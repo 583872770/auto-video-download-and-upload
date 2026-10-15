@@ -1,4 +1,12 @@
-Cookies
-**/__pycache__
+Cookies/
+**/__pycache__/
+.venv/
+.tools/
+.cache/
+videos/
+*.parts/
 videos.txt
-.gitignore
+bilibili.json
+cookies.txt
+*.cookie
+*.log

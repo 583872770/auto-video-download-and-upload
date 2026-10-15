@@ -1,10 +1,11 @@
-import requests
 from PIL import Image, ImageEnhance
+from Utils.paths import io_path
 import os
 
 def enhance_cover(cover_path,size):
     print(cover_path)
-    cover = Image.open(cover_path)
+    with Image.open(io_path(cover_path)) as source:
+        cover = source.convert('RGB')
     # 增强画质
     enhancer = ImageEnhance.Sharpness(cover)
     enhanced_cover = enhancer.enhance(2.0)  # 调整参数来增强画质
@@ -13,7 +14,7 @@ def enhance_cover(cover_path,size):
     # new_size = (864, 516) # 设置新的尺寸  快手封面尺寸864*516
     # new_size = (1920, 1080) # 设置新的尺寸  西瓜视频封面尺寸1080*1920
     new_size = size
-    resized_image = enhanced_cover.resize(new_size)
+    resized_image = enhanced_cover.resize(new_size, Image.Resampling.LANCZOS)
     print('enhance_cover成功')
     return resized_image
 
@@ -47,4 +48,3 @@ if __name__ == '__main__':
         index+=1
 
     
-

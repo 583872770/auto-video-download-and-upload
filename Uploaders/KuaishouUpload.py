@@ -1,381 +1,131 @@
-# -*- coding: utf-8 -*-
-import pathlib
-from datetime import datetime
-
-from playwright.async_api import Playwright, async_playwright
-import os
+"""Kuaishou uploader using the current creator form and positive UI receipts."""
 import asyncio
-import yaml
+from datetime import datetime
+from pathlib import Path
+import re
 
-async def cookie_auth(account_file):
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
+from Uploaders.browser import (
+    UPLOAD_INPUT, UPLOAD_URLS, browser_session, check_login, generate_login,
+    confirm_publication, refresh_login_after_publish, wait_for_upload,
+)
+
+
+async def cookie_auth(account_file, executable_path=None):
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=False)
-        context = await browser.new_context(storage_state=account_file)
-        # 创建一个新的页面
-        page = await context.new_page()
-        # 访问指定的 URL
-        await page.goto("https://cp.kuaishou.com/article/publish/video")
-        try:
-            await page.wait_for_selector(".publish-button", timeout=5000)  # 等待5秒
-            print("[+] 等待5秒 cookie 失效")
-            return False
-        except:
-            print("[+] cookie 有效")
-            return True
-        
+        return await check_login(playwright, 'kuaishou', account_file, executable_path)
+
+
 async def kuaishou_setup(account_file, handle=False):
-    if not os.path.exists(account_file) or not await cookie_auth(account_file):
-        if not handle:
-            # Todo alert message
-            return False
-        print('[+] cookie文件不存在或已失效，即将自动打开浏览器，请扫码登录，登陆后会自动生成cookie文件')
-        await kuaishou_cookie_gen(account_file)
+    if Path(account_file).is_file() and await cookie_auth(account_file):
+        return True
+    if not handle:
+        return False
+    await kuaishou_cookie_gen(account_file)
     return True
 
-async def kuaishou_cookie_gen(account_file):
+
+async def kuaishou_cookie_gen(account_file, executable_path=None):
     async with async_playwright() as playwright:
-        options = {
-            'headless': False
-        }
-        # Make sure to run headed.
-        browser = await playwright.chromium.launch(**options)
-        # Setup context however you like.
-        context = await browser.new_context()  # Pass any options
-        # Pause the page, and start recording manually.
-        page = await context.new_page()
-        await page.goto("https://cp.kuaishou.com/article/publish/video")
-        await page.pause()
-        # 点击调试器的继续，保存cookie
-        await context.storage_state(path=account_file)
+        await generate_login(playwright, 'kuaishou', account_file, executable_path)
 
 
-class KuaiShouVideo(object):
+class KuaiShouVideo:
     def __init__(self, title, file_path, cover_path, tags, publish_date: datetime, account_file):
-        self.title = title  # 视频标题
+        self.title = title
         self.file_path = file_path
         self.cover_path = cover_path
         self.tags = tags
         self.publish_date = publish_date
         self.account_file = account_file
-        self.date_format = '%Y年%m月%d日 %H:%M'
-        self.local_executable_path = ""  # change me
-        self.ua = {
-            "web": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 "
-                   "Safari/537.36",
-            "app": "com.ss.android.ugc.aweme/110101 (Linux; U; Android 5.1.1; zh_CN; MI 9; Build/NMF26X; "
-                   "Cronet/TTNetVersion:b4d74d15 2020-04-23 QuicVersion:0144d358 2020-03-24)"
-        }
+        self.local_executable_path = ''
+        self.visibility = 'public'
 
     async def set_schedule_time_kuaishou(self, page, publish_date):
-        # 选择包含特定文本内容的 label 元素
-        label_element = page.locator('label.ant-radio-wrapper:has-text("定时发布")')
-        # 在选中的 label 元素下点击 checkbox
-        await label_element.click()
-        await asyncio.sleep(0.1)
-        publish_date_hour = publish_date.strftime("%Y-%m-%d %H:%M:%S")
-
-        await page.locator('input[placeholder="选择日期时间"]').click()
-
-        await page.keyboard.press("Control+KeyA")
-   
-        await page.keyboard.type(str(publish_date_hour))
-        await asyncio.sleep(0.2)
-        await page.keyboard.press("Enter")
-        await asyncio.sleep(0.2)
-
-        
-
+        await page.get_by_text('定时发布', exact=True).click()
+        field = page.locator('input[placeholder="选择日期时间"]')
+        value = publish_date.strftime('%Y-%m-%d %H:%M:%S')
+        await field.click()
+        picker = page.locator('.ant-picker-dropdown:visible')
+        date = publish_date.strftime('%Y-%m-%d')
+        for _ in range(2):
+            cell = picker.locator(f'td[title="{date}"]:not(.ant-picker-cell-disabled)')
+            if await cell.count():
+                await cell.click()
+                break
+            await picker.locator('button.ant-picker-header-next-btn').click()
+        else:
+            raise RuntimeError('快手日期选择器中没有可用的指定日期')
+        columns = picker.locator('.ant-picker-time-panel-column')
+        for index, number in enumerate((publish_date.hour, publish_date.minute, publish_date.second)):
+            await columns.nth(index).locator(
+                '.ant-picker-time-panel-cell:not(.ant-picker-time-panel-cell-disabled)'
+            ).filter(has_text=re.compile(f'^{number:02d}$')).click()
+        await picker.get_by_role('button', name='确定', exact=True).click()
+        if await field.input_value() != value:
+            raise RuntimeError('快手未接受指定排期，已停止提交')
 
     async def handle_upload_error(self, page):
-        print("视频出错了，重新上传中")
-        await page.locator('input[accept="video/*,.mp4,.mov,.flv,.f4v,.webm,.mkv,.rm,.rmvb,.m4v,.3gp,.3g2,.wmv,.avi,.asf,.mpg,.mpeg,.ts"]').set_input_files(self.file_path)
+        await page.locator(UPLOAD_INPUT).first.set_input_files(self.file_path)
 
-
-    async def upload(self, playwright: Playwright) -> None:
-        # 使用 Chromium 浏览器启动一个浏览器实例
-        headless=True
-        if self.local_executable_path:
-            browser = await playwright.chromium.launch(channel="chrome",headless=headless, executable_path=self.local_executable_path)
-        else:
-            browser = await playwright.chromium.launch(channel="chrome",headless=headless)
-        # 创建一个浏览器上下文，使用指定的 cookie 文件
-        context = await browser.new_context(storage_state=self.account_file, user_agent=self.ua["web"])
-
-        # 创建一个新的页面
-        page = await context.new_page()
-
-
-        # if not await cookie_auth(self.account_file):
-        #     print('[+] cookie文件不存在或已失效，即将自动打开浏览器，请扫码登录，登陆后会自动生成cookie文件')
-        #     await kuaishou_cookie_gen(self.account_file)
-        #     print('[+] cookie文件已生成，请重新运行程序')
-        #     return
-
-        
-        # 等待页面跳转到指定的 URL，没进入，则自动等待到超时
-        await asyncio.sleep(1)
+    async def prepare(self, page):
+        """Fill the actual form without pressing Publish; also used for live QA."""
+        labels = {'public': '所有人可见', 'friends': '好友可见', 'private': '仅自己可见'}
+        if self.visibility not in labels:
+            raise ValueError('kuaishou_visibility 必须是 public/friends/private')
         try:
-            await page.goto("https://cp.kuaishou.com/article/publish/video")
-            await page.wait_for_url("https://cp.kuaishou.com/article/publish/video")
-            # 点击 "上传视频" 按钮
-            await page.locator('input[accept="video/*,.mp4,.mov,.flv,.f4v,.webm,.mkv,.rm,.rmvb,.m4v,.3gp,.3g2,.wmv,.avi,.asf,.mpg,.mpeg,.ts"]').set_input_files(self.file_path)
-        except Exception as e:
-            print('[+] cookie文件不存在或已失效，即将自动打开浏览器，请扫码登录，登陆后会自动生成cookie文件')
-            await kuaishou_cookie_gen(self.account_file)
-            print('[+] cookie文件已生成，请重新运行程序')
-            self.upload(playwright)
-        
-        
-        await asyncio.sleep(1)
-       
-        # 标题 class="_description_10dx2_59" id="work-description-edit"
-        # title_selector = "_description_10dx2_59"
-        title_selector = f'div[id="work-description-edit"]'
-        await page.type(title_selector, self.title)
-
-
-        await asyncio.sleep(1)
+            await page.goto(UPLOAD_URLS['kuaishou'], wait_until='domcontentloaded', timeout=60000)
+            await page.locator(UPLOAD_INPUT).first.set_input_files(self.file_path)
+        except Exception as error:
+            raise RuntimeError('快手上传页打开失败，请检查登录状态、网络和页面元素') from error
+        await wait_for_upload(
+            page, 'text="预览作品"', 'text="上传失败"',
+            lambda: self.handle_upload_error(page),
+            timeout=getattr(self, 'upload_timeout_seconds', 1800),
+        )
+        print('快手视频上传完成，正在填写表单。', flush=True)
+        # First-time creator onboarding otherwise intercepts every form click.
+        skip = page.get_by_role('button', name='Skip', exact=True)
+        try:
+            await skip.wait_for(state='visible', timeout=2000)
+        except PlaywrightTimeoutError:
+            pass
+        else:
+            await skip.click()
+        description = page.locator('#work-description-edit')
+        await description.fill(self.title)
         for tag in self.tags:
-            # 点击话题 添加#
-            # await page.locator('span:has-text("#话题")').click()
-            # 点击话题 “#” _quick-tips_10dx2_353 _quick-tips-topic_10dx2_372
-            # _quick-tips_2klkp_353 _quick-tips-topic_2klkp_372
-            await page.locator('._quick-tips_2klkp_353._quick-tips-topic_2klkp_372').click()
-            await asyncio.sleep(0.1)
-            await page.type(title_selector, tag)
-            await asyncio.sleep(0.5)
-            await page.press(title_selector, "Space")
-            await asyncio.sleep(0.1)
-            print(f"  [-]添加话题：{tag}")
-
-
-        # # 选择视频封面
-        # # 点击编辑封面
-        # await page.locator('button:has-text("编辑封面")').click()
-        # # 点击上传封面
-        # await page.locator(f'div[id="rc-tabs-2-tab-2"]').click()
-        # await asyncio.sleep(1)
-        # await page.locator('input[type=file][accept^="image/"]').set_input_files(self.cover_path)
-        # # 点击确认
-        # await asyncio.sleep(5)
-        # # await page.locator(f'xpath=/html/body/div[1]/div[1]/div[1]/main/div/div/div[1]/div/div/haploid-html/haploid-body/div/div/div/div/div[1]/div/div[1]/div[2]/div[2]/button[1]/span').click()
-        # await page.locator('button.ant-btn.ant-btn-primary:has-text("确认")').first.click()
-        # await asyncio.sleep(5)
-        
-        
-        
-        
-        # 所属领域
-        # 定位输入框并输入文本
-        # 假设您有一个名为 page 的 Playwright 页面对象
-        await asyncio.sleep(1)
-        # elements = await page.locator("input.ant-select-selection-search-input").all()
-
-        # print(elements)
-
-
-        # 作者服务
-        # elements=await page.locator("div.ant-select-selector").all()
-        # await elements[0].click()
-        # box = await elements[0].bounding_box()
-        # # 检查边界框是否存在
-        # if box:
-        #     # 计算点击位置：元素底部向下10像素的位置
-        #     click_x = box['x'] + (box['width'] / 2)  # 点击元素中心的水平位置
-        #     click_y = box['y'] + box['height'] + 10  # 元素底部向下10像素的垂直位置
-
-        #     # 在计算出的坐标上执行点击操作
-        #     await page.mouse.click(click_x, click_y)
-        # else:
-        #     print("元素没有在页面上，无法获取边界框信息")
-
-        # await elements[1].click()
-
-        
-        # # 获取第一个元素
-        # await asyncio.sleep(0.2)
-        # input_locator_1= elements[2]
-        # await asyncio.sleep(0.2)
-        # await input_locator_1.click()
-        # # 使用文本选择器定位并点击“影视”分类
-        # await page.locator('.ant-select-item-option-content:has-text("游戏")').click()
-        # # await page.locator('text=游戏').click()
-        # elements = await page.locator("input.ant-select-selection-search-input").all()
-        # # 获取第一个元素
-        # input_locator_2= elements[3]
-
-        # await input_locator_2.click()
-        # # 使用文本选择器定位并点击特定分类
-        # await page.locator('text=沙盒游戏').click()
-
-
-
-
-
+            await page.type('#work-description-edit', ' #' + tag)
+            await page.press('#work-description-edit', 'Space')
+        # The persistent image input applies the cover directly. Opening the old
+        # crop dialog and confirming afterward can overwrite it with a frame.
+        await page.locator('input[type="file"][accept*="image/"]').first.set_input_files(self.cover_path)
+        await page.locator('.ant-message-notice').filter(has_text='封面应用成功').first.wait_for(
+            state='visible', timeout=60000)
+        print('快手自定义封面已应用。', flush=True)
+        await page.get_by_text(labels[self.visibility], exact=True).click()
         if self.publish_date != 0:
             await self.set_schedule_time_kuaishou(page, self.publish_date)
 
-        
+    async def upload(self, playwright):
+        async with browser_session(
+            playwright, account_file=self.account_file, headless=True,
+            executable_path=self.local_executable_path or None,
+        ) as context:
+            page = await context.new_page()
+            await self.prepare(page)
+            await page.locator('div[class*="_button-primary_"]').filter(
+                has_text=re.compile(r'^发布$')).click()
+            receipt = await confirm_publication(page, 'kuaishou')
+            await refresh_login_after_publish(context, self.account_file)
+            return receipt
 
-        while True:
-            # 判断重新上传按钮是否存在，如果不存在，代表视频正在上传，则等待
-            try:
-                #  新版：定位重新上传
-                # number = await page.locator('span:has-text("上传成功")').count()
-                number = await page.locator('._tab_1eni7_101:has-text("预览封面")').count()
-                if number > 0:
-                    print("  [-]视频上传完毕")
-                    break
-                else:
-                    print("  [-] 正在上传视频中...")
-                    await asyncio.sleep(2)
-
-                    if await page.locator('div.progress-div > div:has-text("上传失败")').count():
-                        print("  [-] 发现上传出错了...")
-                        await self.handle_upload_error(page)
-            except:
-                print("  [-] 正在上传视频中...")
-                await asyncio.sleep(2)
-
-        # # 使用模板
-        # # 点击使用模板前视频必须已经上传完毕
-        # await page.locator('.HtcINKWm2W4-:has-text("使用模板")').click()
-        
-        # await page.wait_for_selector("._91i17uGkYlI-", state="attached", timeout=30000)  # 等待30秒
-        # elements = await page.locator("._91i17uGkYlI-").all()
-        # # print(f"elements: {elements}")
-        # # 点击第一个元素
-        # await asyncio.sleep(1)
-        # cnt=len(elements)
-        # # 选择第9个模板
-        # await elements[cnt-1].click()
-
-        # # 定位<textarea>元素
-        # await asyncio.sleep(0.2)
-        # # await page.wait_for_selector('textarea.ant-input', state='visible')
-        
-        # textarea_locator = await page.locator('textarea.ant-input').all()
-        # # 清除<textarea>中的现有内容（如果需要）
-        # textarea_locator_1=textarea_locator[0]
-        # textarea_locator_2=textarea_locator[1]
-
-        # # 使用冒号 ":" 分割字符串，得到一个包含所有部分的列表
-        # parts = self.title.split('：')
-
-        # # 提取所需的短语
-        # mc=parts[0]  # 提取 "我的世界"
-        # bianchen=parts[1].split('在')[0]  # 提取 "变成钻石骷髅"
-        # shengcun = '在' + parts[1].split('在')[1].split('【')[0]  # 提取 "MC中生存100天！"
-        # dijiji=parts[1].split('【')[1].split('】')[0]  # 提取 "第1集"
-
-        # await asyncio.sleep(0.2)
-        # # 向<textarea>元素输入文本
-        
-        # await textarea_locator_1.click()
-        # await page.keyboard.press("Control+KeyA")
-        # await asyncio.sleep(0.2)
-        # await page.keyboard.press("Delete")
-        # # await textarea_locator_1.type(f'{mc}')
-        # # await page.keyboard.press("Enter")
-        # await textarea_locator_1.type(f'{bianchen}')
-        # await page.keyboard.press("Enter")
-        # await textarea_locator_1.type(f'{shengcun[:-1]}')
-
-        # await asyncio.sleep(0.1)
-
-        # await textarea_locator_2.click()
-        # await page.keyboard.press("Control+KeyA")
-        # await asyncio.sleep(0.2)
-        # await page.keyboard.press("Delete")
-        # await page.keyboard.press("Enter")
-        # await page.keyboard.press("Enter")
-        # await textarea_locator_2.type(f'{dijiji}')
-
-        # # 点击提交按钮
-        # await asyncio.sleep(0.1)
-        # await page.locator('button.ant-btn.ant-btn-primary:has-text("提交")').click()
-
-
-        # 点击开启画质增强 <span>开启</span>
-        # await page.locator('span:has-text("点击开启【画质增强】功能，一键提升作品画质")').click()
-        # await page.locator('span:has-text("开启")').nth(2).click()
-        # asyncio.sleep(10000)
-
-
-        # # 选择视频封面
-        # # 点击编辑封面
-        # await page.locator('button:has-text("编辑封面")').click()
-        # # 点击上传封面
-        # await page.locator(f'div[id="rc-tabs-1-tab-2"]').click() 
-        # await asyncio.sleep(2)
-        # await page.locator('input[type=file][accept^="image/"]').set_input_files(self.cover_path)
-        # # 点击确认
-        # await asyncio.sleep(3)
-        # # await page.locator(f'xpath=/html/body/div[1]/div[1]/div[1]/main/div/div/div[1]/div/div/haploid-html/haploid-body/div/div/div/div/div[1]/div/div[1]/div[2]/div[2]/button[1]/span').click()
-        # await page.locator('button.ant-btn.ant-btn-primary:has-text("确认")').first.click()
-        # await asyncio.sleep(5)
-
-
-        # 新版
-        # 悬浮 _default-cover_1j1n1_86 _big_1j1n1_95
-        await page.locator('._default-cover_1j1n1_86._big_1j1n1_95').hover()
-        await asyncio.sleep(0.2)
-        await page.locator('._cover-full-editor_1j1n1_40:has-text("封面设置")').click()
-        await asyncio.sleep(0.2)
-        await page.locator('._header-title-item_2t3fe_27:has-text("上传封面")').click()
-        await asyncio.sleep(0.2)
-        await page.locator('#microSupport input[type=file][accept^="image/apng,image/bmp,image/ico,image/cur,image/jpg,image/jpeg,image/jfif,image/pjpeg,image/pjp,image/png,image/webp"]').set_input_files(self.cover_path)
-        await asyncio.sleep(2)
-        # span 确认
-        await page.locator('span:has-text("确认")').click()
-        await asyncio.sleep(5)
-
-
-        # await asyncio.sleep(1000000000)
-        # 点击发布按钮
-        # await page.locator('button:has-text("发布")').click()
-        await page.locator('._button_3a3lq_1._button-primary_3a3lq_60:has-text("发布")').click()
-
-
-        # if self.publish_date != 0:
-        #     # 快手最后还要点击一次确认发布
-        #     asyncio.sleep(0.5)
-        #     # await page.locator('button.ant-btn.ant-btn-primary:has-text("确认发布")').click()
-        #     await page.locator('button:has-text("确认发布")').click()
-
-        await context.storage_state(path=self.account_file)  # 保存cookie
-        print('  [-]cookie更新完毕！')
-
-        await asyncio.sleep(1)
-       
-        # 关闭浏览器上下文和浏览器实例
-        await context.close()
-        await browser.close()
-        
-    
     async def main(self):
         async with async_playwright() as playwright:
-            await self.upload(playwright)
-
+            return await asyncio.wait_for(
+                self.upload(playwright), timeout=getattr(self, 'upload_timeout_seconds', 1800))
 
 
 if __name__ == '__main__':
-    with open('config.yaml', encoding='utf-8') as f:
-        config = yaml.load(f.read(), Loader=yaml.FullLoader)
-    f.close()
-    fullpath = config['path']+config['dir']
-    print(fullpath)
-    # videoFile = getFileNames(fullpath)
-    # print(f"{fullpath} 文件夹下有 {len(videoFile)} 个视频")
-    
-    account_file = 'kuaishou.json'
-    
-    # publish_datetimes = generate_schedule_time_next_day(file_num, 1, daily_times=[16])
-    # cookie_setup = asyncio.run(douyin_setup(account_file, handle=False))
-    
-    tags=["我的世界","mc不灭",'撒旦发射点']
-    file= r"D:\desktop\myself\video\我的世界：变成钻石骷髅在MC中生存100天！【第1集】.mp4"
-    title="我的世界：变成在MC中生存100天【第一集】"
-    cover=r"D:\desktop\myself\videos\image1.png"
-    app = KuaiShouVideo(title, file, cover, tags, datetime(2024, 3, 25, 10, 30, 0), account_file)
-    asyncio.run(app.main(), debug=False)
+    raise SystemExit('请从项目根目录运行 main.py --publish --platforms kuaishou')

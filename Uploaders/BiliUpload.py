@@ -7,9 +7,9 @@ import yaml
 # from script.biliup_tool import BiliBili, Data
 from biliup.plugins.bili_webup import BiliBili, Data
 
-from process_cover import enhance_cover
+from Utils.process_cover import enhance_cover
 
-from dTime import get_random_time_diff
+from Utils.dTime import get_random_time_diff
 
 
 def getFileNames(file_path):
@@ -165,7 +165,3 @@ if __name__ == '__main__':
             ret = bili.submit(submit_api='web')  # 提交视频
         time.sleep(10)
         print('上传成功：'+title)
-
-    
-
-        

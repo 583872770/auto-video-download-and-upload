@@ -1,0 +1,4 @@
+PyYAML>=6.0.2,<7
+Pillow>=11,<13
+yt-dlp[default]>=2026.8.19
+playwright>=1.51,<2
