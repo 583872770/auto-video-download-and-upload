@@ -1,29 +1,47 @@
-# YouTube 登录被拒后的接续步骤
+# YouTube 登录与 Cookie 配置
 
-如果 Google 提示“此浏览器或应用可能不安全”，请停止在项目自动化窗口重试。[Google 说明](https://support.google.com/accounts/answer/7675428?hl=en)列出了自动化控制等可能被拒的浏览器情形。本项目不会通过隐藏自动化标记、关闭安全检查或修改浏览器指纹来规避它。
+部分请求需要登录态才能下载。下载器通过 `youtube_cookie` 读取 Netscape 格式的 Cookie 文件；这与抖音、快手使用的 JSON 登录态不同。
 
-1. 关闭报错窗口，在你平时使用的正常 Chrome、Edge 或 Firefox 中手动登录 YouTube。保持与下载配置相同的代理网络。
-2. 按 [yt-dlp 的 YouTube Cookie 导出说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)导出当前 YouTube 会话的 Netscape Cookie。若需要导出工具，官方 [FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)列出了 Chrome 的“Get cookies.txt LOCALLY”和 Firefox 的“cookies.txt”。只导出 youtube.com 当前网站，不导出所有网站。
-3. 保存为本机“下载”目录下的 `youtube-cookies.txt`。不要将 Cookie 内容粘贴到聊天或提交 Git。
-4. 告诉维护助手“已保存”，助手即可检查并导入本机文件，继续下载。自行运行时，将它复制为项目 `Cookies/youtube.txt`，在下载配置中设置 `youtube_cookie` 指向该文件，再执行下载命令。
+## 导出 Cookie
 
-Cookie 文件第一行应为 `# Netscape HTTP Cookie File` 或 `# HTTP Cookie File`。它与快手、抖音的 Playwright JSON 登录态格式不同。账号 Cookie 也不能保证所有视频都可下载；应以实际下载结果为准。
+1. 在平时使用的 Chrome 中安装 [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)。
+2. 打开 [YouTube](https://www.youtube.com/)，正常登录并停留在该网站标签页。
+3. 点击浏览器右上角“扩展程序”，打开 **Get cookies.txt LOCALLY**，确认当前网址属于 `youtube.com`。
+4. 将 **Export Format** 设为 **Netscape**，点击 **Export As**。不要选择 **Export All Cookies**，以免包含其他网站的凭据。
+5. 将文件保存为项目目录下的 `Cookies/youtube.txt`。
 
-## Chrome 具体导出步骤
+其他浏览器及导出方式见 [yt-dlp Cookie FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) 和 [YouTube Cookie 导出说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)。
 
-1. 用平时使用的 Chrome 打开 [Get cookies.txt LOCALLY 商店页面](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)，确认扩展名称，点击“添加至 Chrome”，查看权限后确认安装。
-2. 在这个 Chrome 中打开 https://www.youtube.com/ 并正常登录，确认右上角显示账号头像。停留在 YouTube 标签页。
-3. 点击 Chrome 右上角拼图形状的“扩展程序”按钮，再点 **Get cookies.txt LOCALLY**。扩展顶部显示的当前网址应属于 `youtube.com`。
-4. 在 **Export Format** 中选择 **Netscape**，点击 **Export As**。不要点击 **Export All Cookies**，后者会导出其他网站的 Cookie。按钮名称与行为已核对[扩展源码](https://github.com/kairi003/Get-cookies.txt-LOCALLY/blob/master/src/popup.mjs)。
-5. 在保存窗口选择 `C:\Users\31493\Downloads`，文件名填 `youtube-cookies.txt`，点击“保存”。如果浏览器自动下载了默认文件名，按 `Ctrl+J` 找到文件，再在资源管理器中改成上述文件名，避免重复 `.txt` 扩展名。
-6. 文件留在本机，不上传到聊天。保存后告知维护助手“已保存”，即可检查格式并继续真实下载测试。
+## 配置与下载
+
+在项目根目录的 `config.yaml` 中设置：
 
 ```yaml
-# config.yaml 位于项目根目录时：
 youtube_cookie: Cookies/youtube.txt
-proxy: http://127.0.0.1:10808
+# 按需启用，端口替换为自己的代理端口：
+# proxy: http://127.0.0.1:7890
 ```
 
+然后运行：
+
 ```powershell
-.\run.ps1 -Mode download -Config config.yaml -Url "https://www.youtube.com/watch?v=视频ID"
+.\run.ps1 -Mode download -Url "https://www.youtube.com/watch?v=视频ID"
 ```
+
+使用其他位置的配置文件时，Cookie 的相对路径以配置文件所在目录为基准。
+
+## 独立浏览器登录
+
+也可运行以下命令，在项目打开的独立浏览器中手动登录：
+
+```powershell
+.\run.ps1 -Mode youtube-login
+```
+
+程序确认登录成功后，仅导出该会话的 YouTube Cookie 到项目 `Cookies/youtube.txt`。下载时仍需在配置中设置 `youtube_cookie`。如果 Google 提示“此浏览器或应用可能不安全”，请改用正常浏览器手动导出；相关原因见 [Google 登录帮助](https://support.google.com/accounts/answer/7675428?hl=en)。
+
+## 注意事项
+
+- Cookie 是登录凭据，请保留在本机，不要提交到 Git、上传到聊天或发送给他人。项目已忽略 `Cookies/` 目录。
+- Netscape 文件通常以 `# Netscape HTTP Cookie File` 或 `# HTTP Cookie File` 开头，不应使用 JSON 文件代替。
+- Cookie 可能过期或被网站更新。下载再次要求登录时，可重新导出；账号登录态不保证所有视频都可下载。
