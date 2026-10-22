@@ -2,10 +2,10 @@
 # 下载与上传使用相同的目标目录：path / dir。
 path: videos
 dir: ""
-url: "https://www.youtube.com/watch?v=xxxxxxxxxxx"
+url: "https://www.youtube.com/watch?v=QkCWK_YJ7uY"
 # url 也支持列表；或在 Download.py 命令后直接传入 URL。
 # proxy: "http://127.0.0.1:7890"
-# youtube_cookie: "Cookies/youtube.txt"  # Netscape 格式，不是浏览器 JSON
+youtube_cookie: "Cookies/youtube.txt"  # Netscape 格式，不是浏览器 JSON
 # download_format: "bestvideo[height<=720]+bestaudio/best[height<=720]"
 # 下载器自动识别 PATH 中的 Deno / Node.js；也可指定运行时路径：
 # js_runtimes: {node: {path: 'C:/Program Files/nodejs/node.exe'}}
