@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -83,6 +84,42 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(self.store.rotation_completed('rotation-1'), 2)
         self.assertEqual(self.store.rotation_completed('rotation-1', False), 1)
         self.assertEqual(self.store.rotation_completed('rotation-2'), 1)
+
+    def test_existing_snapshot_uses_saved_rotation_for_each_worker(self):
+        import yt_dlp
+        from web_worker import execute
+        self.seed()
+        queued = {'directory': str(self.manager.directory), 'node': 'B', 'proxy': self.manager.proxy_url}
+        payload = {'config': {'path': 'videos', 'proxy_mode': 'clash'}, 'base': str(self.root),
+                   'urls': ['http://example.test/fixture.mp4'], 'clash': queued}
+        for slot, policy in [(0, self.rotation()), (1, self.rotation(every=7)),
+                             (1, self.rotation(enabled=False))]:
+            with self.subTest(slot=slot, policy=policy):
+                self.manager.configure_rotation(policy)
+                saved = self.manager.rotation()
+                counts = []
+                progress = []
+                def completed(identity, count_failures):
+                    counts.append((identity, count_failures))
+                    return 5
+                with patch.object(ClashManager, 'download_snapshot', return_value=queued) as resolve, \
+                     patch.object(ClashManager, 'select'), \
+                     patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), \
+                     patch('Download.require_download_tools'):
+                    execute('download', payload, progress.append, rotation_completed=completed,
+                            store=self.store, worker_slot=slot)
+                actual, count = resolve.call_args.args
+                if policy['enabled']:
+                    self.assertEqual(actual['rotation'], saved)
+                    expected_id = saved['id'] + (f':{slot}' if slot else '')
+                    self.assertEqual(counts, [(expected_id, policy['count_failures'])])
+                    self.assertEqual(count, 5)
+                    # Simulate a pre-existing task snapshot after another edit.
+                    queued['rotation'] = saved
+                else:
+                    self.assertNotIn('rotation', actual)
+                    self.assertEqual(counts, [])
+                    self.assertEqual(count, 0)
 
     @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
     def test_real_proxy_rotation_failures_archive_skips_and_restart(self):

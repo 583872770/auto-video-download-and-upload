@@ -41,7 +41,38 @@ def worker_lock(path):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0):
+def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
+    if action != 'download':
+        return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
+    from Utils.download_storage import DownloadWorkspace
+    config = dict(payload['config'])
+    if store:
+        runtime = store.runtime()
+        if 'storage_mode' in runtime:
+            config['storage_mode'] = runtime['storage_mode']
+    workspace = DownloadWorkspace(config, store.directory if store else Path(payload['base']) / '.cache', task_id)
+    last_progress = {}
+
+    def report(value):
+        last_progress.update(value, storage_mode='test' if workspace.test_mode else 'local')
+        if report_progress:
+            report_progress(dict(last_progress))
+
+    try:
+        result = _execute(action, {**payload, 'config': workspace.prepare()}, report,
+                          rotation_completed, store, worker_slot)
+        if workspace.test_mode:
+            report({**last_progress, 'stage': 'cleaning', 'speed': None, 'eta': None})
+    finally:
+        workspace.cleanup()
+    if workspace.test_mode:
+        result.update(message='测试下载完成，本次视频、封面、字幕及元数据已删除，仅保留任务记录和日志。',
+                      test_mode=True, files_deleted=True, skipped=False)
+        print(result['message'], flush=True)
+    return result
+
+
+def _execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0):
     from Utils.runtime import configure_runtime
     configure_runtime()
     from Utils.config import resolve_path
@@ -73,12 +104,13 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         progress.state['worker_slot'] = worker_slot
         progress.save(force=True)
         failure = DownloadFailure()
+        test_mode = config.get('storage_mode') == 'test'
         if store:
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
         urls = payload['urls']
-        if store:
+        if store and not test_mode:
             from webapp.store import source_identity
             video_id, _ = source_identity(urls[0])
             if len(urls) == 1 and video_id and store.archive_has('youtube ' + video_id):
@@ -91,6 +123,16 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             if not proxy:
                 raise RuntimeError('下载任务缺少代理节点配置，请重新创建。')
             manager = ClashManager(proxy['directory'])
+            # Paused queues may contain millions of old snapshots. Resolve the
+            # saved rotation here so changes also apply to existing queued work.
+            manager.reload()
+            proxy = dict(proxy)
+            previous_rotation = proxy.pop('rotation', None)
+            current_rotation = manager.rotation()
+            if current_rotation['enabled']:
+                proxy['rotation'] = current_rotation
+            elif previous_rotation:
+                proxy['node'] = manager.config.get('selected') or proxy['node']
             if worker_slot:
                 manager = manager.for_worker(worker_slot)
                 if not proxy.get('rotation'):
@@ -121,7 +163,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             progress.state.update(stage='extracting')
             progress.save(force=True)
         options = build_ydl_options(config, base)
-        if store:
+        if store and not test_mode:
             from webapp.catalog import MediaCatalog
             from Utils.config import video_directory
             catalog = MediaCatalog(store)
@@ -146,6 +188,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 return super().process_info(info_dict)
 
             def in_download_archive(self, info_dict):
+                if test_mode:
+                    return False
                 archived = store.archive_has(self._make_archive_id(info_dict)) if store else super().in_download_archive(info_dict)
                 if archived:
                     self.skipped = True
@@ -155,6 +199,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 return archived
 
             def record_download_archive(self, info_dict):
+                if test_mode:
+                    return
                 if store:
                     identity = self._make_archive_id(info_dict)
                     if identity:
@@ -224,7 +270,10 @@ def drain(directory, slot=0, role='all'):
                 break
             if task['action'] == 'download':
                 from Utils.config import video_directory
-                target = video_directory(config, base)
+                from Utils.download_storage import DownloadWorkspace
+                current_config = {**config, 'storage_mode': runtime.get('storage_mode', config.get('storage_mode', 'local'))}
+                workspace = DownloadWorkspace(current_config, store.directory, task['id'])
+                target = video_directory(workspace.config, base)
                 target.mkdir(parents=True, exist_ok=True)
                 reserve_gb = int(runtime.get('min_free_gb', config.get('min_free_gb', 2)))
                 reserve = reserve_gb * 1024 ** 3
@@ -233,7 +282,8 @@ def drain(directory, slot=0, role='all'):
                     store.release(task['id'], store.owner, message)
                     store.worker_status(store.owner, name, 'paused', message=message)
                     break
-                store.import_archive(base)
+                if not workspace.test_mode:
+                    store.import_archive(base)
             store.worker_status(store.owner, name, 'running', task['id'])
             heartbeat_stop = threading.Event()
 
@@ -262,7 +312,7 @@ def drain(directory, slot=0, role='all'):
                     print(f'[{task["action"]}] 任务开始', flush=True)
                     result = execute(task['action'], task['payload'],
                                      report,
-                                     rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot))
+                                     rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
                 except YouTubeAuthRequired as error:

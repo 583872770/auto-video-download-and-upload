@@ -93,6 +93,8 @@ class TaskStore:
         task_id = uuid.uuid4().hex
         url = (payload.get('urls') or [None])[0]
         video_id, source_key = source_identity(url)
+        if payload.get('config', {}).get('storage_mode') == 'test':
+            source_key = 'test:' + source_key
         batch_id = payload.get('batch_id')
         if action == 'download':
             inserted = self.db.ensure(db, reservations, {'key': source_key, 'task_id': task_id})
@@ -131,6 +133,8 @@ class TaskStore:
         for index, payload in enumerate(payloads):
             url = payload['urls'][0]
             video_id, source_key = source_identity(url)
+            if payload.get('config', {}).get('storage_mode') == 'test':
+                source_key = 'test:' + source_key
             task_id = uuid.uuid4().hex
             common = {key: value for key, value in payload.items() if key not in ('urls', 'batch_id', 'import_id')}
             encoded = json.dumps(common, ensure_ascii=False, sort_keys=True)
@@ -348,7 +352,7 @@ class TaskStore:
                     field = 'failed' if error else 'succeeded'
                     self.db.ensure(db, rotations, {'id': generation, 'succeeded': 0, 'failed': 0})
                     db.execute(rotations.update().where(rotations.c.id == generation).values({field: rotations.c[field] + 1}))
-                if error and row['source_key']:
+                if row['source_key'] and (error or (result or {}).get('test_mode') or row['source_key'].startswith('test:')):
                     db.execute(reservations.delete().where(reservations.c.key == row['source_key'], reservations.c.task_id == task_id))
             return True
 
@@ -385,7 +389,7 @@ class TaskStore:
             return list(latest.values())
 
     def set_runtime(self, config):
-        keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie')
+        keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.insert(settings).values(key='runtime', value=value)

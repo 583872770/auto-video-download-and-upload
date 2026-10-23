@@ -18,10 +18,10 @@ DEFAULTS = {
     'douyin_visibility': 'public', 'kuaishou_visibility': 'public',
     'douyin_tags': [], 'kuaishou_tags': [],
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
-    'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True,
+    'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
-                   'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads'}
+                   'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode'}
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000)}
 
@@ -47,6 +47,8 @@ def urls_from(value):
 
 
 def validate_settings(config, *, download_only=False):
+    from Utils.download_storage import storage_mode
+    storage_mode(config)
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():

@@ -24,11 +24,13 @@ def download_cookie_session(options):
 
 
 def build_ydl_options(config, base):
+    from Utils.download_storage import storage_mode
+    test_mode = storage_mode(config) == 'test'
     options = {
         'format': config.get('download_format',
                              'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/'
                              'best[ext=mp4][vcodec^=avc1]/bestvideo+bestaudio/best'),
-        'download_archive': str(resolve_path(base, 'videos.txt')),
+        'download_archive': None if test_mode else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
         'outtmpl': str(video_directory(config, base) / '%(title).120B [%(id)s].%(ext)s'),
@@ -101,13 +103,18 @@ def main(argv=None):
         if args.proxy is not None:
             config['proxy'] = args.proxy
             config['proxy_mode'] = 'manual'
-        options = build_ydl_options(config, base)
-        if not args.simulate:
-            require_download_tools(urls, options)
-        options['simulate'] = args.simulate
-        with download_cookie_session(options) as session_options:
-            with yt_dlp.YoutubeDL(session_options) as downloader:
-                return downloader.download(urls)
+        from Utils.download_storage import DownloadWorkspace
+        workspace = DownloadWorkspace(config, base / '.cache')
+        try:
+            options = build_ydl_options(workspace.prepare(), base)
+            if not args.simulate:
+                require_download_tools(urls, options)
+            options['simulate'] = args.simulate
+            with download_cookie_session(options) as session_options:
+                with yt_dlp.YoutubeDL(session_options) as downloader:
+                    return downloader.download(urls)
+        finally:
+            workspace.cleanup()
     except (OSError, ValueError, RuntimeError, yt_dlp.utils.DownloadError) as error:
         parser.exit(1, f'下载失败：{error}\n')
 

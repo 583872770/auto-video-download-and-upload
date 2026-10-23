@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from app import create_app
 from tests import test_scale
@@ -17,6 +18,32 @@ from webapp.store import TaskStore
 
 
 class ControlContract:
+    def test_paused_queue_unlocks_rotation_without_losing_jobs(self):
+        manager = self.app.extensions['clash']
+        (manager.directory / 'nodes.yaml').write_text(
+            'proxies:\n  - {name: A, type: http, server: 127.0.0.1, port: 1234}\n'
+            '  - {name: B, type: http, server: 127.0.0.1, port: 1235}\n', encoding='utf-8')
+        task = self.store.create('download', {'config': {}, 'base': str(self.root),
+                                             'urls': ['https://example.test/one.mp4']})
+        config = {'enabled': True, 'nodes': ['A', 'B'], 'every': 3, 'count_failures': False}
+        self.assertTrue(self.client.get('/api/clash').json['rotation_locked'])
+        self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)
+        self.store.claim('simulated-owner')
+        self.store.set_downloads_paused(True)
+        self.assertTrue(self.client.get('/api/clash').json['rotation_locked'])
+        self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)
+        self.store.stop_running_downloads(lambda owner: True)
+        state = self.client.get('/api/clash').json
+        self.assertTrue(state['locked'])
+        self.assertFalse(state['rotation_locked'])
+        response = self.client.post('/api/clash/rotation', json=config, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.get(task['id'])['attempts'], 0)
+        with patch.object(self.app.extensions['youtube_login'], 'status', return_value={'active': True}):
+            self.assertTrue(self.client.get('/api/clash').json['rotation_locked'])
+            self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)
+
     def test_stop_persists_blocks_downloads_and_imports_but_not_checks(self):
         payload = {'config': {}, 'base': str(self.root)}
         download = self.store.create('download', {**payload, 'urls': ['https://example.test/one.mp4']})

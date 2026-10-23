@@ -10,11 +10,17 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
     def clash_error(error):
         return jsonify(error=str(error)), 502
 
-    def idle():
+    def rotation_locked():
+        return store.pending(runnable=True) or bool(store.download_queue()['running'])
+
+    def idle(*, rotation=False):
         login = app.extensions.get('youtube_login')
         if login and login.status()['active']:
             abort(409, description='请先完成或取消 YouTube 登录，再修改代理或节点。')
-        if store.pending():
+        locked = rotation_locked() if rotation else store.pending()
+        if locked:
+            if rotation:
+                abort(409, description='请先停止全部下载并等待当前任务结束，再修改轮换配置。')
             abort(409, description='请等待下载队列结束后再修改轮换配置、更新订阅、手动切换节点或停止代理。')
 
     def status():
@@ -33,7 +39,12 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
                 rotation['workers'].append({'slot': slot, 'completed': value,
                     'next_node': rotation['nodes'][(rotation['start_index'] + value // rotation['every']) % len(rotation['nodes'])]})
         login = app.extensions.get('youtube_login')
-        return {**data, 'locked': store.pending() or bool(login and login.status()['active']), 'mode': config.get('proxy_mode', 'manual')}
+        login_active = bool(login and login.status()['active'])
+        return {**data, 'locked': store.pending() or login_active,
+                'rotation_locked': rotation_locked() or login_active,
+                'rotation_lock_reason': '请先完成或取消 YouTube 登录，再修改轮换配置。' if login_active else
+                                        '请先停止全部下载并等待当前任务结束，再修改轮换配置。',
+                'mode': config.get('proxy_mode', 'manual')}
 
     @app.get('/api/clash')
     def get_clash():
@@ -84,7 +95,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         request.max_content_length = 512 * 1024
         data = request.get_json(silent=True)
         with media_lock:
-            idle()
+            idle(rotation=True)
             manager.configure_rotation(data)
         return jsonify(message='自动轮换配置已保存。', **status())
 

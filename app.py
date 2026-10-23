@@ -135,6 +135,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             raise ValueError('包含不支持在页面修改的配置项。')
         with media_lock, settings_lock:
             config, _ = settings()
+            if 'storage_mode' in data and data['storage_mode'] != config.get('storage_mode', 'local'):
+                queue = store.download_queue()
+                if queue['running'] or (queue['queued'] and not queue['paused']):
+                    return jsonify(error='请先停止全部下载并等待当前任务结束，再切换保存方式。'), 409
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 require_login_idle()
             if store.pending() and any(key in data and data[key] != config.get(key, DEFAULTS[key])
@@ -146,7 +150,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             sync_runtime(config, config_path.parent)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 youtube_auth.invalidate()
-        return jsonify(message='配置已保存，新任务将使用这份配置。')
+        return jsonify(message='配置已保存，保存方式对尚未开始的下载任务生效，其余设置对新任务生效。')
 
     @app.get('/api/status')
     def status():
@@ -170,7 +174,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                    'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
         return jsonify(tools=tools, accounts=accounts, python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        workers=store.workers(), worker_count=config.get('worker_count', 1), download_queue=store.download_queue(),
-                       youtube=youtube, media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
+                       youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
+                       media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 
     from webapp.youtube_login import YouTubeLogin, LoginBusy
 

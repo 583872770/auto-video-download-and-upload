@@ -1,14 +1,20 @@
 path: videos
 dir: ''
-url:
-- https://www.youtube.com/watch?v=npNnbj46_ik
-- https://www.youtube.com/watch?v=2Gu7q-KUXCk
-- https://www.youtube.com/watch?v=WMu6ANTg8mk
-- https://www.youtube.com/watch?v=hI0ofOjFloE
-- https://www.youtube.com/watch?v=NJvj1iQdZwE
-- https://www.youtube.com/watch?v=8XiDhkvwgEo
-- https://www.youtube.com/watch?v=Xmyef5q9wSo
-- https://www.youtube.com/watch?v=p2MeSftrXtM
+url: 'https://www.youtube.com/watch?v=npNnbj46_ik
+
+  https://www.youtube.com/watch?v=2Gu7q-KUXCk
+
+  https://www.youtube.com/watch?v=WMu6ANTg8mk
+
+  https://www.youtube.com/watch?v=hI0ofOjFloE
+
+  https://www.youtube.com/watch?v=NJvj1iQdZwE
+
+  https://www.youtube.com/watch?v=8XiDhkvwgEo
+
+  https://www.youtube.com/watch?v=Xmyef5q9wSo
+
+  https://www.youtube.com/watch?v=p2MeSftrXtM'
 youtube_cookie: Cookies/youtube.txt
 platforms:
 - douyin
@@ -41,3 +47,10 @@ xigua_tags:
 - 100天
 tid: 201
 proxy_mode: clash
+proxy: ''
+worker_count: 3
+download_attempts: 3
+min_free_gb: 2
+shard_downloads: true
+max_log_mb: 10
+log_retention_days: 0

@@ -122,9 +122,9 @@ function progressLabel(task) {
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
   if (task.status === 'failed') return '下载失败';
   if (task.status === 'interrupted') return '已中断';
-  if (task.status === 'succeeded') return task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
+  if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -303,11 +303,11 @@ function renderRotation(data) {
     $('#rotation-count-failures').checked = rotationDraft.count_failures;
     rotationSavedSignature = signature;
   }
-  const locked = clashBusy || data.locked;
+  const locked = clashBusy || (data.rotation_locked ?? data.locked);
   $$('#clash-rotation-form input, #rotation-save').forEach(input => { input.disabled = locked; });
   $('#rotation-save').disabled = locked || !data.nodes.length;
   $('#rotation-badge').textContent = saved.enabled ? data.mode === 'clash' ? '已开启' : '已保存 · Clash 模式生效' : '未开启';
-  $('#rotation-draft-note').textContent = rotationDirty ? '有未保存的修改' : '配置已保存后对新任务生效';
+  $('#rotation-draft-note').textContent = data.rotation_locked ? data.rotation_lock_reason : rotationDirty ? '有未保存的修改' : '保存后对待下载任务生效';
   $('#rotation-sequence').textContent = rotationDraft.nodes.length ? `轮换顺序：${rotationDraft.nodes.map((name, i) => `${i + 1}. ${name}`).join(' → ')}` : '请勾选至少两个节点。';
   $('#rotation-status').textContent = saved.enabled ? data.mode !== 'clash' ? '当前连接方式未使用 Clash，切换到 Clash 订阅代理后轮换才会生效。' : `${saved.worker_count > 1 ? '各进程独立计数 · 主进程：' : ''}当前配置已计数 ${saved.completed || 0} 个视频 · ${data.locked ? '当前轮换节点' : '下次下载使用'} ${saved.next_node} · ${saved.count_failures ? `再处理 ${saved.remaining} 个视频后轮换（含失败）` : `再成功下载 ${saved.remaining} 个视频后轮换`}` : '开启后可在所选节点之间自动循环。';
   const nodeSignature = JSON.stringify([data.nodes.map(node => node.name), rotationDraft.nodes, locked]);
@@ -337,7 +337,17 @@ function fillConfig(config) {
     const value = config[element.name];
     element.value = Array.isArray(value) ? value.join('\n') : value ?? '';
   }
+  renderStorageSettings();
 }
+function renderStorageSettings() {
+  const test = $('#storage-mode').value === 'test';
+  $$('[data-local-storage]').forEach(label => {
+    label.hidden = test;
+    $('input', label).disabled = test;
+  });
+  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。切换前请先停止全部下载；保存后对尚未开始的任务生效。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。网盘保存待开发。';
+}
+$('#storage-mode').addEventListener('change', renderStorageSettings);
 async function refresh() {
   if (state.polling) return;
   state.polling = true;
@@ -361,7 +371,10 @@ async function refresh() {
     if (mediaChanged) renderMedia();
     renderTasks(); renderStatus(); renderClash(); renderPagination();
     $('#media-directory').textContent = media.directory;
-    $('#download-directory').textContent = media.directory;
+    const testStorage = status.storage_mode === 'test';
+    $('#download-storage-label').textContent = testStorage ? '保存位置 · 测试模式' : '保存位置 · 指定目录';
+    $('#download-directory').textContent = testStorage ? '下载完成后自动删除本次文件，仅保留任务记录和日志。' : media.directory;
+    $('#download-final-step').textContent = testStorage ? '完成后删除' : '保存到素材库';
     $('#database-backend').textContent = `${status.database === 'postgresql' ? 'PostgreSQL 已连接' : 'SQLite 便携模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
