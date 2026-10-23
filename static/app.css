@@ -44,6 +44,9 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .catalog-toolbar span{white-space:nowrap}
 .scale-panel{grid-column:1/-1}
 .scale-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px 24px;padding:0 23px}
+.download-queue-controls{display:flex;align-items:center;gap:14px;padding:0 23px 16px;flex-wrap:wrap}.download-queue-controls .micro-copy{margin:0;flex:1;min-width:180px}.download-queue-controls .queue-stopped{color:#8a6b2b}
+.youtube-auth-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.youtube-login-steps{padding-left:22px;color:var(--muted);font-size:12px;line-height:2}.youtube-login-status{padding:15px;border:1px solid var(--line);border-radius:8px;background:#f7f9f2;font-size:13px;line-height:1.8;overflow-wrap:anywhere}.youtube-login-status.error{background:#fff5ef;color:#a6583a}.youtube-login-status.success{color:#617c45}.youtube-login-summary{padding:0 23px}.youtube-cookie-row{flex-wrap:wrap;gap:10px}
+.youtube-login-summary.error{color:#a6583a}
 @media(max-width:900px){.scale-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.bulk-import-row{padding:14px 17px;flex-wrap:wrap}.catalog-toolbar{padding:0 17px 17px;flex-wrap:wrap;gap:10px}.catalog-toolbar input{flex-basis:100%}.pagination{gap:12px;padding:17px}.scale-fields{grid-template-columns:1fr}}
 @media(max-width:1000px){.rotation-nodes{grid-template-columns:repeat(2,minmax(0,1fr))}}

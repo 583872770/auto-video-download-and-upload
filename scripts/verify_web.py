@@ -77,18 +77,19 @@ def main():
                 assert page.locator('input[name="segment_seconds"], input[name="time_list"], select[name$="visibility"]').count() == 0
                 report['settings_roundtrip'] = 'passed'
                 page.locator('.nav-item[data-view="overview"]').click()
-                page.locator('.youtube-cookie-row [data-open]').click()
+                page.locator('.youtube-cookie-row [data-open=youtube-cookie-dialog]').click()
                 page.locator('#youtube-cookie-form input[name="cookie"]').set_input_files(str(cookie))
                 page.get_by_role('button', name='上传并保存', exact=True).click()
                 expect(page.locator('#youtube-cookie-dialog')).not_to_be_visible()
-                expect(page.locator('.youtube-cookie-row [data-youtube-status]')).to_have_text('Cookie 已保存 · 有效性以下载结果为准')
+                expect(page.locator('.youtube-cookie-row [data-youtube-status]')).to_have_text('Cookie 已保存 · 待检测登录')
                 assert yaml.safe_load(config.read_text(encoding='utf-8'))['youtube_cookie'] == 'Cookies/youtube.txt'
                 assert (output / 'Cookies' / 'youtube.txt').is_file()
                 report['youtube_cookie_file_upload'] = 'passed'
                 page.locator('#download-urls').fill(f'http://127.0.0.1:{server.server_port}/test-source.mp4')
                 page.locator('#download-form button[type="submit"]').click()
-                page.locator('#batch-progress .batch-video').first.wait_for()
-                page.locator('#batch-progress [data-task]').first.click()
+                page.locator('.nav-item[data-view=tasks]').click()
+                page.locator('#all-tasks .task-row').first.wait_for(timeout=30000)
+                page.locator('#all-tasks [data-task]').first.click()
                 page.locator('#task-dialog[open]').wait_for()
                 page.locator('#task-detail-meta .status-succeeded').wait_for(timeout=30000)
                 page.locator('#task-dialog [data-close]').click()

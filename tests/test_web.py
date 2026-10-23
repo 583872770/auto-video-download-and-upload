@@ -216,7 +216,8 @@ class WebTests(unittest.TestCase):
                          [('.youtube.com', 'SID', 'DO_NOT_EXPOSE')])
         self.assertIsNone(next(iter(jar)).expires)
         self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], 'Cookies/youtube.txt')
-        task = self.post_task('download', urls='https://www.youtube.com/watch?v=example').json
+        with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={'state': 'valid'}):
+            task = self.post_task('download', urls='https://www.youtube.com/watch?v=example').json
         from Download import build_ydl_options
         payload = self.store.get(task['id'], private=True)['payload']
         options = build_ydl_options(payload['config'], Path(payload['base']))

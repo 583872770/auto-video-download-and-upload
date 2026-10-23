@@ -165,14 +165,16 @@ class TaskStore:
         with self.connect() as db:
             return self.decode(db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first(), private, db)
 
-    def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc'):
+    def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False):
         if not 1 <= limit <= 100:
             raise ValueError('每页条数必须在 1 到 100 之间。')
         statement = select(tasks)
         if actions:
             statement = statement.where(tasks.c.action.in_(actions))
+        if finished_only:
+            statement = statement.where(tasks.c.status.in_(('succeeded', 'failed', 'interrupted')))
         if status:
-            statuses = {'running': ['running', 'queued'], 'failed': ['failed', 'interrupted']}.get(status, [status])
+            statuses = {'running': ['running', 'queued'], 'active': ['running'], 'failed': ['failed', 'interrupted']}.get(status, [status])
             statement = statement.where(tasks.c.status.in_(statuses))
         if batch_id:
             statement = statement.where(tasks.c.batch_id == batch_id)
@@ -214,9 +216,55 @@ class TaskStore:
             return self._counts(db, ['batch:' + batch_id] if batch_id else
                                 ['action:' + action for action in actions] if actions else None)
 
-    def pending(self):
-        values = self.counts()
+    def pending(self, *, runnable=False):
+        actions = ('check', 'index', 'preview', 'prepare', 'publish', 'login') if runnable and self.downloads_paused() else None
+        values = self.counts(actions=actions)
         return bool(values.get('queued', 0) + values.get('running', 0))
+
+    def downloads_paused(self, db=None, *, lock=False):
+        if db is None:
+            with self.connect() as connection:
+                return self.downloads_paused(connection)
+        statement = select(settings.c.value).where(settings.c.key == 'downloads_paused')
+        if lock and self.db.postgres:
+            statement = statement.with_for_update(read=True)
+        return db.execute(statement).scalar_one() == 'true'
+
+    def set_downloads_paused(self, paused):
+        with self.connect() as db:
+            db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true' if paused else 'false'))
+
+    def download_queue(self):
+        with self.connect() as db:
+            counts = self._counts(db, ['action:download', 'action:import'])
+            return {'paused': self.downloads_paused(db), 'queued': counts.get('queued', 0), 'running': counts.get('running', 0)}
+
+    def stop_running_downloads(self, terminate):
+        """Stop only verified owners, then release their tasks under the same row lock."""
+        with self.connect() as db:
+            owners = db.execute(select(tasks.c.id, tasks.c.worker_id).where(
+                tasks.c.status == 'running', tasks.c.action.in_(('download', 'import'))).limit(64)).all()
+        stopped = 0
+        for task_id, owner in owners:
+            with self.connect() as db:
+                if not self.db.postgres:
+                    db.exec_driver_sql('BEGIN IMMEDIATE')
+                # Resume and new claims cannot pass until the old executor is gone.
+                if not self.downloads_paused(db, lock=True):
+                    break
+                row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id))).mappings().first()
+                if not row or row['status'] != 'running' or row['worker_id'] != owner or not terminate(owner):
+                    continue
+                progress = json.loads(row['progress']) if row['progress'] else {}
+                progress.update(stage='paused', speed=None, eta=None)
+                self._transition(db, row, 'queued')
+                db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
+                    lease_until=None, available_at=0, finished_at=None, error=None,
+                    attempts=max(0, row['attempts'] - 1), progress=json.dumps(progress, ensure_ascii=False)))
+                if owner:
+                    db.execute(workers.update().where(workers.c.id == owner).values(state='stopped', task_id=None, message='用户已停止下载。'))
+                stopped += 1
+        return stopped
 
     def rotation_completed(self, rotation_id, count_failures=True):
         with self.connect() as db:
@@ -231,6 +279,8 @@ class TaskStore:
             if not self.db.postgres:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= time.time())
+            if self.downloads_paused(db, lock=True):
+                statement = statement.where(~tasks.c.action.in_(('download', 'import')))
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:
@@ -335,7 +385,7 @@ class TaskStore:
             return list(latest.values())
 
     def set_runtime(self, config):
-        keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days')
+        keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.insert(settings).values(key='runtime', value=value)

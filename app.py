@@ -27,6 +27,7 @@ from webapp.catalog import MediaCatalog
 from webapp.tasks import TaskRunner, TaskStore
 from webapp.clash import ClashError, ClashManager
 from webapp.clash_routes import register_clash
+from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 
 WEB_PLATFORMS = ('douyin', 'kuaishou')
 ACTIONS = ('download', 'preview', 'prepare', 'publish', 'login', 'check')
@@ -53,15 +54,21 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     catalog = MediaCatalog(store)
     app.extensions['media_catalog'] = catalog
     settings_lock = threading.RLock()
-    media_lock = threading.Lock()
+    media_lock = threading.RLock()
     clash = ClashManager(store.directory / 'clash')
     app.extensions['clash'] = clash
+    youtube_auth = YouTubeAuth(store)
+    app.extensions['youtube_auth'] = youtube_auth
 
     def settings():
         with settings_lock:
             return load_config(config_path)
 
-    store.set_runtime({**DEFAULTS, **settings()[0]})
+    def sync_runtime(config, base):
+        cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
+        store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
+
+    sync_runtime(*settings())
 
     def body():
         data = request.get_json(silent=True)
@@ -128,13 +135,17 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             raise ValueError('包含不支持在页面修改的配置项。')
         with media_lock, settings_lock:
             config, _ = settings()
+            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
+                require_login_idle()
             if store.pending() and any(key in data and data[key] != config.get(key, DEFAULTS[key])
                                        for key in ('proxy', 'proxy_mode')):
                 return jsonify(error='请等待下载队列结束后再修改代理连接方式。'), 409
             config.update(data)
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
             save_settings(config_path, config)
-            store.set_runtime({**DEFAULTS, **config})
+            sync_runtime(config, config_path.parent)
+            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
+                youtube_auth.invalidate()
         return jsonify(message='配置已保存，新任务将使用这份配置。')
 
     @app.get('/api/status')
@@ -155,10 +166,109 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
         youtube_file = resolve_path(base, config['youtube_cookie']) if config.get('youtube_cookie') else None
         youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
-                   'path': str(youtube_file) if youtube_file else None}
+                   'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
+                   'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
         return jsonify(tools=tools, accounts=accounts, python=sys.version.split()[0], database=store.db.engine.dialect.name,
-                       workers=store.workers(), worker_count=config.get('worker_count', 1),
+                       workers=store.workers(), worker_count=config.get('worker_count', 1), download_queue=store.download_queue(),
                        youtube=youtube, media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
+
+    from webapp.youtube_login import YouTubeLogin, LoginBusy
+
+    @app.errorhandler(LoginBusy)
+    def login_busy(error):
+        return jsonify(error=str(error)), 409
+
+    @app.errorhandler(YouTubeAuthRequired)
+    def youtube_auth_required(error):
+        youtube_auth.block(error.result)
+        return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
+
+    def verify_youtube(config, base, urls, snapshot=None, *, force=False):
+        if not is_youtube(urls):
+            return None
+        options = {'force': force}
+        if config.get('proxy_mode') == 'clash':
+            snapshot = snapshot or clash.snapshot()
+            options.update(proxy=snapshot['proxy'], node=snapshot['node'])
+        return youtube_auth.require(config, base, **options)
+
+    @app.post('/api/youtube/auth/check')
+    def check_youtube_auth():
+        with media_lock:
+            require_login_idle()
+            config, base = settings()
+            result = verify_youtube(config, base, ['https://www.youtube.com/'], force=True)
+            youtube_auth.clear_block()
+        return jsonify(auth=result, message=result['message'])
+
+    def cookie_update_busy():
+        return store.pending(runnable=True) or bool(store.download_queue()['running'])
+
+    def install_cookie(data):
+        cookies = parse_youtube_cookie_file(data)
+        with media_lock, settings_lock:
+            if cookie_update_busy():
+                raise LoginBusy('请先停止全部下载并等待当前任务结束，再更新 Cookie。')
+            config, base = settings()
+            target = base / 'Cookies' / 'youtube.txt'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and not target.is_file():
+                raise ValueError('Cookie 保存位置不是文件，请检查 Cookies/youtube.txt。')
+            with tempfile.TemporaryDirectory(prefix='.youtube-import-', dir=target.parent) as staging:
+                backup = Path(staging) / 'previous.txt'
+                config_backup = Path(staging) / 'config.yaml'
+                shutil.copy2(config_path, config_backup)
+                if target.is_file():
+                    shutil.copy2(target, backup)
+                save_youtube_cookies(cookies, target)
+                try:
+                    config['youtube_cookie'] = 'Cookies/youtube.txt'
+                    save_settings(config_path, config)
+                    sync_runtime(config, base)
+                    youtube_auth.invalidate()
+                except Exception:
+                    config_backup.replace(config_path)
+                    if backup.is_file():
+                        backup.replace(target)
+                    else:
+                        target.unlink(missing_ok=True)
+                    raise
+
+    youtube_login = YouTubeLogin(store.directory, install_cookie)
+    app.extensions['youtube_login'] = youtube_login
+
+    def require_login_idle():
+        if youtube_login.status()['active']:
+            raise LoginBusy('请先完成或取消 YouTube 登录，再执行此操作。')
+
+    @app.get('/api/youtube/login')
+    def youtube_login_status():
+        return jsonify(youtube_login.status())
+
+    @app.post('/api/youtube/login')
+    def start_youtube_login():
+        with media_lock:
+            require_login_idle()
+            if cookie_update_busy():
+                raise LoginBusy('请先停止全部下载并等待当前任务结束，再打开登录窗口。')
+            config, base = settings()
+            mode = config.get('proxy_mode', 'manual')
+            connection = '直连'
+            proxy = ''
+            if mode == 'clash':
+                snapshot = clash.snapshot()
+                proxy = snapshot['proxy']
+                connection = 'Clash · ' + snapshot['node']
+            elif mode == 'manual' and config.get('proxy'):
+                proxy = config['proxy']
+                connection = '手动代理'
+            executable = str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''
+            status = youtube_login.start({'proxy': proxy, 'browser_executable': executable}, connection)
+        return jsonify(status), 202
+
+    @app.post('/api/youtube/login/cancel')
+    def cancel_youtube_login():
+        return jsonify(youtube_login.cancel())
 
     @app.post('/api/youtube/cookie')
     def upload_youtube_cookie():
@@ -166,30 +276,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         uploaded = request.files.get('cookie')
         if uploaded is None or not uploaded.filename or Path(uploaded.filename).suffix.lower() != '.txt':
             raise ValueError('请选择 Netscape 格式的 Cookie .txt 文件。')
-        cookies = parse_youtube_cookie_file(uploaded.stream.read(1024 * 1024 + 1))
-        with media_lock, settings_lock:
-            if store.pending():
-                return jsonify(error='请等待当前任务结束后再更新 Cookie。'), 409
-            config, base = settings()
-            # Use a fixed destination, never a client-supplied filename or path.
-            target = base / 'Cookies' / 'youtube.txt'
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists() and not target.is_file():
-                raise ValueError('Cookie 保存位置不是文件，请检查 Cookies/youtube.txt。')
-            with tempfile.TemporaryDirectory(prefix='.youtube-import-', dir=target.parent) as staging:
-                backup = Path(staging) / 'previous.txt'
-                if target.is_file():
-                    shutil.copy2(target, backup)
-                save_youtube_cookies(cookies, target)
-                try:
-                    config['youtube_cookie'] = 'Cookies/youtube.txt'
-                    save_settings(config_path, config)
-                except OSError:
-                    if backup.is_file():
-                        backup.replace(target)
-                    else:
-                        target.unlink(missing_ok=True)
-                    raise
+        uploaded_data = uploaded.stream.read(1024 * 1024 + 1)
+        parse_youtube_cookie_file(uploaded_data)
+        with media_lock:
+            require_login_idle()
+            install_cookie(uploaded_data)
         return jsonify(message='YouTube Cookie 已保存，后续下载将自动使用。', cookie_path='Cookies/youtube.txt'), 201
 
     @app.get('/api/media')
@@ -212,7 +303,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         root = video_directory(config, base)
         return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index')),
                        media=catalog.root_status(root), recent_media=catalog.page(root, limit=4)['items'],
-                       recent_tasks=store.list(limit=5, actions=('download', 'check', 'import', 'index')))
+                       recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index'), finished_only=True)['items'])
 
     @app.get('/media/videos/<path:name>')
     def video(name):
@@ -283,15 +374,44 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     @app.get('/api/tasks')
     def tasks():
         actions = ('download', 'check', 'import', 'index') if request.args.get('scope') == 'download' else None
+        active = request.args.get('view') == 'active'
+        if active:
+            actions = ('download',)
         batch_id = request.args.get('batch_id')
         return jsonify(**store.page(actions=actions, limit=int(request.args.get('limit', 50)),
-                       cursor=request.args.get('cursor'), status=request.args.get('status'),
+                       cursor=request.args.get('cursor'), status='active' if active else request.args.get('status'),
+                       finished_only=request.args.get('view') == 'history',
                        query=request.args.get('q', '')[:200], batch_id=batch_id, order=request.args.get('order', 'desc')),
                        counts=store.counts(actions=actions, batch_id=batch_id))
 
     @app.get('/api/batches')
     def download_batches():
         return jsonify(store.batch_page(cursor=request.args.get('cursor')))
+
+    @app.post('/api/downloads/stop')
+    def stop_downloads():
+        from webapp.control import stop_downloads as stop_workers
+        with media_lock:
+            store.set_downloads_paused(True)
+            stop_workers(store)
+            queue = store.download_queue()
+        message = '正在停止当前下载，排队任务已保留。' if queue['running'] else '下载已停止，队列和部分文件已保留。'
+        return jsonify(message=message, download_queue=queue), 202 if queue['running'] else 200
+
+    @app.post('/api/downloads/resume')
+    def resume_downloads():
+        with media_lock:
+            require_login_idle()
+            queue = store.download_queue()
+            if queue['paused'] and queue['running']:
+                return jsonify(error='当前下载进程尚未停止，请稍后继续。'), 409
+            upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
+            if upcoming and upcoming[0].get('url'):
+                config, base = settings()
+                verify_youtube(config, base, [upcoming[0]['url']], force=True)
+            youtube_auth.clear_block()
+            store.set_downloads_paused(False)
+        return jsonify(message='已继续下载，排队任务将自动执行。', download_queue=store.download_queue())
 
     @app.post('/api/downloads/import')
     def import_downloads():
@@ -312,6 +432,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             if not path.stat().st_size or path.stat().st_size > 1024 ** 3:
                 raise ValueError('导入文件不能为空，最大 1 GB。')
             with media_lock:
+                require_login_idle()
                 if config.get('proxy_mode') == 'clash':
                     payload['clash'] = clash.snapshot()
                 from webapp.bulk import create_import
@@ -365,8 +486,12 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         if action == 'download':
             payload['urls'] = urls_from(data.get('urls') or config.get('url'))
         with media_lock:
+            if action == 'download':
+                require_login_idle()
             if action == 'download' and config.get('proxy_mode') == 'clash':
                 payload['clash'] = clash.snapshot()
+            if action == 'download':
+                verify_youtube(config, base, payload['urls'], payload.get('clash'))
             if batch:
                 batch_id = uuid.uuid4().hex
                 payloads = [{**payload, 'urls': [url], 'batch_id': batch_id} for url in payload['urls']]

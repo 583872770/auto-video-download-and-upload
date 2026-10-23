@@ -73,6 +73,10 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         progress.state['worker_slot'] = worker_slot
         progress.save(force=True)
         failure = DownloadFailure()
+        if store:
+            runtime = store.runtime()
+            if 'youtube_cookie' in runtime:
+                config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
         urls = payload['urls']
         if store:
             from webapp.store import source_identity
@@ -106,6 +110,16 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             progress.save(force=True)
             config = {**config, '_resolved_clash_proxy': snapshot['proxy']}
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
+        from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
+        youtube = is_youtube(urls)
+        if store and youtube:
+            progress.state.update(stage='checking_login')
+            progress.save(force=True)
+            auth = YouTubeAuth(store)
+            auth.require(config, base, **({'proxy': snapshot['proxy'], 'node': snapshot['node']}
+                                        if config.get('proxy_mode') == 'clash' else {}))
+            progress.state.update(stage='extracting')
+            progress.save(force=True)
         options = build_ydl_options(config, base)
         if store:
             from webapp.catalog import MediaCatalog
@@ -153,7 +167,11 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 with ReportingDownloader(session_options) as downloader:
                     failed = downloader.download(urls)
         except yt_dlp.utils.DownloadError as error:
+            if store and youtube and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
+                raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
             raise RuntimeError(failure.message(error)) from error
+        if store and youtube and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
+            raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
         if failed:
             raise RuntimeError(failure.message())
         skipped = downloader.skipped and not progress.streams
@@ -189,6 +207,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
 
 
 def drain(directory, slot=0, role='all'):
+    from webapp.youtube_auth import YouTubeAuthRequired
     store = TaskStore(directory)
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
@@ -246,6 +265,12 @@ def drain(directory, slot=0, role='all'):
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot))
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
+                except YouTubeAuthRequired as error:
+                    from webapp.youtube_auth import YouTubeAuth
+                    YouTubeAuth(store).block(error.result)
+                    store.release(task['id'], store.owner, str(error), delay=0)
+                    print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
+                    break
                 except BaseException as error:
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)

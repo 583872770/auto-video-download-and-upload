@@ -5,17 +5,15 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
 const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
 let clashBusy = false;
+let downloadSubmitting = false;
 let nodeSignature = '';
-let selectedBatch = null;
 let rotationDraft = null;
 let rotationDirty = false;
 let rotationSavedSignature = '';
 let rotationNodeSignature = '';
-const pages = Object.fromEntries(['tasks', 'media', 'batch', 'batches'].map(name => [name, { cursor: null, next: null, history: [] }]));
+const pages = Object.fromEntries(['tasks', 'media'].map(name => [name, { cursor: null, next: null, history: [] }]));
 state.overview = { recent_media: [], recent_tasks: [], media: { count: 0 } };
-state.batches = [];
 state.batchTasks = [];
-state.batchCounts = {};
 
 const actionNames = { download: '下载视频', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引' };
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
@@ -23,7 +21,7 @@ const statusNames = { queued: '排队中', running: '进行中', succeeded: '已
 const viewNames = {
   overview: ['下载概览', 'YouTube 视频，一处下载', '粘贴视频或播放列表链接，原片和配套资源自动保存到本机。'],
   media: ['素材库', '下载的视频，都在这里', '查看本机保存的视频原片、封面和文件大小。'],
-  tasks: ['任务记录', '每一次下载，都有记录', '查看下载与环境检查状态，随时追踪进度和日志。'],
+  tasks: ['任务记录', '每一次下载，都有记录', '查看已结束的下载与环境检查记录，以及执行结果和日志。'],
   settings: ['下载设置', '按你的习惯，保存视频', '配置视频保存位置、下载代理和 YouTube Cookie。'],
   clash: ['代理与节点', '选一个节点，连接 YouTube', '管理 Clash 订阅、选择下载节点，并测试延迟与连通性。'],
 };
@@ -107,7 +105,10 @@ function openMedia(name) {
   if (item.playable) player.play().catch(() => {});
 }
 function taskRows(tasks) {
-  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}</small></span><span class="task-status status-${task.status}">${statusNames[task.status] || task.status}</span><time class="task-time">${escapeHTML(formatDate(task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time">${escapeHTML(formatDate(task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+}
+function taskStatus(task) {
+  return ['download', 'import'].includes(task.action) && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status) ? (task.status === 'running' ? '正在停止' : '已停止') : statusNames[task.status] || task.status;
 }
 function etaText(seconds) {
   if (!Number.isFinite(seconds)) return '—';
@@ -115,31 +116,30 @@ function etaText(seconds) {
   return value >= 3600 ? `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分` : value >= 60 ? `${Math.floor(value / 60)}分${value % 60}秒` : `${value}秒`;
 }
 function progressLabel(task) {
+  if (['download', 'import'].includes(task.action) && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status)) return task.status === 'running' ? '正在停止' : '已停止 · 等待继续';
+  if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待继续下载';
   if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '等待退避重试' : '排队中';
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
   if (task.status === 'failed') return '下载失败';
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
   const active = task.status === 'running';
-  const percentage = task.status === 'queued' ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(data.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
-  const label = task.status === 'queued' ? '等待开始' : percentage === null ? '大小未知' : `${percentage.toFixed(1)}%`;
+  const stopped = task.status === 'queued' && data.stage === 'paused';
+  const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(data.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
+  const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? '大小未知' : `${percentage.toFixed(1)}%`;
   return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="下载进度"></progress><div class="download-metrics"><span>${task.action === 'import' ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>速度 <b>${active && Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—'}</b></span><span>当前文件剩余 <b>${active ? etaText(data.eta) : '—'}</b></span>${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div></div>`;
 }
 function renderBatches() {
-  const select = $('#batch-select');
-  const options = state.batches.map(batch => `<option value="${batch.id}">${escapeHTML(batch.name || formatDate(batch.created_at))} · ${batch.counts.total} 个视频 · ${batch.id.slice(0, 6)}</option>`).join('') || '<option value="">暂无批次</option>';
-  if (select.innerHTML !== options) select.innerHTML = options;
-  select.value = selectedBatch || '';
   const tasks = state.batchTasks;
-  const counts = state.batchCounts;
-  $('#batch-count').textContent = counts.total || 0;
-  $('#batch-summary').textContent = counts.total ? `共 ${counts.total} 个 · 已完成 / 跳过 ${counts.succeeded || 0} 个 · 失败 ${(counts.failed || 0) + (counts.interrupted || 0)} 个 · 排队 ${counts.queued || 0} 个 · 自动刷新` : '每个视频单独排队，进度、速度和剩余时间自动更新。';
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${pages.batch.history.length * 25 + index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(task.error)}</p>` : ''}</article>`).join('') : emptyState('还没有批量下载任务', '粘贴视频 ID 或导入 TXT / CSV 下载清单。');
+  const queue = state.status?.download_queue || {};
+  $('#batch-count').textContent = tasks.length;
+  $('#batch-summary').textContent = `${queue.paused ? '下载已停止' : '正在下载 ' + tasks.length + ' 个'} · 排队 ${queue.queued || 0} 个 · 仅显示当前正在下载的视频，完成后可在任务记录中查看`;
+  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(task.error)}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
   renderPagination();
 }
 function renderPagination() {
@@ -178,11 +178,13 @@ function updateInputCount() {
 function renderTasks() {
   const active = state.counts ? (state.counts.queued || 0) + (state.counts.running || 0) : state.tasks.filter(task => ['queued', 'running'].includes(task.status)).length;
   $('#stat-active').textContent = active;
+  const stopped = state.status?.download_queue?.paused;
+  $('#stat-active').closest('.stat-card').querySelector('.stat-label').firstChild.nodeValue = stopped ? '已停止 · 待继续 ' : '正在处理 ';
   $('#stat-complete').textContent = state.counts ? state.counts.succeeded || 0 : state.tasks.filter(task => task.status === 'succeeded').length;
-  $('#nav-task-count').textContent = state.counts ? state.counts.total : state.tasks.length;
-  $('#active-caption').textContent = active ? '后台按顺序执行，可继续浏览页面' : '准备好开启下一次创作';
-  $('#recent-tasks').innerHTML = state.overview.recent_tasks.length ? taskRows(state.overview.recent_tasks.slice(0, 3)) : emptyState('还没有任务记录', '开始下载视频，执行进度会在这里出现。');
-  $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('这里还没有任务', '可调整搜索条件或创建下载任务。');
+  $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
+  $('#active-caption').textContent = stopped ? '下载已停止，待处理任务保留，点击继续恢复' : active ? '后台按顺序执行，可继续浏览页面' : '准备好开启下一次创作';
+  $('#recent-tasks').innerHTML = state.overview.recent_tasks.length ? taskRows(state.overview.recent_tasks.slice(0, 3)) : emptyState('还没有任务记录', '任务结束后，执行结果会在这里出现。');
+  $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
   renderBatches();
 }
 function renderStatus() {
@@ -192,10 +194,67 @@ function renderStatus() {
   $('.environment-card').classList.toggle('warning', !ready);
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
   $('#environment-note').textContent = !tools.ffmpeg || !tools.ffprobe ? '缺少 FFmpeg / ffprobe' : !tools.node && !tools.deno ? '缺少 JS 运行时' : `Python ${state.status.python}`;
+  renderYouTubeLogin();
   $$('[data-youtube-status]').forEach(element => {
-    element.textContent = state.status.youtube?.saved ? 'Cookie 已保存 · 有效性以下载结果为准' : '尚未上传 Cookie';
+    const auth = state.status.youtube?.auth;
+    element.textContent = auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
+  const auth = state.status.youtube?.auth;
+  $('#youtube-auth-status').textContent = auth?.message || '下载前将自动检测 YouTube 登录状态。';
+  $('#youtube-auth-status').classList.toggle('error', !!auth && !['valid', 'unchecked'].includes(auth.state));
+  $('#youtube-auth-check').disabled = authChecking || !!state.status.youtube?.login?.active;
+  $('#youtube-auth-check').textContent = authChecking ? '正在检测…' : '检测登录';
 }
+let authChecking = false;
+$('#youtube-auth-check').addEventListener('click', async () => {
+  if (authChecking) return;
+  authChecking = true;
+  renderStatus();
+  try {
+    const result = await api('/api/youtube/auth/check', { method: 'POST' });
+    if (state.status?.youtube) state.status.youtube.auth = result.auth;
+    toast(result.message);
+  } catch (error) { toast(error.message, true); }
+  finally { authChecking = false; await refresh(); renderStatus(); }
+});
+let youtubeLoginBusy = false;
+function renderYouTubeLogin() {
+  const login = state.status?.youtube?.login;
+  const queue = state.status?.download_queue;
+  const busy = youtubeLoginBusy || !!login?.active;
+  const needsStop = !!queue && (queue.running > 0 || (!queue.paused && queue.queued > 0));
+  $('#download-form button[type=submit]').disabled = downloadSubmitting || !!login?.active;
+  $('#youtube-login-start').disabled = !login || busy || needsStop;
+  $('#youtube-login-start').textContent = login?.active ? '登录进行中…' : login?.state === 'idle' ? '打开登录窗口' : '重新打开登录窗口';
+  $('#youtube-login-cancel').hidden = !login?.active;
+  $('#youtube-login-cancel').disabled = youtubeLoginBusy || ['cancelling', 'committing'].includes(login?.state);
+  const status = $('#youtube-login-status');
+  status.textContent = needsStop && !login?.active ? '请先停止全部下载，等待当前下载结束后再打开登录窗口。' : login?.message || '正在读取登录状态…';
+  status.classList.toggle('error', ['failed', 'interrupted'].includes(login?.state));
+  status.classList.toggle('success', login?.state === 'succeeded');
+  const connection = state.clash?.mode === 'clash' ? `Clash · ${state.clash.selected || '尚未选择节点'}` : state.config?.proxy_mode === 'manual' && state.config?.proxy ? '手动代理' : '直连';
+  $('#youtube-login-connection').textContent = `登录连接：${login?.active ? login.connection : connection}`;
+  $$('[data-youtube-login-summary]').forEach(element => {
+    element.hidden = !login || login.state === 'idle';
+    element.textContent = login?.message || '';
+  });
+  if (login?.state === 'succeeded' && state.config) state.config.youtube_cookie = 'Cookies/youtube.txt';
+}
+async function youtubeLoginAction(action) {
+  if (youtubeLoginBusy) return;
+  youtubeLoginBusy = true;
+  renderYouTubeLogin();
+  try {
+    const login = await api(`/api/youtube/login${action === 'cancel' ? '/cancel' : ''}`, { method: 'POST' });
+    if (state.status?.youtube) state.status.youtube.login = login;
+    renderYouTubeLogin();
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+  finally { youtubeLoginBusy = false; renderYouTubeLogin(); }
+}
+$('#youtube-login-start').addEventListener('click', () => youtubeLoginAction('start'));
+$('#youtube-login-cancel').addEventListener('click', () => youtubeLoginAction('cancel'));
+
 function renderClash() {
   const data = state.clash;
   if (!data) return;
@@ -283,10 +342,10 @@ async function refresh() {
   if (state.polling) return;
   state.polling = true;
   try {
-    const [media, tasks, status, clash, overview, batches] = await Promise.all([
+    const [media, tasks, status, clash, overview, active] = await Promise.all([
       api(`/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}`),
-      api(`/api/tasks?${listQuery('tasks', { scope: 'download', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}`),
-      api('/api/status'), api('/api/clash'), api('/api/overview'), api(`/api/batches?${listQuery('batches')}`)
+      api(`/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}`),
+      api('/api/status'), api('/api/clash'), api('/api/overview'), api('/api/tasks?view=active&limit=100&order=asc')
     ]);
     const mediaChanged = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]) !== JSON.stringify([media.items, overview.media, overview.recent_media]);
     state.overview = overview;
@@ -294,18 +353,11 @@ async function refresh() {
     state.tasks = tasks.items;
     state.counts = overview.counts;
     state.status = status;
+    renderDownloadControl();
     state.clash = clash;
-    state.batches = batches.items;
+    state.batchTasks = active.items;
     pages.media.next = media.next_cursor;
     pages.tasks.next = tasks.next_cursor;
-    pages.batches.next = batches.next_cursor;
-    if (!selectedBatch || !state.batches.some(batch => batch.id === selectedBatch)) selectedBatch = state.batches[0]?.id || null;
-    if (selectedBatch) {
-      const batch = await api(`/api/tasks?${listQuery('batch', { batch_id: selectedBatch, limit: 25, order: 'asc' })}`);
-      state.batchTasks = batch.items;
-      state.batchCounts = batch.counts;
-      pages.batch.next = batch.next_cursor;
-    } else { state.batchTasks = []; state.batchCounts = {}; pages.batch.next = null; }
     if (mediaChanged) renderMedia();
     renderTasks(); renderStatus(); renderClash(); renderPagination();
     $('#media-directory').textContent = media.directory;
@@ -319,11 +371,38 @@ async function refresh() {
   } finally { state.polling = false; }
 }
 
+function renderDownloadControl() {
+  const queue = state.status?.download_queue;
+  const button = $('#download-queue-toggle');
+  button.textContent = queueControlBusy && queue?.paused ? '正在检测登录…' : queue?.paused ? (queue.running ? '正在停止…' : '继续下载') : '停止全部下载';
+  button.disabled = queueControlBusy || !queue || (queue.paused ? queue.running > 0 || !!state.status?.youtube?.login?.active : !queue.running && !queue.queued);
+  button.classList.toggle('button-dark', !!queue?.paused);
+  const note = $('#download-queue-status');
+  note.textContent = queue?.paused ? (queue.running ? '正在结束当前下载，排队任务已保留。' : `下载已停止，保留 ${queue.queued} 个待处理任务。点击“继续下载”后恢复。`) : '停止会保留队列和部分文件，继续时尝试断点续传。';
+  const auth = state.status?.youtube?.auth_block || state.status?.youtube?.auth;
+  if (queue?.paused && auth && !['valid', 'unchecked'].includes(auth.state)) note.textContent = `${auth.message} 队列已停止，待处理任务已保留。`;
+  note.classList.toggle('queue-stopped', !!queue?.paused);
+}
+
+let queueControlBusy = false;
+$('#download-queue-toggle').addEventListener('click', async () => {
+  if (queueControlBusy || !state.status?.download_queue) return;
+  queueControlBusy = true;
+  const paused = state.status.download_queue.paused;
+  renderDownloadControl();
+  try {
+    const result = await api(`/api/downloads/${paused ? 'resume' : 'stop'}`, { method: 'POST' });
+    state.status.download_queue = result.download_queue;
+    toast(result.message);
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+  finally { queueControlBusy = false; renderDownloadControl(); }
+});
+
 async function startTask(action, extra = {}) {
   if (!state.config) throw new Error('配置尚未读取完成，请稍后重试。');
   const task = await api('/api/tasks', { method: 'POST', body: { action, scope: 'download', ...extra } });
   toast(`${actionNames[action]}已加入后台队列。`);
-  state.tasks.unshift(task); state.counts = null; renderTasks();
   await openTask(task.id);
   return task;
 }
@@ -345,7 +424,7 @@ async function updateTaskDetail() {
   const [task, logs] = await Promise.all([api(`/api/tasks/${taskId}`), api(`/api/tasks/${taskId}/logs?offset=${state.logOffset}`)]);
   if (state.selectedTask !== taskId) return;
   $('#task-dialog-title').textContent = actionNames[task.action] || task.action;
-  $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${statusNames[task.status]}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>`;
+  $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>`;
   $('#task-error').hidden = !task.error;
   $('#task-error').textContent = task.error || '';
   $('#task-download-progress').innerHTML = ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
@@ -390,18 +469,19 @@ async function runButton(button, operation) {
 $('#download-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
-    const batch = await api('/api/downloads', { method: 'POST', body: { urls: $('#download-urls').value, scope: 'download' } });
-    selectedBatch = batch.batch_id; resetPage('batch'); resetPage('batches');
-    state.tasks.unshift(...[...batch.items].reverse());
-    state.counts = null;
-    renderTasks();
+    const button = $('button[type="submit"]', event.target);
+    const label = button.innerHTML;
+    downloadSubmitting = true;
+    button.textContent = '正在检查登录并提交…';
+    let batch;
+    try { batch = await api('/api/downloads', { method: 'POST', body: { urls: $('#download-urls').value, scope: 'download' } }); }
+    finally { downloadSubmitting = false; button.innerHTML = label; }
     toast(`${batch.items.length} 个视频已加入下载队列。`);
     $('#batch-progress-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
     await refresh();
   });
 });
 $('#download-urls').addEventListener('input', updateInputCount);
-$('#batch-select').addEventListener('change', event => { selectedBatch = event.target.value; resetPage('batch'); refresh(); });
 $('#youtube-cookie-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
@@ -433,7 +513,6 @@ document.addEventListener('click', event => {
   const page = pages[name];
   if (button.dataset.direction === 'next' && page.next) { page.history.push(page.cursor); page.cursor = page.next; }
   else if (button.dataset.direction === 'prev' && page.history.length) page.cursor = page.history.pop();
-  if (name === 'batches') { selectedBatch = null; resetPage('batch'); }
   runButton(button, refresh);
 });
 for (const name of ['media', 'tasks']) {
@@ -448,7 +527,7 @@ $('#bulk-import-form').addEventListener('submit', event => {
     const file = $('input[name="file"]', event.target).files[0];
     if (!file || !file.size || file.size > 1024 ** 3) throw new Error('请选择非空的 TXT / CSV 文件，最大 1 GB。');
     const task = await api('/api/downloads/import', { method: 'POST', body: new FormData(event.target) });
-    $('#bulk-import-dialog').close(); event.target.reset(); resetPage('tasks'); resetPage('batches');
+    $('#bulk-import-dialog').close(); event.target.reset(); resetPage('tasks');
     toast('清单已上传，正在后台分批导入。'); await openTask(task.id); await refresh();
   });
 });

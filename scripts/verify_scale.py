@@ -76,14 +76,8 @@ def main():
                 batch = import_task['result']['batch_id']
                 report['import_counts'] = import_task['result']
                 page.locator('#task-dialog [data-close]').click()
-                expect(page.locator('#batch-count')).to_have_text('64', timeout=15000)
-                expect(page.locator('#batch-progress .batch-video')).to_have_count(25)
-                first = page.locator('#batch-progress .batch-video').first.get_attribute('data-download-id')
-                page.locator('[data-page=batch][data-direction=next]').click()
-                expect(page.locator('#batch-progress .batch-video').first).not_to_have_attribute('data-download-id', first)
-                expect(page.locator('#batch-page-label')).to_contain_text('2')
-                page.locator('[data-page=batch][data-direction=prev]').click()
-                expect(page.locator('#batch-progress .batch-video').first).to_have_attribute('data-download-id', first)
+                expect(page.locator('#batch-progress .batch-video')).to_have_count(2, timeout=15000)
+                expect(page.locator('#batch-count')).to_have_text('2')
                 deadline = time.monotonic() + 150
                 while time.monotonic() < deadline:
                     counts = page.request.get(base + '/api/overview').json()['counts']

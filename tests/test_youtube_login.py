@@ -46,6 +46,21 @@ class YoutubeCookieTests(unittest.TestCase):
 
 
 class YoutubeBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_waits_for_browser_cleanup_without_export(self):
+        from scripts.login_youtube import login
+        closed = []
+
+        async def pending(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                closed.append(True)
+
+        with patch('scripts.login_youtube._login', pending):
+            with self.assertRaisesRegex(RuntimeError, '未确认 YouTube 登录'):
+                await login({}, Path('unused.txt'), timeout_seconds=0.02)
+        self.assertEqual(closed, [True])
+
     async def test_google_rejection_stops_without_export_or_security_changes(self):
         from scripts.login_youtube import login
         page = AsyncMock()

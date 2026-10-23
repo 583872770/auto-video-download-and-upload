@@ -48,7 +48,10 @@ class TaskRunner:
                     last_recovery = time.time()
                 config = self.settings()
                 count = max(1, min(16, int(config.get('worker_count', 1))))
-                if self.store.pending():
+                if self.store.downloads_paused():
+                    from webapp.control import stop_downloads
+                    stop_downloads(self.store)
+                if self.store.pending(runnable=True):
                     for slot in [-1, *range(count)]:
                         previous = self.processes.get(slot)
                         if previous is not None and previous.poll() is None:

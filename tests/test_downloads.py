@@ -32,7 +32,8 @@ class DownloadTests(unittest.TestCase):
     def test_ids_are_normalized_deduplicated_and_invalid_batch_is_atomic(self):
         ids = 'npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk\nhI0ofOjFloE\nNJvj1iQdZwE\n8XiDhkvwgEo\nXmyef5q9wSo\np2MeSftrXtM'
         values = ids + '\nnpNnbj46_ik\n' + YOUTUBE_PREFIX + 'npNnbj46_ik'
-        response = self.client.post('/api/downloads', json={'urls': values}, headers=self.headers)
+        with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={'state': 'valid'}):
+            response = self.client.post('/api/downloads', json={'urls': values}, headers=self.headers)
         self.assertEqual(response.status_code, 202)
         self.assertEqual(len(response.json['items']), 8)
         batch_id = response.json['batch_id']

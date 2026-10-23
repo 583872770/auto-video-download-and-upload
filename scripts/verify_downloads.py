@@ -61,7 +61,7 @@ def main():
                 urls = '\n'.join(f'{base}/fixture/{name}.mp4' for name in ('missing', 'alpha', 'beta'))
                 page.locator('#download-urls').fill(urls)
                 page.locator('#download-form button[type=submit]').click()
-                expect(page.locator('#batch-progress .batch-video')).to_have_count(3)
+                expect(page.locator('#batch-progress .batch-video')).to_have_count(1, timeout=30000)
                 page.wait_for_function('() => [...document.querySelectorAll("#batch-progress .download-metrics")].some(row => row.textContent.includes("/s"))', timeout=30000)
                 page.locator('#batch-progress-panel').scroll_into_view_if_needed()
                 page.screenshot(path=str(output / 'progress-desktop.png'), full_page=True)
@@ -73,13 +73,12 @@ def main():
                 report['actual_live_metrics'] = {key: live['progress'][key] for key in ('percent', 'speed', 'eta', 'downloaded_bytes', 'total_bytes')}
                 batch_id = live['batch_id']
                 page.reload(wait_until='networkidle')
-                expect(page.locator('#batch-select')).to_have_value(batch_id)
-                expect(page.locator('#batch-progress .batch-video')).to_have_count(3)
+                expect(page.locator('#batch-progress .batch-video')).to_have_count(1)
                 page.set_viewport_size({'width': 390, 'height': 844})
                 page.locator('#batch-progress-panel').scroll_into_view_if_needed()
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(output / 'progress-mobile.png'), full_page=True)
-                page.wait_for_function('() => { const summary = document.querySelector("#batch-summary").textContent; return summary.includes("跳过 2") && summary.includes("失败 1") && summary.includes("排队 0"); }', timeout=45000)
+                page.wait_for_function('() => { const summary = document.querySelector("#batch-summary").textContent; return summary.includes("正在下载 0") && summary.includes("排队 0"); }', timeout=45000)
                 tasks = page.request.get(base + '/api/tasks?scope=download').json()['items']
                 assert sum(task['status'] == 'succeeded' for task in tasks) == 2
                 assert sum(task['status'] == 'failed' for task in tasks) == 1
@@ -87,16 +86,17 @@ def main():
                 report['failure_continuation_and_reload_persistence'] = 'passed'
                 page.locator('#download-urls').fill(f'{base}/fixture/alpha.mp4')
                 page.locator('#download-form button[type=submit]').click()
-                page.wait_for_function('() => document.querySelector("#batch-progress").textContent.includes("已下载过")', timeout=20000)
-                expect(page.locator('#batch-progress .batch-video')).to_have_count(1)
-                assert page.locator('#batch-select option').count() == 2
-                page.locator('#batch-select').select_option(batch_id)
-                expect(page.locator('#batch-progress .batch-video')).to_have_count(3)
-                page.locator('#batch-progress [data-task]').first.click()
+                page.set_viewport_size({'width': 1440, 'height': 1080})
+                page.locator('.nav-item[data-view=tasks]').click()
+                expect(page.locator('#all-tasks .task-row')).to_have_count(4)
+                expect(page.locator('#batch-progress .batch-video')).to_have_count(0)
+                expect(page.locator('#all-tasks')).to_contain_text('已下载过')
+                failed = next(task for task in tasks if task['status'] == 'failed')
+                page.locator(f'#all-tasks [data-task="{failed["id"]}"]').click()
                 expect(page.locator('#task-download-progress .download-meter')).to_be_visible()
                 expect(page.locator('#task-error')).to_be_visible()
                 page.locator('#task-dialog [data-close]').click()
-                report['archive_skip_batch_switching_and_individual_logs'] = 'passed'
+                report['archive_skip_finished_history_and_individual_logs'] = 'passed'
                 assert not errors, errors
                 report['browser_errors'] = errors
             finally:

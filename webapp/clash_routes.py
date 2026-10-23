@@ -11,6 +11,9 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         return jsonify(error=str(error)), 502
 
     def idle():
+        login = app.extensions.get('youtube_login')
+        if login and login.status()['active']:
+            abort(409, description='请先完成或取消 YouTube 登录，再修改代理或节点。')
         if store.pending():
             abort(409, description='请等待下载队列结束后再修改轮换配置、更新订阅、手动切换节点或停止代理。')
 
@@ -29,7 +32,8 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
                 value = store.rotation_completed(rotation['id'] + (f':{slot}' if slot else ''), rotation['count_failures'])
                 rotation['workers'].append({'slot': slot, 'completed': value,
                     'next_node': rotation['nodes'][(rotation['start_index'] + value // rotation['every']) % len(rotation['nodes'])]})
-        return {**data, 'locked': store.pending(), 'mode': config.get('proxy_mode', 'manual')}
+        login = app.extensions.get('youtube_login')
+        return {**data, 'locked': store.pending() or bool(login and login.status()['active']), 'mode': config.get('proxy_mode', 'manual')}
 
     @app.get('/api/clash')
     def get_clash():

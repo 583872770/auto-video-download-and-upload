@@ -27,6 +27,8 @@ tasks = Table('tasks', metadata,
 Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
+_finished = tasks.c.status.in_(('succeeded', 'failed', 'interrupted'))
+Index('ix_tasks_finished_seq', tasks.c.seq, postgresql_where=_finished, sqlite_where=_finished)
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
 Index('ix_tasks_video_prefix', tasks.c.video_id, postgresql_ops={'video_id': 'varchar_pattern_ops'})
@@ -151,6 +153,8 @@ class Database:
         metadata.create_all(self.engine)
         for index in tasks.indexes:
             index.create(self.engine, checkfirst=True)
+        with self.engine.begin() as db:
+            self.ensure(db, settings, {'key': 'downloads_paused', 'value': 'false'})
         if old:
             # One-time upgrade only; regular requests never enumerate task history.
             with self.engine.begin() as db:

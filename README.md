@@ -57,10 +57,13 @@ Web 版使用 Flask + Waitress，页面资源随项目提供，不依赖前端�
 
 - **下载概览**：固定 YouTube 链接前缀 `https://www.youtube.com/watch?v=`，每行只需粘贴一个 11 位视频 ID；也兼容完整视频或播放列表链接。点击“批量开始下载”后，每个输入单独排队，重复输入自动去重。
 - **逐条下载进度**：按批次查看每个视频的标题、下载阶段、进度、已下载大小、速度、当前文件预计剩余时间和独立日志。音视频分开下载时按轨道估算进度，合并处理结束后才标记完成；总大小或速度未知时显示占位。某条失败会继续下一条，下载记录中的重复视频显示“已下载过 · 已跳过”。进度存入数据库，刷新页面后仍可查看。
-- **大批量下载**：支持 TXT/CSV 流式导入、数据库去重与导入断点，任务、批次和素材分页查询。可在设置页调整 1–16 个下载进程、有限重试、磁盘预留和日志保留，Clash 节点按进程独立轮换。生产使用 PostgreSQL，保留 SQLite 便携模式；迁移、备份恢复和验证范围详见 [大批量下载说明](SCALING.md)。
+- **大批量下载**：支持 TXT/CSV 流式导入、数据库去重与导入断点，任务记录和素材分页查询，首页进度仅显示各批次中当前正在下载的视频。可在设置页调整 1–16 个下载进程、有限重试、磁盘预留和日志保留，Clash 节点按进程独立轮换。生产使用 PostgreSQL，保留 SQLite 便携模式；迁移、备份恢复和验证范围详见 [大批量下载说明](SCALING.md)。
+- **停止与继续**：首页点击“停止全部下载”结束当前下载和清单导入，保留队列、成品和部分文件；点击“继续下载”恢复，源站支持时断点续传。停止状态跨刷新和服务重启保存，手动停止不算下载失败。
 - **YouTube Cookie 上传**：左侧 YouTube、首页下载区或设置页点击“上传 Cookie 文件”，上传 Netscape 格式的 `.txt`（最大 1 MB）。自动保存到所选配置目录下的 `Cookies/youtube.txt` 并更新 `youtube_cookie`，后续下载直接使用；校验失败保留原文件。只保存未过期的 YouTube 域记录，文件存在不代表登录仍有效。
 - **素材库**：查看下载的视频原片、封面与文件大小；点击卡片播放，支持拖动进度和保存视频。未合并的音视频轨只显示为一条“待合并”素材，合并成品优先展示。
-- **任务记录**：分页查看下载、导入、索引或环境检查任务，搜索与筛选状态，并查看实时日志与错误信息。
+- **YouTube 浏览器登录**：首页、左侧 YouTube 和设置页可打开独立浏览器登录，使用当前下载代理，支持状态查看、取消和重试。确认登录后自动保存 Cookie 并更新配置，已有排队任务也会使用新凭据；有下载任务时先停止下载。浏览器窗口在运行服务的电脑上打开，详情见 [登录说明](YOUTUBE_LOGIN.md)。
+- **下载前登录检测**：YouTube 下载开始和队列恢复前，通过当前下载节点验证 Cookie 登录状态；失败会停止队列并保留任务，不消耗重试次数。首页可手动“检测登录”，成功结果按 Cookie 和节点共享缓存最长 5 分钟。
+- **任务记录**：仅展示已结束的下载、导入、索引或环境检查任务（成功、失败、中断），支持分页、搜索、结果筛选和日志查看。排队任务不显示在记录中，当前下载进度显示在首页。
 - **代理与节点**：在页面保存 Clash / Mihomo 订阅，更新订阅、选择节点、单节点或批量测速、搜索和排序，并测试 YouTube 连通性。支持直连、手动代理和订阅代理三种下载连接方式。
 - **自动轮换节点**：在“代理与节点”中勾选至少两个节点，设置每处理多少个视频切换一次（1–1000），可选择失败任务是否计数。按勾选顺序循环，从当前节点开始（如已勾选），在下一个视频开始前切换；已下载而跳过的任务不计数。页面显示轮换顺序、累计次数和下一次使用的节点，任务进度显示实际下载节点。计数跨批次、跨服务和内核重启保存，修改轮换配置或手动切换节点后重新计数。只在 Clash 模式生效；每行输入计一个任务，完整播放列表整体计一次。
 - **下载设置**：编辑保存目录、子目录、默认链接、代理，并上传 Cookie 文件。保存到所选 YAML 文件，保留其他配置项；保存会重新格式化 YAML，不保留注释。
@@ -93,15 +96,19 @@ Web 版使用 Flask + Waitress，页面资源随项目提供，不依赖前端�
 | `GET /api/config`、`PUT /api/config` | 读取和保存页面支持的配置项 |
 | `GET /api/media`、`POST /api/media` | 列出素材；以 multipart 的 `video`、`cover` 字段导入素材 |
 | `GET /media/videos/<name>` | 本地视频播放与保存，支持 HTTP Range 分段请求 |
+| `GET /api/youtube/login`、`POST /api/youtube/login` | 查看独立浏览器登录状态、启动登录 |
+| `POST /api/youtube/auth/check` | 主动检测 YouTube 登录；未通过返回 409 并停止下载队列 |
+| `POST /api/youtube/login/cancel` | 取消登录并关闭独立浏览器，保留原 Cookie |
 | `GET /api/tasks`、`POST /api/tasks` | 任务记录和总数；创建后台任务 |
 | `POST /api/downloads` | JSON `urls` 支持多行视频 ID 或链接，原子创建一个批次及逐条下载任务，返回 `batch_id` 和 `items` |
+| `POST /api/downloads/stop`、`POST /api/downloads/resume` | 停止 / 继续整个下载和清单导入队列；保留待处理任务及部分文件 |
 | `POST /api/downloads/import` | multipart `file` 上传 TXT/CSV 清单，返回后台导入任务 |
 | `GET /api/batches` | 持久化批次分页及每批计数 |
 | `POST /api/media/reindex` | 创建后台素材索引同步任务 |
 | `GET /api/tasks/<id>` | 状态、执行结果及错误 |
 | `GET /api/tasks/<id>/logs?offset=0` | 从字节偏移量增量读取日志，返回下次 `offset` |
 
-页面创建任务时传入 `scope: "download"`，`action` 为 `download` 或 `check`；下载可传 `urls`，检查仅验证下载环境。`GET /api/tasks?scope=download` 返回下载、检查、导入和索引任务，可用 `limit`、`cursor`、`batch_id`、`q`、`status` 分页筛选。原有接口仍支持 `preview`、`prepare`、`publish`、`login`；使用 `platforms: ["douyin", "kuaishou"]` 选择平台，`login` 一次选择一个平台，`publish` 必须传 `confirmed: true`。写接口需要同一浏览器会话的 Cookie 及页面 `<meta name="csrf-token">` 对应的 `X-CSRF-Token` 请求头。
+页面创建任务时传入 `scope: "download"`，`action` 为 `download` 或 `check`；下载可传 `urls`，检查仅验证下载环境。`GET /api/tasks?scope=download` 返回下载、检查、导入和索引任务，可用 `limit`、`cursor`、`batch_id`、`q`、`status` 分页筛选。加 `view=history` 仅查询已结束的任务；`view=active` 仅查询当前运行的下载任务，跨批次展示。原有接口仍支持 `preview`、`prepare`、`publish`、`login`；使用 `platforms: ["douyin", "kuaishou"]` 选择平台，`login` 一次选择一个平台，`publish` 必须传 `confirmed: true`。写接口需要同一浏览器会话的 Cookie 及页面 `<meta name="csrf-token">` 对应的 `X-CSRF-Token` 请求头。
 
 首页批量下载使用 `POST /api/downloads`，单次最多 100 行。任务接口返回 `batch_id`、`video_id`、`url` 和结构化 `progress`；速度单位为字节/秒、ETA 单位为秒。每个完整播放列表链接属于一个输入任务，该任务的进度显示列表中当前视频。
 
