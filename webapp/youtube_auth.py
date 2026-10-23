@@ -97,8 +97,7 @@ class YouTubeAuth:
 
     def _write(self, key, value):
         with self.store.connect() as db:
-            db.execute(self.store.db.insert(settings).values(key=key, value=json.dumps(value, ensure_ascii=False))
-                       .on_conflict_do_update(index_elements=['key'], set_={'value': json.dumps(value, ensure_ascii=False)}))
+            db.execute(self.store.db.upsert(settings, dict(key=key, value=json.dumps(value, ensure_ascii=False)), ['key']))
 
     def invalidate(self):
         self._write('youtube_auth_generation', uuid.uuid4().hex)
@@ -115,8 +114,7 @@ class YouTubeAuth:
         with self.store.connect() as db:
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true'))
             value = json.dumps(result, ensure_ascii=False)
-            db.execute(self.store.db.insert(settings).values(key='youtube_auth_block', value=value)
-                       .on_conflict_do_update(index_elements=['key'], set_={'value': value}))
+            db.execute(self.store.db.upsert(settings, dict(key='youtube_auth_block', value=value), ['key']))
 
     def status(self):
         result = self._read('youtube_auth_latest', {'state': 'unchecked', 'message': '尚未检测 YouTube 登录状态。'})

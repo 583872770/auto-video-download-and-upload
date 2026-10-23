@@ -1,0 +1,6 @@
+# Optional host access for local administration or a stopped-data migration.
+# docker compose -f compose.yaml -f compose.mysql-local.yaml up -d mysql
+services:
+  mysql:
+    ports:
+      - "127.0.0.1:${MYSQL_LOCAL_PORT:-13306}:3306"

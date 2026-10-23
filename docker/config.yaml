@@ -1,0 +1,14 @@
+# Container defaults; copied to the persistent config volume only once.
+path: /data/videos
+dir: ''
+url: ''
+storage_mode: local
+proxy_mode: direct
+proxy: ''
+youtube_cookie: ''
+worker_count: 1
+download_attempts: 3
+min_free_gb: 2
+log_retention_days: 0
+max_log_mb: 10
+shard_downloads: true

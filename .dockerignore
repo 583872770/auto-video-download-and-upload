@@ -1,0 +1,28 @@
+# Only application sources enter the build context. In particular, never send
+# the host's config.yaml, cookies, subscriptions, database or media to Docker.
+**
+!Dockerfile
+!.dockerignore
+!requirements.lock.txt
+!app.py
+!web_worker.py
+!main.py
+!Download.py
+!Utils/
+!Utils/**
+!Uploaders/
+!Uploaders/**
+!webapp/
+!webapp/**
+!templates/
+!templates/**
+!static/
+!static/**
+!scripts/
+!scripts/login_youtube.py
+!scripts/migrate_mysql.py
+!docker/
+!docker/**
+**/__pycache__/
+**/*.pyc
+**/*.log

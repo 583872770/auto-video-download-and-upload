@@ -57,6 +57,8 @@ class MediaCatalog:
     def upsert(self, items, scan_id=None):
         if not items:
             return
+        if self.db.mysql and any(len(item['root']) > 512 for item in items):
+            raise ValueError('MySQL 素材根目录不能超过 512 个字符，请缩短目录路径。')
         combined = {}
         for item in items:
             old = combined.get(item['id'])
@@ -73,9 +75,7 @@ class MediaCatalog:
                             (not value['playable'] and old['name'].endswith('.mp4') and not value['name'].endswith('.mp4'))):
                     combined[key] = {**old, 'scan_id': scan_id}
             values = list(combined.values())
-            statement = self.db.insert(media).values(values)
-            db.execute(statement.on_conflict_do_update(index_elements=['id'],
-                       set_={column.name: getattr(statement.excluded, column.name) for column in media.c if column.name != 'id'}))
+            db.execute(self.db.upsert(media, values, ['id']))
             for root in {item['root'] for item in values}:
                 rows = [item for item in values if item['root'] == root]
                 self.db.ensure(db, roots, {'root': root, 'count': 0, 'bytes': 0, 'scanned': 0})

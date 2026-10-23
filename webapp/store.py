@@ -68,18 +68,22 @@ class TaskStore:
         return task
 
     def _counter(self, db, scope, status, delta):
-        statement = self.db.insert(counters).values(scope=scope, status=status, value=delta)
-        db.execute(statement.on_conflict_do_update(index_elements=['scope', 'status'],
-                   set_={'value': counters.c.value + delta}))
+        db.execute(self.db.upsert(counters, dict(scope=scope, status=status, value=delta),
+                                 ['scope', 'status'], {'value': counters.c.value + delta}))
 
     def _transition(self, db, row, status):
         scopes = ['action:' + row['action']]
         if row.get('batch_id'):
             scopes.append('batch:' + row['batch_id'])
-        for scope in scopes:
+        # Claims and retries touch the same counters in opposite directions.
+        # Lock them in a consistent order to avoid cross-worker deadlocks.
+        for scope in sorted(scopes):
+            changes = Counter({status: 1})
             if row.get('status'):
-                self._counter(db, scope, row['status'], -1)
-            self._counter(db, scope, status, 1)
+                changes[row['status']] -= 1
+            for state in sorted(changes):
+                if changes[state]:
+                    self._counter(db, scope, state, changes[state])
 
     def _pack(self, db, payload):
         common = {key: value for key, value in payload.items() if key not in ('urls', 'batch_id', 'import_id')}
@@ -97,8 +101,9 @@ class TaskStore:
             source_key = 'test:' + source_key
         batch_id = payload.get('batch_id')
         if action == 'download':
-            inserted = self.db.ensure(db, reservations, {'key': source_key, 'task_id': task_id})
-            if deduplicate and inserted.rowcount == 0:
+            self.db.ensure(db, reservations, {'key': source_key, 'task_id': task_id})
+            if deduplicate and db.execute(select(reservations.c.task_id).where(
+                    reservations.c.key == source_key)).scalar_one() != task_id:
                 return None
         if batch_id:
             self.db.ensure(db, batches, {'id': batch_id, 'seq': self.db.sequence(db, 'batch'),
@@ -145,10 +150,9 @@ class TaskStore:
                              batch_id=payload.get('batch_id'), video_id=video_id, source_key=source_key, url=url, title='',
                              attempts=0, max_attempts=payload.get('config', {}).get('download_attempts', 3), available_at=0))
             reservation_rows.append({'key': source_key, 'task_id': task_id})
-        # Preserve the first occurrence inside a chunk before ON CONFLICT sees it.
+        # Preserve the first occurrence inside a chunk before database deduplication.
         unique = {row['key']: row for row in reversed(reservation_rows)}
-        accepted = set(db.execute(self.db.insert(reservations).values([unique[key] for key in sorted(unique)]).on_conflict_do_nothing()
-                                 .returning(reservations.c.task_id)).scalars())
+        accepted = self.db.reserve_downloads(db, [unique[key] for key in sorted(unique)])
         if deduplicate:
             rows = [row for row in rows if row['id'] in accepted]
         if not rows:
@@ -230,7 +234,7 @@ class TaskStore:
             with self.connect() as connection:
                 return self.downloads_paused(connection)
         statement = select(settings.c.value).where(settings.c.key == 'downloads_paused')
-        if lock and self.db.postgres:
+        if lock and not self.db.sqlite:
             statement = statement.with_for_update(read=True)
         return db.execute(statement).scalar_one() == 'true'
 
@@ -251,7 +255,7 @@ class TaskStore:
         stopped = 0
         for task_id, owner in owners:
             with self.connect() as db:
-                if not self.db.postgres:
+                if self.db.sqlite:
                     db.exec_driver_sql('BEGIN IMMEDIATE')
                 # Resume and new claims cannot pass until the old executor is gone.
                 if not self.downloads_paused(db, lock=True):
@@ -276,11 +280,11 @@ class TaskStore:
             return (row['succeeded'] + (row['failed'] if count_failures else 0)) if row else 0
 
     def _locked(self, statement, *, skip=False):
-        return statement.with_for_update(skip_locked=skip) if self.db.postgres else statement
+        return statement if self.db.sqlite else statement.with_for_update(skip_locked=skip)
 
     def claim(self, worker_id=None, actions=None, exclude=None, lease_seconds=60):
         with self.connect() as db:
-            if not self.db.postgres:
+            if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= time.time())
             if self.downloads_paused(db, lock=True):
@@ -325,7 +329,7 @@ class TaskStore:
 
     def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False):
         with self.connect() as db:
-            if not self.db.postgres:
+            if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id))).mappings().first()
             if not row or row['status'] not in ('queued', 'running'):
@@ -358,7 +362,7 @@ class TaskStore:
 
     def recover(self, *, expired_only=False):
         with self.connect() as db:
-            if not self.db.postgres:
+            if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'running')
             if expired_only:
@@ -378,7 +382,7 @@ class TaskStore:
     def worker_status(self, worker_id, slot, state, task_id=None, message=''):
         with self.connect() as db:
             values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state, task_id=task_id, message=message)
-            db.execute(self.db.insert(workers).values(**values).on_conflict_do_update(index_elements=['id'], set_=values))
+            db.execute(self.db.upsert(workers, values, ['id']))
 
     def workers(self):
         with self.connect() as db:
@@ -392,8 +396,7 @@ class TaskStore:
         keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
-            db.execute(self.db.insert(settings).values(key='runtime', value=value)
-                       .on_conflict_do_update(index_elements=['key'], set_={'value': value}))
+            db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))
 
     def runtime(self):
         with self.connect() as db:
@@ -433,9 +436,8 @@ class TaskStore:
                 if not lines:
                     break
                 with self.connect() as db:
-                    db.execute(self.db.insert(archive).values(lines).on_conflict_do_nothing())
-                    db.execute(self.db.insert(settings).values(key=key, value=str(stream.tell()))
-                               .on_conflict_do_update(index_elements=['key'], set_={'value': str(stream.tell())}))
+                    db.execute(self.db.ignore(archive, lines))
+                    db.execute(self.db.upsert(settings, dict(key=key, value=str(stream.tell())), ['key']))
 
     def log_path(self, task_id):
         if len(task_id) != 32 or any(c not in '0123456789abcdef' for c in task_id):

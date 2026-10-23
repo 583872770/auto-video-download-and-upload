@@ -10,3 +10,7 @@ bilibili.json
 cookies.txt
 *.cookie
 *.log
+.env
+.env.*
+!.env.example
+docker-data/

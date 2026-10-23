@@ -1,0 +1,138 @@
+# Docker Compose 部署
+
+需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
+支持 Linux amd64、arm64；构建时需要访问 Docker Hub、Debian 软件源、PyPI 和 GitHub。
+
+## 启动
+
+在项目根目录执行：
+
+```powershell
+cp .env.example .env
+```
+
+编辑 `.env`，填写 `MYSQL_PASSWORD`（应用账号）和独立的 `MYSQL_ROOT_PASSWORD`（管理员），例如将空字符串替换为自己的随机密码。
+保留密码两侧的单引号，可以避免 `$`、`#` 被 Compose 解释；不要使用示例密码。
+`VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
+含空格的目录用引号包围。默认保存到项目的 `docker-data/videos`。
+
+```powershell
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
+docker compose logs -f --tail=100 app
+```
+
+访问 <http://127.0.0.1:5000>。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
+首次构建会安装依赖，首次启动会创建数据库表。确认两个服务都显示 `healthy` 后使用。
+
+首次使用在页面上传 YouTube Netscape Cookie 文件，然后检测登录；需要代理时，在“代理与节点”中导入订阅，选择节点并设置自动轮换。
+原有 Cookie 校验、批量进度、停止/继续、并行下载和三种保存选项沿用现有功能，其中网盘仍为待开发。
+
+## 服务与持久化
+
+| 服务 | 内容 |
+| --- | --- |
+| `app` | Flask / Waitress、独立下载和维护子进程、各下载进程的 Mihomo 内核 |
+| `mysql` | MySQL 8.4，仅在 Compose 内部网络提供服务，默认不映射宿主机数据库端口 |
+
+镜像内已安装 FFmpeg / ffprobe、Node.js 22、锁定版本的 Python 依赖和 Mihomo v1.19.33。
+Mihomo 控制端口和代理端口仅监听应用容器内部的回环地址，所有节点管理继续通过现有页面进行。
+并行数量在页面设置为 1–16；当前使用文件锁和本机进程管理，部署时保留一个 `app` 容器。
+
+| 数据 | 保存位置 |
+| --- | --- |
+| 配置、上传的 Cookie、命令行下载归档 | `app_config` 命名卷，容器内 `/data/config` |
+| 任务日志、会话密钥、订阅、节点和轮换状态、测试下载临时文件 | `app_state` 命名卷，容器内 `/app/.cache/web` |
+| 任务、批次、索引、下载去重和轮换计数 | `mysql_data` 命名卷 |
+| 视频、封面、字幕、元数据 | `VIDEO_DOWNLOAD_DIR` 指定的宿主机目录，映射到 `/data/videos` |
+
+默认 Compose 项目名为 `youtube-downloader`，实际卷名带此前缀。
+配置模板只在第一次启动时复制，之后在网页保存的设置和 Cookie 不会被覆盖。
+页面的指定目录应填写 **容器路径 `/data/videos`**，宿主机路径在 `.env` 中修改；更改目录映射不会搬迁原有文件。
+测试模式下载到状态卷内，完成后清理文件。任务记录仍保存在 MySQL。
+数据库采用 InnoDB、`utf8mb4_0900_bin` 排序规则，YouTube 视频 ID 区分大小写。应用使用独立账号，MySQL 健康检查确认该账号可以连接目标库后才启动应用。
+本机管理或迁移需要数据库端口时，可附加 `-f compose.mysql-local.yaml`，将 MySQL 仅映射到宿主机 `127.0.0.1:13306`；详见 [MYSQL.md](MYSQL.md)。
+
+整个配置目录使用卷挂载，支持页面原子保存配置。需要检查配置时：
+
+```powershell
+docker compose cp app:/data/config/config.yaml ./docker-config.yaml
+```
+
+配置和状态中可能包含登录信息、订阅及节点凭据，备份时一并妥善保存。
+
+## 浏览器登录
+
+本编排使用无图形桌面的 Linux 容器，未安装 Playwright 浏览器或远程桌面。
+网页“独立浏览器登录”无法在宿主机弹出窗口。请在自己的正常浏览器登录 YouTube，导出 Cookie 文件后在页面上传。
+下载、登录状态检测不依赖容器内图形浏览器。Cookie 仍可能被 YouTube 撤销或过期，失效后需要重新上传。
+
+## 局域网或域名访问
+
+默认仅允许宿主机访问。需要从其他设备访问时，修改 `.env`：
+
+```dotenv
+WEB_BIND_IP=0.0.0.0
+VIDEO_WEB_HOSTS=localhost,127.0.0.1,[::1],192.168.1.10,video.example.com
+```
+
+把示例 IP / 域名替换成实际访问地址，保留 `127.0.0.1` 供健康检查使用，主机列表中不带协议或端口。
+运行 `docker compose up -d` 应用修改。项目没有用户账号登录，服务器部署应通过已有身份验证的 HTTPS 反向代理访问。
+
+## 停止、恢复与更新
+
+```powershell
+# 停止整个容器栈，保留数据
+docker compose stop
+
+# 继续运行
+docker compose up -d
+
+# 更新代码后重新构建应用
+docker compose up -d --build app
+```
+
+页面“停止全部下载”只暂停任务，Web 和数据库继续运行；`docker compose stop` 会结束容器内全部下载和代理进程。
+容器重启后，未完成任务会在旧租约过期后恢复；已暂停的队列保持暂停，部分下载文件保留。
+健康检查失败会显示 `unhealthy`，Docker 不会仅因这一状态自动重启；应用进程退出时由 `unless-stopped` 策略重启。
+`docker compose down` 删除容器和网络但保留命名卷；加 `-v` 会删除命名卷中的数据库、配置和状态，日常停止不要使用该参数。
+首次初始化后更改 `.env` 的数据库用户、库名或密码，不会自动修改 MySQL 里已有的账号；需同步修改数据库账号。
+
+## 备份
+
+先在页面停止下载，再停止应用，保持 MySQL 运行：
+
+```powershell
+mkdir backup
+docker compose stop app
+docker compose exec mysql sh
+```
+
+在容器的 shell 内执行以下命令，密码通过环境传递：
+
+```sh
+export MYSQL_PWD="$MYSQL_PASSWORD"
+mysqldump --protocol=TCP -h 127.0.0.1 -u "$MYSQL_USER" --single-transaction --no-tablespaces --set-gtid-purged=OFF --result-file=/tmp/video-downloads.sql "$MYSQL_DATABASE"
+exit
+```
+
+确认备份命令成功后，回到宿主机执行：
+
+```powershell
+docker compose cp mysql:/tmp/video-downloads.sql ./backup/database.sql
+docker compose cp app:/data/config ./backup/config
+docker compose cp app:/app/.cache/web ./backup/state
+docker compose start app
+```
+
+另行备份 `VIDEO_DOWNLOAD_DIR` 中的视频和 `.env`。PowerShell 下使用容器内部文件加 `compose cp`，避免旧版 PowerShell 的重定向改变 SQL 编码。
+数据库恢复应使用 MySQL 客户端导入 SQL，目标为空数据库，并配套恢复配置、状态和视频目录。原 `scripts/backup_database.py` 是 PostgreSQL 专用工具，不能用于 MySQL。
+
+## 与当前 Windows 部署的关系
+
+这是独立的新部署，不会自动迁移 Windows 本机 PostgreSQL、现有百万级任务、Cookie 或订阅。
+构建上下文排除了本机配置、`.cache`、`.tools`、Cookie、视频和 `.env`。
+同一主机、相同路径下迁移 PostgreSQL / SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
+上一版编排的 PostgreSQL 数据卷和容器不会自动转换或删除；旧 `.env` 也需补充新的 MySQL 变量。确认迁移和备份前保留旧库。
+此编排保持当前的单机调度架构，能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。

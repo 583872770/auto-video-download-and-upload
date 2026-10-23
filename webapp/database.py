@@ -1,16 +1,22 @@
-"""Shared SQLAlchemy schema; PostgreSQL in production, SQLite for portable tests."""
+"""Shared schema and transactional SQL for MySQL, PostgreSQL and SQLite."""
 import json
 import os
 from pathlib import Path
 import threading
 
-from sqlalchemy import (BigInteger, Column, Float, Index, Integer, MetaData, String,
-                        Table, Text, create_engine, event, inspect, select)
+from sqlalchemy import (BigInteger, Column, Float as SAFloat, Index, Integer, MetaData, String,
+                        Table, Text as SAText, create_engine, event, inspect, select, text)
+from sqlalchemy.dialects.mysql import DOUBLE, LONGTEXT, insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.pool import NullPool
 
 ROOT = Path(__file__).resolve().parents[1]
+# MySQL FLOAT loses seconds at Unix-epoch magnitudes; leases and media cursors
+# require double precision. JSON snapshots can exceed MySQL TEXT's 64 KiB.
+Float = SAFloat().with_variant(DOUBLE(asdecimal=False), 'mysql')
+Text = SAText().with_variant(LONGTEXT(), 'mysql')
+RootPath = SAText().with_variant(String(512), 'mysql')
 metadata = MetaData()
 tasks = Table('tasks', metadata,
     Column('id', String(32), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
@@ -18,7 +24,7 @@ tasks = Table('tasks', metadata,
     Column('created_at', Text, nullable=False), Column('started_at', Text), Column('finished_at', Text),
     Column('payload', Text, nullable=False), Column('result', Text), Column('error', Text), Column('progress', Text),
     Column('batch_id', String(32)), Column('video_id', String(256)), Column('source_key', String(128)),
-    Column('url', Text), Column('title', Text, nullable=False, server_default=''),
+    Column('url', Text), Column('title', Text, nullable=False, server_default=text("('')")),
     Column('worker_id', String(128)), Column('lease_until', Float),
     Column('attempts', Integer, nullable=False, server_default='0'),
     Column('max_attempts', Integer, nullable=False, server_default='3'),
@@ -28,15 +34,15 @@ Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
 _finished = tasks.c.status.in_(('succeeded', 'failed', 'interrupted'))
-Index('ix_tasks_finished_seq', tasks.c.seq, postgresql_where=_finished, sqlite_where=_finished)
+Index('ix_tasks_finished_seq', tasks.c.seq, postgresql_where=_finished, sqlite_where=_finished).ddl_if(dialect=('postgresql', 'sqlite'))
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
-Index('ix_tasks_video_prefix', tasks.c.video_id, postgresql_ops={'video_id': 'varchar_pattern_ops'})
-Index('ix_tasks_id_prefix', tasks.c.id, postgresql_ops={'id': 'varchar_pattern_ops'})
-Index('ix_tasks_title_prefix', tasks.c.title, postgresql_ops={'title': 'text_pattern_ops'})
+Index('ix_tasks_video_prefix', tasks.c.video_id, postgresql_ops={'video_id': 'varchar_pattern_ops'}).ddl_if(dialect=('postgresql', 'sqlite'))
+Index('ix_tasks_id_prefix', tasks.c.id, postgresql_ops={'id': 'varchar_pattern_ops'}).ddl_if(dialect=('postgresql', 'sqlite'))
+Index('ix_tasks_title_prefix', tasks.c.title, postgresql_ops={'title': 'text_pattern_ops'}, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)
 Index('ix_tasks_seq', tasks.c.seq, unique=True)
-Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at)
+Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at, mysql_length={'finished_at': 40})
 snapshots = Table('task_snapshots', metadata, Column('id', String(64), primary_key=True), Column('payload', Text, nullable=False))
 counters = Table('task_counters', metadata, Column('scope', String(80), primary_key=True),
                  Column('status', String(24), primary_key=True), Column('value', BigInteger, nullable=False))
@@ -48,7 +54,7 @@ sequences = Table('sequence_counters', metadata, Column('key', String(32), prima
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
 batches = Table('batches', metadata, Column('id', String(32), primary_key=True),
                 Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', Text, nullable=False),
-                Column('name', Text, nullable=False, server_default=''))
+                Column('name', Text, nullable=False, server_default=text("('')")))
 reservations = Table('download_reservations', metadata, Column('key', String(128), primary_key=True),
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),
@@ -64,26 +70,32 @@ imports = Table('imports', metadata, Column('id', String(32), primary_key=True),
                 Column('added', BigInteger, nullable=False, server_default='0'),
                 Column('duplicates', BigInteger, nullable=False, server_default='0'),
                 Column('invalid', BigInteger, nullable=False, server_default='0'),
-                Column('samples', Text, nullable=False, server_default='[]'),
+                Column('samples', Text, nullable=False, server_default=text("('[]')")),
                 Column('finished', Integer, nullable=False, server_default='0'))
 media = Table('media_catalog', metadata, Column('id', String(64), primary_key=True),
-              Column('root', Text, nullable=False), Column('name', Text, nullable=False),
+              Column('root', RootPath, nullable=False), Column('name', Text, nullable=False),
               Column('logical_key', Text, nullable=False), Column('title', Text, nullable=False),
               Column('search_title', Text, nullable=False), Column('video_id', String(256)),
               Column('size', BigInteger, nullable=False), Column('modified', Float, nullable=False),
               Column('cover', Text), Column('playable', Integer, nullable=False),
               Column('prepared', Integer, nullable=False), Column('status', String(24)),
               Column('scan_id', String(32)), Column('indexed_at', Float, nullable=False, server_default='0'))
-Index('ix_media_root_recent', media.c.root, media.c.modified, media.c.id)
-Index('ix_media_root_video', media.c.root, media.c.video_id)
-Index('ix_media_root_scan', media.c.root, media.c.scan_id)
+Index('ix_media_root_recent', media.c.root, media.c.modified, media.c.id, mysql_length={'root': 191})
+Index('ix_media_root_video', media.c.root, media.c.video_id, mysql_length={'root': 191})
+Index('ix_media_root_scan', media.c.root, media.c.scan_id, mysql_length={'root': 191})
 Index('ix_media_root_title', media.c.root, media.c.search_title,
-      postgresql_ops={'search_title': 'text_pattern_ops'})
-roots = Table('media_roots', metadata, Column('root', Text, primary_key=True),
+      postgresql_ops={'search_title': 'text_pattern_ops'}, mysql_length={'root': 191, 'search_title': 191})
+roots = Table('media_roots', metadata, Column('root', RootPath, primary_key=True),
               Column('count', BigInteger, nullable=False, server_default='0'),
               Column('bytes', BigInteger, nullable=False, server_default='0'),
               Column('last_indexed', Text), Column('scan_id', String(32)),
               Column('scanned', BigInteger, nullable=False, server_default='0'))
+
+for table in metadata.tables.values():
+    # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;
+    # the NO PAD binary collation also preserves distinct trailing characters.
+    table.dialect_options['mysql'].update(
+        engine='InnoDB', charset='utf8mb4', collate='utf8mb4_0900_bin')
 
 _lock = threading.Lock()
 _engines = {}
@@ -101,19 +113,32 @@ class Database:
         self.url = url or 'sqlite:///' + (self.directory / 'tasks.sqlite3').as_posix()
         if self.url.startswith('postgresql://'):
             self.url = self.url.replace('postgresql://', 'postgresql+psycopg://', 1)
-        if not self.url.startswith(('sqlite:///', 'postgresql+psycopg://')):
-            raise ValueError('数据库仅支持 PostgreSQL 或 SQLite。')
+        if self.url.startswith('mysql://'):
+            self.url = self.url.replace('mysql://', 'mysql+pymysql://', 1)
+        if not self.url.startswith(('sqlite:///', 'postgresql+psycopg://', 'mysql+pymysql://')):
+            raise ValueError('数据库仅支持 MySQL、PostgreSQL 或 SQLite。')
         with _lock:
             if self.url not in _engines:
-                engine = create_engine(self.url, poolclass=NullPool, hide_parameters=True,
-                                       connect_args={'timeout': 30} if self.url.startswith('sqlite:') else {})
+                options = {'connect_args': {'timeout': 30}} if self.url.startswith('sqlite:') else {}
+                if self.url.startswith('mysql:') or self.url.startswith('mysql+pymysql:'):
+                    options.update(isolation_level='READ COMMITTED', connect_args={
+                        'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 60, 'write_timeout': 60})
+                engine = create_engine(self.url, poolclass=NullPool, hide_parameters=True, **options)
                 if engine.dialect.name == 'sqlite':
                     @event.listens_for(engine, 'connect')
                     def configure(dbapi, _):
                         dbapi.execute('PRAGMA busy_timeout=30000')
                         dbapi.execute('PRAGMA journal_mode=WAL')
                 self.engine = engine
-                self.initialize()
+                try:
+                    if self.mysql:
+                        with engine.connect():
+                            if engine.dialect.is_mariadb or engine.dialect.server_version_info < (8, 0, 21):
+                                raise ValueError('请使用 MySQL 8.0.21 或更新版本，推荐 MySQL 8.4。')
+                    self.initialize()
+                except Exception:
+                    engine.dispose()
+                    raise
                 _engines[self.url] = engine
             self.engine = _engines[self.url]
 
@@ -121,16 +146,56 @@ class Database:
     def postgres(self):
         return self.engine.dialect.name == 'postgresql'
 
+    @property
+    def mysql(self):
+        return self.engine.dialect.name == 'mysql'
+
+    @property
+    def sqlite(self):
+        return self.engine.dialect.name == 'sqlite'
+
     def insert(self, table):
-        return (pg_insert if self.postgres else sqlite_insert)(table)
+        return (mysql_insert if self.mysql else pg_insert if self.postgres else sqlite_insert)(table)
+
+    def ignore(self, table, values):
+        statement = self.insert(table).values(values)
+        if self.mysql:
+            # Do not use INSERT IGNORE: it also hides invalid/oversized data.
+            column = next(iter(table.primary_key))
+            return statement.on_duplicate_key_update({column.name: column})
+        return statement.on_conflict_do_nothing()
+
+    def upsert(self, table, values, keys, updates=None):
+        statement = self.insert(table).values(values)
+        if updates is None:
+            incoming = statement.inserted if self.mysql else statement.excluded
+            updates = {column.name: incoming[column.name] for column in table.c if column.name not in keys}
+        if self.mysql:
+            return statement.on_duplicate_key_update(updates)
+        return statement.on_conflict_do_update(index_elements=keys, set_=updates)
 
     def ensure(self, db, table, values):
-        return db.execute(self.insert(table).values(**values).on_conflict_do_nothing())
+        return db.execute(self.ignore(table, values))
+
+    def reserve_downloads(self, db, rows):
+        statement = self.ignore(reservations, rows)
+        if not self.mysql:
+            return set(db.execute(statement.returning(reservations.c.task_id)).scalars())
+        db.execute(statement)
+        # MySQL has no INSERT RETURNING, and FOUND_ROWS makes a duplicate no-op
+        # report rowcount=1. Compare UUID ownership inside the same transaction.
+        return set(db.execute(select(reservations.c.task_id).where(
+            reservations.c.key.in_([row['key'] for row in rows]),
+            reservations.c.task_id.in_([row['task_id'] for row in rows]))).scalars())
 
     def sequence(self, db, key, count=1):
         self.ensure(db, sequences, {'key': key, 'value': 0})
-        end = db.execute(sequences.update().where(sequences.c.key == key)
-                         .values(value=sequences.c.value + count).returning(sequences.c.value)).scalar_one()
+        statement = sequences.update().where(sequences.c.key == key).values(value=sequences.c.value + count)
+        if self.mysql:
+            db.execute(statement)
+            end = db.execute(select(sequences.c.value).where(sequences.c.key == key)).scalar_one()
+        else:
+            end = db.execute(statement.returning(sequences.c.value)).scalar_one()
         return end - count + 1
 
     def initialize(self):
@@ -176,9 +241,8 @@ class Database:
                     if batch_id:
                         self.ensure(db, batches, {'id': batch_id, 'seq': self.sequence(db, 'batch'),
                                                  'created_at': row['created_at'], 'name': ''})
-                        counter = self.insert(counters).values(scope='batch:' + batch_id, status=row['status'], value=1)
-                        db.execute(counter.on_conflict_do_update(index_elements=['scope', 'status'],
-                                                                set_={'value': counters.c.value + 1}))
+                        db.execute(self.upsert(counters, dict(scope='batch:' + batch_id, status=row['status'], value=1),
+                                               ['scope', 'status'], {'value': counters.c.value + 1}))
                     if row['action'] == 'download' and row['status'] not in ('failed', 'interrupted'):
                         self.ensure(db, reservations, {'key': source_key, 'task_id': row['id']})
                     if progress.get('rotation_id') and row['status'] in ('succeeded', 'failed') and not result.get('skipped'):

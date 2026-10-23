@@ -1,5 +1,6 @@
 """Stop this queue's local download executors, including media subprocesses."""
 from pathlib import Path
+import os
 import socket
 
 import psutil
@@ -23,7 +24,7 @@ def terminate_worker(owner, directory):
         if Path(args[position + 1]).resolve() != Path(directory).resolve() or Path(process.cwd()).resolve() != ROOT:
             return False
         # Mihomo is persistent infrastructure. Keep proxy selection and rotation state.
-        proxy = (ROOT / '.tools/mihomo/mihomo.exe').resolve()
+        proxy = (ROOT / '.tools/mihomo' / ('mihomo.exe' if os.name == 'nt' else 'mihomo')).resolve()
         def descendants():
             result = []
             for child in process.children(recursive=True):
