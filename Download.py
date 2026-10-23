@@ -1,16 +1,33 @@
 """Download only when explicitly invoked; importing this module is safe."""
 import argparse
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
+import tempfile
+from urllib.parse import urlsplit
 import yt_dlp
 
 from Utils.config import DEFAULT_CONFIG, load_config, resolve_path, video_directory
 from Utils.runtime import configure_runtime
 
 
+@contextmanager
+def download_cookie_session(options):
+    """Let yt-dlp update its cookie jar without overwriting the uploaded login."""
+    if not options.get('cookiefile'):
+        yield options
+        return
+    with tempfile.TemporaryDirectory(prefix='youtube-download-') as directory:
+        cookie = Path(directory) / 'cookies.txt'
+        shutil.copyfile(options['cookiefile'], cookie)
+        yield {**options, 'cookiefile': str(cookie)}
+
+
 def build_ydl_options(config, base):
     options = {
-        'format': config.get('download_format', 'bestvideo+bestaudio/best'),
+        'format': config.get('download_format',
+                             'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/'
+                             'best[ext=mp4][vcodec^=avc1]/bestvideo+bestaudio/best'),
         'download_archive': str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
@@ -27,6 +44,8 @@ def build_ydl_options(config, base):
         'http_chunk_size': 10 * 1024 * 1024,
         'windowsfilenames': True,
     }
+    if config.get('shard_downloads'):
+        options['outtmpl'] = str(video_directory(config, base) / '%(id).2s' / '%(id)s' / '%(title).120B [%(id)s].%(ext)s')
     if config.get('js_runtimes') is not None:
         if not isinstance(config['js_runtimes'], dict):
             raise ValueError('js_runtimes 必须是运行时配置表')
@@ -37,12 +56,25 @@ def build_ydl_options(config, base):
         options['js_runtimes'] = {'node': {'path': shutil.which('node')}}
     if config.get('proxy') is not None:
         options['proxy'] = config['proxy']
+    if config.get('proxy_mode') == 'direct':
+        options['proxy'] = ''
+    elif config.get('proxy_mode') == 'clash':
+        if not config.get('_resolved_clash_proxy'):
+            raise ValueError('请通过 Web 页面创建使用 Clash 订阅代理的下载任务。')
+        options['proxy'] = config['_resolved_clash_proxy']
     if config.get('youtube_cookie'):
         cookie = resolve_path(base, config['youtube_cookie'])
         if not cookie.is_file():
             raise FileNotFoundError(f'YouTube Cookie 文件不存在：{cookie}')
         options['cookiefile'] = str(cookie)
     return options
+
+
+def require_download_tools(urls, options):
+    youtube = any((urlsplit(url).hostname or '').lower().removeprefix('www.') in
+                  ('youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be') for url in urls)
+    if youtube and '+' in options['format'] and not shutil.which('ffmpeg'):
+        raise RuntimeError('YouTube 音视频合并需要 FFmpeg，请先安装后再下载，避免留下分离轨道。')
 
 
 def main(argv=None):
@@ -68,11 +100,15 @@ def main(argv=None):
             config.update(path=args.output, dir='')
         if args.proxy is not None:
             config['proxy'] = args.proxy
+            config['proxy_mode'] = 'manual'
         options = build_ydl_options(config, base)
+        if not args.simulate:
+            require_download_tools(urls, options)
         options['simulate'] = args.simulate
-        with yt_dlp.YoutubeDL(options) as downloader:
-            return downloader.download(urls)
-    except (OSError, ValueError, yt_dlp.utils.DownloadError) as error:
+        with download_cookie_session(options) as session_options:
+            with yt_dlp.YoutubeDL(session_options) as downloader:
+                return downloader.download(urls)
+    except (OSError, ValueError, RuntimeError, yt_dlp.utils.DownloadError) as error:
         parser.exit(1, f'下载失败：{error}\n')
 
 

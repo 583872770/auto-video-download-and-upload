@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('setup', 'check', 'selftest', 'download', 'prepare', 'login', 'youtube-login', 'publish', 'tests')]
+    [ValidateSet('setup', 'check', 'selftest', 'download', 'prepare', 'login', 'youtube-login', 'publish', 'tests', 'web')]
     [string]$Mode = 'check',
     [string]$Config,
     [ValidateSet('douyin', 'kuaishou', 'xigua')]
     [string]$Platform = 'douyin',
     [string]$Url,
-    [switch]$UseWifi
+    [switch]$UseWifi,
+    [int]$Port = 5000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +43,7 @@ try {
         'check' { & $python main.py --check }
         'selftest' { & $python scripts/verify_pipeline.py }
         'tests' { & $python -m unittest discover -s tests -v }
+        'web' { & $python app.py @configArgs --port $Port }
         'download' {
             $urlArgs = @()
             if ($Url) { $urlArgs = @($Url) }

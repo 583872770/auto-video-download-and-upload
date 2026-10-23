@@ -1,33 +1,43 @@
-# 所有相对路径均相对于本配置文件。
-# 下载与上传使用相同的目标目录：path / dir。
 path: videos
-dir: ""
-url: "https://www.youtube.com/watch?v=QkCWK_YJ7uY"
-# url 也支持列表；或在 Download.py 命令后直接传入 URL。
-# proxy: "http://127.0.0.1:7890"
-youtube_cookie: "Cookies/youtube.txt"  # Netscape 格式，不是浏览器 JSON
-# download_format: "bestvideo[height<=720]+bestaudio/best[height<=720]"
-# 下载器自动识别 PATH 中的 Deno / Node.js；也可指定运行时路径：
-# js_runtimes: {node: {path: 'C:/Program Files/nodejs/node.exe'}}
-
-platforms: [douyin, kuaishou]
-douyin_cookie: "Cookies/douyin.json"
+dir: ''
+url:
+- https://www.youtube.com/watch?v=npNnbj46_ik
+- https://www.youtube.com/watch?v=2Gu7q-KUXCk
+- https://www.youtube.com/watch?v=WMu6ANTg8mk
+- https://www.youtube.com/watch?v=hI0ofOjFloE
+- https://www.youtube.com/watch?v=NJvj1iQdZwE
+- https://www.youtube.com/watch?v=8XiDhkvwgEo
+- https://www.youtube.com/watch?v=Xmyef5q9wSo
+- https://www.youtube.com/watch?v=p2MeSftrXtM
+youtube_cookie: Cookies/youtube.txt
+platforms:
+- douyin
+- kuaishou
+douyin_cookie: Cookies/douyin.json
 douyin_visibility: public
-kuaishou_cookie: "Cookies/kuaishou.json"
-# public 所有人可见，friends 好友可见，private 仅自己可见。
+kuaishou_cookie: Cookies/kuaishou.json
 kuaishou_visibility: public
-xigua_cookie: "Cookies/xigua.json"
-
-# 定时发布时间（本机本地时间）；至少两小时后，严格小于七天。
-time_list: [8, 11, 14, 16, 19, 21]
+xigua_cookie: Cookies/xigua.json
+time_list:
+- 8
+- 11
+- 14
+- 16
+- 19
+- 21
 segment_seconds: 180
 upload_timeout_seconds: 1800
-# 可选：指定浏览器。默认优先使用 Playwright Chromium，否则尝试标准路径的 Edge/Chrome。
-# browser_executable: 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-
-douyin_tags: ["我的世界", "MC不灭", "游戏内容风向标"]
-kuaishou_tags: ["我的世界", "MC不灭", "100天"]
-xigua_tags: ["我的世界", "MC不灭", "100天"]
-
-# 历史 B 站脚本使用的分区，未接入主程序。
+douyin_tags:
+- 我的世界
+- MC不灭
+- 游戏内容风向标
+kuaishou_tags:
+- 我的世界
+- MC不灭
+- 100天
+xigua_tags:
+- 我的世界
+- MC不灭
+- 100天
 tid: 201
+proxy_mode: clash

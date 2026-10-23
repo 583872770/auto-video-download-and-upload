@@ -1,6 +1,6 @@
 # auto-video-download-and-upload
 
-视频下载、分段处理与多平台定时发布工具。通过 yt-dlp 下载视频及配套资源，使用 FFmpeg 处理媒体，再通过 Playwright 上传到创作者平台。
+视频下载、分段处理与多平台定时发布工具。提供 Flask Web 工作台和命令行入口，通过 yt-dlp 下载视频及配套资源，使用 FFmpeg 处理媒体，再通过 Playwright 上传到创作者平台。
 
 ## 功能
 
@@ -20,7 +20,7 @@ B 站上传及 Whisper 翻译为历史脚本，尚未接入当前主流程。源
 
 ## 安装
 
-需要 Python 3.11+、FFmpeg（含 ffprobe）和可用的浏览器。YouTube 下载还需要 Deno 或 Node.js 22+。
+需要 Python 3.11+、FFmpeg（含 ffprobe）。YouTube 下载还需要 Deno 或 Node.js 22+；命令行扫码登录和发布需要可用的浏览器。
 
 以下示例使用 Windows PowerShell：
 
@@ -35,6 +35,75 @@ cd auto-video-download-and-upload
 将 FFmpeg 加入 `PATH`，或将 `ffmpeg.exe`、`ffprobe.exe` 放到 `.tools/ffmpeg/bin/`。下载地址见 [FFmpeg 官网](https://ffmpeg.org/download.html)。
 
 已有 Chrome 或 Edge 时，可以跳过 Chromium 安装；程序会尝试使用 Windows 标准安装路径中的浏览器，也可通过 `browser_executable` 指定路径。
+
+## Web 工作台
+
+安装依赖后启动：
+
+```powershell
+.\run.ps1 -Mode setup
+.\run.ps1 -Mode web
+# 指定配置文件和端口：
+.\run.ps1 -Mode web -Config settings.yaml -Port 5001
+```
+
+浏览器访问 **http://127.0.0.1:5000**。也可以直接运行：
+
+```powershell
+.\.venv\Scripts\python.exe app.py --port 5000 --config config.yaml
+```
+
+Web 版使用 Flask + Waitress，页面资源随项目提供，不依赖前端构建或 CDN。目前页面专用于 YouTube 视频下载，提供：
+
+- **下载概览**：固定 YouTube 链接前缀 `https://www.youtube.com/watch?v=`，每行只需粘贴一个 11 位视频 ID；也兼容完整视频或播放列表链接。点击“批量开始下载”后，每个输入单独排队，重复输入自动去重。
+- **逐条下载进度**：按批次查看每个视频的标题、下载阶段、进度、已下载大小、速度、当前文件预计剩余时间和独立日志。音视频分开下载时按轨道估算进度，合并处理结束后才标记完成；总大小或速度未知时显示占位。某条失败会继续下一条，下载记录中的重复视频显示“已下载过 · 已跳过”。进度存入数据库，刷新页面后仍可查看。
+- **大批量下载**：支持 TXT/CSV 流式导入、数据库去重与导入断点，任务、批次和素材分页查询。可在设置页调整 1–16 个下载进程、有限重试、磁盘预留和日志保留，Clash 节点按进程独立轮换。生产使用 PostgreSQL，保留 SQLite 便携模式；迁移、备份恢复和验证范围详见 [大批量下载说明](SCALING.md)。
+- **YouTube Cookie 上传**：左侧 YouTube、首页下载区或设置页点击“上传 Cookie 文件”，上传 Netscape 格式的 `.txt`（最大 1 MB）。自动保存到所选配置目录下的 `Cookies/youtube.txt` 并更新 `youtube_cookie`，后续下载直接使用；校验失败保留原文件。只保存未过期的 YouTube 域记录，文件存在不代表登录仍有效。
+- **素材库**：查看下载的视频原片、封面与文件大小；点击卡片播放，支持拖动进度和保存视频。未合并的音视频轨只显示为一条“待合并”素材，合并成品优先展示。
+- **任务记录**：分页查看下载、导入、索引或环境检查任务，搜索与筛选状态，并查看实时日志与错误信息。
+- **代理与节点**：在页面保存 Clash / Mihomo 订阅，更新订阅、选择节点、单节点或批量测速、搜索和排序，并测试 YouTube 连通性。支持直连、手动代理和订阅代理三种下载连接方式。
+- **自动轮换节点**：在“代理与节点”中勾选至少两个节点，设置每处理多少个视频切换一次（1–1000），可选择失败任务是否计数。按勾选顺序循环，从当前节点开始（如已勾选），在下一个视频开始前切换；已下载而跳过的任务不计数。页面显示轮换顺序、累计次数和下一次使用的节点，任务进度显示实际下载节点。计数跨批次、跨服务和内核重启保存，修改轮换配置或手动切换节点后重新计数。只在 Clash 模式生效；每行输入计一个任务，完整播放列表整体计一次。
+- **下载设置**：编辑保存目录、子目录、默认链接、代理，并上传 Cookie 文件。保存到所选 YAML 文件，保留其他配置项；保存会重新格式化 YAML，不保留注释。
+
+抖音、快手登录及发布、排期、分段预处理入口已从页面隐藏，原有命令行和后台接口保留。下载设置的保存及下载任务不受发布配置校验影响。
+
+订阅代理使用项目独立的 Mihomo 内核。Windows x64 首次使用执行 `.\.venv\Scripts\python.exe scripts/install_mihomo.py`，随后在“代理与节点”中粘贴支持 Clash YAML 的订阅链接，点击“保存并更新订阅”。导入成功会启动内核并将下载连接切换为 Clash；已有订阅时，链接框留空即可更新。流量、到期等提示与可选节点分开展示。测速使用 gstatic 连通性地址，YouTube 检测单独执行，延迟不代表下载带宽。
+
+内核仅监听本机，不修改系统代理。内核、私有订阅配置分别保存在 `.tools/mihomo/`、`.cache/web/clash/`，这些目录已被 Git 忽略；接口不回显订阅令牌、控制密钥或节点凭据。下载任务记录所选节点并在执行前核对，队列未结束时禁止修改轮换配置、更新订阅、手动切换节点、改变连接方式或停止内核；自动轮换仅在视频任务之间执行。关闭网页或重启 Flask 不会停止代理，重启后会复用本项目的内核进程和选中的节点。Web 的订阅代理配置不自动应用于独立命令行下载；命令行可用 `--proxy` 显式指定代理地址。
+
+任务由独立下载进程执行，默认 1 个，可配置到 16 个，并为导入和索引保留独立维护进程。生产队列和元数据使用 PostgreSQL；未配置时使用 SQLite，连接配置、日志和会话密钥保存在 `.cache/web/`。关闭网页或停止 Web 服务后，后台进程会继续处理队列；重新启动服务可以继续查看。下载、导入和索引的过期租约可有限恢复，临时网络错误退避重试；发布等任务仍需人工核对后重试。下载使用创建时的配置快照；进程数、磁盘预留及日志清理参数在运行时读取。
+
+缺少 FFmpeg / ffprobe 时，页面仍可使用。需要合并的 YouTube 下载会在开始前提示安装 FFmpeg，避免将分离轨道误报为下载完成。默认优先选择 H.264 视频和 AAC 音频，便于浏览器播放；不受浏览器支持的格式可保存到本机播放。环境卡片检查下载所需工具，点击“检查”可获得下载依赖检查日志，不检查发布用浏览器。
+
+默认仅监听本机，定位为个人本地工作台，未提供用户账号登录。若需要局域网或服务器部署，应在受信任网络中通过带身份验证的反向代理访问，并显式设置允许的主机名，例如 `$env:VIDEO_WEB_HOSTS = 'localhost,127.0.0.1,video.example.com'`，再运行 `app.py --host 0.0.0.0`。上传浏览器代理仍可通过 `VIDEO_BROWSER_PROXY` 设置，或使用 `run.ps1 -Mode web -UseWifi`。
+
+主要 HTTP 接口：
+
+| 方法与路径 | 用途 |
+| --- | --- |
+| `GET /api/status` | 工具与本地登录态文件状态 |
+| `GET /api/clash` | 代理运行状态、订阅摘要、节点与测速进度，不含凭据 |
+| `POST /api/clash/subscription` | 保存并更新订阅；JSON `url` 留空使用已保存链接 |
+| `POST /api/clash/select` | 使用 JSON `name` 选择节点 |
+| `POST /api/clash/rotation` | 保存轮换：JSON `enabled` 开关、`nodes` 有序节点名列表、`every` 间隔和 `count_failures` 失败是否计数 |
+| `POST /api/clash/delay` | 异步测速；JSON `name` 可选，省略则测试全部节点 |
+| `POST /api/clash/test` | 通过当前节点测试 YouTube 连通性 |
+| `POST /api/clash/start`、`POST /api/clash/stop` | 启动或停止项目代理 |
+| `POST /api/youtube/cookie` | 以 multipart 的 `cookie` 字段上传 YouTube Netscape Cookie 文件 |
+| `GET /api/config`、`PUT /api/config` | 读取和保存页面支持的配置项 |
+| `GET /api/media`、`POST /api/media` | 列出素材；以 multipart 的 `video`、`cover` 字段导入素材 |
+| `GET /media/videos/<name>` | 本地视频播放与保存，支持 HTTP Range 分段请求 |
+| `GET /api/tasks`、`POST /api/tasks` | 任务记录和总数；创建后台任务 |
+| `POST /api/downloads` | JSON `urls` 支持多行视频 ID 或链接，原子创建一个批次及逐条下载任务，返回 `batch_id` 和 `items` |
+| `POST /api/downloads/import` | multipart `file` 上传 TXT/CSV 清单，返回后台导入任务 |
+| `GET /api/batches` | 持久化批次分页及每批计数 |
+| `POST /api/media/reindex` | 创建后台素材索引同步任务 |
+| `GET /api/tasks/<id>` | 状态、执行结果及错误 |
+| `GET /api/tasks/<id>/logs?offset=0` | 从字节偏移量增量读取日志，返回下次 `offset` |
+
+页面创建任务时传入 `scope: "download"`，`action` 为 `download` 或 `check`；下载可传 `urls`，检查仅验证下载环境。`GET /api/tasks?scope=download` 返回下载、检查、导入和索引任务，可用 `limit`、`cursor`、`batch_id`、`q`、`status` 分页筛选。原有接口仍支持 `preview`、`prepare`、`publish`、`login`；使用 `platforms: ["douyin", "kuaishou"]` 选择平台，`login` 一次选择一个平台，`publish` 必须传 `confirmed: true`。写接口需要同一浏览器会话的 Cookie 及页面 `<meta name="csrf-token">` 对应的 `X-CSRF-Token` 请求头。
+
+首页批量下载使用 `POST /api/downloads`，单次最多 100 行。任务接口返回 `batch_id`、`video_id`、`url` 和结构化 `progress`；速度单位为字节/秒、ETA 单位为秒。每个完整播放列表链接属于一个输入任务，该任务的进度显示列表中当前视频。
 
 ## 配置
 
@@ -136,6 +205,8 @@ kuaishou_tags: [游戏]
 .\run.ps1 -Mode tests
 .\run.ps1 -Mode selftest
 .\.venv\Scripts\python.exe -m pip check
+# 使用真实浏览器验证 Web 页面（测试配置及素材独立保存，不投稿）：
+.\.venv\Scripts\python.exe scripts/verify_web.py
 ```
 
 回归测试覆盖配置、排期、媒体处理及上传流程；自检使用本机 HTTP 服务验证下载、分段、封面和解码，不需要平台账号。
