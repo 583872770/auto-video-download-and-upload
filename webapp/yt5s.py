@@ -19,11 +19,15 @@ from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
-from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as BrowserTimeoutError, async_playwright
 
 
 class BrowserEnvironmentRequired(RuntimeError):
     """A deployment prerequisite is missing; keep queued downloads for later."""
+
+
+class WebsiteTimeoutError(RuntimeError):
+    """A website step timed out; retain normal queue retry/backoff behavior."""
 
 
 def display_available():
@@ -112,13 +116,51 @@ def transfer(url, directory, args):
         temporary.unlink(missing_ok=True)
 
 
+async def wait_for_site(event, timeout, label, *, interval=10):
+    """Bound each website wait and explain that no video bytes are transferring."""
+    started = asyncio.get_running_loop().time()
+    deadline = started + timeout
+    while not event.is_set():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=min(interval, remaining))
+        except TimeoutError:
+            elapsed = asyncio.get_running_loop().time() - started
+            if elapsed >= timeout:
+                raise
+            print(f'{label}：已等待 {int(elapsed)} 秒，最多 {timeout} 秒，视频文件尚未开始下载。', flush=True)
+
+
+def site_timeout_message(stage, timeout):
+    messages = {
+        'starting_browser': '方式二浏览器启动超时，请检查 Chromium 和显示环境。',
+        'connecting_browser': '方式二浏览器调试连接超时，请检查 Chromium 是否正常运行。',
+        'opening_site': 'yt5s 网页加载超时（45 秒），请检查任务使用的连接方式和节点能否访问 yt5s.biz。',
+        'waiting_site_form': 'yt5s 下载输入框未出现（30 秒），网页可能仍在验证或页面结构已变化；请查看远程桌面。',
+        'submitting_site': 'yt5s 提交按钮未能完成操作（30 秒），请查看远程桌面中的验证或弹窗。',
+        'waiting_verification': f'yt5s 验证与解析超时（{timeout} 秒），网站未返回解析结果；请在远程桌面查看验证提示或更换节点后重试。',
+        'extracting': 'yt5s 已返回解析结果，但视频信息或所选画质未出现；网站页面结构可能已变化。',
+        'converting': f'yt5s 视频转换超时（{timeout} 秒），网站未返回下载地址。',
+    }
+    return messages.get(stage, '方式二网站操作超时，请检查当前节点及远程桌面中的网页。')
+
+
 async def probe(args, directory, report, *, download=True, on_stage=None):
-    stage = on_stage or (lambda value: None)
+    def stage(value):
+        report['stage'] = value
+        if on_stage:
+            on_stage(value)
+
+    stage('starting_browser')
+    print('方式二浏览器连接：' + ('HTTP(S) 代理。' if args.proxy else '直连；如需代理，请确认任务创建时已启用。'), flush=True)
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
     pending = set()
     resolved = asyncio.Event()
+    converted = asyncio.Event()
     state = {}
     # A fresh test profile; never open the user's normal browser profile.
     with tempfile.TemporaryDirectory(prefix='yt5s-probe-', ignore_cleanup_errors=True) as profile:
@@ -146,7 +188,9 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                         raise RuntimeError('原生浏览器启动失败，请检查显示环境和浏览器安装。')
                     await asyncio.sleep(0.2)
             async with async_playwright() as driver:
-                browser = await driver.chromium.connect_over_cdp(address)
+                stage('connecting_browser')
+                browser = await driver.chromium.connect_over_cdp(address, timeout=20000)
+                page = None
                 try:
                     page = await browser.contexts[0].new_page()
 
@@ -156,18 +200,26 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                         step = 'analyze' if '/analyze/' in response.url else 'convert'
                         entry = {'step': step, 'http_status': response.status}
                         try:
-                            data = await response.json()
+                            data = await asyncio.wait_for(response.json(), timeout=15)
                             entry.update(status=data.get('status'),
                                          verification_failed='Verification failed' in str(data.get('result', '')))
                             if step == 'analyze':
                                 state['analyze_status'] = data.get('status')
-                                resolved.set()
+                                if response.status >= 400:
+                                    state['analyze_error'] = f'yt5s 解析接口返回 HTTP {response.status}，请检查节点或网站访问限制。'
+                                if entry['verification_failed']:
+                                    state['analyze_error'] = 'yt5s 网站验证未通过，请在远程桌面查看提示或更换节点。'
                             if data.get('downloadUrlX'):
                                 state['download_url'] = data['downloadUrlX']
+                                converted.set()
                         except Exception:
                             entry['json_response'] = False
+                            if step == 'analyze':
+                                state['analyze_error'] = f'yt5s 解析接口未返回有效数据（HTTP {response.status}）；请查看远程桌面或检查节点。'
                         report['responses'].append(entry)
                         print(json.dumps(entry, ensure_ascii=False), flush=True)
+                        if step == 'analyze':
+                            resolved.set()
 
                     def received(response):
                         if '/mates/en/' in response.url:
@@ -176,13 +228,20 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                             operation.add_done_callback(pending.discard)
 
                     page.on('response', received)
-                    await page.goto('https://yt5s.biz/enwr200/', wait_until='domcontentloaded', timeout=45000)
-                    await page.locator('#txt-url').fill('https://www.youtube.com/watch?v=' + args.video_id)
+                    stage('opening_site')
+                    print('正在打开 yt5s 网页，最多等待 45 秒。', flush=True)
+                    response = await page.goto('https://yt5s.biz/enwr200/', wait_until='domcontentloaded', timeout=45000)
+                    print(f'yt5s 网页已响应，HTTP {response.status if response else "未知"}。', flush=True)
+                    stage('waiting_site_form')
+                    await page.locator('#txt-url').fill('https://www.youtube.com/watch?v=' + args.video_id, timeout=30000)
+                    stage('submitting_site')
+                    await page.locator('#btn-submit').click(timeout=30000)
                     stage('waiting_verification')
-                    await page.locator('#btn-submit').click()
-                    print('等待网站验证与解析；需要时可在远程桌面中操作。', flush=True)
+                    print(f'等待网站验证与解析，最多 {args.timeout} 秒；需要时可在远程桌面中操作。', flush=True)
                     try:
-                        await asyncio.wait_for(resolved.wait(), timeout=args.timeout)
+                        await wait_for_site(resolved, args.timeout, '网站验证与解析')
+                        if state.get('analyze_error'):
+                            raise RuntimeError(state['analyze_error'])
                         if state.get('analyze_status') != 'success':
                             raise RuntimeError('网站解析失败，本次验证未得到下载选项。')
                         report['analysis_succeeded'] = True
@@ -206,11 +265,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                         else:
                             stage('converting')
                             await link.click()
-                            deadline = time.monotonic() + args.timeout
-                            while not state.get('download_url'):
-                                if time.monotonic() >= deadline:
-                                    raise RuntimeError('网站转换超时，尚未得到下载链接。')
-                                await asyncio.sleep(0.5)
+                            await wait_for_site(converted, args.timeout, '网站视频转换')
                         # No YouTube credentials or challenge tokens are exported.
                         if not download:
                             return {'id': args.video_id, 'title': title.strip() or args.video_id,
@@ -227,10 +282,21 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                         except Exception:
                             pass
                 finally:
+                    # Also capture failures before submission, such as a blocked landing page.
+                    if page is not None and not (directory / 'page.png').is_file():
+                        try:
+                            await page.screenshot(path=str(directory / 'page.png'), timeout=5000)
+                        except Exception:
+                            pass
                     for operation in list(pending):
                         operation.cancel()
                     await asyncio.gather(*list(pending), return_exceptions=True)
-                    await browser.close()
+                    try:
+                        await asyncio.wait_for(browser.close(), timeout=10)
+                    except Exception:
+                        pass  # The native process is terminated below as well.
+        except (TimeoutError, BrowserTimeoutError):
+            raise WebsiteTimeoutError(site_timeout_message(report.get('stage'), args.timeout)) from None
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -304,10 +370,29 @@ def resolve(url, config, base, directory, on_stage=None):
             if acquired:
                 args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', '360'),
                                        timeout=180, proxy=proxy, browser_executable=executable)
+                report = {'responses': []}
                 try:
                     with tempfile.TemporaryDirectory(prefix='resolve-', dir=directory) as temporary:
-                        return asyncio.run(probe(args, Path(temporary), {'responses': []},
-                                                 download=False, on_stage=on_stage))
+                        try:
+                            return asyncio.run(probe(args, Path(temporary), report,
+                                                     download=False, on_stage=on_stage))
+                        except Exception:
+                            try:
+                                screenshot = Path(temporary) / 'page.png'
+                                target = directory / 'last-failure.png'
+                                saved = screenshot.is_file()
+                                if saved:
+                                    screenshot.replace(target)
+                                    print('方式二最近失败截图已保留：' + str(target), flush=True)
+                                else:
+                                    target.unlink(missing_ok=True)
+                                (directory / 'last-failure.json').write_text(json.dumps({
+                                    'video_id': video_id, 'stage': report.get('stage'),
+                                    'screenshot_saved': saved, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                }, ensure_ascii=False), encoding='utf-8')
+                            except OSError:
+                                pass  # Diagnostics must not replace the original failure.
+                            raise
                 except RuntimeError:
                     raise
                 except Exception as error:

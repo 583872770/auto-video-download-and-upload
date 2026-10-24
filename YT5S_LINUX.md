@@ -36,6 +36,23 @@ docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 
 
 首次启动应先测试少量视频。页面会显示等待浏览器、网站验证或网站转换的阶段；网站验证无法自动完成时，在等待期间通过下面的 SSH 隧道进入远程桌面操作。
 
+方式二会记录当前浏览器使用直连还是 HTTP(S) 代理，并区分网页加载（45 秒）、等待输入框/提交（各 30 秒）、网站验证与解析（180 秒）以及视频转换（180 秒）。验证和转换等待期间每 10 秒打印已等待时长；这时尚未传输视频文件。超时提示会注明具体阶段。
+
+“保存并更新订阅”只会启用后续新建任务的 Clash 连接方式；旧任务不会因页面改成 Clash 而自动切换。已有大量排队任务时，无需重新导入清单：
+
+1. 在首页点击“停止全部下载”，等待正在下载的任务停止。
+2. 打开“代理与节点”，将“下载连接”的连接方式设为“Clash 订阅代理”。
+3. 点击“将当前连接应用到排队任务”，看到成功提示后再点击“继续下载”。
+
+应用连接只覆盖当前已有下载及导入任务的网络设置，保留原来的下载方式、画质、视频清单和任务记录；后续新建任务仍使用创建时的设置。手动代理和直连也可按此流程应用。应用操作不会恢复队列，也不会逐条改写百万条任务，设置跨重启保存；之后再次修改页面连接时，需再次点击应用按钮才能更新已有队列。Clash 任务应显示“下载代理节点”日志；正式服务中的浏览器和文件下载使用同一个解析后的代理地址。
+
+失败截图只保留最近一次，位于容器 `/app/.cache/web/yt5s/last-failure.png`，阶段信息保存在同目录的 `last-failure.json`；不会按百万条失败任务累计截图。若浏览器启动前就失败，可能无法生成截图，可查看 JSON 中的 `screenshot_saved`。在部署服务器执行（保持原项目名称）：
+
+```bash
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/last-failure.png ./yt5s-last-failure.png
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/last-failure.json ./yt5s-last-failure.json
+```
+
 后续重建和更新服务时也要同时传入这两份 Compose 文件，否则默认镜像不包含 Chromium 和虚拟显示环境。Windows 本机需安装 Chrome；Linux 不使用 Docker 时，需自行安装 Chromium 并提供 DISPLAY。
 
 ## 独立验证，不启动正式服务

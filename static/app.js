@@ -125,7 +125,7 @@ function progressLabel(task) {
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { waiting_browser: '等待方式二浏览器', waiting_verification: '方式二 · 等待网站验证', converting: '方式二 · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { waiting_browser: '等待方式二浏览器', starting_browser: '方式二 · 启动浏览器', connecting_browser: '方式二 · 连接浏览器', opening_site: '方式二 · 打开 yt5s 网页', waiting_site_form: '方式二 · 等待网页输入框', submitting_site: '方式二 · 提交视频链接', waiting_verification: '方式二 · 等待网站验证', converting: '方式二 · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -270,14 +270,25 @@ function renderClash() {
   $('#clash-subscription-info').textContent = data.subscription_saved ? `${data.subscription_host} · 更新于 ${formatDate(data.updated_at, true)}${data.notices?.length ? '\n' + data.notices.join(' · ') : ''}` : '导入订阅后即可选择节点。链接仅保存在本机，保存后不回显。';
   $('#clash-core-status').textContent = data.running ? '代理运行中' : data.installed ? '代理已停止' : '内核未安装';
   $('#proxy-mode-select').value = data.mode;
-  $('#proxy-mode-select').disabled = clashBusy || data.locked;
+  $('#proxy-mode-select').disabled = clashBusy || (data.connection_edit_locked ?? data.locked);
   $('#clash-selected').textContent = data.selected || '尚未选择节点';
-  $('#clash-connection-info').textContent = data.mode === 'clash' ? '下载使用所选节点；停止后将在下一次下载时自动启动。' : data.mode === 'direct' ? '当前下载直接连接网络。' : '当前下载使用“下载设置”中的手动代理地址。';
+  $('#clash-connection-info').textContent = (data.mode === 'clash' ? '新任务使用 Clash 所选节点。' : data.mode === 'direct' ? '新任务直接连接网络。' : '新任务使用“下载设置”中的手动代理地址。') + '已有排队任务请点击下方按钮应用当前连接。';
+  $('#clash-apply-connection').disabled = clashBusy || data.connection_apply_locked;
+  const applied = data.download_connection;
+  const appliedMode = applied?.mode === 'clash' ? 'Clash' : applied?.mode === 'manual' ? '手动代理' : '直连';
+  $('#clash-apply-note').textContent = clashBusy ? '正在处理代理操作，请稍候…'
+    : (applied ? `上次应用：${formatDate(applied.updated_at, true)} · ${appliedMode}。` : '')
+      + (data.connection_apply_reason || '应用后队列保持暂停；点击“继续下载”后生效，无需重新导入清单。');
   $('#download-proxy-note').textContent = data.mode === 'clash' ? `Clash · ${data.selected || '尚未配置'}${data.rotation?.enabled ? ` · 每 ${data.rotation.every} 个视频轮换` : ''}` : data.mode === 'direct' ? '下载连接：直连' : `下载连接：${state.config?.proxy ? '手动代理' : '直连'}`;
   $('#clash-lock-note').hidden = !data.locked;
   $('#clash-error').hidden = !data.error;
   $('#clash-error').textContent = data.error || '';
-  $('#clash-import').disabled = clashBusy || data.locked || testing;
+  const subscriptionLocked = data.subscription_locked ?? data.locked;
+  $('#clash-import').disabled = clashBusy || subscriptionLocked || testing;
+  $('#clash-subscription-note').textContent = clashBusy ? '正在处理代理操作，请稍候…'
+    : testing ? '节点正在测速，请等待测速完成后更新订阅。'
+    : subscriptionLocked ? data.subscription_lock_reason || '请先停止全部下载并等待当前任务结束，再更新订阅。'
+    : '已有订阅时留空更新原订阅。更新失败会保留原有配置和节点。';
   $('#clash-start').disabled = clashBusy || data.locked || data.running || !data.nodes.length;
   $('#clash-stop').disabled = clashBusy || data.locked || testing || !data.running;
   $('#clash-test-youtube').disabled = clashBusy || !data.running || !data.selected;
@@ -617,6 +628,10 @@ $('#proxy-mode-select').addEventListener('change', event => {
   });
 });
 $('#clash-start').addEventListener('click', () => clashAction(() => api('/api/clash/start', { method: 'POST' })));
+$('#clash-apply-connection').addEventListener('click', () => clashAction(async () => {
+  const result = await api('/api/downloads/connection', { method: 'POST' });
+  toast(result.message);
+}));
 $('#clash-stop').addEventListener('click', () => clashAction(() => api('/api/clash/stop', { method: 'POST' })));
 $('#clash-test-all').addEventListener('click', () => clashAction(() => api('/api/clash/delay', { method: 'POST', body: {} })));
 $('#clash-test-youtube').addEventListener('click', () => clashAction(async () => {

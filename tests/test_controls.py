@@ -18,6 +18,40 @@ from webapp.store import TaskStore
 
 
 class ControlContract:
+    def test_subscription_update_requires_paused_and_drained_queue_and_preserves_jobs(self):
+        from webapp.clash import ClashError
+
+        manager = self.app.extensions['clash']
+        task = self.store.create('download', {'config': {}, 'base': str(self.root),
+                                             'urls': ['https://example.test/one.mp4']})
+        url = {'url': 'https://example.test/subscription'}
+        with patch.object(manager, 'import_subscription', return_value=2) as update:
+            self.assertTrue(self.client.get('/api/clash').json['subscription_locked'])
+            self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 409)
+            self.store.claim('simulated-owner')
+            self.store.set_downloads_paused(True)
+            self.assertTrue(self.client.get('/api/clash').json['subscription_locked'])
+            self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 409)
+            update.assert_not_called()
+            self.store.stop_running_downloads(lambda owner: True)
+            state = self.client.get('/api/clash').json
+            self.assertTrue(state['locked'])  # Manual node changes remain locked.
+            self.assertFalse(state['subscription_locked'])
+            self.assertEqual(state['subscription_lock_reason'], '')
+            response = self.client.post('/api/clash/subscription', json=url, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.json)
+            update.assert_called_once_with(url['url'])
+            with patch.object(self.app.extensions['youtube_login'], 'status', return_value={'active': True}):
+                self.assertTrue(self.client.get('/api/clash').json['subscription_locked'])
+                self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 409)
+            update.assert_called_once()
+        config_before = self.config.read_bytes()
+        with patch.object(manager, 'import_subscription', side_effect=ClashError('fixture update failed')):
+            self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 502)
+        self.assertEqual(self.config.read_bytes(), config_before)
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual((self.store.get(task['id'])['status'], self.store.get(task['id'])['attempts']), ('queued', 0))
+
     def test_paused_queue_unlocks_rotation_without_losing_jobs(self):
         manager = self.app.extensions['clash']
         (manager.directory / 'nodes.yaml').write_text(

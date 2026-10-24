@@ -1,4 +1,5 @@
 """Provider selection must route real transfers without exposing login cookies."""
+import asyncio
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -9,16 +10,97 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app import create_app
 from Utils.runtime import configure_runtime
 from webapp.settings import validate_settings
-from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
+from webapp.yt5s import BrowserEnvironmentRequired, BrowserTimeoutError, WebsiteTimeoutError, probe, require_browser_environment, resolve, wait_for_site
 from web_worker import execute
 
 VIDEO = 'https://www.youtube.com/watch?v=npNnbj46_ik'
+
+
+class WebsiteWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_logs_progress_and_finishes_when_site_responds(self):
+        event = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.03, event.set)
+        with patch('builtins.print') as log:
+            await wait_for_site(event, 1, 'fixture website', interval=0.005)
+        self.assertTrue(event.is_set())
+        self.assertTrue(log.called)
+
+    async def test_silent_site_has_bounded_wait(self):
+        with patch('builtins.print') as log:
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(wait_for_site(asyncio.Event(), 0.03, 'fixture', interval=0.005), timeout=1)
+        self.assertTrue(log.called)
+
+    async def test_navigation_form_and_verification_timeouts_report_phase_and_cleanup(self):
+        for failure, expected in [('navigation', '45 秒'), ('form', '输入框'), ('verification', '验证与解析超时')]:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                args = SimpleNamespace(video_id='npNnbj46_ik', quality='360', proxy='', timeout=0.02)
+                page = MagicMock()
+                page.goto = AsyncMock(return_value=SimpleNamespace(status=200))
+                locator = MagicMock(fill=AsyncMock(), click=AsyncMock())
+                page.locator.return_value = locator
+                if failure == 'navigation':
+                    page.goto.side_effect = BrowserTimeoutError('https://example.test/?token=PRIVATE_TEST_TOKEN')
+                elif failure == 'form':
+                    locator.fill.side_effect = BrowserTimeoutError('fixture missing form')
+
+                async def screenshot(**options):
+                    Path(options['path']).write_bytes(b'fixture screenshot')
+
+                page.screenshot = AsyncMock(side_effect=screenshot)
+                context = MagicMock(new_page=AsyncMock(return_value=page))
+                browser = MagicMock(contexts=[context], close=AsyncMock())
+                driver = MagicMock()
+                driver.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+                playwright = MagicMock()
+                playwright.__aenter__ = AsyncMock(return_value=driver)
+                playwright.__aexit__ = AsyncMock(return_value=False)
+                process = MagicMock()
+                process.poll.return_value = None
+                report = {'responses': []}
+                with patch('webapp.yt5s.async_playwright', return_value=playwright), \
+                        patch('webapp.yt5s.subprocess.Popen', return_value=process), \
+                        patch('webapp.yt5s.browser_executable', return_value='/fixture/chromium'), \
+                        patch('webapp.yt5s.build_opener'), patch('builtins.print'):
+                    with self.assertRaisesRegex(RuntimeError, expected) as error:
+                        await probe(args, directory, report, download=False)
+                self.assertNotIn('PRIVATE_TEST_TOKEN', str(error.exception))
+                self.assertTrue((directory / 'page.png').is_file())
+                browser.close.assert_awaited_once()
+                process.terminate.assert_called_once()
+
+
+class WebsiteDiagnosticsTests(unittest.TestCase):
+    def test_failed_resolutions_preserve_only_latest_screenshot_and_safe_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for screenshot in (b'first screenshot', b'latest screenshot', None):
+                async def fail(args, directory, report, **kwargs):
+                    report['stage'] = 'opening_site'
+                    if screenshot is not None:
+                        (directory / 'page.png').write_bytes(screenshot)
+                    raise RuntimeError('fixture navigation timeout')
+
+                with patch('webapp.yt5s.require_browser_environment', return_value='/fixture/chromium'), \
+                        patch('webapp.yt5s.probe', side_effect=fail), patch('builtins.print'):
+                    with self.assertRaisesRegex(RuntimeError, 'fixture navigation timeout'):
+                        resolve(VIDEO, {'proxy_mode': 'direct'}, root, root)
+                report = json.loads((root / 'yt5s/last-failure.json').read_text(encoding='utf-8'))
+                self.assertEqual(report['stage'], 'opening_site')
+                self.assertEqual(report['screenshot_saved'], screenshot is not None)
+                if screenshot is not None:
+                    self.assertEqual((root / 'yt5s/last-failure.png').read_bytes(), screenshot)
+                else:
+                    self.assertFalse((root / 'yt5s/last-failure.png').exists())
+                self.assertEqual(list((root / 'yt5s').glob('resolve-*')), [])
 
 
 class Yt5sTests(unittest.TestCase):
@@ -130,6 +212,19 @@ class Yt5sTests(unittest.TestCase):
             with patch('webapp.yt5s.display_available', return_value=False):
                 with self.assertRaisesRegex(BrowserEnvironmentRequired, 'DISPLAY'):
                     require_browser_environment({}, self.root)
+
+    def test_website_timeout_still_uses_configured_retry_backoff(self):
+        from web_worker import drain
+
+        task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos'},
+                                             'base': str(self.root), 'urls': [VIDEO]})
+        self.store.update_progress(task['id'], {'stage': 'opening_site'})
+        with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=WebsiteTimeoutError('网站解析超时')):
+            drain(self.store.directory)
+        current = self.store.get(task['id'])
+        self.assertEqual((current['status'], current['attempts']), ('queued', 1))
+        self.assertEqual(current['progress']['stage'], 'retrying')
+        self.assertFalse(self.store.downloads_paused())
 
     def test_real_transfer_progress_archive_metadata_catalog_and_test_cleanup(self):
         configure_runtime()

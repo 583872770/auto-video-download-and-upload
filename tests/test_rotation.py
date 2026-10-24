@@ -121,6 +121,30 @@ class RotationTests(unittest.TestCase):
                     self.assertEqual(counts, [])
                     self.assertEqual(count, 0)
 
+    def test_queued_download_uses_current_selection_after_subscription_replaces_old_node(self):
+        import yt_dlp
+        from web_worker import execute
+
+        self.seed()
+        self.manager.config['selected'] = 'A'
+        self.manager.config['subscription_id'] = 'updated-subscription'
+        self.manager.save()
+        queued = {'directory': str(self.manager.directory), 'node': 'removed-node', 'proxy': self.manager.proxy_url,
+                  'subscription_id': 'old-subscription'}
+        payload = {'config': {'path': 'videos', 'proxy_mode': 'clash'}, 'base': str(self.root),
+                   'urls': ['http://example.test/fixture.mp4'], 'clash': queued}
+        snapshot = {**queued, 'node': 'A'}
+        for slot in (0, 1):
+            with self.subTest(slot=slot), patch.object(ClashManager, 'for_worker', return_value=self.manager), \
+                    patch.object(ClashManager, 'select') as select, \
+                    patch.object(ClashManager, 'download_snapshot', return_value=snapshot) as resolve, \
+                    patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), patch('Download.require_download_tools'):
+                execute('download', payload, store=self.store, worker_slot=slot)
+                self.assertEqual(resolve.call_args.args[0]['node'], 'A')
+                if slot:
+                    select.assert_called_once_with('A', automatic=True)
+        self.assertEqual(queued['node'], 'removed-node')  # No mass rewrite of queued snapshots.
+
     @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
     def test_real_proxy_rotation_failures_archive_skips_and_restart(self):
         requests = []

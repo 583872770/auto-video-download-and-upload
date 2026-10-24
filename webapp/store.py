@@ -287,6 +287,56 @@ class TaskStore:
             counts = self._counts(db, ['action:download', 'action:import'])
             return {'paused': self.downloads_paused(db), 'queued': counts.get('queued', 0), 'running': counts.get('running', 0)}
 
+    def apply_download_connection(self, config, clash=None):
+        """Override existing jobs at execution time without rewriting their snapshots."""
+        connection = {'proxy_mode': config.get('proxy_mode', 'manual'), 'proxy': config.get('proxy', '')}
+        if connection['proxy_mode'] == 'clash' and not clash:
+            raise ValueError('请先配置并启动 Clash 代理。')
+        with self.connect() as db:
+            if self.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
+            if not self.downloads_paused(db, lock=True):
+                raise ValueError('请先停止全部下载，再应用当前连接。')
+            counts = self._counts(db, ['action:download', 'action:import'])
+            if counts.get('running', 0):
+                raise ValueError('当前下载进程尚未停止，请稍后再应用当前连接。')
+            if not counts.get('queued', 0):
+                raise ValueError('当前没有排队的下载或导入任务。')
+            cutoff = db.execute(select(func.max(tasks.c.seq))).scalar_one() or 0
+            value = {'cutoff_seq': cutoff, 'config': connection, 'updated_at': now()}
+            if connection['proxy_mode'] == 'clash':
+                value['clash'] = clash
+            db.execute(self.db.upsert(settings, dict(key='download_connection_override',
+                value=json.dumps(value, ensure_ascii=False)), ['key']))
+        return {'mode': connection['proxy_mode'], 'updated_at': value['updated_at']}
+
+    def download_connection(self):
+        """Public summary; proxy credentials and controller paths stay private."""
+        with self.connect() as db:
+            saved = db.execute(select(settings.c.value).where(
+                settings.c.key == 'download_connection_override')).scalar_one_or_none()
+        value = json.loads(saved) if saved else None
+        return {'mode': value['config']['proxy_mode'], 'updated_at': value['updated_at']} if value else None
+
+    def effective_download_payload(self, task_id, payload):
+        if not task_id:
+            return payload
+        with self.connect() as db:
+            saved = db.execute(select(settings.c.value).where(
+                settings.c.key == 'download_connection_override')).scalar_one_or_none()
+            if not saved:
+                return payload
+            value = json.loads(saved)
+            eligible = db.execute(select(tasks.c.id).where(tasks.c.id == task_id,
+                tasks.c.seq <= value['cutoff_seq'], tasks.c.action.in_(('download', 'import')))).first()
+        if not eligible:
+            return payload
+        result = {**payload, 'config': {**payload.get('config', {}), **value['config']}}
+        result.pop('clash', None)
+        if value.get('clash'):
+            result['clash'] = value['clash']
+        return result
+
     def stop_running_downloads(self, terminate):
         """Stop only verified owners, then release their tasks under the same row lock."""
         with self.connect() as db:

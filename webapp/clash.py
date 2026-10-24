@@ -300,7 +300,7 @@ class ClashManager:
                 else:
                     self.start()
                 self.api('/proxies/' + GROUP, 'PUT', {'name': selected})
-                self.config.update(subscription_url=url, selected=selected,
+                self.config.update(subscription_url=url, selected=selected, subscription_id=secrets.token_hex(16),
                                    updated_at=datetime.now().astimezone().isoformat(timespec='seconds'))
                 rotation = self.rotation()
                 remaining = [name for name in rotation['nodes'] if name in names]
@@ -353,7 +353,8 @@ class ClashManager:
             current = self.api('/proxies/' + GROUP).get('now')
             if not current or (expected is not None and current != expected):
                 raise ClashError('代理节点已改变，请重新创建下载任务。')
-            snapshot = {'directory': str(self.directory), 'node': current, 'proxy': self.proxy_url}
+            snapshot = {'directory': str(self.directory), 'node': current, 'proxy': self.proxy_url,
+                        'subscription_id': self.config.get('subscription_id', '')}
             if self.rotation()['enabled']:
                 snapshot['rotation'] = self.rotation()
             return snapshot
@@ -392,6 +393,7 @@ class ClashManager:
                     child.stop()
                 atomic_text(destination, source.decode('utf-8'))
             child.config['rotation'] = self.rotation()
+            child.config['subscription_id'] = self.config.get('subscription_id', '')
             child.save()
             return child
 

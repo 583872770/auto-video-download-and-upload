@@ -142,9 +142,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                     return jsonify(error='请先停止全部下载并等待当前任务结束，再切换保存方式。'), 409
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 require_login_idle()
-            if store.pending() and any(key in data and data[key] != config.get(key, DEFAULTS[key])
-                                       for key in ('proxy', 'proxy_mode')):
-                return jsonify(error='请等待下载队列结束后再修改代理连接方式。'), 409
+            if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode')):
+                if store.pending(runnable=True) or store.download_queue()['running']:
+                    return jsonify(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
             config.update(data)
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
             save_settings(config_path, config)
@@ -429,13 +429,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
             if upcoming and upcoming[0].get('url'):
                 config, base = settings()
-                queued = store.get(upcoming[0]['id'], private=True)['payload']
+                queued = store.effective_download_payload(upcoming[0]['id'],
+                    store.get(upcoming[0]['id'], private=True)['payload'])
                 config = {**config, **queued.get('config', {})}
                 runtime = store.runtime()
                 if 'youtube_cookie' in runtime:
                     config['youtube_cookie'] = runtime['youtube_cookie']
                 base = Path(queued.get('base', base))
-                verify_youtube(config, base, [upcoming[0]['url']], force=True)
+                verify_youtube(config, base, [upcoming[0]['url']], queued.get('clash'), force=True)
             youtube_auth.clear_block()
             store.set_downloads_paused(False)
         return jsonify(message='已继续下载，排队任务将自动执行。', download_queue=store.download_queue())

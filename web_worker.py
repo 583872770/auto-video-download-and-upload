@@ -42,6 +42,8 @@ def worker_lock(path):
 
 
 def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
+    if store and action in ('download', 'import'):
+        payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
         return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
     from Utils.download_storage import DownloadWorkspace
@@ -133,7 +135,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             current_rotation = manager.rotation()
             if current_rotation['enabled']:
                 proxy['rotation'] = current_rotation
-            elif previous_rotation:
+            elif previous_rotation or proxy.get('subscription_id', '') != manager.config.get('subscription_id', ''):
+                # Subscription updates while paused may replace the saved node.
+                # Use the current selection without rewriting millions of tasks.
                 proxy['node'] = manager.config.get('selected') or proxy['node']
             if worker_slot:
                 manager = manager.for_worker(worker_slot)
@@ -266,7 +270,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 def drain(directory, slot=0, role='all'):
     from webapp.youtube_auth import YouTubeAuthRequired
-    from webapp.yt5s import BrowserEnvironmentRequired
+    from webapp.yt5s import BrowserEnvironmentRequired, WebsiteTimeoutError
     store = TaskStore(directory)
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
@@ -343,7 +347,7 @@ def drain(directory, slot=0, role='all'):
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = str(error) or type(error).__name__
-                    transient = any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
+                    transient = isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504'))
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)
                     if not isinstance(error, Exception):
