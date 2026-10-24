@@ -478,7 +478,8 @@ class TaskStore:
                 lease_until=None, worker_id=None))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
-            self.statistics.transition(db, row, outcome, error)
+            self.statistics.transition(db, row, outcome, error,
+                fallback_used=bool(progress.get('fallback_used') or (result or {}).get('fallback_used')))
             self.statistics.settle(db)
             if not retry:
                 generation = progress.get('rotation_id')
@@ -525,7 +526,7 @@ class TaskStore:
             return list(latest.values())
 
     def set_runtime(self, config):
-        keys = ('worker_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
+        keys = ('worker_count', 'yt5s_browser_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))

@@ -133,7 +133,7 @@ class FallbackContract:
             events.append('auth')
             return 'valid', 'Fixture verified'
 
-        def resolve(url, config, *args):
+        def resolve(url, config, *args, **kwargs):
             events.append('yt5s')
             self.assertEqual(config['download_method'], 'yt5s')
             return {'id': 'npNnbj46_ik', 'title': 'Fixture'}
@@ -224,6 +224,8 @@ class FallbackContract:
             drain(self.store.directory)
         self.assertEqual((self.store.get(task['id'])['status'], self.store.get(task['id'])['attempts']), ('queued', 0))
         self.assertTrue(self.store.downloads_paused())
+        third = self.client.get('/api/statistics').json['methods'][2]
+        self.assertEqual((third['attempted'], third['fallback_tasks'], third['unfinished'], third['failed']), (1, 1, 1, 0))
 
     def test_control_and_local_storage_errors_never_start_fallback(self):
         self.cookie()
@@ -239,13 +241,18 @@ class FallbackContract:
     def test_both_providers_fail_uses_native_error_and_redacts_fallback_reason(self):
         self.cookie()
         values = []
+        task = self.store.create('download', self.payload())
+        job = self.store.claim(self.store.owner, actions=('download',))
         with patch('webapp.youtube_auth.YouTubeAuth.require'), \
                 patch('webapp.yt5s.resolve', side_effect=RuntimeError('fixture https://example.test/?token=PRIVATE_TOKEN')), \
                 patch.object(yt_dlp.YoutubeDL, 'download', side_effect=yt_dlp.utils.DownloadError('fixture HTTP Error 503')), \
                 patch('builtins.print') as log:
             with self.assertRaisesRegex(RuntimeError, '503'):
-                execute('download', self.payload(), values.append, store=self.store)
+                execute('download', job['payload'], values.append, store=self.store, task_id=task['id'])
         self.assertNotIn('PRIVATE_TOKEN', str(values) + str(log.call_args_list))
+        self.store.finish(task['id'], error='HTTP 503', worker_id=self.store.owner)
+        third = self.client.get('/api/statistics').json['methods'][2]
+        self.assertEqual((third['attempted'], third['failed'], third['fallback_tasks']), (1, 1, 1))
 
     def test_real_fallback_transfer_bills_exact_bytes_once_and_test_mode_cleans(self):
         self.cookie()
@@ -315,6 +322,12 @@ class FallbackContract:
         self.assertFalse(list((self.store.directory / 'test-downloads').rglob('*.mp4')))
         totals = self.client.get('/api/statistics').json['summary']
         self.assertEqual((totals['file_count'], int(totals['file_bytes'])), (1, len(content)))
+        methods = self.client.get('/api/statistics').json['methods']
+        self.assertEqual(methods[0]['attempted'], 0)  # Native transfer still belongs to selected mode three.
+        third = methods[2]
+        self.assertEqual((third['attempted'], third['succeeded'], third['skipped'], third['test_succeeded'], third['fallback_tasks']), (3, 1, 1, 1, 2))
+        self.assertEqual((third['file_bytes'], third['test_file_bytes'], third['downloaded_file_bytes']),
+                         (len(content), len(content), len(content) * 2))
         self.assertTrue(all(value is None or value.startswith('bytes=0-') for value in Handler.ranges))
 
 

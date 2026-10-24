@@ -93,14 +93,14 @@ class WebsiteDiagnosticsTests(unittest.TestCase):
                         patch('webapp.yt5s.probe', side_effect=fail), patch('builtins.print'):
                     with self.assertRaisesRegex(RuntimeError, 'fixture navigation timeout'):
                         resolve(VIDEO, {'proxy_mode': 'direct'}, root, root)
-                report = json.loads((root / 'yt5s/last-failure.json').read_text(encoding='utf-8'))
+                report = json.loads((root / 'yt5s/worker-0/last-failure.json').read_text(encoding='utf-8'))
                 self.assertEqual(report['stage'], 'opening_site')
                 self.assertEqual(report['screenshot_saved'], screenshot is not None)
                 if screenshot is not None:
-                    self.assertEqual((root / 'yt5s/last-failure.png').read_bytes(), screenshot)
+                    self.assertEqual((root / 'yt5s/worker-0/last-failure.png').read_bytes(), screenshot)
                 else:
-                    self.assertFalse((root / 'yt5s/last-failure.png').exists())
-                self.assertEqual(list((root / 'yt5s').glob('resolve-*')), [])
+                    self.assertFalse((root / 'yt5s/worker-0/last-failure.png').exists())
+                self.assertEqual(list((root / 'yt5s/worker-0').glob('resolve-*')), [])
 
 
 class WebsiteResponseTests(unittest.IsolatedAsyncioTestCase):
@@ -335,8 +335,13 @@ class Yt5sTests(unittest.TestCase):
         payload = {'config': config, 'base': str(self.root), 'urls': [VIDEO]}
         with patch('webapp.yt5s.resolve', return_value=info) as resolver, \
                 patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('no cookie preflight')):
-            result = execute('download', payload, values.append, store=self.store)
+            result = execute('download', payload, values.append, store=self.store, worker_slot=2)
             resolver.assert_called_once()
+            self.assertEqual(resolver.call_args.kwargs['worker_slot'], 2)
+            capacity = resolver.call_args.kwargs['browser_capacity']
+            self.assertEqual(capacity(), 2)
+            self.store.set_runtime({'yt5s_browser_count': 3})
+            self.assertEqual(capacity(), 3)  # Existing queued snapshots use the live limit.
         self.assertFalse(result['skipped'])
         self.assertTrue(self.store.archive_has('youtube npNnbj46_ik'))
         self.assertTrue(any(row.get('downloaded_bytes', 0) > 0 for row in values))

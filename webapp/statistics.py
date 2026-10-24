@@ -70,6 +70,8 @@ def charge(size, price, unit):
 class DownloadStatistics:
     def __init__(self, store):
         self.store, self.db = store, store.db
+        from webapp.statistics_methods import MethodStatistics
+        self.methods = MethodStatistics(store)
 
     def _active(self, db):
         return db.execute(self.store._locked(select(settings.c.value).where(
@@ -105,9 +107,10 @@ class DownloadStatistics:
         elif old['status'] in OUTCOMES and old['status'] != 'running':
             changes[old['status']] = sessions.c[old['status']] - 1
         db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
+        self.methods.change(db, row, identity, 'running')
         return identity
 
-    def transition(self, db, row, status, error=None):
+    def transition(self, db, row, status, error=None, *, fallback_used=False):
         identity = json.loads(row['payload']).get('download_session_id')
         if row['action'] != 'download' or not identity:
             return
@@ -125,6 +128,7 @@ class DownloadStatistics:
             changes[status] = sessions.c[status] + 1
         if changes:
             db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
+        self.methods.change(db, row, identity, status, fallback_used=fallback_used)
 
     def settle(self, db, *, stop=False):
         identity = self._active(db)
@@ -172,6 +176,7 @@ class DownloadStatistics:
             else:
                 db.execute(sessions.update().where(sessions.c.id == session_id).values(
                     file_count=sessions.c.file_count + 1, file_bytes=sessions.c.file_bytes + size))
+            self.methods.record_file(db, task, session_id, size, test_mode)
         return True
 
     def session_rows(self, db, cursor=None, query='', limit=21):
@@ -203,13 +208,21 @@ class DownloadStatistics:
             active = db.execute(session_select().where(sessions.c.id == active_id, condition)).mappings().first() if active_id else None
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
             test_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_test_statistics_since')).scalar_one()
+            method_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_method_statistics_since')).scalar_one()
+            methods = self.methods.summary(db, {**totals, **test_summary}, query=query)
             defaults = self.defaults(db)
         return {'summary': {**with_test_sizes({**{key: int(value) for key, value in totals.items()}, **test_summary}),
                             'file_bytes_exact': str(int(totals['file_bytes'])),
                             'amount': format(amount, '.2f'), 'unpriced_bytes': unpriced_bytes},
                 'active': describe(active) if active else None,
                 'items': [describe(row) for row in rows[:20]], 'next_cursor': str(rows[19]['seq']) if len(rows) > 20 else None,
-                'pricing': defaults, 'tracking_since': since, 'test_tracking_since': test_since}
+                'pricing': defaults, 'tracking_since': since, 'test_tracking_since': test_since,
+                'methods': methods, 'method_tracking_since': method_since}
+
+    def method_summary(self, identity):
+        with self.store.connect() as db:
+            row = db.execute(session_select().where(sessions.c.id == identity)).mappings().one()
+            return self.methods.summary(db, row, identity=identity)
 
     @staticmethod
     def cursor(value):

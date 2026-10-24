@@ -372,12 +372,12 @@ def main(argv=None):
     return 0 if report['success'] else 1
 
 
-def resolve(url, config, base, directory, on_stage=None):
+def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, browser_capacity=None):
     """Resolve one video without loading or exporting any YouTube login cookie."""
     from types import SimpleNamespace
     from webapp.settings import validate_method_urls
     from webapp.store import source_identity
-    from web_worker import worker_lock
+    from webapp.browser_pool import browser_slot
 
     validate_method_urls({**config, 'download_method': 'yt5s'}, [url])
     video_id, _ = source_identity(url)
@@ -388,46 +388,46 @@ def resolve(url, config, base, directory, on_stage=None):
         if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
             raise RuntimeError('方式二暂仅支持不含账号密码的 HTTP(S) 代理，请使用 Clash HTTP 端口或直连。')
     executable = require_browser_environment(config, base)
-    # Serialize browser resolution; completed direct transfers may run in parallel.
     directory = Path(directory) / 'yt5s'
-    directory.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 600
-    while True:
-        with worker_lock(directory / 'resolver.lock') as acquired:
-            if acquired:
-                args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', '360'),
-                                       timeout=180, proxy=proxy, browser_executable=executable)
-                report = {'responses': []}
-                try:
-                    with tempfile.TemporaryDirectory(prefix='resolve-', dir=directory) as temporary:
-                        try:
-                            return asyncio.run(probe(args, Path(temporary), report,
-                                                     download=False, on_stage=on_stage))
-                        except Exception:
-                            try:
-                                screenshot = Path(temporary) / 'page.png'
-                                target = directory / 'last-failure.png'
-                                saved = screenshot.is_file()
-                                if saved:
-                                    screenshot.replace(target)
-                                    print('方式二最近失败截图已保留：' + str(target), flush=True)
-                                else:
-                                    target.unlink(missing_ok=True)
-                                (directory / 'last-failure.json').write_text(json.dumps({
-                                    'video_id': video_id, 'stage': report.get('stage'),
-                                    'responses': report.get('responses', []),
-                                    'screenshot_saved': saved, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                }, ensure_ascii=False), encoding='utf-8')
-                            except OSError:
-                                pass  # Diagnostics must not replace the original failure.
-                            raise
-                except RuntimeError:
-                    raise
-                except Exception as error:
-                    raise RuntimeError('方式二未能完成网站验证或解析（' + type(error).__name__
-                                       + '）。请检查浏览器、Linux 显示环境及当前节点；可通过远程桌面完成验证。') from None
-        if time.monotonic() >= deadline:
-            raise RuntimeError('等待方式二浏览器超时，请稍后重试。')
+    diagnostics = directory / f'worker-{worker_slot}'
+    diagnostics.mkdir(parents=True, exist_ok=True)
+
+    def waiting():
+        print('yt5s 浏览器并发已满，等待空闲名额；尚未开始网站解析。', flush=True)
         if on_stage:
             on_stage('waiting_browser')
-        time.sleep(0.5)
+
+    capacity = browser_capacity if browser_capacity is not None else config.get('yt5s_browser_count', 2)
+    with browser_slot(directory, capacity, waiting, preferred=worker_slot) as slot:
+        print(f'yt5s 下载进程 {worker_slot + 1} 使用独立浏览器，浏览器名额 {slot + 1}。', flush=True)
+        args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', '360'),
+                               timeout=180, proxy=proxy, browser_executable=executable)
+        report = {'responses': []}
+        try:
+            with tempfile.TemporaryDirectory(prefix='resolve-', dir=diagnostics) as temporary:
+                try:
+                    return asyncio.run(probe(args, Path(temporary), report,
+                                             download=False, on_stage=on_stage))
+                except Exception:
+                    try:
+                        screenshot = Path(temporary) / 'page.png'
+                        target = diagnostics / 'last-failure.png'
+                        saved = screenshot.is_file()
+                        if saved:
+                            screenshot.replace(target)
+                            print('方式二最近失败截图已保留：' + str(target), flush=True)
+                        else:
+                            target.unlink(missing_ok=True)
+                        (diagnostics / 'last-failure.json').write_text(json.dumps({
+                            'video_id': video_id, 'stage': report.get('stage'), 'worker_slot': worker_slot,
+                            'responses': report.get('responses', []),
+                            'screenshot_saved': saved, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                        }, ensure_ascii=False), encoding='utf-8')
+                    except OSError:
+                        pass  # Diagnostics must not replace the original failure.
+                    raise
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError('方式二未能完成网站验证或解析（' + type(error).__name__
+                               + '）。请检查浏览器、Linux 显示环境及当前节点；可通过远程桌面完成验证。') from None

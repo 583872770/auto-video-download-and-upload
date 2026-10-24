@@ -283,8 +283,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 progress.state.update(stage=value, speed=None, eta=None)
                                 progress.save(force=True)
 
+                            def browser_capacity():
+                                runtime = store.runtime() if store else config
+                                return int(runtime.get('yt5s_browser_count', config.get('yt5s_browser_count', 2)))
+
                             for url in addresses:
-                                info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage)
+                                info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage,
+                                               worker_slot=worker_slot, browser_capacity=browser_capacity)
                                 downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         else:
@@ -323,6 +328,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     raise
                 reason = clean_download_error(error)
                 used_fallback = True
+                if store and payload.get('_task_id'):
+                    store.statistics.methods.fallback(payload['_task_id'])
                 progress.state.update(stage='switching_provider', download_method='yt_dlp', fallback_used=True,
                                       fallback_reason=reason, speed=None, eta=None)
                 progress.save(force=True)

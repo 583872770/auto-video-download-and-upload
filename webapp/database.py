@@ -132,6 +132,16 @@ test_totals = Table('download_test_totals', metadata,
     Column('test_file_count', BigInteger, nullable=False, server_default='0'),
     Column('test_file_bytes', BigInteger, nullable=False, server_default='0'))
 
+method_totals = Table('download_method_totals', metadata,
+    Column('session_id', String(32), primary_key=True), Column('method', String(32), primary_key=True),
+    *(Column(name, BigInteger, nullable=False, server_default='0') for name in
+      ('attempted', 'running', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'file_count', 'file_bytes',
+       'test_file_count', 'test_file_bytes', 'fallback_tasks')))
+method_tasks = Table('download_method_tasks', metadata,
+    Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
+    Column('method', String(32), nullable=False), Column('status', String(24), nullable=False),
+    Column('fallback_used', Integer, nullable=False, server_default='0'))
+
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;
     # the NO PAD binary collation also preserves distinct trailing characters.
@@ -293,6 +303,8 @@ class Database:
             self.ensure(db, settings, {'key': 'download_statistics_since',
                                       'value': datetime.now().astimezone().isoformat(timespec='seconds')})
             self.ensure(db, settings, {'key': 'download_test_statistics_since',
+                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
+            self.ensure(db, settings, {'key': 'download_method_statistics_since',
                                       'value': datetime.now().astimezone().isoformat(timespec='seconds')})
         if old:
             # One-time upgrade only; regular requests never enumerate task history.

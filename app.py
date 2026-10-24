@@ -152,7 +152,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             sync_runtime(config, config_path.parent)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 youtube_auth.invalidate()
-        return jsonify(message='配置已保存，保存方式对尚未开始的下载任务生效，其余设置对新任务生效。')
+        return jsonify(message='配置已保存，浏览器并发上限对等待中的任务生效；保存方式对尚未开始的下载生效，下载方式等设置对新任务生效。')
 
     @app.get('/api/status')
     def status():
@@ -182,7 +182,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                    'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
                    'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
         return jsonify(tools=tools, accounts=accounts, python=sys.version.split()[0], database=store.db.engine.dialect.name,
-                       workers=store.workers(), worker_count=config.get('worker_count', 1), download_queue=store.download_queue(),
+                       workers=store.workers(), worker_count=config.get('worker_count', 1),
+                       yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=store.download_queue(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
                        download_method=config.get('download_method', 'yt_dlp'),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')

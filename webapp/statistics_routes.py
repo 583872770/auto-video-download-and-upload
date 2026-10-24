@@ -75,8 +75,27 @@ def register_statistics(app, store):
 
     @app.get('/api/statistics/sessions/<identity>', endpoint='statistics_details')
     def details(identity):
-        return jsonify(session=session(identity), **statistics.details(identity,
+        return jsonify(session=session(identity), methods=statistics.method_summary(identity), **statistics.details(identity,
             kind=request.args.get('kind', 'files'), cursor=request.args.get('cursor')))
+
+    def methods_export(rows, filename):
+        buffer = StringIO(newline='')
+        writer = csv.writer(buffer)
+        writer.writerow(['下载方式', '参与任务', '成功任务(含测试)', '失败任务', '测试成功', '跳过任务', '未完成',
+                         '成功率(%)', '交付视频数', '交付精确字节数(计费)', '测试视频数', '测试精确字节数(不计费)',
+                         '全部完成视频数', '全部完成精确字节数', '自动切换任务数'])
+        for row in rows:
+            writer.writerow([csv_cell(value) for value in [row['label'], row['attempted'],
+                row['succeeded'] + row['test_succeeded'], row['failed'], row['test_succeeded'], row['skipped'],
+                row['unfinished'], row['success_rate'], row['file_count'], row['file_bytes_exact'], row['test_file_count'],
+                row['test_file_bytes_exact'], row['downloaded_file_count'], row['downloaded_file_bytes_exact'], row['fallback_tasks']]])
+        return Response('\ufeff' + buffer.getvalue(), mimetype='text/csv', headers={
+            'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-store'})
+
+    @app.get('/api/statistics/methods/export', endpoint='statistics_methods_export')
+    def all_methods_export():
+        data = statistics.overview(query=request.args.get('q', '')[:200])
+        return methods_export(data['methods'], 'download-methods.csv')
 
     @app.put('/api/statistics/sessions/<identity>', endpoint='statistics_update')
     def update(identity):
@@ -87,6 +106,8 @@ def register_statistics(app, store):
     def export(identity):
         current = session(identity)
         kind = request.args.get('kind', 'files')
+        if kind == 'methods':
+            return methods_export(statistics.method_summary(identity), f'download-{identity[:12]}-methods.csv')
         if kind not in ('files', 'test_files', 'failed', 'tasks'):
             raise ValueError('导出类型无效。')
         # Fix the upper bound at request time, so an active session's CSV is finite.

@@ -16,7 +16,11 @@ yt5s 使用设置中的 360p / 720p；切换后沿用方式一的 `download_form
 
 ## yt5s 运行环境与验证结果
 
-方式二使用服务器上的原生 Chromium、Xvfb 虚拟显示、noVNC 网页远程桌面。服务器不需要实体显示器。解析成功后复用现有下载进度、节点代理、去重、保存方式和素材库逻辑。浏览器解析限制为一个，已经取得链接的文件传输可以并行。
+方式二使用服务器上的原生 Chromium、Xvfb 虚拟显示、noVNC 网页远程桌面。服务器不需要实体显示器。解析成功后复用现有下载进度、节点代理、去重、保存方式和素材库逻辑。方式二、三中的每个下载进程独立启动浏览器，使用独立临时配置目录、调试端口和该进程的代理，退出后清理；各浏览器不共享 YouTube Cookie。
+
+在“下载设置 → 下载队列与存储”设置“浏览器并发数（方式二、三）”，默认 2，范围 1–16，建议从 2～3 开始。它与“并行下载进程”分别控制：例如下载进程 10、浏览器并发 2，可同时有 2 个任务验证和解析，剩余需要解析的任务等待浏览器名额；取得下载地址后释放名额，文件传输继续并行，最多仍是 10 个下载任务。方式一以及方式三切换后的 yt-dlp 不占用浏览器名额。浏览器并发大于下载进程数时，实际解析并发仍受下载进程数限制。
+
+浏览器并发保存后对已排队和正在等待名额的任务生效，无需重新导入清单；降低时等待现有浏览器完成，之后按新上限补位，不会强制中断解析。各进程通过系统文件锁竞争名额，暂停或进程意外退出后锁自动释放。该机制适用于一个 app 容器内的多个下载进程，部署时继续保留单 app 容器。配置文件对应字段为 `yt5s_browser_count: 2`，旧配置未填写时自动使用默认值。
 
 目前的实际结果：在 Windows 本机，Playwright 直接启动的 Chrome 出现验证失败；改为原生启动 Chrome 后再通过本地调试连接操作，连续三次成功解析同一个公开视频，并通过网站的 360p 链接完整下载了 25,861,548 字节。FFprobe 确认视频为 H.264、音频为 AAC、时长约 623 秒。这是小样本成功，不能推断 Linux、其他网络出口或长期批量任务一定成功。
 
@@ -62,11 +66,11 @@ docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 
 
 应用连接只覆盖当前已有下载及导入任务的网络设置，保留原来的下载方式、画质、视频清单和任务记录；后续新建任务仍使用创建时的设置。手动代理和直连也可按此流程应用。应用操作不会恢复队列，也不会逐条改写百万条任务，设置跨重启保存；之后再次修改页面连接时，需再次点击应用按钮才能更新已有队列。Clash 任务应显示“下载代理节点”日志；正式服务中的浏览器和文件下载使用同一个解析后的代理地址。
 
-失败截图只保留最近一次，位于容器 `/app/.cache/web/yt5s/last-failure.png`，阶段及接口状态信息保存在同目录的 `last-failure.json`；不会按百万条失败任务累计截图。若浏览器启动前就失败，可能无法生成截图，可查看 JSON 中的 `screenshot_saved`。在部署服务器执行（保持原项目名称）：
+失败截图按下载进程各保留最近一次，首个下载进程位于容器 `/app/.cache/web/yt5s/worker-0/last-failure.png`，第二个位于 `worker-1`，以此类推；阶段及接口状态信息保存在各自目录的 `last-failure.json`。不同进程不会相互覆盖，也不会按百万条失败任务累计截图。若浏览器启动前就失败，可能无法生成截图，可查看 JSON 中的 `screenshot_saved`。在部署服务器执行（保持原项目名称，其他进程替换 worker 编号）：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/last-failure.png ./yt5s-last-failure.png
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/last-failure.json ./yt5s-last-failure.json
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.png ./yt5s-worker-0-last-failure.png
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.json ./yt5s-worker-0-last-failure.json
 ```
 
 后续重建和更新服务时也要同时传入这两份 Compose 文件，否则默认镜像不包含 Chromium 和虚拟显示环境。Windows 本机需安装 Chrome；Linux 不使用 Docker 时，需自行安装 Chromium 并提供 DISPLAY。

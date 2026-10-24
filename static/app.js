@@ -127,7 +127,7 @@ function progressLabel(task) {
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { checking_environment: '方式三 · 检查下载环境', switching_provider: '方式三 · 正在切换到 yt-dlp', waiting_browser: 'yt5s · 等待浏览器', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_environment: '方式三 · 检查下载环境', switching_provider: '方式三 · 正在切换到 yt-dlp', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -365,10 +365,11 @@ function renderDownloadMethod() {
   $('#download-method').disabled = downloadMethodBusy || !state.config;
   const tools = state.status?.tools;
   const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
+  const browsers = `独立浏览器并发上限 ${state.config?.yt5s_browser_count ?? 2}，整体下载进程 ${state.config?.worker_count ?? 1}。`;
   $('#download-method-note').textContent = method === 'yt5s_fallback'
-    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请加载 compose.yt5s.yaml 后重新构建。' : ''}切换仅影响新任务。`
+    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。${browsers}开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请加载 compose.yt5s.yaml 后重新构建。' : ''}切换仅影响新任务。`
     : method === 'yt5s'
-    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${missing ? '当前环境缺少浏览器或显示环境，请同时加载主编排与 compose.yt5s.yaml，重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
+    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${browsers}${missing ? '当前环境缺少浏览器或显示环境，请同时加载主编排与 compose.yt5s.yaml，重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
     : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
 }
 $('#download-method').addEventListener('change', async event => {
@@ -670,12 +671,12 @@ $('#settings-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
     const data = Object.fromEntries(new FormData(event.target));
-    await api('/api/config', { method: 'PUT', body: data });
+    const result = await api('/api/config', { method: 'PUT', body: data });
     fillConfig((await api('/api/config')).config);
     $('#download-urls').value = inputAsIds(state.config.url);
     updateInputCount();
     await refresh();
-    toast('设置已保存，后续任务将使用新的配置。');
+    toast(result.message);
   });
 });
 

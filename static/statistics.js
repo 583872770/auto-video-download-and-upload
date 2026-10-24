@@ -18,6 +18,10 @@
     if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value ?? '';
   });
 
+  function renderMethods(target, rows) {
+    $(target).innerHTML = (rows || []).map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${row.method === 'yt5s_fallback' ? '切换后仍计入方式三' : row.method === 'unknown' ? '升级前未记录下载方式' : '按任务保存的方式归类'}</small></td><td><b>${integer(row.attempted)}</b><small>进行中 ${integer(row.running)}</small></td><td><b>${integer(successes(row))} / ${integer(row.failed)}</b><small>含测试成功 ${integer(row.test_succeeded)} · 成功率 ${row.success_rate === null ? '—' : `${row.success_rate}%`}</small></td><td>${integer(row.skipped)} / ${integer(row.unfinished)}</td><td><b>${gb(row.file_bytes)}</b><small>${integer(row.file_count)} 个视频 · ${integer(row.file_bytes_exact)} 字节</small></td><td><b>${gb(row.test_file_bytes)}</b><small>${integer(row.test_file_count)} 个视频 · ${integer(row.test_file_bytes_exact)} 字节 · 不计费</small></td><td><b>${gb(row.downloaded_file_bytes)}</b><small>${integer(row.downloaded_file_count)} 个视频 · ${integer(row.downloaded_file_bytes_exact)} 字节</small></td><td>${row.method === 'yt5s_fallback' ? integer(row.fallback_tasks) : '—'}</td></tr>`).join('');
+  }
+
   function renderOverview(data) {
     const total = data.summary;
     $('#statistics-totals').innerHTML = card('累计计费视频大小', gb(total.file_bytes), `${integer(total.file_bytes_exact)} 字节 · 精确大小累计`)
@@ -27,6 +31,9 @@
       + card('累计测试下载大小', gb(total.test_file_bytes), `${integer(total.test_file_count)} 个视频 · ${integer(total.test_file_bytes_exact)} 字节 · 已删除，不计费`)
       + card('累计完成视频大小', gb(total.downloaded_file_bytes), `交付 + 测试，共 ${integer(total.downloaded_file_count)} 个视频 · ${integer(total.downloaded_file_bytes_exact)} 字节`);
     $('#statistics-summary-export').href = `/api/statistics/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
+    $('#statistics-methods-export').href = `/api/statistics/methods/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
+    renderMethods('#statistics-methods', data.methods);
+    $('#statistics-methods-since').textContent = `下载方式统计起始于 ${formatDate(data.method_tracking_since, true)}。按任务保存的方式分类；方式三切换后仍计入方式三，自动切换按任务去重。旧记录显示为历史未分类。成功率 = 成功任务（含测试）÷ 成功与失败任务之和。`;
     $('#statistics-since').textContent = `计费大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。历史任务未补算大小；金额按精确字节计算，按会话四舍五入到分。`;
     if (!stats.pricingDirty) fill($('#statistics-pricing-form'), data.pricing);
     const active = data.active;
@@ -54,6 +61,8 @@
       + card('本次测试下载大小', gb(item.test_file_bytes), `${integer(item.test_file_count)} 个视频 · ${integer(item.test_file_bytes_exact)} 字节 · 已删除，不计费`)
       + card('本次完成视频大小', gb(item.downloaded_file_bytes), `交付 + 测试，共 ${integer(item.downloaded_file_count)} 个视频 · ${integer(item.downloaded_file_bytes_exact)} 字节`);
     $('#statistics-exact-bytes').textContent = `计费公式：${integer(item.file_bytes_exact)} ÷ ${item.unit === 'GB' ? '1,000,000,000' : '1,073,741,824'} × ${item.price} = ${item.amount} 元。成功视频按成品文件计数，播放列表中的已完成文件也会保留登记。`;
+    renderMethods('#statistics-detail-methods', data.methods);
+    $('#statistics-detail-methods-export').href = `/api/statistics/sessions/${item.id}/export?kind=methods`;
     if (!stats.dirty) fill($('#statistics-session-form'), item);
     const files = ['files', 'test_files'].includes(stats.kind);
     const testing = stats.kind === 'test_files';
