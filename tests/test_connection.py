@@ -1,4 +1,4 @@
-"""Apply connection changes to large paused queues without rewriting jobs."""
+﻿"""Apply connection changes to large paused queues without rewriting jobs."""
 from copy import deepcopy
 from io import BytesIO
 import unittest
@@ -179,7 +179,7 @@ class ConnectionContract:
             with self.subTest(slot=slot), patch('webapp.clash.ClashManager.for_worker', return_value=manager), \
                     patch('webapp.clash.ClashManager.select'), \
                     patch('webapp.clash.ClashManager.download_snapshot', return_value=resolved), \
-                    patch('Download.require_download_tools'), \
+                    patch('webapp.downloader.require_download_tools'), \
                     patch('webapp.yt5s.resolve', side_effect=RuntimeError('stop at browser fixture')) as browser, \
                     patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('method two uses no cookie')):
                 with self.assertRaisesRegex(RuntimeError, 'stop at browser fixture'):
@@ -197,3 +197,5 @@ class SQLiteConnectionTests(ConnectionContract, unittest.TestCase):
 
 class MySQLConnectionTests(MySQLFixture, ConnectionContract, unittest.TestCase):
     pass
+
+

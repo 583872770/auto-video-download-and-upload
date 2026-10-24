@@ -1,4 +1,4 @@
-"""Disposable downloads must never delete or archive permanent media."""
+﻿"""Disposable downloads must never delete or archive permanent media."""
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import http.server
@@ -73,7 +73,7 @@ class StorageContract:
 
         progress = []
         with patch('webapp.youtube_auth.YouTubeAuth.require'), patch.object(yt_dlp.YoutubeDL, 'download', download), \
-             patch('Download.require_download_tools'):
+             patch('webapp.downloader.require_download_tools'):
             result = execute('download', old, progress.append, store=self.store, task_id=task['id'])
         self.assertTrue(result['test_mode'])
         self.assertTrue(result['files_deleted'])
@@ -170,10 +170,6 @@ class SQLiteStorageTests(StorageContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
 
-class PostgreSQLStorageTests(StorageContract, test_scale.PostgreSQLFixture, unittest.TestCase):
-    pass
-
-
 class WorkspaceTests(unittest.TestCase):
     def test_invalid_task_id_and_symlink_cannot_select_a_deletion_target(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -205,3 +201,5 @@ class WorkspaceTests(unittest.TestCase):
                  patch.object(DownloadWorkspace, 'cleanup', side_effect=PermissionError('fixture file in use')):
                 with self.assertRaises(PermissionError):
                     execute('download', payload)
+
+

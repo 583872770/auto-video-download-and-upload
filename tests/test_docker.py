@@ -1,4 +1,4 @@
-"""Container bootstrap must preserve credentials and persistent user settings."""
+﻿"""Container bootstrap must preserve credentials and persistent user settings."""
 import importlib.util
 import hashlib
 from http.client import RemoteDisconnected
@@ -114,3 +114,4 @@ class DockerBootstrapTests(unittest.TestCase):
         worker.kill.assert_called_once()
         media.kill.assert_called_once()
         proxy.kill.assert_not_called()
+

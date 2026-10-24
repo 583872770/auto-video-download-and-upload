@@ -174,8 +174,7 @@ class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
 
 
 class MySQLControlTests(MySQLFixture, test_controls.ControlContract, unittest.TestCase):
-    test_two_real_download_workers_stop_and_resume_partial_files = (
-        test_controls.PostgreSQLControlTests.test_two_real_download_workers_stop_and_resume_partial_files)
+    pass
 
 
 class MySQLStorageTests(MySQLFixture, StorageContract, unittest.TestCase):
@@ -248,38 +247,6 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
             migrate(self.store.db.url, url, self.root / 'target', activate=True)
         self.assertEqual(target.counts()['total'], 1)
         self.assertFalse((self.root / 'target/database.json').exists())
-
-    def test_postgresql_to_mysql_preserves_queue_and_sequence(self):
-        from scripts.migrate_mysql import migrate
-        from webapp.store import TaskStore
-        from sqlalchemy.engine import URL
-        connection = Path(__file__).resolve().parents[1] / '.cache/postgres/connection.json'
-        if not connection.is_file():
-            self.skipTest('Local PostgreSQL unavailable for cross-database migration test')
-        config = json.loads(connection.read_text(encoding='utf-8'))
-        pg_url = URL.create('postgresql+psycopg', username=config['user'], password=config['password'],
-                            host='127.0.0.1', port=config['port'], database='postgres')
-        admin = create_engine(pg_url, isolation_level='AUTOCOMMIT', poolclass=NullPool, hide_parameters=True)
-        self.addCleanup(admin.dispose)
-        name = 'test_mysql_migration_' + uuid.uuid4().hex[:12]
-        with admin.connect() as db:
-            db.exec_driver_sql(f'CREATE DATABASE "{name}"')
-        def cleanup():
-            with admin.connect() as db:
-                db.exec_driver_sql(f'DROP DATABASE "{name}" WITH (FORCE)')
-        self.addCleanup(cleanup)
-        pg_source = TaskStore(self.root / 'pg-source', pg_url.set(database=name).render_as_string(hide_password=False))
-        records = pg_source.create_batch([{'config': {}, 'base': str(self.root),
-                                          'urls': [f'https://youtu.be/{i:011d}']} for i in range(3)])
-        pg_source.set_downloads_paused(True)
-        url = self.empty_target()
-        migrate(pg_source.db.url, url, self.root / 'pg-source', activate=True)
-        restored = TaskStore(self.root / 'pg-source')
-        self.assertTrue(restored.db.mysql)
-        self.assertEqual([row['id'] for row in restored.page(order='asc')['items']], [row['id'] for row in records])
-        added = restored.create('check', {'config': {}, 'base': str(self.root)})
-        self.assertGreater(added['seq'], records[-1]['seq'])
-        self.assertEqual(pg_source.counts()['total'], 3)
 
     def test_sqlite_to_mysql_keeps_progress_media_and_existing_log_files(self):
         from scripts.migrate_mysql import migrate

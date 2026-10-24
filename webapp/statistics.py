@@ -1,4 +1,4 @@
-"""Transactional session totals and a ledger of completed video files."""
+﻿"""Transactional session totals and a ledger of completed video files."""
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
@@ -268,3 +268,4 @@ class DownloadStatistics:
         with self.store.connect() as db:
             db.execute(self.db.upsert(settings, {'key': 'download_billing_defaults', 'value': json.dumps(values)}, ['key']))
         return values
+

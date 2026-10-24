@@ -1,4 +1,4 @@
-"""Web boundaries, durable jobs, and a real local HTTP background download."""
+﻿"""Web boundaries, durable jobs, and a real local HTTP background download."""
 import functools
 import http.server
 import io
@@ -35,7 +35,7 @@ class WebTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = self.root / 'config.yaml'
-        self.config.write_text('path: videos\nplatforms: [douyin, kuaishou]\ntid: 201\n', encoding='utf-8')
+        self.config.write_text('path: videos\nworker_count: 1\n', encoding='utf-8')
         self.app = create_app(self.config, self.root / 'state', start_worker=False)
         self.app.testing = True
         self.client = self.app.test_client()
@@ -67,14 +67,13 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/', base_url='http://untrusted.example').status_code, 400)
         self.assertEqual(self.client.get('/media/covers/..%5cconfig.yaml').status_code, 404)
 
-    def test_settings_roundtrip_preserves_cli_fields_and_invalid_write_is_atomic(self):
-        response = self.client.put('/api/config', json={'time_list': [21, 8, 8], 'douyin_tags': ['游戏']}, headers=self.headers)
+    def test_settings_roundtrip_and_invalid_write_is_atomic(self):
+        response = self.client.put('/api/config', json={'worker_count': 2}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         saved = yaml.safe_load(self.config.read_text(encoding='utf-8'))
-        self.assertEqual(saved['tid'], 201)
-        self.assertEqual(saved['time_list'], [8, 21])
+        self.assertEqual(saved['worker_count'], 2)
         before = self.config.read_bytes()
-        for invalid in ({'segment_seconds': -1}, {'time_list': [True]}, {'douyin_tags': 'bad'}, {'path': ''}, {'unknown': 1}):
+        for invalid in ({'worker_count': 0}, {'download_method': 'invalid'}, {'path': ''}, {'unknown': 1}):
             response = self.client.put('/api/config', json=invalid, headers=self.headers)
             self.assertEqual(response.status_code, 400, invalid)
             self.assertEqual(self.config.read_bytes(), before)
@@ -85,8 +84,6 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.post_task('login', platforms=['xigua']).status_code, 400)
         self.assertEqual(self.post_task('login', platforms=['douyin', 'kuaishou']).status_code, 400)
         self.assertEqual(self.post_task('download', urls='file:///private').status_code, 400)
-        with patch('app.shutil.which', return_value=None):
-            self.assertEqual(self.post_task('prepare', platforms=['douyin']).status_code, 400)
         self.assertEqual(len(self.store.list()), 0)
 
     def test_config_snapshot_does_not_change_with_settings(self):
@@ -99,8 +96,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/tasks/no-such-task/logs').status_code, 404)
 
     def test_download_scope_hides_unrelated_history_and_counts(self):
-        payload = {'config': {}, 'base': str(self.root), 'platforms': ['douyin']}
-        self.store.create('publish', payload)
+        payload = {'config': {}, 'base': str(self.root)}
+        self.store.create('legacy', payload)
         download = self.post_task('download', urls='https://example.com/video.mp4').json
         self.post_task('check', scope='download')
         response = self.client.get('/api/tasks?scope=download').json
@@ -109,15 +106,14 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/tasks').json['counts']['total'], 3)
         self.assertIn(download['id'], {task['id'] for task in response['items']})
 
-    def test_hidden_publishing_settings_do_not_block_downloads_or_get_rewritten(self):
+    def test_settings_save_keeps_only_download_fields(self):
         original = yaml.safe_load(self.config.read_text())
-        original.update(time_list='not-used', douyin_visibility='not-used', segment_seconds=-1)
+        original['legacy_publish_field'] = 'removed'
         self.config.write_text(yaml.safe_dump(original), encoding='utf-8')
         response = self.client.put('/api/config', json={'dir': 'youtube'}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         saved = yaml.safe_load(self.config.read_text())
-        self.assertEqual(saved['time_list'], 'not-used')
-        self.assertEqual(saved['segment_seconds'], -1)
+        self.assertNotIn('legacy_publish_field', saved)
         self.assertEqual(self.post_task('download', urls='https://example.com/video.mp4').status_code, 202)
         self.assertEqual(self.post_task('check', scope='download').status_code, 202)
 
@@ -180,21 +176,17 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.client.get('/media/videos/' + target).status_code, 404)
 
     def test_youtube_merge_requires_ffmpeg_but_direct_file_download_does_not(self):
-        from Download import build_ydl_options, require_download_tools
+        from webapp.downloader import build_ydl_options, require_download_tools
         options = build_ydl_options({}, self.root)
-        with patch('Download.shutil.which', return_value=None):
+        with patch('webapp.downloader.shutil.which', return_value=None):
             with self.assertRaisesRegex(RuntimeError, 'FFmpeg'):
                 require_download_tools(['https://youtu.be/abcdefghijk'], options)
             require_download_tools(['https://example.com/video.mp4'], options)
             require_download_tools(['https://www.youtube.com/watch?v=abcdefghijk'], {'format': 'best'})
 
     def test_saved_account_state_does_not_expose_credentials(self):
-        cookies = self.root / 'Cookies'
-        cookies.mkdir()
-        (cookies / 'douyin.json').write_text(json.dumps({'cookies': [{'value': 'DO_NOT_EXPOSE'}], 'origins': []}))
         response = self.client.get('/api/status')
-        self.assertTrue(response.json['accounts']['douyin']['saved'])
-        self.assertNotIn('DO_NOT_EXPOSE', response.text)
+        self.assertEqual(response.json['accounts'], {})
 
     def upload_cookie(self, content, filename='cookies.txt', headers=None):
         response = self.client.post('/api/youtube/cookie', data={'cookie': (io.BytesIO(content), filename)},
@@ -218,7 +210,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], 'Cookies/youtube.txt')
         with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={'state': 'valid'}):
             task = self.post_task('download', urls='https://www.youtube.com/watch?v=example').json
-        from Download import build_ydl_options
+        from webapp.downloader import build_ydl_options
         payload = self.store.get(task['id'], private=True)['payload']
         options = build_ydl_options(payload['config'], Path(payload['base']))
         self.assertEqual(options['cookiefile'], str(target))
@@ -324,3 +316,4 @@ class WebTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

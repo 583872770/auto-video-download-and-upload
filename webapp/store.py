@@ -1,4 +1,4 @@
-"""Indexed, paginated task store with transactional counters and leased claims."""
+﻿"""Indexed, paginated task store with transactional counters and leased claims."""
 import base64
 import codecs
 from collections import Counter
@@ -57,7 +57,7 @@ class TaskStore:
         task['progress'] = json.loads(task['progress']) if task.get('progress') else None
         url = task.get('url') or (payload.get('urls') or [None])[0]
         task.update(batch_id=task.get('batch_id') or payload.get('batch_id'), url=url,
-                    video_id=task.get('video_id') or source_identity(url)[0], platforms=payload.get('platforms', []))
+                    video_id=task.get('video_id') or source_identity(url)[0])
         if private:
             snapshot_id = payload.pop('snapshot_id', None)
             if snapshot_id:
@@ -67,7 +67,6 @@ class TaskStore:
                 else:
                     saved = db.execute(select(snapshots.c.payload).where(snapshots.c.id == snapshot_id)).scalar_one()
                 payload = {**json.loads(saved), **payload}
-            task['platforms'] = payload.get('platforms', [])
             task['payload'] = payload
         return task
 
@@ -202,8 +201,6 @@ class TaskStore:
             # with parallel downloads. Sequence breaks equal-second time ties.
             finished = tasks.c.finished_at
             time_order = finished.asc() if order == 'asc' else finished.desc()
-            if self.db.postgres:
-                time_order = time_order.nulls_first() if order == 'asc' else time_order.nulls_last()
             ordering = [time_order, tasks.c.seq.asc() if order == 'asc' else tasks.c.seq.desc()]
             if cursor:
                 try:
@@ -271,7 +268,7 @@ class TaskStore:
                                 ['action:' + action for action in actions] if actions else None)
 
     def pending(self, *, runnable=False):
-        actions = ('check', 'index', 'preview', 'prepare', 'publish', 'login') if runnable and self.downloads_paused() else None
+        actions = ('check', 'index') if runnable and self.downloads_paused() else None
         values = self.counts(actions=actions)
         return bool(values.get('queued', 0) + values.get('running', 0))
 
@@ -540,7 +537,7 @@ class TaskStore:
                 self._transition(db, row, status)
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,
                     available_at=time.time() + 2 if retry else 0, finished_at=None if retry else now(),
-                    error='执行进程已退出，等待恢复。' if retry else '执行进程已退出；发布任务请先核对平台作品列表。'))
+                    error='执行进程已退出，等待恢复。' if retry else '执行进程已退出。'))
                 self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
                 if not retry:
                     db.execute(reservations.delete().where(reservations.c.task_id == row['id']))
@@ -628,3 +625,4 @@ class TaskStore:
             text = decoder.decode(chunk, final=False)
             pending, _ = decoder.getstate()
             return {'text': text, 'offset': stream.tell() - len(pending)}
+

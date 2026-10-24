@@ -1,4 +1,4 @@
-"""Install a pinned official Linux Mihomo release, checking the asset SHA256."""
+﻿"""Install a pinned official Linux Mihomo release, checking the asset SHA256."""
 import gzip
 import hashlib
 from http.client import HTTPException
@@ -70,3 +70,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

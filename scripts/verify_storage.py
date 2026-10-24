@@ -1,4 +1,4 @@
-"""Exercise storage selection and an actual disposable local download in the UI."""
+﻿"""Exercise storage selection and an actual disposable local download in the UI."""
 import json
 from pathlib import Path
 import subprocess
@@ -14,7 +14,7 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_web import QuietHandler
-from Uploaders.browser import browser_options
+from webapp.browser import browser_options
 from Utils.runtime import ROOT
 
 
@@ -95,3 +95,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

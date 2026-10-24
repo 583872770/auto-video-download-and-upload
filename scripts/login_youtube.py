@@ -1,4 +1,4 @@
-"""Let the user sign in normally, then save this independent YouTube session."""
+﻿"""Let the user sign in normally, then save this independent YouTube session."""
 import argparse
 import asyncio
 from pathlib import Path
@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.async_api import async_playwright, Error as BrowserError, TimeoutError as BrowserTimeoutError
-from Uploaders.browser import browser_session
+from webapp.browser import browser_session
 from Utils.config import DEFAULT_CONFIG, load_config
 from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import save_youtube_cookies
@@ -87,3 +87,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

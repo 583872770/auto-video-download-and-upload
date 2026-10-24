@@ -1,4 +1,4 @@
-"""Flask web console. Run `python app.py`, then open http://127.0.0.1:5000."""
+﻿"""Flask web console. Run `python app.py`, then open http://127.0.0.1:5000."""
 import argparse
 import importlib.util
 import json
@@ -21,7 +21,7 @@ from Utils.config import DEFAULT_CONFIG, load_config, resolve_path, video_direct
 from Utils.paths import io_path
 from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
-from main import VIDEO_SUFFIXES
+from webapp.media import VIDEO_SUFFIXES
 from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, save_settings, urls_from, validate_settings, validate_method_urls
 from webapp.catalog import MediaCatalog
 from webapp.tasks import TaskRunner, TaskStore
@@ -31,8 +31,7 @@ from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
 
-WEB_PLATFORMS = ('douyin', 'kuaishou')
-ACTIONS = ('download', 'preview', 'prepare', 'publish', 'login', 'check')
+ACTIONS = ('download', 'check')
 
 
 def create_app(config_path=None, state_dir=None, *, start_worker=True):
@@ -162,17 +161,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     @app.get('/api/status')
     def status():
         config, base = settings()
-        accounts = {}
-        for platform in WEB_PLATFORMS:
-            path = resolve_path(base, config.get(f'{platform}_cookie', f'Cookies/{platform}.json'))
-            valid = False
-            if path.is_file():
-                try:
-                    state = json.loads(path.read_text(encoding='utf-8'))
-                    valid = isinstance(state, dict) and isinstance(state.get('cookies'), list) and bool(state['cookies']) and isinstance(state.get('origins'), list)
-                except (ValueError, OSError):
-                    pass
-            accounts[platform] = {'saved': valid, 'visibility': config.get(f'{platform}_visibility', 'public')}
         tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'node', 'deno')}
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
         from webapp.yt5s import browser_executable, display_available
@@ -186,7 +174,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
                    'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
                    'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
-        return jsonify(tools=tools, accounts=accounts, python=sys.version.split()[0], database=store.db.engine.dialect.name,
+        return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=store.download_queue(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
@@ -513,22 +501,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         action = 'download' if batch else data.get('action')
         if action not in ACTIONS:
             raise ValueError('不支持的任务类型。')
-        if action == 'publish' and data.get('confirmed') is not True:
-            raise ValueError('发布会实际提交作品，请先确认。')
         config, base = settings()
         # Fill defaults in the snapshot only; opening the web app never rewrites YAML.
         config = {**DEFAULTS, **config}
         validate_settings(config, download_only=action == 'download' or (action == 'check' and data.get('scope') == 'download'))
-        platforms = data.get('platforms', config['platforms']) if action in ('login', 'preview', 'prepare', 'publish') else []
-        if action in ('login', 'preview', 'prepare', 'publish'):
-            if not isinstance(platforms, list) or not platforms or any(p not in WEB_PLATFORMS for p in platforms):
-                raise ValueError('Web 版当前支持抖音和快手；西瓜流程待适配。')
-            platforms = list(dict.fromkeys(platforms))
-        if action == 'login' and len(platforms) != 1:
-            raise ValueError('请一次登录一个平台。')
-        if action in ('preview', 'prepare', 'publish') and not all(shutil.which(tool) for tool in ('ffmpeg', 'ffprobe')):
-            raise ValueError('缺少 FFmpeg / ffprobe，请安装后再预览、预处理或发布。')
-        payload = {'config': config, 'base': str(base), 'platforms': platforms}
+        payload = {'config': config, 'base': str(base)}
         if data.get('scope') == 'download':
             payload['scope'] = 'download'
         if action == 'download':
@@ -568,9 +545,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
 
 
 if __name__ == '__main__':
-    if os.name == 'nt':
-        from scripts.setup_database import ensure_running
-        ensure_running()
     parser = argparse.ArgumentParser(description='视频工作台 Flask 服务')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', default=5000, type=int)
@@ -580,3 +554,4 @@ if __name__ == '__main__':
     print(f'视频工作台：http://{args.host}:{args.port}', flush=True)
     serve(create_app(args.config), host=args.host, port=args.port, threads=8,
           max_request_body_size=8 * 1024 ** 3, channel_timeout=300)
+

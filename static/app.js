@@ -475,7 +475,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     $('#download-storage-label').textContent = testStorage ? '保存位置 · 测试模式' : '保存位置 · 指定目录';
     $('#download-directory').textContent = testStorage ? '下载完成后自动删除本次文件，仅保留任务记录和日志。' : state.mediaDirectory || '';
     $('#download-final-step').textContent = testStorage ? '完成后删除' : '保存到素材库';
-    $('#database-backend').textContent = `${status.database === 'mysql' ? 'MySQL 已连接' : status.database === 'postgresql' ? 'PostgreSQL 已连接' : 'SQLite 便携模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
+    $('#database-backend').textContent = `${status.database === 'mysql' ? 'MySQL 已连接' : 'SQLite 测试模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
     $('#worker-status').hidden = !paused.length;

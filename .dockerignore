@@ -6,12 +6,8 @@
 !requirements.lock.txt
 !app.py
 !web_worker.py
-!main.py
-!Download.py
 !Utils/
 !Utils/**
-!Uploaders/
-!Uploaders/**
 !webapp/
 !webapp/**
 !templates/
@@ -21,7 +17,6 @@
 !scripts/
 !scripts/login_youtube.py
 !scripts/migrate_mysql.py
-!scripts/probe_yt5s.py
 !docker/
 !docker/**
 **/__pycache__/

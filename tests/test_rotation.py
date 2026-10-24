@@ -1,4 +1,4 @@
-"""Durable rotation counters and real node switching between queued videos."""
+﻿"""Durable rotation counters and real node switching between queued videos."""
 import http.server
 from pathlib import Path
 import re
@@ -105,7 +105,7 @@ class RotationTests(unittest.TestCase):
                 with patch.object(ClashManager, 'download_snapshot', return_value=queued) as resolve, \
                      patch.object(ClashManager, 'select'), \
                      patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), \
-                     patch('Download.require_download_tools'):
+                     patch('webapp.downloader.require_download_tools'):
                     execute('download', payload, progress.append, rotation_completed=completed,
                             store=self.store, worker_slot=slot)
                 actual, count = resolve.call_args.args
@@ -138,7 +138,7 @@ class RotationTests(unittest.TestCase):
             with self.subTest(slot=slot), patch.object(ClashManager, 'for_worker', return_value=self.manager), \
                     patch.object(ClashManager, 'select') as select, \
                     patch.object(ClashManager, 'download_snapshot', return_value=snapshot) as resolve, \
-                    patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), patch('Download.require_download_tools'):
+                    patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), patch('webapp.downloader.require_download_tools'):
                 execute('download', payload, store=self.store, worker_slot=slot)
                 self.assertEqual(resolve.call_args.args[0]['node'], 'A')
                 if slot:
@@ -354,3 +354,5 @@ class RotationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+

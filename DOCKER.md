@@ -117,12 +117,12 @@ docker compose -f compose.remote-mysql.yaml cp app:/data/config ./backup/config
 docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web ./backup/state
 ```
 
-原 `scripts/backup_database.py` 是 PostgreSQL 专用工具，不能用于 MySQL。
+数据库备份请使用远程 MySQL 服务商或 MySQL 客户端工具。
 
 ## 与当前 Windows 部署的关系
 
-这是独立的新部署，不会自动迁移 Windows 本机 PostgreSQL、现有百万级任务、Cookie 或订阅。
+这是独立的新部署，不会自动迁移 Windows 本机旧数据库、现有百万级任务、Cookie 或订阅。
 构建上下文排除了本机配置、`.cache`、`.tools`、Cookie、视频和 `.env`。
-同一主机、相同路径下迁移 PostgreSQL / SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
-上一版编排的 PostgreSQL 数据卷和容器不会自动转换或删除；旧 `.env` 也需补充新的 MySQL 变量。确认迁移和备份前保留旧库。
+同一主机、相同路径下迁移旧 SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
+旧数据库文件不会自动转换或删除；确认迁移和备份前请保留原数据。
 此编排保持当前的单机调度架构，能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。

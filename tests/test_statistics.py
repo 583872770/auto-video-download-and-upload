@@ -1,4 +1,4 @@
-"""Billing follows durable final files, with transactional pause/retry boundaries."""
+﻿"""Billing follows durable final files, with transactional pause/retry boundaries."""
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import http.server
@@ -314,7 +314,7 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
             self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', 'storage_mode': mode},
                 'base': str(self.root), 'urls': [f'http://127.0.0.1:{server.server_port}/{name}.mp4']})
             job = self.claim()
-            with patch('Download.require_download_tools'):
+            with patch('webapp.downloader.require_download_tools'):
                 result = execute('download', job['payload'], store=self.store, task_id=job['id'])
             self.store.finish(job['id'], result=result, worker_id=self.store.owner)
             if identity is None:
@@ -335,3 +335,5 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
 
 class MySQLStatisticsTests(MySQLFixture, StatisticsContract, unittest.TestCase):
     pass
+
+

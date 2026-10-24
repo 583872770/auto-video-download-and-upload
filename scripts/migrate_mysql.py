@@ -25,9 +25,9 @@ MARKER = '_mysql_migration_v1'
 
 def normalized_url(value):
     parsed = make_url(value)
-    driver = {'mysql': 'mysql+pymysql', 'postgresql': 'postgresql+psycopg'}.get(parsed.drivername, parsed.drivername)
-    if driver not in ('mysql+pymysql', 'postgresql+psycopg', 'sqlite'):
-        raise ValueError('迁移源必须是 MySQL、PostgreSQL 或当前格式的 SQLite。')
+    driver = {'mysql': 'mysql+pymysql'}.get(parsed.drivername, parsed.drivername)
+    if driver not in ('mysql+pymysql', 'sqlite'):
+        raise ValueError('迁移源必须是 MySQL 或当前格式的 SQLite。')
     return parsed.set(drivername=driver)
 
 

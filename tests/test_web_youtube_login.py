@@ -1,4 +1,4 @@
-"""Login controls, cookie replacement and queued downloads on SQLite/PostgreSQL."""
+"""Login controls, cookie replacement and queued downloads on SQLite/MySQL."""
 import asyncio
 import io
 from pathlib import Path
@@ -167,5 +167,3 @@ class SQLiteLoginTests(LoginContract, SQLiteFixture):
     pass
 
 
-class PostgreSQLLoginTests(LoginContract, test_scale.PostgreSQLFixture, unittest.TestCase):
-    pass

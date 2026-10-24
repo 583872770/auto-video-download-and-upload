@@ -1,4 +1,4 @@
-"""Isolate disposable downloads from the user's permanent media directory."""
+﻿"""Isolate disposable downloads from the user's permanent media directory."""
 from pathlib import Path
 import re
 import shutil
@@ -46,3 +46,4 @@ class DownloadWorkspace:
             self._verify()
             if self.directory.exists():
                 shutil.rmtree(self.directory)
+

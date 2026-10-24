@@ -119,5 +119,3 @@ class SQLiteTaskViewTests(TaskViewContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
 
-class PostgreSQLTaskViewTests(test_scale.PostgreSQLFixture, TaskViewContract, unittest.TestCase):
-    pass

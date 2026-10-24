@@ -1,10 +1,8 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('setup', 'check', 'selftest', 'download', 'prepare', 'login', 'youtube-login', 'publish', 'tests', 'web')]
-    [string]$Mode = 'check',
+    [ValidateSet('setup', 'tests', 'web', 'download', 'youtube-login')]
+    [string]$Mode = 'web',
     [string]$Config,
-    [ValidateSet('douyin', 'kuaishou', 'xigua')]
-    [string]$Platform = 'douyin',
     [string]$Url,
     [switch]$UseWifi,
     [int]$Port = 5000
@@ -40,19 +38,14 @@ try {
     if ($Config) { $configArgs = @('--config', $Config) }
     switch ($Mode) {
         'setup' { & $python -m pip install -r requirements.lock.txt }
-        'check' { & $python main.py --check }
-        'selftest' { & $python scripts/verify_pipeline.py }
         'tests' { & $python -m unittest discover -s tests -v }
         'web' { & $python app.py @configArgs --port $Port }
         'download' {
             $urlArgs = @()
             if ($Url) { $urlArgs = @($Url) }
-            & $python Download.py @configArgs @urlArgs
+            & $python webapp/downloader.py @configArgs @urlArgs
         }
-        'prepare' { & $python main.py @configArgs --prepare --platforms $Platform }
-        'login' { & $python main.py @configArgs --login $Platform }
         'youtube-login' { & $python scripts/login_youtube.py @configArgs }
-        'publish' { & $python main.py @configArgs --publish --platforms $Platform }
     }
     $resultCode = $LASTEXITCODE
 } finally {

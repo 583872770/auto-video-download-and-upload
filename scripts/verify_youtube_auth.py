@@ -1,4 +1,4 @@
-"""Exercise login preflight UI with synthetic cookies and network results."""
+﻿"""Exercise login preflight UI with synthetic cookies and network results."""
 import json
 from pathlib import Path
 import sys
@@ -13,7 +13,7 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_web import QuietHandler
-from Uploaders.browser import browser_options
+from webapp.browser import browser_options
 from Utils.runtime import ROOT
 
 
@@ -91,3 +91,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -1,4 +1,4 @@
-"""Resource bounds, progress persistence and queue dispatch regressions."""
+﻿"""Resource bounds, progress persistence and queue dispatch regressions."""
 import asyncio
 from pathlib import Path
 import subprocess
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from sqlalchemy import event, text
 
-from Download import build_ydl_options
+from webapp.downloader import build_ydl_options
 from tests import test_scale
 from tests.test_mysql import MySQLFixture
 from webapp.browser_pool import browser_slot
@@ -229,3 +229,4 @@ class MySQLPerformanceTests(MySQLFixture, DispatchContract, unittest.TestCase):
         second.close()
         first.close()
         self.assertEqual(engine.pool.checkedout(), 0)
+

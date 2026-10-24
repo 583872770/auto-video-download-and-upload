@@ -1,4 +1,4 @@
-"""Shared schema and transactional SQL for MySQL, PostgreSQL and SQLite."""
+"""Shared schema and transactional SQL for MySQL (with SQLite test support)."""
 import json
 import os
 from pathlib import Path
@@ -8,7 +8,6 @@ from datetime import datetime
 from sqlalchemy import (BigInteger, Column, Float as SAFloat, Index, Integer, MetaData, String,
                         Table, Text as SAText, create_engine, event, func, inspect, select, text)
 from sqlalchemy.dialects.mysql import DOUBLE, LONGTEXT, insert as mysql_insert
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.pool import NullPool
 
@@ -35,19 +34,14 @@ Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
 Index('ix_tasks_dispatch', tasks.c.action, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
-_finished = tasks.c.status.in_(('succeeded', 'failed', 'interrupted'))
-Index('ix_tasks_finished_seq', tasks.c.seq, postgresql_where=_finished, sqlite_where=_finished).ddl_if(dialect=('postgresql', 'sqlite'))
-Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq,
-      sqlite_where=_finished).ddl_if(dialect='sqlite')
-Index('ix_tasks_finished_time_desc', tasks.c.finished_at.desc().nulls_last(), tasks.c.seq.desc(),
-      postgresql_where=_finished).ddl_if(dialect='postgresql')
+Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq)
 Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, tasks.c.seq,
-      mysql_length={'finished_at': 40}).ddl_if(dialect='mysql')
+      mysql_length={'finished_at': 40})
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
-Index('ix_tasks_video_prefix', tasks.c.video_id, postgresql_ops={'video_id': 'varchar_pattern_ops'}).ddl_if(dialect=('postgresql', 'sqlite'))
-Index('ix_tasks_id_prefix', tasks.c.id, postgresql_ops={'id': 'varchar_pattern_ops'}).ddl_if(dialect=('postgresql', 'sqlite'))
-Index('ix_tasks_title_prefix', tasks.c.title, postgresql_ops={'title': 'text_pattern_ops'}, mysql_length=191)
+Index('ix_tasks_video_prefix', tasks.c.video_id)
+Index('ix_tasks_id_prefix', tasks.c.id)
+Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)
 Index('ix_tasks_seq', tasks.c.seq, unique=True)
 Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at, mysql_length={'finished_at': 40})
@@ -92,7 +86,7 @@ Index('ix_media_root_recent', media.c.root, media.c.modified, media.c.id, mysql_
 Index('ix_media_root_video', media.c.root, media.c.video_id, mysql_length={'root': 191})
 Index('ix_media_root_scan', media.c.root, media.c.scan_id, mysql_length={'root': 191})
 Index('ix_media_root_title', media.c.root, media.c.search_title,
-      postgresql_ops={'search_title': 'text_pattern_ops'}, mysql_length={'root': 191, 'search_title': 191})
+      mysql_length={'root': 191, 'search_title': 191})
 roots = Table('media_roots', metadata, Column('root', RootPath, primary_key=True),
               Column('count', BigInteger, nullable=False, server_default='0'),
               Column('bytes', BigInteger, nullable=False, server_default='0'),
@@ -163,12 +157,10 @@ class Database:
         if url is None and config.is_file():
             url = json.loads(config.read_text(encoding='utf-8'))['url']
         self.url = url or 'sqlite:///' + (self.directory / 'tasks.sqlite3').as_posix()
-        if self.url.startswith('postgresql://'):
-            self.url = self.url.replace('postgresql://', 'postgresql+psycopg://', 1)
         if self.url.startswith('mysql://'):
             self.url = self.url.replace('mysql://', 'mysql+pymysql://', 1)
-        if not self.url.startswith(('sqlite:///', 'postgresql+psycopg://', 'mysql+pymysql://')):
-            raise ValueError('数据库仅支持 MySQL、PostgreSQL 或 SQLite。')
+        if not self.url.startswith(('sqlite:///', 'mysql+pymysql://')):
+            raise ValueError('数据库仅支持 MySQL。')
         with _lock:
             if self.url not in _engines:
                 options = {'connect_args': {'timeout': 30}} if self.url.startswith('sqlite:') else {}
@@ -201,10 +193,6 @@ class Database:
             self.engine = _engines[self.url]
 
     @property
-    def postgres(self):
-        return self.engine.dialect.name == 'postgresql'
-
-    @property
     def mysql(self):
         return self.engine.dialect.name == 'mysql'
 
@@ -214,13 +202,13 @@ class Database:
 
     @property
     def supports_skip_locked(self):
-        return self.postgres or (self.mysql and self.engine.dialect.server_version_info >= (8, 0, 1))
+        return self.mysql and self.engine.dialect.server_version_info >= (8, 0, 1)
 
     def schema(self):
         if not self.mysql or self.engine.dialect.server_version_info >= (8, 0, 21):
             return metadata
-        # Keep shared metadata immutable: this process may open 5.7, 8.x and
-        # SQLite databases together (including during a database migration).
+        # Keep shared metadata immutable: this process may open MySQL 5.7, 8.x
+        # and SQLite databases together during a migration or test run.
         schema = MetaData()
         for original in metadata.tables.values():
             table = original.to_metadata(schema)
@@ -237,7 +225,7 @@ class Database:
         return schema
 
     def insert(self, table):
-        return (mysql_insert if self.mysql else pg_insert if self.postgres else sqlite_insert)(table)
+        return (mysql_insert if self.mysql else sqlite_insert)(table)
 
     def ignore(self, table, values):
         statement = self.insert(table).values(values)

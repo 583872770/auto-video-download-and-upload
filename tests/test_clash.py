@@ -1,4 +1,4 @@
-"""Private subscription boundaries and real Mihomo routing with local fixtures."""
+﻿"""Private subscription boundaries and real Mihomo routing with local fixtures."""
 import http.server
 import json
 from pathlib import Path
@@ -17,7 +17,7 @@ from urllib.request import ProxyHandler, build_opener
 import yaml
 
 from app import create_app
-from Download import build_ydl_options
+from webapp.downloader import build_ydl_options
 from webapp.clash import ClashError, ClashManager, GROUP, ROOT, parse_subscription
 
 
@@ -223,3 +223,4 @@ class ClashTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

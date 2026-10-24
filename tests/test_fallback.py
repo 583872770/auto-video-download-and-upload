@@ -1,4 +1,4 @@
-"""Automatic provider fallback, lossless preflight and delivered byte accounting."""
+﻿"""Automatic provider fallback, lossless preflight and delivered byte accounting."""
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import yt_dlp
 
-from Download import download_cookie_session
+from webapp.downloader import download_cookie_session
 from tests import test_yt5s
 from tests.test_yt5s import VIDEO
 from tests.test_mysql import MySQLFixture
@@ -200,7 +200,7 @@ class FallbackContract:
         with patch('webapp.clash.ClashManager', return_value=manager), \
                 patch('webapp.youtube_auth.YouTubeAuth.require') as auth, \
                 patch('webapp.yt5s.resolve', side_effect=WebsiteHTTPError('analyze', 502)), \
-                patch('Download.download_cookie_session', side_effect=session), \
+                patch('webapp.downloader.download_cookie_session', side_effect=session), \
                 patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), patch('builtins.print'):
             rotation_count = Mock(return_value=4)
             result = execute('download', payload, store=self.store, worker_slot=2, rotation_completed=rotation_count)
@@ -347,3 +347,5 @@ class MySQLFallbackTests(MySQLFixture, FallbackContract, unittest.TestCase):
         self.addCleanup(browser.stop)
         self.addCleanup(display.stop)
         super().setUp()
+
+

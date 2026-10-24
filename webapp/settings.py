@@ -1,5 +1,4 @@
-"""Validate web-editable settings while preserving unrelated CLI options."""
-import math
+"""Validate settings used by the YouTube download service."""
 import re
 from pathlib import Path
 import tempfile
@@ -11,12 +10,7 @@ import yaml
 
 DEFAULTS = {
     'path': 'videos', 'dir': '', 'url': '', 'proxy': '', 'proxy_mode': 'manual', 'youtube_cookie': '',
-    'platforms': ['douyin', 'kuaishou'], 'segment_seconds': 180,
-    'time_list': [8, 11, 14, 16, 19, 21], 'upload_timeout_seconds': 1800,
-    'browser_executable': '', 'douyin_cookie': 'Cookies/douyin.json',
-    'kuaishou_cookie': 'Cookies/kuaishou.json',
-    'douyin_visibility': 'public', 'kuaishou_visibility': 'public',
-    'douyin_tags': [], 'kuaishou_tags': [],
+    'browser_executable': '', 'download_format': '', 'js_runtimes': None,
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
     'download_method': 'yt_dlp', 'yt5s_quality': '360', 'yt5s_browser_count': 2,
@@ -72,10 +66,8 @@ def validate_settings(config, *, download_only=False):
     if config.get('proxy_mode', 'manual') not in ('direct', 'manual', 'clash'):
         raise ValueError('请选择有效的下载连接方式。')
     for key, default in DEFAULTS.items():
-        if download_only and key not in DOWNLOAD_FIELDS:
-            continue
         value = config.get(key, default)
-        if key in INTEGER_FIELDS or key == 'shard_downloads' or key in ('platforms', 'time_list', 'segment_seconds', 'upload_timeout_seconds', 'url') or key.endswith('_tags'):
+        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url'):
             continue
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')
@@ -83,31 +75,6 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('素材目录不能为空。')
     if config.get('url'):
         urls_from(config['url'])
-    if download_only:
-        return config
-    for key in ('segment_seconds', 'upload_timeout_seconds'):
-        value = config.get(key, DEFAULTS[key])
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-            raise ValueError(f'{key} 必须是大于零的数字。')
-    hours = config.get('time_list', DEFAULTS['time_list'])
-    if isinstance(hours, str):
-        try:
-            hours = [int(item.strip()) for item in hours.replace('，', ',').split(',')]
-        except ValueError as error:
-            raise ValueError('发布时间应为逗号分隔的整数小时。') from error
-    if not isinstance(hours, list) or not hours or any(type(h) is not int or not 0 <= h <= 23 for h in hours):
-        raise ValueError('发布时间必须是 0 到 23 的整数小时。')
-    config['time_list'] = sorted(set(hours))
-    platforms = config.get('platforms', DEFAULTS['platforms'])
-    if not isinstance(platforms, list) or not platforms or any(p not in ('douyin', 'kuaishou', 'xigua') for p in platforms):
-        raise ValueError('请选择有效的发布平台。')
-    config['platforms'] = list(dict.fromkeys(platforms))
-    for platform in ('douyin', 'kuaishou'):
-        if config.get(f'{platform}_visibility', 'private') not in ('private', 'public', 'friends'):
-            raise ValueError('可见范围必须是 private / public / friends。')
-        tags = config.get(f'{platform}_tags', [])
-        if not isinstance(tags, list) or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 100 for tag in tags):
-            raise ValueError('话题必须为非空文本组成的列表，每个不超过 100 字。')
     return config
 
 
@@ -124,7 +91,8 @@ def save_settings(path, config):
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                          prefix='.web-config-', suffix='.tmp', delete=False) as output:
             temporary = Path(output.name)
-            yaml.safe_dump(config, output, allow_unicode=True, sort_keys=False)
+            clean = {key: config.get(key, default) for key, default in DEFAULTS.items()}
+            yaml.safe_dump(clean, output, allow_unicode=True, sort_keys=False)
         temporary.replace(path)
     finally:
         if temporary is not None:

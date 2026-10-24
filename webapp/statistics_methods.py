@@ -1,4 +1,4 @@
-"""Incremental accounting by the method saved in each task's config snapshot."""
+﻿"""Incremental accounting by the method saved in each task's config snapshot."""
 import json
 
 from sqlalchemy import func, select
@@ -109,3 +109,4 @@ class MethodStatistics:
                     for key in FIELDS if key != 'fallback_tasks'}
         residual['fallback_tasks'] = int(rows.get('unknown', {}).get('fallback_tasks', 0))
         return [*known, *([describe_method('unknown', residual)] if any(residual.values()) else [])]
+

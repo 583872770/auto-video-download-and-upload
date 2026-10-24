@@ -1,4 +1,4 @@
-"""Exercise subscription, selection and latency UI against an isolated real core."""
+﻿"""Exercise subscription, selection and latency UI against an isolated real core."""
 import http.server
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ from werkzeug.serving import make_server
 import yaml
 
 from app import create_app
-from Uploaders.browser import browser_options
+from webapp.browser import browser_options
 import webapp.clash as clash_module
 from Utils.runtime import ROOT
 from scripts.verify_web import QuietHandler
@@ -165,3 +165,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

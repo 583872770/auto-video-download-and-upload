@@ -1,4 +1,4 @@
-"""Positive login evidence, cached preflight and lossless queue blocking."""
+﻿"""Positive login evidence, cached preflight and lossless queue blocking."""
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import json
@@ -166,7 +166,7 @@ class AuthContract:
             downloader.report_warning('The provided YouTube account cookies are no longer valid.')
             return 1
 
-        with patch('webapp.youtube_auth.probe', side_effect=positive), patch('Download.require_download_tools'):
+        with patch('webapp.youtube_auth.probe', side_effect=positive), patch('webapp.downloader.require_download_tools'):
             with patch.object(yt_dlp.YoutubeDL, 'download', download):
                 with self.assertRaises(YouTubeAuthRequired):
                     execute('download', {'config': config, 'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
@@ -182,5 +182,5 @@ class SQLiteAuthTests(AuthContract, SQLiteFixture):
     pass
 
 
-class PostgreSQLAuthTests(AuthContract, test_scale.PostgreSQLFixture, unittest.TestCase):
-    pass
+
+

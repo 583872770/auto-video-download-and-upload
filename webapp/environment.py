@@ -1,4 +1,4 @@
-"""Checks needed for video downloading, independent of publishing browsers."""
+﻿"""Checks needed by the YouTube download providers."""
 import importlib.util
 import shutil
 
@@ -46,3 +46,5 @@ def check_download_environment():
     if not runtime:
         missing.append('JavaScript runtime')
     return int(bool(missing))
+
+

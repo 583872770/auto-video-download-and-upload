@@ -1,4 +1,4 @@
-"""Download only when explicitly invoked; importing this module is safe."""
+﻿"""Download only when explicitly invoked; importing this module is safe."""
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,9 +27,9 @@ def build_ydl_options(config, base):
     from Utils.download_storage import storage_mode
     test_mode = storage_mode(config) == 'test'
     options = {
-        'format': config.get('download_format',
+        'format': config.get('download_format') or
                              'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/'
-                             'best[ext=mp4][vcodec^=avc1]/bestvideo+bestaudio/best'),
+                             'best[ext=mp4][vcodec^=avc1]/bestvideo+bestaudio/best',
         'download_archive': None if test_mode else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
@@ -123,3 +123,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

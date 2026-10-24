@@ -1,8 +1,6 @@
-"""Run queued work outside Flask, serializing all media and browser operations."""
+﻿"""Run queued work outside Flask, serializing all media and browser operations."""
 import argparse
-import asyncio
 from contextlib import contextmanager
-import importlib
 import os
 from pathlib import Path
 import shutil
@@ -78,11 +76,9 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
 def _execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0):
     from Utils.runtime import configure_runtime
     configure_runtime()
-    from Utils.config import resolve_path
-    from main import (PLATFORMS, VIDEO_SUFFIXES, build_plan, check_environment, prepare_media,
-                      publish_plan, write_prepared_manifest)
+    from webapp.media import VIDEO_SUFFIXES
+    from webapp.environment import check_download_environment
     config, base = payload['config'], Path(payload['base'])
-    platforms = payload.get('platforms', [])
     if action == 'import':
         from webapp.bulk import run_import
         return run_import(store, payload, report_progress or (lambda value: None))
@@ -91,12 +87,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from Utils.config import video_directory
         return MediaCatalog(store).reindex(video_directory(config, base), report_progress)
     if action == 'check':
-        if payload.get('scope') == 'download':
-            from webapp.environment import check_download_environment
-            checker = check_download_environment
-        else:
-            checker = check_environment
-        if checker():
+        if check_download_environment():
             raise RuntimeError('环境检查未通过，请根据日志补齐依赖。')
         return {'message': '环境检查通过'}
     if action == 'download':
@@ -104,7 +95,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from webapp.downloads import DownloadFailure, DownloadProgress, DownloadLeaseLost, clean_download_error
         from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
         from webapp.yt5s import BrowserEnvironmentRequired
-        from Download import build_ydl_options, download_cookie_session, require_download_tools
+        from webapp.downloader import build_ydl_options, download_cookie_session, require_download_tools
         progress = DownloadProgress(report_progress or (lambda value: None))
         progress.state['worker_slot'] = worker_slot
         method = config.get('download_method', 'yt_dlp')
@@ -349,33 +340,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
                 'billable_bytes': billable_bytes, 'download_method': progress.state['download_method'],
                 'fallback_used': used_fallback}
-    if action == 'login':
-        platform = platforms[0]
-        module = importlib.import_module(PLATFORMS[platform][0])
-        target = resolve_path(base, config.get(f'{platform}_cookie', f'Cookies/{platform}.json'))
-        executable = resolve_path(base, config['browser_executable']) if config.get('browser_executable') else None
-        asyncio.run(getattr(module, f'{platform}_cookie_gen')(str(target), executable))
-        return {'message': '登录态已保存；有效性以平台为准。'}
-    print('正在扫描视频并计算排期……', flush=True)
-    plans, schedule = build_plan(config, base)
-    result = {
-        'videos': [{'name': plan.source.name, 'parts': plan.parts, 'cover': plan.cover.name} for plan in plans],
-        'schedule': [slot.isoformat() for slot in schedule], 'platforms': platforms,
-    }
-    print(f'共 {len(plans)} 个视频，{len(schedule)} 个分段；平台：{", ".join(platforms)}。', flush=True)
-    for index, slot in enumerate(schedule, 1):
-        print(f'{index:02d}  {slot:%Y-%m-%d %H:%M}', flush=True)
-    if action == 'prepare':
-        print('正在转码分段并生成封面……', flush=True)
-        jobs = prepare_media(plans, config, platforms)
-        result['manifest'] = str(write_prepared_manifest(jobs, schedule, config, base, platforms))
-        print(f'预处理完成：{result["manifest"]}', flush=True)
-    elif action == 'publish':
-        print('开始实际投稿。收到提交回执后仍需等待平台审核。', flush=True)
-        asyncio.run(publish_plan(plans, schedule, config, base, platforms))
-    elif action != 'preview':
-        raise ValueError('未知任务类型')
-    return result
+    raise ValueError('当前 Web 服务只支持 YouTube 下载、导入、索引和环境检查。')
 
 
 def drain(directory, slot=0, role='all'):
@@ -483,3 +448,4 @@ if __name__ == '__main__':
     parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance'), default='all')
     args = parser.parse_args()
     drain(args.state, args.slot, args.role)
+

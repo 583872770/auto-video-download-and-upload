@@ -12,3 +12,7 @@ min_free_gb: 2
 log_retention_days: 0
 max_log_mb: 10
 shard_downloads: true
+download_method: yt_dlp
+yt5s_quality: '360'
+yt5s_browser_count: 2
+fragment_concurrency: 4

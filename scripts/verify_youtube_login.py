@@ -1,4 +1,4 @@
-"""Real browser lifecycle against a local login fixture, never a Google account."""
+﻿"""Real browser lifecycle against a local login fixture, never a Google account."""
 import asyncio
 from contextlib import asynccontextmanager
 import json
@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright, expect
 from werkzeug.serving import make_server
 
 from app import create_app
-from Uploaders.browser import browser_session, browser_options
+from webapp.browser import browser_session, browser_options
 from Utils.runtime import ROOT
 from scripts.verify_web import QuietHandler
 
@@ -134,3 +134,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

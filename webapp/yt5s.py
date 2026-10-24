@@ -1,4 +1,4 @@
-"""Native-browser resolver for yt5s and its independent download experiment.
+﻿"""Native-browser resolver for yt5s and its independent download experiment.
 
 Run with a real display (or Xvfb on Linux). This does not fake a challenge
 response, modify browser fingerprints, or reuse a YouTube account session.
@@ -404,3 +404,4 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
         except Exception as error:
             raise RuntimeError('方式二未能完成网站验证或解析（' + type(error).__name__
                                + '）。请检查浏览器、Linux 显示环境及当前节点；可通过远程桌面完成验证。') from None
+

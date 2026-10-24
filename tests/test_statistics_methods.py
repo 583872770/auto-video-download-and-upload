@@ -1,4 +1,4 @@
-"""Selected-mode accounting remains exact across retries, fallback and upgrades."""
+﻿"""Selected-mode accounting remains exact across retries, fallback and upgrades."""
 from concurrent.futures import ThreadPoolExecutor
 import csv
 from io import StringIO
@@ -198,3 +198,4 @@ class SQLiteMethodStatisticsTests(MethodStatisticsContract, unittest.TestCase):
 
 class MySQLMethodStatisticsTests(MySQLFixture, MethodStatisticsContract, unittest.TestCase):
     pass
+

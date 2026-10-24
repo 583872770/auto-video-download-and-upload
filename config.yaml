@@ -1,57 +1,18 @@
+# Local development defaults. Production Docker uses /data/config/config.yaml.
 path: videos
 dir: ''
-url: 'https://www.youtube.com/watch?v=npNnbj46_ik
-
-  https://www.youtube.com/watch?v=2Gu7q-KUXCk
-
-  https://www.youtube.com/watch?v=WMu6ANTg8mk
-
-  https://www.youtube.com/watch?v=hI0ofOjFloE
-
-  https://www.youtube.com/watch?v=NJvj1iQdZwE
-
-  https://www.youtube.com/watch?v=8XiDhkvwgEo
-
-  https://www.youtube.com/watch?v=Xmyef5q9wSo
-
-  https://www.youtube.com/watch?v=p2MeSftrXtM'
-youtube_cookie: Cookies/youtube.txt
-platforms:
-- douyin
-- kuaishou
-douyin_cookie: Cookies/douyin.json
-douyin_visibility: public
-kuaishou_cookie: Cookies/kuaishou.json
-kuaishou_visibility: public
-xigua_cookie: Cookies/xigua.json
-time_list:
-- 8
-- 11
-- 14
-- 16
-- 19
-- 21
-segment_seconds: 180
-upload_timeout_seconds: 1800
-douyin_tags:
-- 我的世界
-- MC不灭
-- 游戏内容风向标
-kuaishou_tags:
-- 我的世界
-- MC不灭
-- 100天
-xigua_tags:
-- 我的世界
-- MC不灭
-- 100天
-tid: 201
-proxy_mode: clash
+url: ''
+storage_mode: local
+proxy_mode: direct
 proxy: ''
-worker_count: 3
+youtube_cookie: ''
+worker_count: 1
 download_attempts: 3
 min_free_gb: 2
 shard_downloads: true
 max_log_mb: 10
 log_retention_days: 0
-download_method: yt5s
+download_method: yt_dlp
+yt5s_quality: '360'
+yt5s_browser_count: 2
+fragment_concurrency: 4

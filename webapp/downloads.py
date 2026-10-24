@@ -1,4 +1,4 @@
-"""Structured yt-dlp progress persisted independently of terminal output."""
+﻿"""Structured yt-dlp progress persisted independently of terminal output."""
 import math
 import re
 import time
@@ -114,3 +114,4 @@ class DownloadProgress:
         self.state.update(stage='processing', speed=None, eta=None,
                           title=str(info.get('title') or self.state['title']))
         self.save(force=True)
+

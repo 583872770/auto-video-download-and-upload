@@ -36,9 +36,8 @@ RUN python /tmp/install_mihomo.py \
     && rm /tmp/install_mihomo.py \
     && node --version && ffmpeg -version && ffprobe -version
 
-COPY app.py web_worker.py main.py Download.py ./
+COPY app.py web_worker.py ./
 COPY Utils/ ./Utils/
-COPY Uploaders/ ./Uploaders/
 COPY webapp/ ./webapp/
 COPY templates/ ./templates/
 COPY static/ ./static/
