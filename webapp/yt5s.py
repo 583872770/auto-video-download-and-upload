@@ -66,11 +66,11 @@ def require_browser_environment(config, base):
         executable = browser_executable(explicit)
     except RuntimeError as error:
         raise BrowserEnvironmentRequired(
-            '方式二缺少 Chrome/Chromium。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
+            'yt5s（方式二 / 三）缺少 Chrome/Chromium。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
             '重新构建并创建容器（up -d --build）；非 Docker 环境请安装浏览器或配置 YT5S_BROWSER。') from error
     if not display_available():
         raise BrowserEnvironmentRequired(
-            '方式二缺少 Linux 显示环境。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
+            'yt5s（方式二 / 三）缺少 Linux 显示环境。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
             '重新构建并创建容器（up -d --build）；非 Docker 环境请启动 Xvfb 并配置 DISPLAY。')
     return executable
 

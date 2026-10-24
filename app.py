@@ -29,6 +29,7 @@ from webapp.clash import ClashError, ClashManager
 from webapp.clash_routes import register_clash
 from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
+from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
 
 WEB_PLATFORMS = ('douyin', 'kuaishou')
 ACTIONS = ('download', 'preview', 'prepare', 'publish', 'login', 'check')
@@ -198,16 +199,20 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
     @app.errorhandler(BrowserEnvironmentRequired)
+    @app.errorhandler(DownloadEnvironmentRequired)
     def browser_environment_required(error):
         return jsonify(error=str(error), download_queue=store.download_queue()), 409
 
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
-        if config.get('download_method', 'yt_dlp') == 'yt5s':
+        method = config.get('download_method', 'yt_dlp')
+        if method == 'yt5s':
             require_browser_environment(config, base)
             return None
+        if method == 'yt5s_fallback':
+            require_fallback_environment(config, base)
         if not is_youtube(urls):
             return None
-        options = {'force': force}
+        options = {'force': force or method == 'yt5s_fallback'}
         if config.get('proxy_mode') == 'clash':
             snapshot = snapshot or clash.snapshot()
             options.update(proxy=snapshot['proxy'], node=snapshot['node'])
@@ -427,7 +432,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             if queue['paused'] and queue['running']:
                 return jsonify(error='当前下载进程尚未停止，请稍后继续。'), 409
             upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
-            if upcoming and upcoming[0].get('url'):
+            if not upcoming:
+                upcoming = store.page(limit=1, actions=('import',), status='queued', order='asc')['items']
+            if upcoming:
                 config, base = settings()
                 queued = store.effective_download_payload(upcoming[0]['id'],
                     store.get(upcoming[0]['id'], private=True)['payload'])
@@ -436,7 +443,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 if 'youtube_cookie' in runtime:
                     config['youtube_cookie'] = runtime['youtube_cookie']
                 base = Path(queued.get('base', base))
-                verify_youtube(config, base, [upcoming[0]['url']], queued.get('clash'), force=True)
+                verify_youtube(config, base, queued.get('urls') or ['https://www.youtube.com/'],
+                               queued.get('clash'), force=True)
             youtube_auth.clear_block()
             store.set_downloads_paused(False)
         return jsonify(message='已继续下载，排队任务将自动执行。', download_queue=store.download_queue())
@@ -452,19 +460,23 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         validate_settings(config, download_only=True)
         if config.get('download_method') == 'yt5s':
             require_browser_environment(config, base)
+        payload = {'config': config, 'base': str(base), 'scope': 'download'}
+        with media_lock:
+            require_login_idle()
+            if config.get('proxy_mode') == 'clash':
+                payload['clash'] = clash.snapshot()
+            if config.get('download_method') == 'yt5s_fallback':
+                verify_youtube(config, base, ['https://www.youtube.com/'], payload.get('clash'))
         identity = uuid.uuid4().hex
         directory = store.directory / 'imports'
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / (identity + Path(source.filename).suffix.lower())
-        payload = {'config': config, 'base': str(base), 'scope': 'download'}
         try:
             source.save(path)
             if not path.stat().st_size or path.stat().st_size > 1024 ** 3:
                 raise ValueError('导入文件不能为空，最大 1 GB。')
             with media_lock:
                 require_login_idle()
-                if config.get('proxy_mode') == 'clash':
-                    payload['clash'] = clash.snapshot()
                 from webapp.bulk import create_import
                 task = create_import(store, identity, path, Path(source.filename).name, payload)
         except Exception:
@@ -531,6 +543,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(task), 202
 
     register_clash(app, clash, store, media_lock, settings_lock, settings, config_path)
+    from webapp.statistics_routes import register_statistics
+    register_statistics(app, store)
 
     if start_worker:
         def restore_clash():

@@ -54,6 +54,8 @@ class StorageContract:
         self.catalog.index_file(existing, existing.parent)
         self.store.set_downloads_paused(True)
         self.assertEqual(self.set_mode('test').status_code, 200)
+        self.store.set_downloads_paused(False)
+        self.assertEqual(self.store.claim(self.store.owner)['id'], task['id'])
         outputs = []
 
         def download(downloader, urls):
@@ -85,6 +87,9 @@ class StorageContract:
         self.assertEqual(progress[-1]['stage'], 'cleaning')
         self.store.finish(task['id'], result=result)
         self.assertEqual(self.client.get('/api/tasks?view=history').json['items'][0]['result']['test_mode'], True)
+        totals = self.client.get('/api/statistics').json['summary']
+        self.assertEqual((totals['test_file_count'], totals['test_file_bytes']), (1, len(b'disposable fixture')))
+        self.assertEqual(totals['file_bytes'], 0)
 
     def test_failed_download_cleans_only_its_workspace_and_keeps_failure(self):
         import yt_dlp
@@ -156,6 +161,9 @@ class StorageContract:
         self.assertFalse((self.root / 'videos').exists())
         self.assertFalse((self.root / 'videos.txt').exists())
         self.assertEqual(len(self.client.get('/api/tasks?view=history').json['items']), 2)
+        totals = self.client.get('/api/statistics').json['summary']
+        self.assertEqual((totals['test_file_count'], totals['test_file_bytes']), (2, len(content) * 2))
+        self.assertEqual(totals['file_bytes'], 0)
 
 
 class SQLiteStorageTests(StorageContract, unittest.TestCase):

@@ -51,7 +51,7 @@ def urls_from(value):
 def validate_settings(config, *, download_only=False):
     from Utils.download_storage import storage_mode
     storage_mode(config)
-    if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s'):
+    if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s', 'yt5s_fallback'):
         raise ValueError('请选择有效的下载方式。')
     if config.get('yt5s_quality', '360') not in ('360', '720'):
         raise ValueError('方式二画质请选择 360p 或 720p。')
@@ -110,10 +110,10 @@ def validate_settings(config, *, download_only=False):
 
 
 def validate_method_urls(config, urls):
-    if config.get('download_method', 'yt_dlp') == 'yt5s':
+    if config.get('download_method', 'yt_dlp') in ('yt5s', 'yt5s_fallback'):
         from webapp.store import source_identity
         if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            raise ValueError('方式二目前仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
+            raise ValueError('方式二、方式三仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

@@ -5,6 +5,10 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 
+class DownloadLeaseLost(RuntimeError):
+    """Do not start another provider after ownership of a task was lost."""
+
+
 def clean_download_error(message):
     """Keep the extractor reason, excluding terminal escapes and signed URL data."""
     message = re.sub(r'\x1b\[[0-9;]*m', '', str(message))

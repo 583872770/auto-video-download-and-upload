@@ -23,6 +23,7 @@ const viewNames = {
   overview: ['下载概览', 'YouTube 视频，一处下载', '粘贴视频或播放列表链接，原片和配套资源自动保存到本机。'],
   media: ['素材库', '下载的视频，都在这里', '查看本机保存的视频原片、封面和文件大小。'],
   tasks: ['任务记录', '每一次下载，都有记录', '查看已结束的下载与环境检查记录，以及执行结果和日志。'],
+  statistics: ['下载统计与计费', '每一份交付，都有明细', '按下载会话查看成功、失败、成品大小与费用，导出清单供客户核对。'],
   settings: ['下载设置', '按你的习惯，保存视频', '配置视频保存位置、下载代理和 YouTube Cookie。'],
   clash: ['代理与节点', '选一个节点，连接 YouTube', '管理 Clash 订阅、选择下载节点，并测试延迟与连通性。'],
 };
@@ -75,6 +76,7 @@ function setView(name) {
   $('#page-description').textContent = description;
   $('#sidebar').classList.remove('mobile-open');
   history.replaceState(null, '', `#${name}`);
+  document.dispatchEvent(new CustomEvent('viewchange', { detail: name }));
 }
 function emptyState(title, description, button = false) {
   return `<div class="empty-state"><div class="empty-icon">${icon('film')}</div><div><strong>${escapeHTML(title)}</strong><p>${escapeHTML(description)}</p>${button ? `<button class="button button-white" data-view="overview">${icon('download')}开始下载视频</button>` : ''}</div></div>`;
@@ -125,7 +127,7 @@ function progressLabel(task) {
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { waiting_browser: '等待方式二浏览器', starting_browser: '方式二 · 启动浏览器', connecting_browser: '方式二 · 连接浏览器', opening_site: '方式二 · 打开 yt5s 网页', waiting_site_form: '方式二 · 等待网页输入框', submitting_site: '方式二 · 提交视频链接', waiting_verification: '方式二 · 等待网站验证', converting: '方式二 · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_environment: '方式三 · 检查下载环境', switching_provider: '方式三 · 正在切换到 yt-dlp', waiting_browser: 'yt5s · 等待浏览器', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -135,7 +137,8 @@ function downloadProgress(task) {
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? '大小未知' : `${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
   const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div></div>`;
+  const provider = data.download_method === 'yt5s' ? 'yt5s' : data.download_method === 'yt_dlp' ? 'yt-dlp' : '';
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>下载器 <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${data.fallback_reason ? `<p class="micro-copy">yt5s 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks;
@@ -362,7 +365,9 @@ function renderDownloadMethod() {
   $('#download-method').disabled = downloadMethodBusy || !state.config;
   const tools = state.status?.tools;
   const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
-  $('#download-method-note').textContent = method === 'yt5s'
+  $('#download-method-note').textContent = method === 'yt5s_fallback'
+    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请加载 compose.yt5s.yaml 后重新构建。' : ''}切换仅影响新任务。`
+    : method === 'yt5s'
     ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${missing ? '当前环境缺少浏览器或显示环境，请同时加载主编排与 compose.yt5s.yaml，重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
     : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
 }
@@ -375,7 +380,7 @@ $('#download-method').addEventListener('change', async event => {
     await api('/api/config', { method: 'PUT', body: { download_method: method } });
     state.config.download_method = method;
     $('#settings-download-method').value = method;
-    toast(`已切换为${method === 'yt5s' ? '方式二：yt5s' : '方式一：yt-dlp'}，对新任务生效。`);
+    toast(`已切换为${method === 'yt5s_fallback' ? '方式三：yt5s → yt-dlp' : method === 'yt5s' ? '方式二：yt5s' : '方式一：yt-dlp'}，对新任务生效。`);
     await refresh();
   } catch (error) { toast(error.message, true); }
   finally { downloadMethodBusy = false; renderDownloadMethod(); renderStatus(); }
@@ -526,7 +531,7 @@ $('#download-form').addEventListener('submit', event => {
     const button = $('button[type="submit"]', event.target);
     const label = button.innerHTML;
     downloadSubmitting = true;
-    button.textContent = state.config?.download_method === 'yt5s' ? '正在提交方式二任务…' : '正在检查登录并提交…';
+    button.textContent = state.config?.download_method === 'yt5s_fallback' ? '正在检查环境与登录…' : state.config?.download_method === 'yt5s' ? '正在提交方式二任务…' : '正在检查登录并提交…';
     let batch;
     try { batch = await api('/api/downloads', { method: 'POST', body: { urls: $('#download-urls').value, scope: 'download' } }); }
     finally { downloadSubmitting = false; button.innerHTML = label; }

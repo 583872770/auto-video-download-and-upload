@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import threading
+from datetime import datetime
 
 from sqlalchemy import (BigInteger, Column, Float as SAFloat, Index, Integer, MetaData, String,
                         Table, Text as SAText, create_engine, event, func, inspect, select, text)
@@ -96,6 +97,40 @@ roots = Table('media_roots', metadata, Column('root', RootPath, primary_key=True
               Column('bytes', BigInteger, nullable=False, server_default='0'),
               Column('last_indexed', Text), Column('scan_id', String(32)),
               Column('scanned', BigInteger, nullable=False, server_default='0'))
+
+download_sessions = Table('download_sessions', metadata,
+    Column('id', String(32), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
+    Column('started_at', Text, nullable=False), Column('ended_at', Text), Column('stop_requested_at', Text),
+    Column('status', String(24), nullable=False), Column('label', Text, nullable=False),
+    Column('price', String(32), nullable=False), Column('unit', String(8), nullable=False),
+    *(Column(name, BigInteger, nullable=False, server_default='0') for name in
+      ('attempted', 'running', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'file_count', 'file_bytes')))
+session_tasks = Table('download_session_tasks', metadata,
+    Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
+    Column('seq', BigInteger, nullable=False), Column('video_id', String(256)), Column('batch_id', String(32)),
+    Column('status', String(24), nullable=False), Column('started_at', Text, nullable=False),
+    Column('finished_at', Text), Column('error', Text))
+Index('ix_session_tasks_recent', session_tasks.c.session_id, session_tasks.c.seq)
+Index('ix_session_tasks_status', session_tasks.c.session_id, session_tasks.c.status, session_tasks.c.seq)
+deliveries = Table('download_deliveries', metadata,
+    Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
+    Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
+    Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
+Index('ix_deliveries_session', deliveries.c.session_id, deliveries.c.seq)
+
+# Separate ledgers keep deleted test files out of delivery billing and avoid
+# altering existing task/delivery tables during upgrades with large queues.
+test_files = Table('download_test_files', metadata,
+    Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
+    Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
+    Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
+Index('ix_test_files_session', test_files.c.session_id, test_files.c.seq)
+test_totals = Table('download_test_totals', metadata,
+    Column('session_id', String(32), primary_key=True),
+    Column('test_file_count', BigInteger, nullable=False, server_default='0'),
+    Column('test_file_bytes', BigInteger, nullable=False, server_default='0'))
 
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;
@@ -254,6 +289,11 @@ class Database:
             index.create(self.engine, checkfirst=True)
         with self.engine.begin() as db:
             self.ensure(db, settings, {'key': 'downloads_paused', 'value': 'false'})
+            self.ensure(db, settings, {'key': 'download_statistics_active', 'value': ''})
+            self.ensure(db, settings, {'key': 'download_statistics_since',
+                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
+            self.ensure(db, settings, {'key': 'download_test_statistics_since',
+                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
         if old:
             # One-time upgrade only; regular requests never enumerate task history.
             with self.engine.begin() as db:

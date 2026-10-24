@@ -42,6 +42,8 @@ class TaskStore:
         self.directory = self.db.directory
         self.database = self.directory / 'tasks.sqlite3'
         self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}'
+        from webapp.statistics import DownloadStatistics
+        self.statistics = DownloadStatistics(self)
 
     def connect(self):
         return self.db.engine.begin()
@@ -120,6 +122,8 @@ class TaskStore:
                       available_at=0)
         db.execute(tasks.insert().values(**values))
         self._transition(db, {**values, 'status': None}, 'queued')
+        if action in ('download', 'import') and not self.downloads_paused(db):
+            self.statistics.ensure_session(db)
         return task_id
 
     def create(self, action, payload):
@@ -172,6 +176,8 @@ class TaskStore:
         self._counter(db, 'action:download', 'queued', len(rows))
         for batch_id, count in Counter(row['batch_id'] for row in rows if row['batch_id']).items():
             self._counter(db, 'batch:' + batch_id, 'queued', count)
+        if not self.downloads_paused(db):
+            self.statistics.ensure_session(db)
         return [row['id'] for row in rows]
 
     def get(self, task_id, private=False):
@@ -281,6 +287,12 @@ class TaskStore:
     def set_downloads_paused(self, paused):
         with self.connect() as db:
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true' if paused else 'false'))
+            if paused:
+                self.statistics.settle(db, stop=True)
+            else:
+                counts = self._counts(db, ['action:download', 'action:import'])
+                if counts.get('queued', 0) or counts.get('running', 0):
+                    self.statistics.ensure_session(db)
 
     def download_queue(self):
         with self.connect() as db:
@@ -359,6 +371,8 @@ class TaskStore:
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, available_at=0, finished_at=None, error=None,
                     attempts=max(0, row['attempts'] - 1), progress=json.dumps(progress, ensure_ascii=False)))
+                self.statistics.transition(db, row, 'paused')
+                self.statistics.settle(db)
                 if owner:
                     db.execute(workers.update().where(workers.c.id == owner).values(state='stopped', task_id=None, message='用户已停止下载。'))
                 stopped += 1
@@ -407,6 +421,9 @@ class TaskStore:
             values = dict(status='running', worker_id=worker_id or self.owner,
                           started_at=now(), finished_at=None, lease_until=time.time() + lease_seconds,
                           attempts=row['attempts'] + 1, error=None)
+            if row['action'] == 'download':
+                identity = self.statistics.begin(db, row)
+                values['payload'] = json.dumps({**json.loads(row['payload']), 'download_session_id': identity}, ensure_ascii=False)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
             return self.decode({**row, **values}, private=True, db=db)
 
@@ -423,6 +440,8 @@ class TaskStore:
                 self._transition(db, row, 'queued')
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, attempts=max(0, row['attempts'] - 1), available_at=time.time() + delay, error=reason))
+                self.statistics.transition(db, row, 'paused', reason)
+                self.statistics.settle(db)
 
     def update_progress(self, task_id, progress, worker_id=None):
         statement = tasks.update().where(tasks.c.id == task_id)
@@ -457,6 +476,10 @@ class TaskStore:
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
                 available_at=time.time() + min(300, 5 * 2 ** max(0, row['attempts'] - 1)) if retry else 0,
                 lease_until=None, worker_id=None))
+            outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
+                       else 'skipped' if (result or {}).get('skipped') else 'succeeded')
+            self.statistics.transition(db, row, outcome, error)
+            self.statistics.settle(db)
             if not retry:
                 generation = progress.get('rotation_id')
                 if generation and not (result or {}).get('skipped'):
@@ -482,8 +505,10 @@ class TaskStore:
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,
                     available_at=time.time() + 2 if retry else 0, finished_at=None if retry else now(),
                     error='执行进程已退出，等待恢复。' if retry else '执行进程已退出；发布任务请先核对平台作品列表。'))
+                self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
                 if not retry:
                     db.execute(reservations.delete().where(reservations.c.task_id == row['id']))
+            self.statistics.settle(db)
             return len(rows)
 
     def worker_status(self, worker_id, slot, state, task_id=None, message=''):

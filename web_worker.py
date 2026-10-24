@@ -46,6 +46,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
         return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
+    payload = {**payload, '_task_id': task_id}
     from Utils.download_storage import DownloadWorkspace
     config = dict(payload['config'])
     if store:
@@ -78,7 +79,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
     from Utils.runtime import configure_runtime
     configure_runtime()
     from Utils.config import resolve_path
-    from main import (PLATFORMS, build_plan, check_environment, prepare_media,
+    from main import (PLATFORMS, VIDEO_SUFFIXES, build_plan, check_environment, prepare_media,
                       publish_plan, write_prepared_manifest)
     config, base = payload['config'], Path(payload['base'])
     platforms = payload.get('platforms', [])
@@ -100,12 +101,17 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         return {'message': '环境检查通过'}
     if action == 'download':
         import yt_dlp
-        from webapp.downloads import DownloadFailure, DownloadProgress
+        from webapp.downloads import DownloadFailure, DownloadProgress, DownloadLeaseLost, clean_download_error
+        from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
+        from webapp.yt5s import BrowserEnvironmentRequired
         from Download import build_ydl_options, download_cookie_session, require_download_tools
         progress = DownloadProgress(report_progress or (lambda value: None))
         progress.state['worker_slot'] = worker_slot
-        method_two = config.get('download_method', 'yt_dlp') == 'yt5s'
-        progress.state['download_method'] = 'yt5s' if method_two else 'yt_dlp'
+        method = config.get('download_method', 'yt_dlp')
+        automatic = method == 'yt5s_fallback'
+        method_two = method == 'yt5s'
+        progress.state.update(download_method='yt5s' if method_two or automatic else 'yt_dlp',
+                              selected_download_method=method)
         progress.save(force=True)
         failure = DownloadFailure()
         test_mode = config.get('storage_mode') == 'test'
@@ -160,6 +166,12 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
+        if automatic:
+            progress.state.update(stage='checking_environment')
+            progress.save(force=True)
+            require_fallback_environment(config, base)
+            if not store:
+                raise DownloadEnvironmentRequired('方式三请通过 Web 下载队列执行，以验证 YouTube 登录。')
         if store and youtube and not method_two:
             progress.state.update(stage='checking_login')
             progress.save(force=True)
@@ -168,15 +180,36 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                         if config.get('proxy_mode') == 'clash' else {}))
             progress.state.update(stage='extracting')
             progress.save(force=True)
-        options = build_ydl_options(config, base)
+        output_files, existing_files, current_video = {}, set(), {}
+        billable_bytes = 0
+        catalog = None
         if store and not test_mode:
             from webapp.catalog import MediaCatalog
             from Utils.config import video_directory
             catalog = MediaCatalog(store)
-            options.update(download_archive=None, post_hooks=[lambda filename: catalog.index_file(filename, video_directory(config, base))])
-        options.update(progress_hooks=[progress.hook], postprocessor_hooks=[progress.postprocess])
-        require_download_tools(urls, options)
+
+        def completed_file(filename):
+            nonlocal billable_bytes
+            from Utils.paths import io_path
+            path = Path(io_path(filename)).resolve()
+            if path.suffix.lower() not in VIDEO_SUFFIXES:
+                return
+            if catalog:
+                catalog.index_file(path, video_directory(config, base))
+            if path in existing_files or str(path) in output_files:
+                return
+            size = path.stat().st_size
+            output_files[str(path)] = size
+            if store and payload.get('_task_id'):
+                if store.statistics.record_file(payload['_task_id'], path,
+                        current_video.get('id', ''), current_video.get('title', progress.state.get('title', '')),
+                        test_mode=test_mode):
+                    if not test_mode:
+                        billable_bytes += size
+
         print(f'开始下载，共 {len(urls)} 个地址。', flush=True)
+        if automatic:
+            print('方式三：环境与 YouTube 登录检查通过，优先使用 yt5s，失败时切换到 yt-dlp。', flush=True)
         class ReportingDownloader(yt_dlp.YoutubeDL):
             skipped = False
 
@@ -190,6 +223,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
             def process_info(self, info_dict):
                 # yt-dlp removes requested_formats before individual stream hooks.
+                from Utils.paths import io_path
+                current_video.update(id=info_dict.get('id', ''), title=info_dict.get('title', ''))
+                for filename in (self.prepare_filename(info_dict), info_dict.get('filepath')):
+                    if filename:
+                        path = Path(io_path(filename)).resolve()
+                        if path.is_file() and str(path) not in output_files:
+                            existing_files.add(path)
                 progress.begin_video(info_dict)
                 return super().process_info(info_dict)
 
@@ -214,31 +254,93 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 else:
                     super().record_download_archive(info_dict)
 
-        try:
-            with download_cookie_session(options) as session_options:
-                with ReportingDownloader(session_options) as downloader:
-                    if method_two:
-                        from webapp.yt5s import resolve
-                        def stage(value):
-                            progress.state.update(stage=value, speed=None, eta=None)
-                            progress.save(force=True)
-                        for url in urls:
-                            info = resolve(url, config, base, store.directory if store else base / '.cache', stage)
-                            downloader.process_ie_result(info, download=True)
-                        failed = downloader._download_retcode
-                    else:
-                        failed = downloader.download(urls)
-        except yt_dlp.utils.DownloadError as error:
-            if store and youtube and not method_two and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
-                raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
-            raise RuntimeError(failure.message(error)) from error
-        if store and youtube and not method_two and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
-            raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
-        if failed:
-            raise RuntimeError(failure.message())
-        skipped = downloader.skipped and not progress.streams
+        def attempt(provider, addresses):
+            nonlocal failure
+            # Each provider needs its own error collector and Cookie policy.
+            failure = DownloadFailure()
+            provider_config = {**config, 'download_method': provider}
+            options = build_ydl_options(provider_config, base)
+            if automatic and provider == 'yt_dlp':
+                # The providers can return different encodings for the same filename.
+                # Never append native bytes to an incomplete yt5s transfer.
+                options['continuedl'] = False
+            if catalog:
+                options['download_archive'] = None
+            options.update(post_hooks=[completed_file], progress_hooks=[progress.hook],
+                           postprocessor_hooks=[progress.postprocess])
+            require_download_tools(addresses, options)
+            progress.state.update(download_method=provider, stage='extracting', percent=0,
+                                  downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='')
+            progress.streams = {}
+            progress.save(force=True)
+            try:
+                with download_cookie_session(options) as session_options:
+                    with ReportingDownloader(session_options) as downloader:
+                        if provider == 'yt5s':
+                            from webapp.yt5s import resolve
+
+                            def stage(value):
+                                progress.state.update(stage=value, speed=None, eta=None)
+                                progress.save(force=True)
+
+                            for url in addresses:
+                                info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage)
+                                downloader.process_ie_result(info, download=True)
+                            failed = downloader._download_retcode
+                        else:
+                            failed = downloader.download(addresses)
+            except yt_dlp.utils.DownloadError as error:
+                if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
+                    raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
+                raise RuntimeError(failure.message(error)) from error
+            if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
+                raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
+            if failed:
+                raise RuntimeError(failure.message())
+            return downloader.skipped
+
+        skipped_any = False
+        used_fallback = False
+        for addresses in ([url] for url in urls) if automatic else [urls]:
+            if automatic:
+                progress.state.update(fallback_used=False, fallback_reason='')
+            try:
+                skipped_any |= attempt('yt5s' if automatic or method_two else 'yt_dlp', addresses)
+            except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                if not automatic or isinstance(error, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
+                                                       YouTubeAuthRequired, DownloadLeaseLost)):
+                    raise
+                # Local storage errors and loss of ownership are not provider failures.
+                cause = error
+                while cause:
+                    if isinstance(cause, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
+                                          YouTubeAuthRequired, DownloadLeaseLost)):
+                        raise cause
+                    if isinstance(cause, OSError) and cause.errno in (5, 13, 28, 30, 122):
+                        raise error
+                    cause = cause.__cause__ or cause.__context__
+                if any(term in str(error).lower() for term in ('no space left', 'disk full', 'permission denied', 'read-only file system')):
+                    raise
+                reason = clean_download_error(error)
+                used_fallback = True
+                progress.state.update(stage='switching_provider', download_method='yt_dlp', fallback_used=True,
+                                      fallback_reason=reason, speed=None, eta=None)
+                progress.save(force=True)
+                print(f'方式三：yt5s 失败（{reason}）；切换到 yt-dlp，沿用当前代理节点。', flush=True)
+                try:
+                    # A browser verification/conversion may have taken several minutes.
+                    YouTubeAuth(store).require(config, base, **(
+                        {'proxy': snapshot['proxy'], 'node': snapshot['node']}
+                        if config.get('proxy_mode') == 'clash' else {}))
+                    skipped_any |= attempt('yt_dlp', addresses)
+                except Exception:
+                    print('方式三：yt5s 和 yt-dlp 均未完成下载，最终错误以 yt-dlp 为准。', flush=True)
+                    raise
+        skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
         return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
-                'skipped': skipped}
+                'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
+                'billable_bytes': billable_bytes, 'download_method': progress.state['download_method'],
+                'fallback_used': used_fallback}
     if action == 'login':
         platform = platforms[0]
         module = importlib.import_module(PLATFORMS[platform][0])
@@ -270,6 +372,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 def drain(directory, slot=0, role='all'):
     from webapp.youtube_auth import YouTubeAuthRequired
+    from webapp.environment import DownloadEnvironmentRequired
+    from webapp.downloads import DownloadLeaseLost
     from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
     store = TaskStore(directory)
     name = 'maintenance' if slot < 0 else str(slot)
@@ -318,7 +422,7 @@ def drain(directory, slot=0, role='all'):
 
             def report(value):
                 if not store.update_progress(task['id'], value, store.owner):
-                    raise RuntimeError('任务租约已失效，当前执行已停止。')
+                    raise DownloadLeaseLost('任务租约已失效，当前执行已停止。')
             # Redirect OS handles too, so FFmpeg stderr and Python logs stay together.
             sys.stdout.flush()
             sys.stderr.flush()
@@ -332,10 +436,10 @@ def drain(directory, slot=0, role='all'):
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
-                except BrowserEnvironmentRequired as error:
+                except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
                     store.set_downloads_paused(True)
                     store.release(task['id'], store.owner, str(error), delay=0)
-                    print(f'浏览器环境检查未通过，队列已停止，任务保留：{error}', flush=True)
+                    print(f'下载环境检查未通过，队列已停止，任务保留：{error}', flush=True)
                     break
                 except YouTubeAuthRequired as error:
                     from webapp.youtube_auth import YouTubeAuth
