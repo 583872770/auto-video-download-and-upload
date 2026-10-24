@@ -73,34 +73,32 @@ class WebsiteWaitTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(RuntimeError, expected) as error:
                         await probe(args, directory, report, download=False)
                 self.assertNotIn('PRIVATE_TEST_TOKEN', str(error.exception))
-                self.assertTrue((directory / 'page.png').is_file())
+                page.screenshot.assert_not_awaited()
+                self.assertFalse((directory / 'page.png').exists())
+                self.assertGreaterEqual(report['elapsed_seconds'], 0)
+                self.assertIn(report['stage'], report['stage_seconds'])
                 browser.close.assert_awaited_once()
                 process.terminate.assert_called_once()
 
 
 class WebsiteDiagnosticsTests(unittest.TestCase):
-    def test_failed_resolutions_preserve_only_latest_screenshot_and_safe_stage(self):
+    def test_failed_resolutions_keep_safe_timings_without_screenshots(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for screenshot in (b'first screenshot', b'latest screenshot', None):
-                async def fail(args, directory, report, **kwargs):
-                    report['stage'] = 'opening_site'
-                    if screenshot is not None:
-                        (directory / 'page.png').write_bytes(screenshot)
-                    raise RuntimeError('fixture navigation timeout')
+            async def fail(args, directory, report, **kwargs):
+                report.update(stage='opening_site', stage_seconds={'opening_site': 4.2}, elapsed_seconds=5)
+                raise RuntimeError('fixture navigation timeout')
 
-                with patch('webapp.yt5s.require_browser_environment', return_value='/fixture/chromium'), \
-                        patch('webapp.yt5s.probe', side_effect=fail), patch('builtins.print'):
-                    with self.assertRaisesRegex(RuntimeError, 'fixture navigation timeout'):
-                        resolve(VIDEO, {'proxy_mode': 'direct'}, root, root)
-                report = json.loads((root / 'yt5s/worker-0/last-failure.json').read_text(encoding='utf-8'))
-                self.assertEqual(report['stage'], 'opening_site')
-                self.assertEqual(report['screenshot_saved'], screenshot is not None)
-                if screenshot is not None:
-                    self.assertEqual((root / 'yt5s/worker-0/last-failure.png').read_bytes(), screenshot)
-                else:
-                    self.assertFalse((root / 'yt5s/worker-0/last-failure.png').exists())
-                self.assertEqual(list((root / 'yt5s/worker-0').glob('resolve-*')), [])
+            with patch('webapp.yt5s.require_browser_environment', return_value='/fixture/chromium'), \
+                    patch('webapp.yt5s.probe', side_effect=fail), patch('builtins.print'):
+                with self.assertRaisesRegex(RuntimeError, 'fixture navigation timeout'):
+                    resolve(VIDEO, {'proxy_mode': 'direct'}, root, root)
+            report = json.loads((root / 'yt5s/worker-0/last-failure.json').read_text(encoding='utf-8'))
+            self.assertEqual(report['stage'], 'opening_site')
+            self.assertEqual(report['stage_seconds'], {'opening_site': 4.2})
+            self.assertEqual(report['elapsed_seconds'], 5)
+            self.assertEqual(list(root.rglob('*.png')), [])
+            self.assertEqual(list((root / 'yt5s/worker-0').glob('resolve-*')), [])
 
 
 class WebsiteResponseTests(unittest.IsolatedAsyncioTestCase):

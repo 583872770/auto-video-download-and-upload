@@ -329,12 +329,15 @@ function renderRotation(data) {
   $('#rotation-draft-note').textContent = data.rotation_locked ? data.rotation_lock_reason : rotationDirty ? '有未保存的修改' : '保存后对待下载任务生效';
   $('#rotation-sequence').textContent = rotationDraft.nodes.length ? `轮换顺序：${rotationDraft.nodes.map((name, i) => `${i + 1}. ${name}`).join(' → ')}` : '请勾选至少两个节点。';
   $('#rotation-status').textContent = saved.enabled ? data.mode !== 'clash' ? '当前连接方式未使用 Clash，切换到 Clash 订阅代理后轮换才会生效。' : `${saved.worker_count > 1 ? '各进程独立计数 · 主进程：' : ''}当前配置已计数 ${saved.completed || 0} 个视频 · ${data.locked ? '当前轮换节点' : '下次下载使用'} ${saved.next_node} · ${saved.count_failures ? `再处理 ${saved.remaining} 个视频后轮换（含失败）` : `再成功下载 ${saved.remaining} 个视频后轮换`}` : '开启后可在所选节点之间自动循环。';
-  const nodeSignature = JSON.stringify([data.nodes.map(node => node.name), rotationDraft.nodes, locked]);
+  const nodeSignature = JSON.stringify([data.nodes.map(node => [node.name, node.delay]), rotationDraft.nodes, locked]);
   if (nodeSignature === rotationNodeSignature) return;
   rotationNodeSignature = nodeSignature;
   $('#rotation-nodes').innerHTML = data.nodes.length ? data.nodes.map(node => {
     const index = rotationDraft.nodes.indexOf(node.name);
-    return `<label class="rotation-node${index >= 0 ? ' checked' : ''}"><input type="checkbox" data-rotation-node="${escapeHTML(node.name)}"${index >= 0 ? ' checked' : ''}${locked ? ' disabled' : ''}><span>${escapeHTML(node.name)}</span>${index >= 0 ? `<b>${index + 1}</b>` : ''}</label>`;
+    const delay = node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
+    const delayClass = node.delay?.ms ? 'delay-ok' : node.delay ? 'delay-failed' : '';
+    const checkedAt = node.delay ? escapeHTML(formatDate(node.delay.checked_at, true)) : '';
+    return `<label class="rotation-node${index >= 0 ? ' checked' : ''}"><input type="checkbox" data-rotation-node="${escapeHTML(node.name)}"${index >= 0 ? ' checked' : ''}${locked ? ' disabled' : ''}><span>${escapeHTML(node.name)}</span><small class="rotation-node-delay ${delayClass}" title="${checkedAt}">${delay}</small>${index >= 0 ? `<b>${index + 1}</b>` : ''}</label>`;
   }).join('') : '<p class="micro-copy">导入订阅后可选择轮换节点。</p>';
 }
 async function clashAction(operation) {
@@ -395,41 +398,71 @@ function renderStorageSettings() {
   $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。切换前请先停止全部下载；保存后对尚未开始的任务生效。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。网盘保存待开发。';
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
-async function refresh() {
-  if (state.polling) return;
+const refreshedAt = {};
+async function refresh({ poll = false, viewChanged = false } = {}) {
+  if (state.polling) {
+    if (!poll || viewChanged) state.refreshQueued = true;
+    return;
+  }
   state.polling = true;
   try {
-    const [media, tasks, status, clash, overview, active] = await Promise.all([
-      api(`/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}`),
-      api(`/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}`),
-      api('/api/status'), api('/api/clash'), api('/api/overview'), api('/api/tasks?view=active&limit=100&order=asc')
-    ]);
-    const mediaChanged = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]) !== JSON.stringify([media.items, overview.media, overview.recent_media]);
-    state.overview = overview;
-    state.media = media.items;
-    state.tasks = tasks.items;
-    state.counts = overview.counts;
-    state.status = status;
-    renderDownloadControl();
-    state.clash = clash;
-    state.batchTasks = active.items;
-    pages.media.next = media.next_cursor;
-    pages.tasks.next = tasks.next_cursor;
-    if (mediaChanged) renderMedia();
-    renderTasks(); renderStatus(); renderClash(); renderPagination();
-    $('#media-directory').textContent = media.directory;
+    const view = location.hash.slice(1) || 'overview';
+    const stamp = Date.now();
+    const due = (name, visible, interval) => !poll || (visible && (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
+    const requests = {
+      media: due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
+      tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
+      status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
+      clash: due('clash', view === 'clash', 15000) ? '/api/clash' : null,
+      overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
+      active: due('active', view === 'overview', 2000) ? '/api/tasks?view=active&limit=100&order=asc' : null,
+    };
+    const entries = await Promise.all(Object.entries(requests).filter(([, path]) => path).map(async ([name, path]) => [name, await api(path)]));
+    const data = Object.fromEntries(entries);
+    for (const [name] of entries) refreshedAt[name] = stamp;
+    const { media, tasks, clash, overview, active } = data;
+    const mediaBefore = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]);
+    if (overview) { state.overview = overview; state.counts = overview.counts; }
+    if (media) { state.media = media.items; pages.media.next = media.next_cursor; }
+    if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
+    if (data.status) state.status = data.status;
+    if (clash) state.clash = clash;
+    if (active) state.batchTasks = active.items;
+    if ((media || overview) && mediaBefore !== JSON.stringify([state.media, state.overview.media, state.overview.recent_media])) renderMedia();
+    if (tasks || overview || active || data.status) renderTasks();
+    if (clash) renderClash();
+    if (data.status) { renderDownloadControl(); renderStatus(); }
+    renderPagination();
+    if (media) {
+      $('#media-directory').textContent = media.directory;
+      state.mediaDirectory = media.directory;
+    }
+    const status = state.status;
+    if (!status) return;
     const testStorage = status.storage_mode === 'test';
     $('#download-storage-label').textContent = testStorage ? '保存位置 · 测试模式' : '保存位置 · 指定目录';
-    $('#download-directory').textContent = testStorage ? '下载完成后自动删除本次文件，仅保留任务记录和日志。' : media.directory;
+    $('#download-directory').textContent = testStorage ? '下载完成后自动删除本次文件，仅保留任务记录和日志。' : state.mediaDirectory || '';
     $('#download-final-step').textContent = testStorage ? '完成后删除' : '保存到素材库';
-    $('#database-backend').textContent = `${status.database === 'postgresql' ? 'PostgreSQL 已连接' : 'SQLite 便携模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
+    $('#database-backend').textContent = `${status.database === 'mysql' ? 'MySQL 已连接' : status.database === 'postgresql' ? 'PostgreSQL 已连接' : 'SQLite 便携模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
     $('#worker-status').hidden = !paused.length;
     $('#worker-status').textContent = paused.map(worker => worker.message).join('；');
     if (state.selectedTask && $('#task-dialog').open) await updateTaskDetail();
-  } finally { state.polling = false; }
+  } finally {
+    state.polling = false;
+    if (state.refreshQueued) {
+      state.refreshQueued = false;
+      queueMicrotask(() => refresh().catch(error => toast(error.message, true)));
+    }
+  }
 }
+document.addEventListener('viewchange', () => {
+  if (state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
+});
 
 function renderDownloadControl() {
   const queue = state.status?.download_queue;
@@ -695,7 +728,7 @@ async function init() {
   let failures = 0;
   setInterval(async () => {
     if (document.hidden) return;
-    try { await refresh(); failures = 0; }
+    try { await refresh({ poll: true }); failures = 0; }
     catch { failures += 1; if (failures === 3) toast('暂时无法连接服务，正在自动重试。', true); }
   }, 2000);
 }

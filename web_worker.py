@@ -162,7 +162,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 progress.state['rotation_id'] = rotation_id
                 print(f'自动轮换：已计数 {completed} 个视频，每 {rotation["every"]} 个切换节点。', flush=True)
             progress.save(force=True)
-            config = {**config, '_resolved_clash_proxy': snapshot['proxy']}
+            config = {**config, '_resolved_clash_proxy': snapshot['proxy'],
+                      '_resolved_clash_node': snapshot.get('node', '')}
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
@@ -471,9 +472,8 @@ def drain(directory, slot=0, role='all'):
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)
                     store.worker_status(store.owner, name, 'idle')
-            from webapp.maintenance import cleanup_logs, trim_log
+            from webapp.maintenance import trim_log
             trim_log(store, task['id'], runtime.get('max_log_mb', config.get('max_log_mb', 10)))
-            cleanup_logs(store, runtime.get('log_retention_days', config.get('log_retention_days', 0)))
 
 
 if __name__ == '__main__':

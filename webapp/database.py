@@ -32,6 +32,7 @@ tasks = Table('tasks', metadata,
     Column('logs_pruned', Integer, nullable=False, server_default='0'),
     Column('available_at', Float, nullable=False, server_default='0'))
 Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
+Index('ix_tasks_dispatch', tasks.c.action, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
 _finished = tasks.c.status.in_(('succeeded', 'failed', 'interrupted'))
@@ -174,7 +175,13 @@ class Database:
                 if self.url.startswith('mysql:') or self.url.startswith('mysql+pymysql:'):
                     options.update(isolation_level='READ COMMITTED', connect_args={
                         'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 60, 'write_timeout': 60})
-                engine = create_engine(self.url, poolclass=NullPool, hide_parameters=True, **options)
+                if self.url.startswith('sqlite:'):
+                    options['poolclass'] = NullPool
+                else:
+                    # Engines are process-local: bound both idle and busy connections.
+                    options.update(pool_size=2, max_overflow=0, pool_timeout=15,
+                                   pool_pre_ping=True, pool_recycle=300)
+                engine = create_engine(self.url, hide_parameters=True, **options)
                 if engine.dialect.name == 'sqlite':
                     @event.listens_for(engine, 'connect')
                     def configure(dbapi, _):

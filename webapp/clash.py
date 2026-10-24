@@ -1,6 +1,8 @@
 """Project-owned Mihomo process, private subscriptions and public node summaries."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime
 import json
 import os
@@ -27,6 +29,8 @@ MAX_WORKERS = 16
 _manager_locks = {}
 _manager_locks_guard = threading.Lock()
 _core_children = {}
+_node_cache = OrderedDict()
+_node_cache_lock = threading.Lock()
 
 
 def is_notice(name):
@@ -200,7 +204,21 @@ class ClashManager:
 
     def nodes(self):
         path = self.directory / 'nodes.yaml'
-        return parse_subscription(path.read_bytes()) if path.is_file() else []
+        with _node_cache_lock:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                _node_cache.pop(path, None)
+                return []
+            version = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+            cached = _node_cache.get(path)
+            if cached is None or cached[0] != version:
+                cached = (version, parse_subscription(path.read_bytes()))
+                _node_cache[path] = cached
+            _node_cache.move_to_end(path)
+            while len(_node_cache) > 8:
+                _node_cache.popitem(last=False)
+            return deepcopy(cached[1])
 
     def api(self, path, method='GET', data=None, timeout=2):
         url = f'http://127.0.0.1:{self.config["control_port"]}{path}'

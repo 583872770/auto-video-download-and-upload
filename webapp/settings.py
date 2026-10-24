@@ -20,12 +20,14 @@ DEFAULTS = {
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
     'download_method': 'yt_dlp', 'yt5s_quality': '360', 'yt5s_browser_count': 2,
+    'fragment_concurrency': 4,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
-                   'download_method', 'yt5s_quality', 'yt5s_browser_count'}
+                   'download_method', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency'}
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
-                  'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16)}
+                  'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
+                  'fragment_concurrency': (1, 16)}
 
 
 def urls_from(value):

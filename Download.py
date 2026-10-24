@@ -42,7 +42,7 @@ def build_ydl_options(config, base):
         'writeautomaticsub': True,
         'writeinfojson': True,
         'writethumbnail': True,
-        'concurrent_fragment_downloads': 16,
+        'concurrent_fragment_downloads': int(config.get('fragment_concurrency', 4)),
         'http_chunk_size': 10 * 1024 * 1024,
         'windowsfilenames': True,
     }

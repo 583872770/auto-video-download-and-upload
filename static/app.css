@@ -29,6 +29,9 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .rotation-node{display:flex;align-items:center;gap:9px;padding:12px;border:1px solid var(--line);border-radius:6px;font-size:11px;min-width:0;cursor:pointer}
 .rotation-node.checked{border-color:#b3c29e;background:#f6f9ef}
 .rotation-node span{flex:1;overflow-wrap:anywhere}
+.rotation-node-delay{flex-shrink:0;color:#829274;font-size:10px;white-space:nowrap}
+.rotation-node-delay.delay-ok{color:#62884d}
+.rotation-node-delay.delay-failed{color:#b06c55}
 .rotation-node b{display:grid;place-items:center;flex-shrink:0;width:20px;height:20px;border-radius:50%;background:#e5edda;color:#6d8554;font-size:10px}
 .rotation-status{font-size:12px;line-height:1.9;color:#6d8554;overflow-wrap:anywhere}
 .rotation-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px}

@@ -41,6 +41,7 @@ class TaskRunner:
     def _watch(self):
         last_recovery = 0
         last_error = 0
+        last_cleanup = 0
         while not self.stop.is_set():
             try:
                 if time.time() - last_recovery > 15:
@@ -48,17 +49,32 @@ class TaskRunner:
                     last_recovery = time.time()
                 config = self.settings()
                 count = max(1, min(16, int(config.get('worker_count', 1))))
+                if time.monotonic() - last_cleanup >= 60:
+                    from web_worker import worker_lock
+                    from webapp.maintenance import cleanup_logs
+                    with worker_lock(self.store.directory / 'log-maintenance.lock') as acquired:
+                        if acquired:
+                            cleanup_logs(self.store, config.get('log_retention_days', 0))
+                    last_cleanup = time.monotonic()
                 if self.store.downloads_paused():
                     from webapp.control import stop_downloads
                     stop_downloads(self.store)
-                if self.store.pending(runnable=True):
+                role_counts = self.store.runnable_counts()
+                roles = set(role_counts)
+                if role_counts.get('download'):
+                    roles.add('regular')
+                if roles:
                     for slot in [-1, *range(count)]:
+                        role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
+                        if role not in roles:
+                            continue
+                        if role == 'download' and slot >= max(1, min(count, role_counts['download'])):
+                            continue
                         previous = self.processes.get(slot)
                         if previous is not None and previous.poll() is None:
                             continue
                         if time.monotonic() - self.last_started.get(slot, 0) < 5:
                             continue
-                        role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
                         env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1')
                         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
                         process = subprocess.Popen(

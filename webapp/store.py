@@ -275,6 +275,41 @@ class TaskStore:
         values = self.counts(actions=actions)
         return bool(values.get('queued', 0) + values.get('running', 0))
 
+    def runnable_roles(self):
+        """Dispatch only queues with a due task, including after retry backoff."""
+        with self.connect() as db:
+            paused = self.downloads_paused(db)
+            queued = db.execute(select(counters.c.scope).where(
+                counters.c.status == 'queued', counters.c.value > 0,
+                counters.c.scope.like('action:%'))).scalars().all()
+            roles = set()
+            for scope in queued:
+                action = scope.removeprefix('action:')
+                if paused and action in ('download', 'import'):
+                    continue
+                due = db.execute(select(tasks.c.id).where(
+                    tasks.c.action == action, tasks.c.status == 'queued',
+                    tasks.c.available_at <= time.time()).limit(1)).first()
+                if due:
+                    roles.update(('download', 'regular') if action == 'download' else
+                                 ('maintenance',) if action in ('import', 'index') else ('regular',))
+            return roles
+
+    def runnable_counts(self):
+        """Small due-count snapshot used to avoid launching idle worker slots."""
+        with self.connect() as db:
+            paused = self.downloads_paused(db)
+            statement = select(tasks.c.action).where(
+                tasks.c.status == 'queued', tasks.c.available_at <= time.time())
+            counts = {}
+            for action in db.execute(statement).scalars():
+                if paused and action in ('download', 'import'):
+                    continue
+                role = ('download' if action == 'download' else
+                        'maintenance' if action in ('import', 'index') else 'regular')
+                counts[role] = counts.get(role, 0) + 1
+            return counts
+
     def downloads_paused(self, db=None, *, lock=False):
         if db is None:
             with self.connect() as connection:

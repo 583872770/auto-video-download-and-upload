@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
 import subprocess
 import tempfile
 import time
@@ -171,167 +170,147 @@ def site_timeout_message(stage, timeout):
     return messages.get(stage, '方式二网站操作超时，请检查当前节点及远程桌面中的网页。')
 
 
-async def probe(args, directory, report, *, download=True, on_stage=None):
+async def probe(args, directory, report, *, download=True, on_stage=None, browser_owner=None):
+    from webapp.yt5s_browser import NativeBrowser
+
+    started = changed = time.monotonic()
+
     def stage(value):
+        nonlocal changed
+        stamp = time.monotonic()
+        previous = report.get('stage')
+        if previous:
+            report.setdefault('stage_seconds', {})[previous] = round(stamp - changed, 3)
         report['stage'] = value
+        changed = stamp
         if on_stage:
             on_stage(value)
 
     stage('starting_browser')
     print('方式二浏览器连接：' + ('HTTP(S) 代理。' if args.proxy else '直连；如需代理，请确认任务创建时已启用。'), flush=True)
-    with socket.socket() as listener:
-        listener.bind(('127.0.0.1', 0))
-        port = listener.getsockname()[1]
     pending = set()
     resolved = asyncio.Event()
     converted = asyncio.Event()
     state = {}
-    # A fresh test profile; never open the user's normal browser profile.
-    with tempfile.TemporaryDirectory(prefix='yt5s-probe-', ignore_cleanup_errors=True) as profile:
-        command = [browser_executable(getattr(args, 'browser_executable', '')), f'--user-data-dir={profile}', f'--remote-debugging-port={port}',
-                   '--remote-debugging-address=127.0.0.1', '--no-first-run',
-                   '--no-default-browser-check', '--start-maximized']
-        if os.environ.get('YT5S_PROBE_CONTAINER') == '1' or os.environ.get('YT5S_CONTAINER_BROWSER') == '1':
-            command.append('--no-sandbox')
-        if args.proxy:
-            command.append('--proxy-server=' + args.proxy)
-        command.append('about:blank')
-        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            address = f'http://127.0.0.1:{port}'
-            deadline = time.monotonic() + 20
-            # CDP remains accessible only on the loopback interface.
-            opener = build_opener(ProxyHandler({}))
-            while True:
-                try:
-                    with opener.open(address + '/json/version', timeout=1) as response:
-                        response.read()
-                    break
-                except OSError:
-                    if process.poll() is not None or time.monotonic() >= deadline:
-                        raise RuntimeError('原生浏览器启动失败，请检查显示环境和浏览器安装。')
-                    await asyncio.sleep(0.2)
-            async with async_playwright() as driver:
-                stage('connecting_browser')
-                browser = await driver.chromium.connect_over_cdp(address, timeout=20000)
-                page = None
-                try:
-                    page = await browser.contexts[0].new_page()
-
-                    async def response_seen(response):
-                        if not any(path in response.url for path in ('/mates/en/analyze/ajax', '/mates/en/convert')):
-                            return
-                        step = 'analyze' if '/analyze/' in response.url else 'convert'
-                        entry = {'step': step, 'http_status': response.status}
-                        data = None
-                        try:
-                            data = await asyncio.wait_for(response.json(), timeout=15)
-                        except Exception:
-                            entry['json_response'] = False
-                        error = response_error(step, response.status, data)
-                        if error:
-                            state[step + '_error'] = error
-                        if isinstance(data, dict):
-                            entry.update(status=data.get('status'),
-                                         verification_failed='verification failed' in str(data.get('result', '')).lower())
-                            if step == 'analyze':
-                                state['analyze_status'] = data.get('status')
-                            if not error and data.get('downloadUrlX'):
-                                state['download_url'] = data['downloadUrlX']
-                                converted.set()
-                        if step == 'convert' and error:
-                            converted.set()
-                        report['responses'].append(entry)
-                        print(json.dumps(entry, ensure_ascii=False), flush=True)
-                        if step == 'analyze':
-                            resolved.set()
-
-                    def received(response):
-                        if '/mates/en/' in response.url:
-                            operation = asyncio.create_task(response_seen(response))
-                            pending.add(operation)
-                            operation.add_done_callback(pending.discard)
-
-                    page.on('response', received)
-                    stage('opening_site')
-                    print('正在打开 yt5s 网页，最多等待 45 秒。', flush=True)
-                    response = await page.goto('https://yt5s.biz/enwr200/', wait_until='domcontentloaded', timeout=45000)
-                    print(f'yt5s 网页已响应，HTTP {response.status if response else "未知"}。', flush=True)
-                    stage('waiting_site_form')
-                    await page.locator('#txt-url').fill('https://www.youtube.com/watch?v=' + args.video_id, timeout=30000)
-                    stage('submitting_site')
-                    await page.locator('#btn-submit').click(timeout=30000)
-                    stage('waiting_verification')
-                    print(f'等待网站验证与解析，最多 {args.timeout} 秒；需要时可在远程桌面中操作。', flush=True)
-                    try:
-                        await wait_for_site(resolved, args.timeout, '网站验证与解析')
-                        if state.get('analyze_error'):
-                            raise state['analyze_error']
-                        if state.get('analyze_status') != 'success':
-                            raise RuntimeError('网站解析失败，本次验证未得到下载选项。')
-                        report['analysis_succeeded'] = True
-                        stage('extracting')
-                        title = await page.locator('#video_title').inner_text()
-                        thumbnail = await page.locator('#result .img-thumbnail').get_attribute('src')
-                        duration_text = await page.locator('#result .caption p').inner_text()
-                        duration_match = re.search(r'(\d+:\d+(?::\d+)?)', duration_text)
-                        duration = None
-                        if duration_match:
-                            duration = 0
-                            for part in duration_match[1].split(':'):
-                                duration = duration * 60 + int(part)
-                        link = page.locator('#result tr').filter(
-                            has_text=re.compile(r'\b' + args.quality + r'p\b')).first.locator('a, button').filter(
-                                has_text='Download').first
-                        await link.wait_for(state='visible', timeout=15000)
-                        href = await link.get_attribute('href')
-                        if href and href.startswith(('https://', 'http://')):
-                            state['download_url'] = href
-                        else:
-                            stage('converting')
-                            await link.click()
-                            await wait_for_site(converted, args.timeout, '网站视频转换')
-                            if state.get('convert_error'):
-                                raise state['convert_error']
-                        # No YouTube credentials or challenge tokens are exported.
-                        if not download:
-                            return {'id': args.video_id, 'title': title.strip() or args.video_id,
-                                    'url': state['download_url'], 'ext': 'mp4', 'duration': duration,
-                                    'thumbnail': thumbnail, 'height': int(args.quality),
-                                    'webpage_url': 'https://www.youtube.com/watch?v=' + args.video_id,
-                                    'extractor': 'youtube', 'extractor_key': 'Youtube',
-                                    'http_headers': {'Referer': 'https://yt5s.biz/'}}
-                        report['download'] = await asyncio.to_thread(transfer, state['download_url'], directory, args)
-                        report['success'] = True
-                    finally:
-                        try:
-                            await page.screenshot(path=str(directory / 'page.png'), timeout=5000)
-                        except Exception:
-                            pass
-                finally:
-                    # Also capture failures before submission, such as a blocked landing page.
-                    if page is not None and not (directory / 'page.png').is_file():
-                        try:
-                            await page.screenshot(path=str(directory / 'page.png'), timeout=5000)
-                        except Exception:
-                            pass
-                    for operation in list(pending):
-                        operation.cancel()
-                    await asyncio.gather(*list(pending), return_exceptions=True)
-                    try:
-                        await asyncio.wait_for(browser.close(), timeout=10)
-                    except Exception:
-                        pass  # The native process is terminated below as well.
-        except (TimeoutError, BrowserTimeoutError):
-            raise WebsiteTimeoutError(site_timeout_message(report.get('stage'), args.timeout)) from None
-        finally:
-            if process.poll() is None:
-                process.terminate()
+    owner = browser_owner or NativeBrowser()
+    try:
+        report['browser_reused'] = owner.process is not None and owner.process.poll() is None
+        address = await owner.start(args)
+        async with async_playwright() as driver:
+            stage('connecting_browser')
+            browser = await driver.chromium.connect_over_cdp(address, timeout=20000)
+            context = browser.contexts[0]
+            existing_pages = set(context.pages)
+            page = None
             try:
-                await asyncio.to_thread(process.wait, timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                await asyncio.to_thread(process.wait, timeout=5)
+                page = await context.new_page()
+
+                async def response_seen(response):
+                    if not any(path in response.url for path in ('/mates/en/analyze/ajax', '/mates/en/convert')):
+                        return
+                    step = 'analyze' if '/analyze/' in response.url else 'convert'
+                    entry = {'step': step, 'http_status': response.status}
+                    data = None
+                    try:
+                        data = await asyncio.wait_for(response.json(), timeout=15)
+                    except Exception:
+                        entry['json_response'] = False
+                    error = response_error(step, response.status, data)
+                    if error:
+                        state[step + '_error'] = error
+                    if isinstance(data, dict):
+                        entry.update(status=data.get('status'),
+                                     verification_failed='verification failed' in str(data.get('result', '')).lower())
+                        if step == 'analyze':
+                            state['analyze_status'] = data.get('status')
+                        if not error and data.get('downloadUrlX'):
+                            state['download_url'] = data['downloadUrlX']
+                            converted.set()
+                    if step == 'convert' and error:
+                        converted.set()
+                    report['responses'].append(entry)
+                    print(json.dumps(entry, ensure_ascii=False), flush=True)
+                    if step == 'analyze':
+                        resolved.set()
+
+                def received(response):
+                    if '/mates/en/' in response.url:
+                        operation = asyncio.create_task(response_seen(response))
+                        pending.add(operation)
+                        operation.add_done_callback(pending.discard)
+
+                page.on('response', received)
+                stage('opening_site')
+                print('正在打开 yt5s 网页，最多等待 45 秒。', flush=True)
+                response = await page.goto('https://yt5s.biz/enwr200/', wait_until='domcontentloaded', timeout=45000)
+                print(f'yt5s 网页已响应，HTTP {response.status if response else "未知"}。', flush=True)
+                stage('waiting_site_form')
+                await page.locator('#txt-url').fill('https://www.youtube.com/watch?v=' + args.video_id, timeout=30000)
+                stage('submitting_site')
+                await page.locator('#btn-submit').click(timeout=30000)
+                stage('waiting_verification')
+                print(f'等待网站验证与解析，最多 {args.timeout} 秒；需要时可在远程桌面中操作。', flush=True)
+                await wait_for_site(resolved, args.timeout, '网站验证与解析')
+                if state.get('analyze_error'):
+                    raise state['analyze_error']
+                if state.get('analyze_status') != 'success':
+                    raise RuntimeError('网站解析失败，本次验证未得到下载选项。')
+                report['analysis_succeeded'] = True
+                stage('extracting')
+                title = await page.locator('#video_title').inner_text()
+                thumbnail = await page.locator('#result .img-thumbnail').get_attribute('src')
+                duration_text = await page.locator('#result .caption p').inner_text()
+                duration_match = re.search(r'(\d+:\d+(?::\d+)?)', duration_text)
+                duration = None
+                if duration_match:
+                    duration = 0
+                    for part in duration_match[1].split(':'):
+                        duration = duration * 60 + int(part)
+                link = page.locator('#result tr').filter(
+                    has_text=re.compile(r'\b' + args.quality + r'p\b')).first.locator('a, button').filter(
+                        has_text='Download').first
+                await link.wait_for(state='visible', timeout=15000)
+                href = await link.get_attribute('href')
+                if href and href.startswith(('https://', 'http://')):
+                    state['download_url'] = href
+                else:
+                    stage('converting')
+                    await link.click()
+                    await wait_for_site(converted, args.timeout, '网站视频转换')
+                    if state.get('convert_error'):
+                        raise state['convert_error']
+                # No YouTube credentials or challenge tokens are exported.
+                if not download:
+                    return {'id': args.video_id, 'title': title.strip() or args.video_id,
+                            'url': state['download_url'], 'ext': 'mp4', 'duration': duration,
+                            'thumbnail': thumbnail, 'height': int(args.quality),
+                            'webpage_url': 'https://www.youtube.com/watch?v=' + args.video_id,
+                            'extractor': 'youtube', 'extractor_key': 'Youtube',
+                            'http_headers': {'Referer': 'https://yt5s.biz/'}}
+                report['download'] = await asyncio.to_thread(transfer, state['download_url'], directory, args)
+                report['success'] = True
+            finally:
+                for operation in list(pending):
+                    operation.cancel()
+                await asyncio.gather(*list(pending), return_exceptions=True)
+                try:
+                    if browser_owner is None:
+                        await asyncio.wait_for(browser.close(), timeout=10)
+                    else:
+                        # Close this task's page and any site popups before reuse.
+                        opened = set(context.pages) - existing_pages
+                        if page is not None:
+                            opened.add(page)
+                        await asyncio.wait_for(asyncio.gather(*(item.close() for item in opened)), timeout=5)
+                except Exception:
+                    await asyncio.to_thread(owner.close)
+    except (TimeoutError, BrowserTimeoutError):
+        raise WebsiteTimeoutError(site_timeout_message(report.get('stage'), args.timeout)) from None
+    finally:
+        report.setdefault('stage_seconds', {})[report.get('stage', 'unknown')] = round(time.monotonic() - changed, 3)
+        report['elapsed_seconds'] = round(time.monotonic() - started, 3)
+        if browser_owner is None:
+            await asyncio.to_thread(owner.close)
 
 
 def main(argv=None):
@@ -365,7 +344,7 @@ def main(argv=None):
         report.update(error_type='Interrupted', error='本次验证已取消。')
     except Exception as error:
         # Browser/HTTP exception strings may contain signed URLs or proxy secrets.
-        report.update(error_type=type(error).__name__, error='验证未完成，请查看 page.png 和失败阶段。')
+        report.update(error_type=type(error).__name__, error='验证未完成，请查看 report.json 中的失败阶段及耗时。')
     (directory / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
     print('验证结果目录：' + str(directory), flush=True)
@@ -377,7 +356,7 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     from types import SimpleNamespace
     from webapp.settings import validate_method_urls
     from webapp.store import source_identity
-    from webapp.browser_pool import browser_slot
+    from webapp.yt5s_browser import session
 
     validate_method_urls({**config, 'download_method': 'yt5s'}, [url])
     video_id, _ = source_identity(url)
@@ -398,8 +377,8 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
             on_stage('waiting_browser')
 
     capacity = browser_capacity if browser_capacity is not None else config.get('yt5s_browser_count', 2)
-    with browser_slot(directory, capacity, waiting, preferred=worker_slot) as slot:
-        print(f'yt5s 下载进程 {worker_slot + 1} 使用独立浏览器，浏览器名额 {slot + 1}。', flush=True)
+    signature = (executable, proxy, config.get('_resolved_clash_node', ''))
+    with session(directory, worker_slot).use(directory, capacity, waiting, worker_slot, signature) as owner:
         args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', '360'),
                                timeout=180, proxy=proxy, browser_executable=executable)
         report = {'responses': []}
@@ -407,24 +386,18 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
             with tempfile.TemporaryDirectory(prefix='resolve-', dir=diagnostics) as temporary:
                 try:
                     return asyncio.run(probe(args, Path(temporary), report,
-                                             download=False, on_stage=on_stage))
+                                             download=False, on_stage=on_stage, browser_owner=owner))
                 except Exception:
                     try:
-                        screenshot = Path(temporary) / 'page.png'
-                        target = diagnostics / 'last-failure.png'
-                        saved = screenshot.is_file()
-                        if saved:
-                            screenshot.replace(target)
-                            print('方式二最近失败截图已保留：' + str(target), flush=True)
-                        else:
-                            target.unlink(missing_ok=True)
                         (diagnostics / 'last-failure.json').write_text(json.dumps({
                             'video_id': video_id, 'stage': report.get('stage'), 'worker_slot': worker_slot,
                             'responses': report.get('responses', []),
-                            'screenshot_saved': saved, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                            'stage_seconds': report.get('stage_seconds', {}),
+                            'elapsed_seconds': report.get('elapsed_seconds'),
+                            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
                         }, ensure_ascii=False), encoding='utf-8')
                     except OSError:
-                        pass  # Diagnostics must not replace the original failure.
+                        pass
                     raise
         except RuntimeError:
             raise

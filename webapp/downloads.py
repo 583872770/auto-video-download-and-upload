@@ -73,11 +73,12 @@ class DownloadProgress:
         self.save(force=True)
 
     def save(self, force=False):
-        if force or time.monotonic() - self.last_write >= 0.5:
+        if force or time.monotonic() - self.last_write >= 1.5:
             self.write(dict(self.state))
             self.last_write = time.monotonic()
 
     def hook(self, event):
+        previous_stage = self.state['stage']
         info = event.get('info_dict') or {}
         # Subtitle downloads have their own progress hooks; keep the video meter separate.
         if info.get('ext') in ('vtt', 'srt', 'ass', 'ttml', 'srv1', 'srv2', 'srv3', 'json3'):
@@ -106,7 +107,7 @@ class DownloadProgress:
                           total_bytes=all_total, speed=None if finished else number(event.get('speed')),
                           eta=None if finished else number(event.get('eta')), title=str(info.get('title') or self.state['title']),
                           format=f'{format_name} · {info.get("format_id", "")}')
-        self.save(force=finished)
+        self.save(force=finished or previous_stage != self.state['stage'])
 
     def postprocess(self, event):
         info = event.get('info_dict') or {}

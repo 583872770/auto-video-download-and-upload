@@ -99,7 +99,7 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(Path(options['outtmpl']).parent, root / 'media' / 'batch')
             # Instantiate the real library to check API compatibility without networking.
             with YoutubeDL({**options, 'quiet': True}) as downloader:
-                self.assertEqual(downloader.params['concurrent_fragment_downloads'], 16)
+                self.assertEqual(downloader.params['concurrent_fragment_downloads'], 4)
                 self.assertEqual(downloader.params['http_chunk_size'], 10485760)
                 self.assertIs(downloader.params['writethumbnail'], True)
 

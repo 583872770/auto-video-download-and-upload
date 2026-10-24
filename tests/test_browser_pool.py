@@ -147,7 +147,6 @@ class BrowserPoolTests(unittest.TestCase):
             seen.append((args.proxy, directory))
             await asyncio.to_thread(arrived.wait, 5)
             report['stage'] = 'opening_site'
-            (directory / 'page.png').write_bytes(args.proxy.encode())
             raise RuntimeError('fixture website failure')
 
         def run(index):
@@ -162,7 +161,7 @@ class BrowserPoolTests(unittest.TestCase):
         self.assertEqual(len({path for _, path in seen}), 2)
         for index in range(2):
             directory = self.root / 'yt5s' / f'worker-{index}'
-            self.assertEqual((directory / 'last-failure.png').read_text(), f'http://127.0.0.1:{18000 + index}')
+            self.assertFalse((directory / 'last-failure.png').exists())
             report = json.loads((directory / 'last-failure.json').read_text(encoding='utf-8'))
             self.assertEqual(report['worker_slot'], index)
             self.assertEqual(list(directory.glob('resolve-*')), [])
