@@ -30,6 +30,30 @@ class WebsiteTimeoutError(RuntimeError):
     """A website step timed out; retain normal queue retry/backoff behavior."""
 
 
+class WebsiteHTTPError(RuntimeError):
+    """Keep the website status separate from translated user-facing messages."""
+    def __init__(self, step, status):
+        self.status = status
+        self.retryable = status in (408, 429, 500, 502, 503, 504)
+        label = '解析' if step == 'analyze' else '转换'
+        super().__init__(f'yt5s {label}接口返回 HTTP {status}，可能是网站上游故障或当前出口受限。')
+
+
+def response_error(step, http_status, data):
+    label = '解析' if step == 'analyze' else '转换'
+    if isinstance(data, dict) and 'verification failed' in str(data.get('result', '')).lower():
+        return RuntimeError('yt5s 网站验证未通过，请在远程桌面查看提示或更换节点。')
+    if http_status >= 400:
+        return WebsiteHTTPError(step, http_status)
+    if not isinstance(data, dict):
+        return RuntimeError(f'yt5s {label}接口未返回有效数据（HTTP {http_status}）；请查看远程桌面或检查节点。')
+    # Some upstream failures are JSON business statuses inside an HTTP 200.
+    status = str(data.get('status', ''))
+    if status.isascii() and status.isdigit() and 400 <= int(status) <= 599:
+        return WebsiteHTTPError(step, int(status))
+    return None
+
+
 def display_available():
     return os.name == 'nt' or bool(os.environ.get('DISPLAY'))
 
@@ -199,23 +223,24 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                             return
                         step = 'analyze' if '/analyze/' in response.url else 'convert'
                         entry = {'step': step, 'http_status': response.status}
+                        data = None
                         try:
                             data = await asyncio.wait_for(response.json(), timeout=15)
-                            entry.update(status=data.get('status'),
-                                         verification_failed='Verification failed' in str(data.get('result', '')))
-                            if step == 'analyze':
-                                state['analyze_status'] = data.get('status')
-                                if response.status >= 400:
-                                    state['analyze_error'] = f'yt5s 解析接口返回 HTTP {response.status}，请检查节点或网站访问限制。'
-                                if entry['verification_failed']:
-                                    state['analyze_error'] = 'yt5s 网站验证未通过，请在远程桌面查看提示或更换节点。'
-                            if data.get('downloadUrlX'):
-                                state['download_url'] = data['downloadUrlX']
-                                converted.set()
                         except Exception:
                             entry['json_response'] = False
+                        error = response_error(step, response.status, data)
+                        if error:
+                            state[step + '_error'] = error
+                        if isinstance(data, dict):
+                            entry.update(status=data.get('status'),
+                                         verification_failed='verification failed' in str(data.get('result', '')).lower())
                             if step == 'analyze':
-                                state['analyze_error'] = f'yt5s 解析接口未返回有效数据（HTTP {response.status}）；请查看远程桌面或检查节点。'
+                                state['analyze_status'] = data.get('status')
+                            if not error and data.get('downloadUrlX'):
+                                state['download_url'] = data['downloadUrlX']
+                                converted.set()
+                        if step == 'convert' and error:
+                            converted.set()
                         report['responses'].append(entry)
                         print(json.dumps(entry, ensure_ascii=False), flush=True)
                         if step == 'analyze':
@@ -241,7 +266,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                     try:
                         await wait_for_site(resolved, args.timeout, '网站验证与解析')
                         if state.get('analyze_error'):
-                            raise RuntimeError(state['analyze_error'])
+                            raise state['analyze_error']
                         if state.get('analyze_status') != 'success':
                             raise RuntimeError('网站解析失败，本次验证未得到下载选项。')
                         report['analysis_succeeded'] = True
@@ -266,6 +291,8 @@ async def probe(args, directory, report, *, download=True, on_stage=None):
                             stage('converting')
                             await link.click()
                             await wait_for_site(converted, args.timeout, '网站视频转换')
+                            if state.get('convert_error'):
+                                raise state['convert_error']
                         # No YouTube credentials or challenge tokens are exported.
                         if not download:
                             return {'id': args.video_id, 'title': title.strip() or args.video_id,
@@ -388,6 +415,7 @@ def resolve(url, config, base, directory, on_stage=None):
                                     target.unlink(missing_ok=True)
                                 (directory / 'last-failure.json').write_text(json.dumps({
                                     'video_id': video_id, 'stage': report.get('stage'),
+                                    'responses': report.get('responses', []),
                                     'screenshot_saved': saved, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
                                 }, ensure_ascii=False), encoding='utf-8')
                             except OSError:

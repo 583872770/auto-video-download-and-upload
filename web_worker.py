@@ -270,7 +270,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 def drain(directory, slot=0, role='all'):
     from webapp.youtube_auth import YouTubeAuthRequired
-    from webapp.yt5s import BrowserEnvironmentRequired, WebsiteTimeoutError
+    from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
     store = TaskStore(directory)
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
@@ -347,9 +347,13 @@ def drain(directory, slot=0, role='all'):
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = str(error) or type(error).__name__
-                    transient = isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
-                                    'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504'))
+                    transient = (error.retryable if isinstance(error, WebsiteHTTPError) else
+                                 isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
+                                    'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)
+                    current = store.get(task['id'])
+                    if current and current['status'] == 'queued':
+                        print(f'临时错误，已安排自动重试；本次为第 {current["attempts"]}/{current["max_attempts"]} 次尝试。', flush=True)
                     if not isinstance(error, Exception):
                         raise
                 finally:

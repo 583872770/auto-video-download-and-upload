@@ -38,6 +38,8 @@ docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 
 
 方式二会记录当前浏览器使用直连还是 HTTP(S) 代理，并区分网页加载（45 秒）、等待输入框/提交（各 30 秒）、网站验证与解析（180 秒）以及视频转换（180 秒）。验证和转换等待期间每 10 秒打印已等待时长；这时尚未传输视频文件。超时提示会注明具体阶段。
 
+首页 HTTP 200 只表示网页打开成功，提交视频后的解析、转换接口仍可能返回 502。`verification_failed: false` 表示该响应没有报告验证失败，不能据此保证视频能够解析。解析或转换遇到 408、429、500、502、503、504 时，会按任务保存的最多尝试次数退避重试，日志显示“已安排自动重试”；明确的验证失败和普通 403 不按这类临时错误重试。若同一节点能解析某个视频、另一个持续 502，应分别检查该视频及网站解析能力，不能仅用首页连通或节点延迟判断。
+
 “保存并更新订阅”只会启用后续新建任务的 Clash 连接方式；旧任务不会因页面改成 Clash 而自动切换。已有大量排队任务时，无需重新导入清单：
 
 1. 在首页点击“停止全部下载”，等待正在下载的任务停止。
@@ -46,7 +48,7 @@ docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 
 
 应用连接只覆盖当前已有下载及导入任务的网络设置，保留原来的下载方式、画质、视频清单和任务记录；后续新建任务仍使用创建时的设置。手动代理和直连也可按此流程应用。应用操作不会恢复队列，也不会逐条改写百万条任务，设置跨重启保存；之后再次修改页面连接时，需再次点击应用按钮才能更新已有队列。Clash 任务应显示“下载代理节点”日志；正式服务中的浏览器和文件下载使用同一个解析后的代理地址。
 
-失败截图只保留最近一次，位于容器 `/app/.cache/web/yt5s/last-failure.png`，阶段信息保存在同目录的 `last-failure.json`；不会按百万条失败任务累计截图。若浏览器启动前就失败，可能无法生成截图，可查看 JSON 中的 `screenshot_saved`。在部署服务器执行（保持原项目名称）：
+失败截图只保留最近一次，位于容器 `/app/.cache/web/yt5s/last-failure.png`，阶段及接口状态信息保存在同目录的 `last-failure.json`；不会按百万条失败任务累计截图。若浏览器启动前就失败，可能无法生成截图，可查看 JSON 中的 `screenshot_saved`。在部署服务器执行（保持原项目名称）：
 
 ```bash
 docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/last-failure.png ./yt5s-last-failure.png

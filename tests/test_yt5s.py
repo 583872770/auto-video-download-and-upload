@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app import create_app
 from Utils.runtime import configure_runtime
 from webapp.settings import validate_settings
-from webapp.yt5s import BrowserEnvironmentRequired, BrowserTimeoutError, WebsiteTimeoutError, probe, require_browser_environment, resolve, wait_for_site
+from webapp.yt5s import BrowserEnvironmentRequired, BrowserTimeoutError, WebsiteHTTPError, WebsiteTimeoutError, probe, require_browser_environment, resolve, wait_for_site
 from web_worker import execute
 
 VIDEO = 'https://www.youtube.com/watch?v=npNnbj46_ik'
@@ -101,6 +101,64 @@ class WebsiteDiagnosticsTests(unittest.TestCase):
                 else:
                     self.assertFalse((root / 'yt5s/last-failure.png').exists())
                 self.assertEqual(list((root / 'yt5s').glob('resolve-*')), [])
+
+
+class WebsiteResponseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_analyze_and_convert_fail_fast_with_http_status_and_no_response_secrets(self):
+        cases = [('analyze', 502, {'status': 502}, WebsiteHTTPError, True),
+                 ('analyze', 503, None, WebsiteHTTPError, True),
+                 ('analyze', 200, {'status': 502}, WebsiteHTTPError, True),
+                 ('analyze', 429, {'status': 'error'}, WebsiteHTTPError, True),
+                 ('analyze', 403, {'status': 'error'}, WebsiteHTTPError, False),
+                 ('analyze', 403, {'result': 'Verification failed PRIVATE_TOKEN'}, RuntimeError, False),
+                 ('convert', 502, {'status': 502}, WebsiteHTTPError, True),
+                 ('convert', 502, None, WebsiteHTTPError, True)]
+        for step, status, data, kind, retryable in cases:
+            with self.subTest(step=step, status=status, data=data), tempfile.TemporaryDirectory() as temporary:
+                page = MagicMock(goto=AsyncMock(return_value=SimpleNamespace(status=200)), screenshot=AsyncMock())
+                locator = MagicMock(fill=AsyncMock(), wait_for=AsyncMock(), inner_text=AsyncMock(return_value='Fixture 0:30'))
+                locator.filter.return_value = locator
+                locator.locator.return_value = locator
+                locator.first = locator
+                locator.get_attribute = AsyncMock(side_effect=lambda name: 'https://example.test/cover.jpg' if name == 'src' else None)
+                page.locator.return_value = locator
+                callbacks = {}
+                page.on.side_effect = lambda event, callback: callbacks.update({event: callback})
+                clicks = 0
+
+                async def click(**kwargs):
+                    nonlocal clicks
+                    clicks += 1
+                    analyze_success = step == 'convert' and clicks == 1
+                    response = MagicMock(url='https://example.test/mates/en/' +
+                                         ('analyze/ajax' if analyze_success else 'analyze/ajax' if step == 'analyze' else 'convert'))
+                    response.status = 200 if analyze_success else status
+                    response.json = AsyncMock(return_value={'status': 'success'} if analyze_success else data)
+                    if data is None and not analyze_success:
+                        response.json.side_effect = ValueError('non-JSON gateway body PRIVATE_TOKEN')
+                    callbacks['response'](response)
+
+                locator.click = AsyncMock(side_effect=click)
+                browser = MagicMock(contexts=[MagicMock(new_page=AsyncMock(return_value=page))], close=AsyncMock())
+                driver = MagicMock()
+                driver.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+                playwright = MagicMock(__aenter__=AsyncMock(return_value=driver), __aexit__=AsyncMock(return_value=False))
+                process = MagicMock()
+                process.poll.return_value = None
+                args = SimpleNamespace(video_id='npNnbj46_ik', quality='360', proxy='', timeout=0.1)
+                report = {'responses': []}
+                with patch('webapp.yt5s.async_playwright', return_value=playwright), \
+                        patch('webapp.yt5s.subprocess.Popen', return_value=process), \
+                        patch('webapp.yt5s.browser_executable', return_value='/fixture/chromium'), \
+                        patch('webapp.yt5s.build_opener'), patch('builtins.print'):
+                    with self.assertRaises(kind) as caught:
+                        await probe(args, Path(temporary), report, download=False)
+                self.assertIs(type(caught.exception), kind)
+                self.assertEqual(getattr(caught.exception, 'retryable', False), retryable)
+                self.assertNotIn('PRIVATE_TOKEN', str(caught.exception) + json.dumps(report))
+                self.assertEqual(report['responses'][-1]['http_status'], status)
+                browser.close.assert_awaited_once()
+                process.terminate.assert_called_once()
 
 
 class Yt5sTests(unittest.TestCase):
@@ -225,6 +283,27 @@ class Yt5sTests(unittest.TestCase):
         self.assertEqual((current['status'], current['attempts']), ('queued', 1))
         self.assertEqual(current['progress']['stage'], 'retrying')
         self.assertFalse(self.store.downloads_paused())
+
+    def test_website_http_errors_retry_with_backoff_and_respect_attempt_limit(self):
+        from web_worker import drain
+
+        for status, maximum, expected in ((502, 3, 'queued'), (503, 1, 'failed'), (403, 3, 'failed')):
+            with self.subTest(status=status, maximum=maximum):
+                task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos',
+                                                                 'download_attempts': maximum},
+                                                     'base': str(self.root), 'urls': [VIDEO]})
+                self.store.update_progress(task['id'], {'stage': 'waiting_verification'})
+                with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=WebsiteHTTPError('analyze', status)), \
+                        patch('builtins.print') as log:
+                    drain(self.store.directory)
+                current = self.store.get(task['id'])
+                self.assertEqual((current['status'], current['attempts']), (expected, 1))
+                if expected == 'queued':
+                    self.assertEqual(current['progress']['stage'], 'retrying')
+                    self.assertGreater(current['available_at'], 0)
+                    self.assertTrue(any('已安排自动重试' in str(call) for call in log.call_args_list))
+                    self.store.finish(task['id'], error='fixture cleanup')
+                self.assertFalse(self.store.downloads_paused())
 
     def test_real_transfer_progress_archive_metadata_catalog_and_test_cleanup(self):
         configure_runtime()
