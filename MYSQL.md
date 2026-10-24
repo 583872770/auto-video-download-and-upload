@@ -1,33 +1,12 @@
 # MySQL 连接与迁移
 
-项目支持 **MySQL 5.7.9+（包括 5.7.44）和 MySQL 8.x**，推荐新部署使用 **MySQL 8.4 LTS**。Docker Compose 默认使用 MySQL 8.4；原 PostgreSQL 和 SQLite 连接继续兼容，不支持 MariaDB。
+项目支持 **MySQL 5.7.9+（包括 5.7.44）和 MySQL 8.x**；原 PostgreSQL 和 SQLite 连接继续兼容，不支持 MariaDB。
 下载队列、批次、进度、计数、去重记录、登录检测状态和素材索引使用所选数据库，视频仍保存在文件目录中。
-
-## Docker 部署
-
-参见 [DOCKER.md](DOCKER.md)。复制 `.env.example` 为 `.env`，填写 `MYSQL_PASSWORD` 和独立的 `MYSQL_ROOT_PASSWORD`，再执行：
-
-```powershell
-docker compose config --quiet
-docker compose up -d --build
-```
-
-应用连接内部地址 `mysql:3306`，数据库由 `MYSQL_DATABASE` 指定，默认 `video_downloads`，应用用户默认 `video`。
-数据库健康检查通过后启动应用，表结构自动初始化；默认不对宿主机开放数据库端口。
-
-如需本机数据库客户端访问，使用可选覆盖文件：
-
-```powershell
-docker compose -f compose.yaml -f compose.mysql-local.yaml up -d
-```
-
-此时数据库地址为 `127.0.0.1:13306`，仅宿主机可访问；`MYSQL_LOCAL_PORT` 可在 `.env` 中调整。
-持续使用该端口时，后续 Compose 命令保持带两个 `-f` 参数。
 
 ## Linux Docker 连接远程 MySQL
 
 使用独立的 `compose.remote-mysql.yaml`，它只启动应用，不创建本地 MySQL，也不需要 `MYSQL_ROOT_PASSWORD`。
-**不要同时加载 `compose.yaml`**，默认文件的数据库地址固定为内部容器 `mysql`。
+这是项目唯一的 Compose 编排文件；它只启动应用，不创建本地 MySQL。
 
 全新部署先复制模板（已有 `.env` 时直接编辑，避免覆盖原配置）：
 
@@ -53,12 +32,6 @@ MYSQL_PASSWORD='你的数据库密码'
 docker compose -f compose.remote-mysql.yaml config --quiet
 docker compose -f compose.remote-mysql.yaml up -d --build
 docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
-```
-
-如需方式二的 Chromium 和远程桌面，启动命令改为：
-
-```bash
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml up -d --build
 ```
 
 后续查看状态、停止或更新时，也带上所用的 `-f` 文件参数。
@@ -139,13 +112,7 @@ folder.mkdir(parents=True, exist_ok=True)
 ```
 
 SQLite 的源文件也以 JSON 指定，例如 `{"url":"sqlite:///D:/项目/.cache/web/tasks.sqlite3"}`，另存到 `.cache/mysql/source.json` 后作为 `--source-connection-file`。
-路径始终按运行迁移脚本的环境解释。若目标是 Compose MySQL，可以先只启动数据库，临时开放本机端口：
-
-```powershell
-docker compose -f compose.yaml -f compose.mysql-local.yaml up -d mysql
-```
-
-此时目标连接文件使用 `127.0.0.1:13306`，在宿主机运行迁移；不要先启动会写入目标库的 `app`。
+路径始终按运行迁移脚本的环境解释。目标 MySQL 可以是远程实例；迁移脚本运行环境需要能够访问其地址，且应用账号具备建表和写入权限。
 
 迁移默认每批 500 行，每批复制与检查点在同一事务提交。中断后使用相同命令重跑，会从检查点继续；`--chunk-size 100` 可减小单批内存和网络包。
 目标库非空且不是同一来源的未完成迁移时，工具会拒绝复制。全表数量核对通过后，才能加 `--activate` 切换：

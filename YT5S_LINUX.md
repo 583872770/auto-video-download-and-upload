@@ -28,24 +28,18 @@ yt5s 使用设置中的 360p / 720p；切换后沿用方式一的 `download_form
 
 ## 启用正式 Web 服务中的方式二
 
-已有项目的 `.env` 和数据库配置时，执行：
+使用项目唯一的远程 MySQL 编排：
 
 ```bash
-docker compose -f compose.yaml -f compose.yt5s.yaml up -d --build
+docker compose -f compose.remote-mysql.yaml up -d --build
 ```
 
-连接远程 MySQL 时，使用远程数据库编排：
+如果通过 PyCharm 部署，在“运行 → 编辑配置”中将 Compose 文件设为 `compose.remote-mysql.yaml`，保留原 Docker 服务器、项目名称、环境文件及 `--build` 选项，然后重新部署。这个文件已经包含 Chromium、虚拟显示和网页远程桌面；仅重启旧容器不会安装浏览器。使用命令行更新已有 PyCharm 部署时，需用 `-p 原项目名称` 保持项目名一致，避免创建另一套配置和状态卷。
+
+出现“没有找到 Chrome/Chromium”通常表示没有使用最新的 `compose.remote-mysql.yaml`，或仍在使用之前的镜像。可在部署服务器检查：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml up -d --build
-```
-
-如果通过 PyCharm 部署，在“运行 → 编辑配置”中修改现有 Docker Compose 配置，将 Compose 文件按顺序设为 `compose.remote-mysql.yaml`、`compose.yt5s.yaml`，保留原 Docker 服务器、项目名称、环境文件及 `--build` 选项，然后重新部署。这样会在原项目中重建镜像并替换容器；仅重启旧容器不会安装浏览器。使用命令行更新已有 PyCharm 部署时，需用 `-p 原项目名称` 保持项目名一致，避免创建另一套配置和状态卷。
-
-出现“没有找到 Chrome/Chromium”通常表示部署时遗漏了 `compose.yt5s.yaml`，或仍在使用之前的镜像。可在部署服务器检查：
-
-```bash
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER_ENABLED DISPLAY'
+docker compose -f compose.remote-mysql.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER_ENABLED DISPLAY'
 ```
 
 浏览器版应输出 Chromium 路径、`1` 和 `:99`。方式二在提交、导入和继续任务前检查浏览器与显示环境；后台执行时若环境缺失，会暂停下载并将当前任务放回队列。修复部署后点击“继续下载”；此前已经失败的记录需重新提交视频 ID。
@@ -69,32 +63,10 @@ docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 
 不再生成网页截图。每个下载进程只保留最近一次失败的 `last-failure.json`，内容包括视频 ID、失败阶段、各阶段耗时和接口状态，不保存响应正文或下载签名链接。首个进程位于容器 `/app/.cache/web/yt5s/worker-0/last-failure.json`，其他进程替换 worker 编号。可执行：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.json ./yt5s-worker-0-last-failure.json
+docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.json ./yt5s-worker-0-last-failure.json
 ```
 
-后续重建和更新服务时也要同时传入这两份 Compose 文件，否则默认镜像不包含 Chromium 和虚拟显示环境。Windows 本机需安装 Chrome；Linux 不使用 Docker 时，需自行安装 Chromium 并提供 DISPLAY。
-
-## 独立验证，不启动正式服务
-
-服务器需安装 Docker 和 Docker Compose。在项目目录执行：
-
-```bash
-docker compose -f compose.yt5s-probe.yaml up --build --abort-on-container-exit --exit-code-from probe
-```
-
-默认验证视频 `npNnbj46_ik`、360p、单个阶段最多等待 180 秒、文件上限 128 MiB。浏览器可能自行完成验证；需要人工操作时，可在等待期间进入远程桌面。本工具不伪造验证令牌、不修改浏览器指纹，也不使用 YouTube 登录 Cookie。
-
-它使用独立的 Compose 项目，不启动或挂载正式服务、MySQL、Cookie、订阅配置、任务库。输出写入 `docker-data/yt5s-probe/<本次运行目录>/`：
-
-- `report.json`：解析响应、下载字节数、FFprobe 校验、成功或失败原因；不保存验证令牌和签名下载链接。
-- `<视频ID>.mp4`：完整下载并通过音视频校验后保留的视频。未完成的 `.part` 文件会清理。
-
-完成后容器退出。查看结果：
-
-```bash
-find docker-data/yt5s-probe -name report.json -print -exec cat {} \;
-docker compose -f compose.yt5s-probe.yaml down
-```
+后续重建和更新服务时继续使用同一个 Compose 文件；它已经包含 Chromium 和虚拟显示环境。Windows 本机需安装 Chrome；Linux 不使用 Docker 时，需自行安装 Chromium 并提供 DISPLAY。
 
 ## 从本机操作服务器浏览器
 
@@ -110,18 +82,9 @@ ssh -N -L 6080:127.0.0.1:6080 你的SSH用户@服务器地址
 http://127.0.0.1:6080/vnc.html?autoconnect=true
 ```
 
-noVNC 端口只绑定服务器的 `127.0.0.1`，没有设置远程桌面密码，应通过 SSH 隧道访问，不要将端口直接开放到公网。浏览器调试端口不对宿主机发布。浏览器运行在独立测试容器中，容器内使用 `--no-sandbox` 兼容 Chromium 启动；不要在该临时浏览器中登录账号或输入其他凭据。
+noVNC 端口只绑定服务器的 `127.0.0.1`，没有设置远程桌面密码，应通过 SSH 隧道访问，不要将端口直接开放到公网。浏览器调试端口不对宿主机发布。浏览器运行在正式 `app` 容器中，容器内使用 `--no-sandbox` 兼容 Chromium 启动；不要在该临时浏览器中登录账号或输入其他凭据。
 
-## 更换视频、画质与等待时间
-
-```bash
-YT5S_VIDEO_ID=2Gu7q-KUXCk YT5S_QUALITY=360 YT5S_TIMEOUT=300 \
-  docker compose -f compose.yt5s-probe.yaml up --abort-on-container-exit --exit-code-from probe
-```
-
-可选画质为 360、720。720p 可能需要网站后端转换，目前没有验证它的完整下载链路。网站没有对应画质时，工具报告失败，不会悄悄降级。某些视频可能没有音频或受到网站限制，也会校验失败。
-
-独立实验可设置 `YT5S_PROXY=http://可访问的代理地址:端口`，浏览器与文件下载使用同一个代理。方式二目前仅支持没有账号密码的 HTTP(S) 代理。容器中的 `127.0.0.1` 指向本容器，不能用它直接访问宿主机的 Clash。正式 Web 服务中的方式二会使用任务原有的 Clash 节点和轮换设置；独立实验不加载项目的订阅与节点配置。
+可选画质为 360、720。720p 可能需要网站后端转换，目前没有验证它的完整下载链路。网站没有对应画质时，工具报告失败，不会悄悄降级。方式二目前仅支持没有账号密码的 HTTP(S) 代理；正式 Web 服务中的方式二会使用任务原有的 Clash 节点和轮换设置。
 
 ## 部署验证范围
 

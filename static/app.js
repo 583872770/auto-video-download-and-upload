@@ -3,7 +3,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
-const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
+const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', liveLogs: {}, polling: false, detailBusy: false };
 let clashBusy = false;
 let downloadSubmitting = false;
 let downloadMethodBusy = false;
@@ -147,6 +147,35 @@ function renderBatches() {
   $('#batch-summary').textContent = `${queue.paused ? '下载已停止' : '正在下载 ' + tasks.length + ' 个'} · 排队 ${queue.queued || 0} 个 · 仅显示当前正在下载的视频，完成后可在任务记录中查看`;
   $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(task.error)}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
   renderPagination();
+}
+function renderLiveLogs() {
+  const container = $('#live-task-logs');
+  if (!container) return;
+  const items = state.batchTasks.filter(task => state.liveLogs[task.id]);
+  container.innerHTML = items.length ? items.map(task => {
+    const entry = state.liveLogs[task.id];
+    const title = task.progress?.title || task.video_id || task.id.slice(0, 8);
+    return `<article class="live-log-item"><div class="live-log-heading"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(progressLabel(task))}</span></div><pre>${escapeHTML(entry.text || '等待日志…')}</pre></article>`;
+  }).join('') : '<p class="micro-copy">当前没有运行中的任务日志。任务开始后，这里会实时显示下载进程正在执行的步骤。</p>';
+}
+async function updateLiveLogs(tasks) {
+  const activeIds = new Set(tasks.map(task => task.id));
+  for (const id of Object.keys(state.liveLogs)) {
+    if (!activeIds.has(id)) delete state.liveLogs[id];
+  }
+  await Promise.all(tasks.map(async task => {
+    const previous = state.liveLogs[task.id] || { text: '', offset: 0 };
+    try {
+      const logs = await api(`/api/tasks/${task.id}/logs?offset=${previous.offset}`);
+      if (logs.text) previous.text = (previous.text + logs.text).slice(-24000);
+      previous.offset = logs.offset;
+      state.liveLogs[task.id] = previous;
+    } catch (error) {
+      // The task may finish between the active-list and log requests.
+      if (error.message !== '任务不存在') throw error;
+    }
+  }));
+  renderLiveLogs();
 }
 function renderPagination() {
   for (const [name, page] of Object.entries(pages)) {
@@ -370,9 +399,9 @@ function renderDownloadMethod() {
   const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
   const browsers = `独立浏览器并发上限 ${state.config?.yt5s_browser_count ?? 2}，整体下载进程 ${state.config?.worker_count ?? 1}。`;
   $('#download-method-note').textContent = method === 'yt5s_fallback'
-    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。${browsers}开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请加载 compose.yt5s.yaml 后重新构建。' : ''}切换仅影响新任务。`
+    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。${browsers}开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建。' : ''}切换仅影响新任务。`
     : method === 'yt5s'
-    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${browsers}${missing ? '当前环境缺少浏览器或显示环境，请同时加载主编排与 compose.yt5s.yaml，重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
+    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${browsers}${missing ? '当前环境缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
     : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
 }
 $('#download-method').addEventListener('change', async event => {
@@ -427,7 +456,10 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
     if (data.status) state.status = data.status;
     if (clash) state.clash = clash;
-    if (active) state.batchTasks = active.items;
+    if (active) {
+      state.batchTasks = active.items;
+      await updateLiveLogs(active.items);
+    }
     if ((media || overview) && mediaBefore !== JSON.stringify([state.media, state.overview.media, state.overview.recent_media])) renderMedia();
     if (tasks || overview || active || data.status) renderTasks();
     if (clash) renderClash();

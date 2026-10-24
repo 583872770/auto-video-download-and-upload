@@ -1,16 +1,19 @@
 name: youtube-downloader
 
-# Standalone configuration: use instead of compose.yaml.
+# 唯一的 Docker Compose 编排：连接远程 MySQL，并包含 yt5s 浏览器环境。
 services:
   app:
     build:
       context: .
       args:
         MIHOMO_DOWNLOAD_BASE_URL: ${MIHOMO_DOWNLOAD_BASE_URL:-}
+        WITH_YT5S_BROWSER: "1"
     init: true
+    shm_size: 512m
     restart: unless-stopped
     ports:
       - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-5000}:5000"
+      - "127.0.0.1:${YT5S_DESKTOP_PORT:-6080}:6080"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       VIDEO_WEB_HOSTS: ${VIDEO_WEB_HOSTS:-localhost,127.0.0.1,[::1]}

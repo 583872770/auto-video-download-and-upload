@@ -39,6 +39,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     configure_runtime()
     app = Flask(__name__)
     app.json.ensure_ascii = False
+    # Development and local deployments should see edited templates and
+    # static JavaScript/CSS immediately after restarting the service.
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
     config_path = Path(config_path or DEFAULT_CONFIG).resolve()
     store = TaskStore(state_dir or ROOT / '.cache' / 'web')
     secret_file = store.directory / 'session.key'
@@ -98,6 +101,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         )
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
+        elif request.path.startswith('/static/'):
+            response.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return response
 
     @app.errorhandler(ValueError)
