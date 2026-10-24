@@ -2,13 +2,15 @@
 import csv
 import json
 from pathlib import Path
+import time
 
 from sqlalchemy import select
 
 from webapp.database import imports
 from webapp.settings import urls_from, validate_method_urls
 
-CHUNK = 500
+CHUNK = 2000
+REPORT_INTERVAL = 1.0
 MAX_LINE = 16384
 
 
@@ -35,11 +37,17 @@ def run_import(store, payload, report):
     total = path.stat().st_size
     batch_payload = {key: value for key, value in payload.items() if key not in ('import_id', 'urls')}
     batch_payload.update(batch_id=identity, batch_name=job['name'])
+    shared_snapshot = store.prepare_snapshot(batch_payload)
     column_index = job['column_index']
     samples = json.loads(job['samples'])
 
-    with path.open('rb') as stream:
+    # Reuse this connection, but commit each chunk independently. NullPool is
+    # intentional elsewhere; a remote login for every chunk wastes many RTTs.
+    with path.open('rb') as stream, store.db.engine.connect() as connection:
         stream.seek(job['offset'])
+        report_started = time.monotonic()
+        report_offset, report_processed = job['offset'], job['processed']
+        last_report = None
 
         def lines():
             while True:
@@ -55,22 +63,31 @@ def run_import(store, payload, report):
 
         def commit(finished=False):
             nonlocal chunk, processed, invalid, job
-            with store.connect() as db:
+            nonlocal report_started, report_offset, report_processed, last_report
+            with connection.begin():
+                db = connection
                 current = db.execute(store._locked(select(imports).where(imports.c.id == identity))).mappings().one()
                 if current['offset'] != job['offset']:
                     raise RuntimeError('导入检查点已改变，请等待原导入任务完成。')
-                accepted = store.insert_downloads(db, chunk, deduplicate=True)
+                accepted = store.insert_downloads(db, chunk, deduplicate=True, shared_snapshot=shared_snapshot)
                 values = dict(offset=stream.tell(), column_index=column_index,
                               processed=current['processed'] + processed, added=current['added'] + len(accepted),
                               duplicates=current['duplicates'] + len(chunk) - len(accepted),
                               invalid=current['invalid'] + invalid, samples=json.dumps(samples, ensure_ascii=False), finished=int(finished))
                 db.execute(imports.update().where(imports.c.id == identity).values(**values))
             job = {**job, **values}
-            report({'stage': 'importing', 'title': job['name'], 'processed': job['processed'],
-                    'added': job['added'], 'duplicates': job['duplicates'], 'invalid': job['invalid'],
-                    'downloaded_bytes': stream.tell(), 'total_bytes': total,
-                    'percent': round(100 * stream.tell() / total, 1) if total else 100,
-                    'speed': None, 'eta': None})
+            stamp = time.monotonic()
+            if finished or last_report is None or stamp - last_report >= REPORT_INTERVAL:
+                elapsed = max(stamp - report_started, 0.001)
+                speed = (job['offset'] - report_offset) / elapsed
+                report({'stage': 'importing', 'title': job['name'], 'processed': job['processed'],
+                        'added': job['added'], 'duplicates': job['duplicates'], 'invalid': job['invalid'],
+                        'downloaded_bytes': job['offset'], 'total_bytes': total,
+                        'percent': round(100 * job['offset'] / total, 1) if total else 100,
+                        'records_per_second': (job['processed'] - report_processed) / elapsed,
+                        'speed': speed, 'eta': 0 if finished else (total - job['offset']) / speed if speed else None})
+                report_started, last_report = stamp, stamp
+                report_offset, report_processed = job['offset'], job['processed']
             chunk, processed, invalid = [], 0, 0
 
         first = job['offset'] == 0

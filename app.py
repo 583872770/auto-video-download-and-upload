@@ -28,6 +28,7 @@ from webapp.tasks import TaskRunner, TaskStore
 from webapp.clash import ClashError, ClashManager
 from webapp.clash_routes import register_clash
 from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
+from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 
 WEB_PLATFORMS = ('douyin', 'kuaishou')
 ACTIONS = ('download', 'preview', 'prepare', 'publish', 'login', 'check')
@@ -168,13 +169,13 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             accounts[platform] = {'saved': valid, 'visibility': config.get(f'{platform}_visibility', 'public')}
         tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'node', 'deno')}
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
-        from webapp.yt5s import browser_executable
+        from webapp.yt5s import browser_executable, display_available
         try:
             tools['yt5s_browser'] = bool(browser_executable(
                 str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''))
         except RuntimeError:
             tools['yt5s_browser'] = False
-        tools['yt5s_display'] = os.name == 'nt' or bool(os.environ.get('DISPLAY'))
+        tools['yt5s_display'] = display_available()
         youtube_file = resolve_path(base, config['youtube_cookie']) if config.get('youtube_cookie') else None
         youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
                    'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
@@ -196,8 +197,15 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         youtube_auth.block(error.result)
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
+    @app.errorhandler(BrowserEnvironmentRequired)
+    def browser_environment_required(error):
+        return jsonify(error=str(error), download_queue=store.download_queue()), 409
+
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
-        if config.get('download_method', 'yt_dlp') == 'yt5s' or not is_youtube(urls):
+        if config.get('download_method', 'yt_dlp') == 'yt5s':
+            require_browser_environment(config, base)
+            return None
+        if not is_youtube(urls):
             return None
         options = {'force': force}
         if config.get('proxy_mode') == 'clash':
@@ -441,6 +449,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         config, base = settings()
         config = {**DEFAULTS, **config}
         validate_settings(config, download_only=True)
+        if config.get('download_method') == 'yt5s':
+            require_browser_environment(config, base)
         identity = uuid.uuid4().hex
         directory = store.directory / 'imports'
         directory.mkdir(parents=True, exist_ok=True)

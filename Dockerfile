@@ -31,6 +31,7 @@ COPY requirements.lock.txt ./
 RUN python -m pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.lock.txt
 
 COPY docker/install_mihomo.py /tmp/install_mihomo.py
+ARG MIHOMO_DOWNLOAD_BASE_URL=""
 RUN python /tmp/install_mihomo.py \
     && rm /tmp/install_mihomo.py \
     && node --version && ffmpeg -version && ffprobe -version

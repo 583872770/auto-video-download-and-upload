@@ -9,10 +9,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app import create_app
-from webapp.bulk import run_import
+from webapp.bulk import CHUNK, run_import
 from webapp.database import imports, tasks
 from webapp.store import TaskStore
 
@@ -50,18 +50,58 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual((result['added'], result['duplicates']), (1, 1))
 
     def test_import_resumes_after_committed_chunk_without_recreating_tasks(self):
-        task = self.upload(('\n'.join(f'{index:011d}' for index in range(1200)) + '\n').encode())
+        total = CHUNK * 2 + 200
+        task = self.upload(('\n'.join(f'{index:011d}' for index in range(total)) + '\n').encode())
 
         def interruption(value):
             raise RuntimeError('simulated worker exit after commit')
 
         with self.assertRaisesRegex(RuntimeError, 'simulated worker exit'):
             run_import(self.store, task['payload'], interruption)
-        self.assertEqual(self.store.counts(actions=['download'])['total'], 500)
+        self.assertEqual(self.store.counts(actions=['download'])['total'], CHUNK)
         result = run_import(self.store, task['payload'], lambda value: None)
-        self.assertEqual(result['added'], 1200)
-        self.assertEqual(self.store.counts(actions=['download'])['total'], 1200)
+        self.assertEqual(result['added'], total)
+        self.assertEqual(self.store.counts(actions=['download'])['total'], total)
         self.assertEqual(result['duplicates'], 0)
+
+    def test_import_reuses_connection_and_reports_final_counts_and_speed(self):
+        total = CHUNK * 2 + 200
+        task = self.upload(('\n'.join(f'{index:011d}' for index in range(total)) + '\n').encode())
+        reports, connections = [], []
+        def connected(dbapi, record):
+            connections.append(record)
+        event.listen(self.store.db.engine, 'connect', connected)
+        try:
+            with patch('webapp.bulk.time.monotonic', side_effect=[10.0, 10.2, 10.4, 10.6]):
+                result = run_import(self.store, task['payload'], reports.append)
+        finally:
+            event.remove(self.store.db.engine, 'connect', connected)
+        self.assertLessEqual(len(connections), 2)
+        self.assertEqual([report['processed'] for report in reports], [CHUNK, total])
+        self.assertEqual((reports[-1]['percent'], reports[-1]['eta']), (100, 0))
+        self.assertGreater(reports[0]['records_per_second'], 0)
+        self.assertGreater(reports[0]['speed'], 0)
+        self.assertEqual(result['added'], total)
+        restored = self.store.get(self.store.page(actions=['download'], limit=1)['items'][0]['id'], private=True)
+        self.assertEqual(restored['payload']['config'], task['payload']['config'])
+        self.assertEqual(restored['payload']['batch_id'], task['payload']['import_id'])
+
+    def test_failed_import_chunk_rolls_back_tasks_reservations_counters_and_checkpoint(self):
+        total = CHUNK + 10
+        task = self.upload(('\n'.join(f'{index:011d}' for index in range(total)) + '\n').encode())
+        insert = self.store.insert_downloads
+        def fail_after_insert(*args, **kwargs):
+            insert(*args, **kwargs)
+            raise RuntimeError('interruption before checkpoint')
+        with patch.object(self.store, 'insert_downloads', side_effect=fail_after_insert):
+            with self.assertRaisesRegex(RuntimeError, 'before checkpoint'):
+                run_import(self.store, task['payload'], lambda value: None)
+        self.assertEqual(self.store.counts(actions=['download'])['total'], 0)
+        with self.store.connect() as db:
+            offset = db.execute(select(imports.c.offset).where(imports.c.id == task['payload']['import_id'])).scalar_one()
+        self.assertEqual(offset, 0)
+        result = run_import(self.store, task['payload'], lambda value: None)
+        self.assertEqual((result['added'], result['duplicates']), (total, 0))
 
     def test_task_keyset_pages_are_stable_when_new_tasks_arrive(self):
         payload = {'config': {}, 'base': str(self.root), 'batch_id': 'a' * 32}

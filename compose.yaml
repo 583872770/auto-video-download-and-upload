@@ -2,7 +2,10 @@ name: youtube-downloader
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        MIHOMO_DOWNLOAD_BASE_URL: ${MIHOMO_DOWNLOAD_BASE_URL:-}
     init: true
     restart: unless-stopped
     depends_on:

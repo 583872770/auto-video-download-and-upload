@@ -266,6 +266,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 def drain(directory, slot=0, role='all'):
     from webapp.youtube_auth import YouTubeAuthRequired
+    from webapp.yt5s import BrowserEnvironmentRequired
     store = TaskStore(directory)
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
@@ -327,6 +328,11 @@ def drain(directory, slot=0, role='all'):
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
+                except BrowserEnvironmentRequired as error:
+                    store.set_downloads_paused(True)
+                    store.release(task['id'], store.owner, str(error), delay=0)
+                    print(f'浏览器环境检查未通过，队列已停止，任务保留：{error}', flush=True)
+                    break
                 except YouTubeAuthRequired as error:
                     from webapp.youtube_auth import YouTubeAuth
                     YouTubeAuth(store).block(error.result)

@@ -1,11 +1,15 @@
 """Container bootstrap must preserve credentials and persistent user settings."""
 import importlib.util
+import hashlib
+from http.client import RemoteDisconnected
+from io import BytesIO
 import os
 from pathlib import Path
 import socket
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 
 from sqlalchemy.engine import make_url
 import yaml
@@ -15,6 +19,47 @@ from webapp.control import ROOT, terminate_worker
 spec = importlib.util.spec_from_file_location('docker_entrypoint', ROOT / 'docker/entrypoint.py')
 entrypoint = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(entrypoint)
+
+installer_spec = importlib.util.spec_from_file_location('docker_install_mihomo', ROOT / 'docker/install_mihomo.py')
+installer = importlib.util.module_from_spec(installer_spec)
+installer_spec.loader.exec_module(installer)
+
+
+class MihomoDownloadTests(unittest.TestCase):
+    def test_disconnect_and_bad_checksum_fall_back_to_verified_source(self):
+        archive = b'fixture verified archive'
+        with patch.object(installer, 'urlopen', side_effect=[RemoteDisconnected('closed'),
+                          BytesIO(b'<html>not a release</html>'), BytesIO(archive)]) as request, \
+                patch('builtins.print'):
+            result = installer.download_archive('fixture.gz', hashlib.sha256(archive).hexdigest())
+        self.assertEqual(result, archive)
+        self.assertEqual([call.args[0].full_url for call in request.call_args_list],
+                         [f'{base}/{installer.VERSION}/fixture.gz' for base in installer.DOWNLOAD_BASES])
+        self.assertTrue(all(call.kwargs['timeout'] == 30 for call in request.call_args_list))
+
+    def test_custom_source_has_priority(self):
+        archive = b'fixture archive'
+        with patch.object(installer, 'urlopen', return_value=BytesIO(archive)) as request, patch('builtins.print'):
+            installer.download_archive('fixture.gz', hashlib.sha256(archive).hexdigest(), 'https://example.org/releases/')
+        self.assertEqual(request.call_args.args[0].full_url,
+                         f'https://example.org/releases/{installer.VERSION}/fixture.gz')
+        self.assertEqual(request.call_count, 1)
+
+    def test_unavailable_sources_retry_then_fail_with_configuration_hint(self):
+        with patch.object(installer, 'urlopen', side_effect=URLError('offline')) as request, \
+                patch.object(installer.time, 'sleep') as sleep, patch('builtins.print'):
+            with self.assertRaisesRegex(RuntimeError, 'MIHOMO_DOWNLOAD_BASE_URL'):
+                installer.download_archive('fixture.gz', 'unused')
+        self.assertEqual(request.call_count, len(installer.DOWNLOAD_BASES) * 2)
+        sleep.assert_called_once_with(2)
+
+    def test_oversized_archives_are_rejected_even_with_matching_hash(self):
+        archive = b'1234'
+        with patch.object(installer, 'MAX_ARCHIVE_BYTES', 3), \
+                patch.object(installer, 'urlopen', side_effect=lambda *args, **kwargs: BytesIO(archive)), \
+                patch.object(installer.time, 'sleep'), patch('builtins.print'):
+            with self.assertRaisesRegex(RuntimeError, 'all sources'):
+                installer.download_archive('fixture.gz', hashlib.sha256(archive).hexdigest())
 
 
 class DockerBootstrapTests(unittest.TestCase):

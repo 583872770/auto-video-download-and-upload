@@ -16,6 +16,22 @@
 docker compose -f compose.yaml -f compose.yt5s.yaml up -d --build
 ```
 
+连接远程 MySQL 时，使用远程数据库编排：
+
+```bash
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml up -d --build
+```
+
+如果通过 PyCharm 部署，在“运行 → 编辑配置”中修改现有 Docker Compose 配置，将 Compose 文件按顺序设为 `compose.remote-mysql.yaml`、`compose.yt5s.yaml`，保留原 Docker 服务器、项目名称、环境文件及 `--build` 选项，然后重新部署。这样会在原项目中重建镜像并替换容器；仅重启旧容器不会安装浏览器。使用命令行更新已有 PyCharm 部署时，需用 `-p 原项目名称` 保持项目名一致，避免创建另一套配置和状态卷。
+
+出现“没有找到 Chrome/Chromium”通常表示部署时遗漏了 `compose.yt5s.yaml`，或仍在使用之前的镜像。可在部署服务器检查：
+
+```bash
+docker compose -f compose.remote-mysql.yaml -f compose.yt5s.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER_ENABLED DISPLAY'
+```
+
+浏览器版应输出 Chromium 路径、`1` 和 `:99`。方式二在提交、导入和继续任务前检查浏览器与显示环境；后台执行时若环境缺失，会暂停下载并将当前任务放回队列。修复部署后点击“继续下载”；此前已经失败的记录需重新提交视频 ID。
+
 打开工作台，在首页下载输入框上方选择“方式二：yt5s（实验）”，输入视频 ID 后开始下载。“下载设置”可设置方式二的 360p 或 720p 画质。360p 已验证，720p 可能需要网站转换，尚未验证完整下载。
 
 首次启动应先测试少量视频。页面会显示等待浏览器、网站验证或网站转换的阶段；网站验证无法自动完成时，在等待期间通过下面的 SSH 隧道进入远程桌面操作。

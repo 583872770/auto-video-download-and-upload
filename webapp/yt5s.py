@@ -22,6 +22,31 @@ import uuid
 from playwright.async_api import async_playwright
 
 
+class BrowserEnvironmentRequired(RuntimeError):
+    """A deployment prerequisite is missing; keep queued downloads for later."""
+
+
+def display_available():
+    return os.name == 'nt' or bool(os.environ.get('DISPLAY'))
+
+
+def require_browser_environment(config, base):
+    from Utils.config import resolve_path
+
+    explicit = str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''
+    try:
+        executable = browser_executable(explicit)
+    except RuntimeError as error:
+        raise BrowserEnvironmentRequired(
+            '方式二缺少 Chrome/Chromium。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
+            '重新构建并创建容器（up -d --build）；非 Docker 环境请安装浏览器或配置 YT5S_BROWSER。') from error
+    if not display_available():
+        raise BrowserEnvironmentRequired(
+            '方式二缺少 Linux 显示环境。Docker 部署请同时加载主编排和 compose.yt5s.yaml，'
+            '重新构建并创建容器（up -d --build）；非 Docker 环境请启动 Xvfb 并配置 DISPLAY。')
+    return executable
+
+
 def browser_executable(explicit=''):
     configured = explicit or os.environ.get('YT5S_BROWSER', '')
     candidates = [configured, shutil.which('google-chrome'), shutil.which('chromium'),
@@ -257,7 +282,6 @@ def main(argv=None):
 def resolve(url, config, base, directory, on_stage=None):
     """Resolve one video without loading or exporting any YouTube login cookie."""
     from types import SimpleNamespace
-    from Utils.config import resolve_path
     from webapp.settings import validate_method_urls
     from webapp.store import source_identity
     from web_worker import worker_lock
@@ -270,7 +294,7 @@ def resolve(url, config, base, directory, on_stage=None):
         parsed = urlsplit(proxy)
         if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
             raise RuntimeError('方式二暂仅支持不含账号密码的 HTTP(S) 代理，请使用 Clash HTTP 端口或直连。')
-    executable = str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''
+    executable = require_browser_environment(config, base)
     # Serialize browser resolution; completed direct transfers may run in parallel.
     directory = Path(directory) / 'yt5s'
     directory.mkdir(parents=True, exist_ok=True)

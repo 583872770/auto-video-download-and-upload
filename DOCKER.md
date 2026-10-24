@@ -1,9 +1,11 @@
 # Docker Compose 部署
 
 需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
-支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用阿里云镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取，Mihomo 仍从 GitHub 下载。
+支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用阿里云镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取。Mihomo 固定版本的 GitHub 发布包优先通过 `ghfast.top`、`gh-proxy.com` 下载，失败后尝试 GitHub 原站，最多两轮，每个请求超时 30 秒；每次都验证项目固定的 SHA256，通过后才安装。
 
 主应用和方式二独立测试镜像均支持构建参数 `DEBIAN_MIRROR`（如 `https://mirrors.aliyun.com`，不带 `/debian`）和 `PIP_INDEX_URL`（完整的 `/simple` 地址）。如需切换源，可在 `docker compose build` 中传入 `--build-arg DEBIAN_MIRROR=... --build-arg PIP_INDEX_URL=...`。
+
+若 Mihomo 下载仍出现 `RemoteDisconnected` 或超时，可在 `.env` 添加 `MIHOMO_DOWNLOAD_BASE_URL=https://你的下载站/MetaCubeX/mihomo/releases/download`，作为优先来源。脚本会追加 `/v1.19.33/mihomo-linux-<架构>-v1.19.33.gz`；自定义来源也必须提供与固定校验值一致的官方压缩包。主应用的两份基础编排均会自动传入该构建参数。修改后使用原来的 Compose 文件和项目名称重新 `up -d --build`，无需删除卷或使用 `--no-cache`。
 
 页面支持切换“方式一：yt-dlp”和“方式二：yt5s（实验）”。Linux 使用方式二需增加浏览器编排：`docker compose -f compose.yaml -f compose.yt5s.yaml up -d --build`，安装 Chromium、虚拟显示和网页远程桌面。部署及独立验证步骤见 [YT5S_LINUX.md](YT5S_LINUX.md)。
 
@@ -21,6 +23,8 @@ cp .env.example .env
 保留密码两侧的单引号，可以避免 `$`、`#` 被 Compose 解释；不要使用示例密码。
 `VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
 含空格的目录用引号包围。默认保存到项目的 `docker-data/videos`。
+
+这里的“宿主机”是 **Docker 引擎所在的机器**。如果 Windows 上的 PyCharm 连接远程 Linux Docker，`.env` 应填写服务器上的绝对目录，例如 `VIDEO_DOWNLOAD_DIR=/srv/youtube-videos`。不要填写 Windows 路径或保留 `./docker-data/videos`，后者可能被本地 Compose 展开成 `D:\...` 后传给 Linux，报 `invalid volume specification`。目录位于服务器，不会自动映射到 Windows；网页中的保存目录仍填 `/data/videos`。修改后重新运行 Compose 的 `up -d` 即可，无需重新构建镜像。
 
 ```powershell
 docker compose config --quiet

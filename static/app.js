@@ -133,7 +133,9 @@ function downloadProgress(task) {
   const stopped = task.status === 'queued' && data.stage === 'paused';
   const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(data.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? '大小未知' : `${percentage.toFixed(1)}%`;
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="下载进度"></progress><div class="download-metrics"><span>${task.action === 'import' ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>速度 <b>${active && Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—'}</b></span><span>当前文件剩余 <b>${active ? etaText(data.eta) : '—'}</b></span>${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div></div>`;
+  const importing = task.action === 'import';
+  const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—';
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div></div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks;
@@ -350,7 +352,7 @@ function renderDownloadMethod() {
   const tools = state.status?.tools;
   const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
   $('#download-method-note').textContent = method === 'yt5s'
-    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${missing ? '当前环境缺少浏览器或显示环境，Linux 请启用浏览器版 Docker 编排。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
+    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${missing ? '当前环境缺少浏览器或显示环境，请同时加载主编排与 compose.yt5s.yaml，重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
     : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
 }
 $('#download-method').addEventListener('change', async event => {

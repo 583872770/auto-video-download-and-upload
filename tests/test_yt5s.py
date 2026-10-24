@@ -1,6 +1,7 @@
 """Provider selection must route real transfers without exposing login cookies."""
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 import json
 from pathlib import Path
 import re
@@ -14,6 +15,7 @@ from unittest.mock import patch
 from app import create_app
 from Utils.runtime import configure_runtime
 from webapp.settings import validate_settings
+from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 from web_worker import execute
 
 VIDEO = 'https://www.youtube.com/watch?v=npNnbj46_ik'
@@ -21,6 +23,12 @@ VIDEO = 'https://www.youtube.com/watch?v=npNnbj46_ik'
 
 class Yt5sTests(unittest.TestCase):
     def setUp(self):
+        browser = patch('webapp.yt5s.browser_executable', return_value='/fixture/chromium')
+        display = patch('webapp.yt5s.display_available', return_value=True)
+        browser.start()
+        display.start()
+        self.addCleanup(browser.stop)
+        self.addCleanup(display.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -80,6 +88,48 @@ class Yt5sTests(unittest.TestCase):
             result = self.client.put('/api/config', json=values, headers=self.headers)
             self.assertEqual(result.status_code, 400)
             self.assertEqual(self.config.read_bytes(), before)
+
+    def test_missing_browser_rejects_new_jobs_import_and_resume_without_losing_queue(self):
+        self.method('yt5s')
+        with patch('webapp.yt5s.browser_executable', side_effect=RuntimeError('missing')):
+            result = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
+            self.assertEqual(result.status_code, 409, result.json)
+            self.assertIn('compose.yt5s.yaml', result.json['error'])
+            imported = self.client.post('/api/downloads/import', headers=self.headers,
+                                        data={'file': (BytesIO(b'npNnbj46_ik\n'), 'videos.txt')})
+            self.assertEqual(imported.status_code, 409, imported.json)
+            self.assertEqual(self.store.counts()['total'], 0)
+            self.assertFalse((self.store.directory / 'imports').exists())
+        created = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
+        self.assertEqual(created.status_code, 202, created.json)
+        self.store.set_downloads_paused(True)
+        self.method('yt_dlp')  # Resume must check the queued task's method.
+        with patch('webapp.yt5s.display_available', return_value=False):
+            result = self.client.post('/api/downloads/resume', headers=self.headers)
+        self.assertEqual(result.status_code, 409, result.json)
+        self.assertIn('显示环境', result.json['error'])
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+
+    def test_worker_missing_browser_pauses_and_requeues_without_failure(self):
+        from web_worker import drain
+
+        task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos'},
+                                             'base': str(self.root), 'urls': [VIDEO]})
+        with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=BrowserEnvironmentRequired('missing browser')):
+            drain(self.store.directory)
+        current = self.store.get(task['id'])
+        self.assertEqual((current['status'], current['attempts']), ('queued', 0))
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.client.get('/api/tasks?view=history').json['items'], [])
+
+    def test_browser_preflight_resolves_explicit_path_and_reports_missing_display(self):
+        with patch('webapp.yt5s.browser_executable', return_value='/fixture/chromium') as browser:
+            self.assertEqual(require_browser_environment({'browser_executable': 'browser/chromium'}, self.root),
+                             '/fixture/chromium')
+            browser.assert_called_once_with(str(self.root / 'browser/chromium'))
+            with patch('webapp.yt5s.display_available', return_value=False):
+                with self.assertRaisesRegex(BrowserEnvironmentRequired, 'DISPLAY'):
+                    require_browser_environment({}, self.root)
 
     def test_real_transfer_progress_archive_metadata_catalog_and_test_cleanup(self):
         configure_runtime()

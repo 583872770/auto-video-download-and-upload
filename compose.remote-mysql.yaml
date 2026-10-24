@@ -3,7 +3,10 @@ name: youtube-downloader
 # Standalone configuration: use instead of compose.yaml.
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        MIHOMO_DOWNLOAD_BASE_URL: ${MIHOMO_DOWNLOAD_BASE_URL:-}
     init: true
     restart: unless-stopped
     ports:

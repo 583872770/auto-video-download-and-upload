@@ -87,10 +87,14 @@ class TaskStore:
                 if changes[state]:
                     self._counter(db, scope, state, changes[state])
 
-    def _pack(self, db, payload):
+    def prepare_snapshot(self, payload):
         common = {key: value for key, value in payload.items() if key not in ('urls', 'batch_id', 'import_id')}
         encoded = json.dumps(common, ensure_ascii=False, sort_keys=True)
         identity = hashlib.sha256(encoded.encode()).hexdigest()
+        return identity, encoded
+
+    def _pack(self, db, payload):
+        identity, encoded = self.prepare_snapshot(payload)
         self.db.ensure(db, snapshots, {'id': identity, 'payload': encoded})
         return json.dumps({**{key: value for key, value in payload.items() if key in ('urls', 'batch_id', 'import_id')},
                            'snapshot_id': identity}, ensure_ascii=False)
@@ -131,7 +135,7 @@ class TaskStore:
             rows = db.execute(select(tasks).where(tasks.c.id.in_(ids)).order_by(tasks.c.seq)).mappings().all() if ids else []
             return [self.decode(row) for row in rows]
 
-    def insert_downloads(self, db, payloads, *, deduplicate=True):
+    def insert_downloads(self, db, payloads, *, deduplicate=True, shared_snapshot=None):
         """Bounded bulk insert; importer commits its cursor in this same transaction."""
         if not payloads:
             return []
@@ -143,9 +147,7 @@ class TaskStore:
             if payload.get('config', {}).get('storage_mode') == 'test':
                 source_key = 'test:' + source_key
             task_id = uuid.uuid4().hex
-            common = {key: value for key, value in payload.items() if key not in ('urls', 'batch_id', 'import_id')}
-            encoded = json.dumps(common, ensure_ascii=False, sort_keys=True)
-            snapshot_id = hashlib.sha256(encoded.encode()).hexdigest()
+            snapshot_id, encoded = shared_snapshot or self.prepare_snapshot(payload)
             packed[snapshot_id] = encoded
             rows.append(dict(id=task_id, seq=start + index, action='download', status='queued', created_at=now(),
                              payload=json.dumps({'snapshot_id': snapshot_id, 'urls': [url], 'batch_id': payload.get('batch_id')}, ensure_ascii=False),
@@ -162,7 +164,8 @@ class TaskStore:
         for key, value in packed.items():
             self.db.ensure(db, snapshots, {'id': key, 'payload': value})
         batch_ids = {row['batch_id'] for row in rows if row['batch_id']}
-        for batch_id in batch_ids:
+        existing_batches = set(db.execute(select(batches.c.id).where(batches.c.id.in_(batch_ids))).scalars()) if batch_ids else set()
+        for batch_id in sorted(batch_ids - existing_batches):
             self.db.ensure(db, batches, {'id': batch_id, 'seq': self.db.sequence(db, 'batch'), 'created_at': now(),
                                         'name': payloads[0].get('batch_name', '')})
         db.execute(tasks.insert(), rows)

@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 
 from sqlalchemy import (BigInteger, Column, Float as SAFloat, Index, Integer, MetaData, String,
-                        Table, Text as SAText, create_engine, event, inspect, select, text)
+                        Table, Text as SAText, create_engine, event, func, inspect, select, text)
 from sqlalchemy.dialects.mysql import DOUBLE, LONGTEXT, insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -219,13 +219,16 @@ class Database:
             reservations.c.task_id.in_([row['task_id'] for row in rows]))).scalars())
 
     def sequence(self, db, key, count=1):
+        if self.mysql:
+            # LAST_INSERT_ID(expr) is connection-local, and the OK packet
+            # exposes its value as lastrowid without a separate SELECT.
+            statement = self.insert(sequences).values(key=key, value=func.last_insert_id(count))
+            result = db.execute(statement.on_duplicate_key_update(
+                value=func.last_insert_id(sequences.c.value + count)))
+            return result.lastrowid - count + 1
         self.ensure(db, sequences, {'key': key, 'value': 0})
         statement = sequences.update().where(sequences.c.key == key).values(value=sequences.c.value + count)
-        if self.mysql:
-            db.execute(statement)
-            end = db.execute(select(sequences.c.value).where(sequences.c.key == key)).scalar_one()
-        else:
-            end = db.execute(statement.returning(sequences.c.value)).scalar_one()
+        end = db.execute(statement.returning(sequences.c.value)).scalar_one()
         return end - count + 1
 
     def initialize(self):
