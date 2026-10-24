@@ -1,5 +1,6 @@
 """Project-owned Mihomo process, private subscriptions and public node summaries."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime
 import json
 import os
@@ -19,8 +20,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUP = 'DOWNLOAD'
+WORKER_GROUP_PREFIX = 'DOWNLOAD_WORKER_'
 TEST_URL = 'https://www.gstatic.com/generate_204'
 MAX_SUBSCRIPTION = 5 * 1024 * 1024
+MAX_WORKERS = 16
+_manager_locks = {}
+_manager_locks_guard = threading.Lock()
+_core_children = {}
 
 
 def is_notice(name):
@@ -66,7 +72,8 @@ def parse_subscription(content):
         name = node.get('name')
         if (not isinstance(name, str) or not name.strip() or len(name) > 256
                 or any(ord(char) < 32 for char in name) or name in names
-                or name.upper() in ('DIRECT', 'REJECT', 'GLOBAL', GROUP, 'PASS', 'COMPATIBLE')):
+                or name.upper() in ('DIRECT', 'REJECT', 'GLOBAL', GROUP, 'PASS', 'COMPATIBLE')
+                or name.upper().startswith(WORKER_GROUP_PREFIX)):
             raise ClashError('订阅节点名称为空、重复或使用了保留名称。')
         if not isinstance(node.get('type'), str) or not isinstance(node.get('server'), str):
             raise ClashError('订阅节点缺少协议或服务器地址。')
@@ -75,24 +82,36 @@ def parse_subscription(content):
 
 
 class ClashManager:
-    def __init__(self, directory, binary=None):
+    def __init__(self, directory, binary=None, *, worker_slot=0):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.binary = Path(binary or ROOT / '.tools' / 'mihomo' / ('mihomo.exe' if os.name == 'nt' else 'mihomo')).resolve()
-        self.lock = threading.RLock()
+        if type(worker_slot) is not int or not 0 <= worker_slot < MAX_WORKERS:
+            raise ValueError('下载槽编号必须为 0 到 15。')
+        self.worker_slot = worker_slot
+        with _manager_locks_guard:
+            self.lock, self._lock_state = _manager_locks.setdefault(str(self.directory),
+                (threading.RLock(), threading.local()))
         self.direct = build_opener(ProxyHandler({}))
         self.process = None
         self.last_error = ''
         self.testing = {'running': False, 'done': 0, 'total': 0}
         path = self.directory / 'settings.json'
-        if path.is_file():
-            self.config = json.loads(path.read_text(encoding='utf-8'))
-        else:
-            self.config = {'secret': secrets.token_urlsafe(32), 'proxy_port': free_port(17890),
-                           'control_port': free_port(19090), 'selected': '', 'subscription_url': '', 'updated_at': None}
-            while self.config['control_port'] == self.config['proxy_port']:
-                self.config['control_port'] = free_port(0)
-            self.save()
+        with self.guard():
+            if path.is_file():
+                self.config = json.loads(path.read_text(encoding='utf-8'))
+            else:
+                self.config = {'secret': secrets.token_urlsafe(32), 'proxy_port': free_port(17890),
+                               'control_port': free_port(19090), 'selected': '', 'subscription_url': '', 'updated_at': None,
+                               'worker_ports': {}, 'worker_nodes': {}}
+                while self.config['control_port'] == self.config['proxy_port']:
+                    self.config['control_port'] = free_port(0)
+                self.save()
+        # These fields were added when worker processes moved from one
+        # Mihomo process each to listeners in a shared process.  Keep old
+        # installations readable and migrate them lazily.
+        self.config.setdefault('worker_ports', {})
+        self.config.setdefault('worker_nodes', {})
         self.delays = {}
         delay_file = self.directory / 'delays.json'
         if delay_file.is_file():
@@ -103,7 +122,43 @@ class ClashManager:
 
     @property
     def proxy_url(self):
-        return f'http://127.0.0.1:{self.config["proxy_port"]}'
+        return f'http://127.0.0.1:{self.proxy_port}'
+
+    @property
+    def proxy_port(self):
+        if self.worker_slot:
+            if str(self.worker_slot) not in self.config['worker_ports']:
+                self.start()
+                self.reload()
+            return int(self.config['worker_ports'][str(self.worker_slot)])
+        return int(self.config['proxy_port'])
+
+    @property
+    def group(self):
+        return f'{WORKER_GROUP_PREFIX}{self.worker_slot}' if self.worker_slot else GROUP
+
+    @contextmanager
+    def guard(self):
+        """One reentrant lock shared by all views and processes of this core."""
+        from web_worker import worker_lock
+
+        with self.lock:
+            if getattr(self._lock_state, 'held', False):
+                yield
+                return
+            deadline = time.monotonic() + 60
+            while True:
+                with worker_lock(self.directory / 'manager.lock') as acquired:
+                    if acquired:
+                        self._lock_state.held = True
+                        try:
+                            yield
+                        finally:
+                            self._lock_state.held = False
+                        return
+                if time.monotonic() >= deadline:
+                    raise ClashError('代理内核管理繁忙，请稍后重试。')
+                time.sleep(0.05)
 
     def save(self):
         atomic_text(self.directory / 'settings.json', json.dumps(self.config, ensure_ascii=False))
@@ -111,6 +166,8 @@ class ClashManager:
     def reload(self):
         # The worker can select another node while Flask keeps this instance alive.
         self.config = json.loads((self.directory / 'settings.json').read_text(encoding='utf-8'))
+        self.config.setdefault('worker_ports', {})
+        self.config.setdefault('worker_nodes', {})
 
     def rotation(self):
         return {'enabled': False, 'nodes': [], 'every': 1, 'count_failures': True,
@@ -127,7 +184,7 @@ class ClashManager:
         if (not isinstance(names, list) or any(not isinstance(name, str) for name in names)
                 or len(set(names)) != len(names)):
             raise ValueError('轮换节点必须是无重复的节点名称列表。')
-        with self.lock:
+        with self.guard():
             self.reload()
             available = {node['name'] for node in self.nodes() if not is_notice(node['name'])}
             if any(name not in available for name in names):
@@ -168,13 +225,35 @@ class ClashManager:
         selected = selected or self.config['selected']
         if selected in names:
             names = [selected] + [name for name in names if name != selected]
-        return {'mixed-port': self.config['proxy_port'], 'bind-address': '127.0.0.1',
+        groups = [{'name': GROUP, 'type': 'select', 'proxies': names}]
+        listeners = []
+        # Worker slots use independent listeners and independent select groups
+        # inside this same Mihomo process.  A node switch in one slot therefore
+        # cannot affect another slot's active HTTP(S) connections.
+        for slot, port in sorted((self.config.get('worker_ports') or {}).items(), key=lambda item: int(item[0])):
+            try:
+                slot_number = int(slot)
+                port_number = int(port)
+            except (TypeError, ValueError):
+                continue
+            if slot_number <= 0 or not 1 <= port_number <= 65535:
+                continue
+            worker_selected = (self.config.get('worker_nodes') or {}).get(str(slot_number), selected)
+            worker_names = [worker_selected] + [name for name in names if name != worker_selected] \
+                if worker_selected in names else list(names)
+            worker_group = f'{WORKER_GROUP_PREFIX}{slot_number}'
+            groups.append({'name': worker_group, 'type': 'select', 'proxies': worker_names})
+            listeners.append({'name': worker_group.lower(), 'type': 'mixed', 'port': port_number,
+                              'listen': '127.0.0.1', 'proxy': worker_group})
+        runtime = {'mixed-port': self.config['proxy_port'], 'bind-address': '127.0.0.1',
                 'allow-lan': False, 'external-controller': f'127.0.0.1:{self.config["control_port"]}',
                 'secret': self.config['secret'], 'mode': 'rule', 'log-level': 'warning',
                 'ipv6': False, 'find-process-mode': 'off', 'dns': {'enable': False},
-                'profile': {'store-selected': False}, 'proxies': nodes,
-                'proxy-groups': [{'name': GROUP, 'type': 'select', 'proxies': names}],
+                'profile': {'store-selected': False}, 'proxies': nodes, 'proxy-groups': groups,
                 'rules': [f'MATCH,{GROUP}']}
+        if listeners:
+            runtime['listeners'] = listeners
+        return runtime
 
     def validate_runtime(self, content):
         if not self.binary.is_file():
@@ -204,17 +283,67 @@ class ClashManager:
             pass
         return None
 
+    def _root(self):
+        return self if not self.worker_slot else ClashManager(self.directory, binary=self.binary)
+
+    def _group_path(self):
+        return '/proxies/' + quote(self.group, safe='')
+
+    def _ensure_worker_port(self, slot):
+        """Allocate a stable listener port for a worker slot."""
+        key = str(int(slot))
+        ports = self.config.setdefault('worker_ports', {})
+        current = ports.get(key)
+        if current:
+            return int(current)
+        used = {int(self.config.get('proxy_port', 0)), int(self.config.get('control_port', 0))}
+        used.update(int(value) for value in ports.values() if str(value).isdigit())
+        preferred = 17890 + int(slot)
+        while True:
+            candidate = free_port(preferred)
+            if candidate not in used:
+                ports[key] = candidate
+                return candidate
+            preferred = 0
+
+    def _apply_runtime(self):
+        """Write the shared runtime and reload it when the core is alive."""
+        nodes = self.nodes()
+        runtime_file = self.directory / 'runtime.yaml'
+        atomic_text(runtime_file, yaml.safe_dump(self.runtime(nodes), allow_unicode=True, sort_keys=False))
+        if self.running():
+            self.api('/configs', 'PUT', {'path': str(runtime_file)}, timeout=12)
+
     def start(self):
-        with self.lock:
-            if self.running():
+        if self.worker_slot:
+            return self._root().start()
+        with self.guard():
+            self.reload()
+            running = self.running()
+            if running and self.config.get('listener_layout') == 1:
                 return
             if not self.nodes():
                 raise ClashError('请先导入订阅。')
             if not self.binary.is_file():
                 raise ClashError('未安装 Mihomo 内核。')
-            if self.owned_process():
+            if not running and self.owned_process():
                 raise ClashError('内核进程仍在运行但控制接口不可用，请先停止后再启动。')
-            for port in (self.config['proxy_port'], self.config['control_port']):
+            # Prepare all supported slots once.  Changing the download count
+            # later never reloads the core or disturbs another active download.
+            self._stop_legacy_workers()
+            for slot in range(1, MAX_WORKERS):
+                self._ensure_worker_port(slot)
+            self.save()
+            if running:
+                if not self.owned_process():
+                    raise ClashError('当前控制端口不是本项目启动的代理内核，未修改配置。')
+                self._apply_runtime()
+                self.config['listener_layout'] = 1
+                self.save()
+                return
+            listener_ports = [int(value) for value in (self.config.get('worker_ports') or {}).values()
+                              if str(value).isdigit()]
+            for port in (self.config['proxy_port'], self.config['control_port'], *listener_ports):
                 with socket.socket() as stream:
                     try:
                         stream.bind(('127.0.0.1', port))
@@ -226,6 +355,9 @@ class ClashManager:
                 self.process = subprocess.Popen([str(self.binary), '-d', str(self.directory), '-f', str(runtime_file)],
                                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            # A short-lived worker view can start the persistent core too.
+            # Retain its Popen until stop, even after that view is discarded.
+            _core_children[str(self.directory)] = self.process
             process = psutil.Process(self.process.pid)
             atomic_text(self.directory / 'process.json', json.dumps({'pid': process.pid, 'created': process.create_time()}))
             deadline = time.monotonic() + 12
@@ -233,6 +365,8 @@ class ClashManager:
                 if self.process.poll() is not None:
                     raise ClashError('代理内核启动失败，请检查端口或订阅配置。')
                 if self.running():
+                    self.config['listener_layout'] = 1
+                    self.save()
                     self.last_error = ''
                     return
                 time.sleep(0.15)
@@ -240,7 +374,10 @@ class ClashManager:
             raise ClashError('代理内核启动超时。')
 
     def stop(self):
-        with self.lock:
+        if self.worker_slot:
+            return self._root().stop()
+        with self.guard():
+            self.reload()
             if self.testing['running']:
                 raise ClashError('节点正在测速，请等待测速完成。')
             process = self.owned_process()
@@ -255,14 +392,23 @@ class ClashManager:
                 raise ClashError('当前端口不是本项目启动的代理进程，未停止。')
             if self.process is not None:
                 self.process.poll()
-            directory = self.directory / 'workers'
-            if directory.is_dir():
-                for child in directory.iterdir():
-                    if child.is_dir() and child.name.isdigit() and (child / 'settings.json').is_file():
-                        ClashManager(child, binary=self.binary).stop()
+            child = _core_children.pop(str(self.directory), None)
+            if child is not None:
+                child.poll()
+            self._stop_legacy_workers()
+
+    def _stop_legacy_workers(self):
+        """Retire only verified worker cores left by the old architecture."""
+        directory = self.directory / 'workers'
+        if directory.is_dir():
+            for child in directory.iterdir():
+                if child.is_dir() and child.name.isdigit() and (child / 'settings.json').is_file():
+                    manager = ClashManager(child, binary=self.binary)
+                    if manager.owned_process():
+                        manager.stop()
 
     def import_subscription(self, url=''):
-        with self.lock:
+        with self.guard():
             self.reload()
             if self.testing['running']:
                 raise ClashError('节点正在测速，请等待测速完成后更新订阅。')
@@ -283,6 +429,10 @@ class ClashManager:
             names = [node['name'] for node in nodes if not is_notice(node['name'])]
             if not names:
                 raise ClashError('订阅中只有流量或到期提示，没有可选节点。')
+            was_running = self.running()
+            if was_running:
+                self.start()
+                self.reload()
             selected = self.config['selected'] if self.config['selected'] in names else names[0]
             runtime = yaml.safe_dump(self.runtime(nodes, selected), allow_unicode=True, sort_keys=False)
             self.validate_runtime(runtime)
@@ -290,8 +440,13 @@ class ClashManager:
             runtime_file = self.directory / 'runtime.yaml'
             previous_nodes = nodes_file.read_text(encoding='utf-8') if nodes_file.is_file() else None
             previous_runtime = runtime_file.read_text(encoding='utf-8') if runtime_file.is_file() else None
+            if was_running and previous_nodes:
+                # Group selections change through the API between reloads.
+                # Build rollback content from persisted selections so a failed
+                # subscription update restores every worker's latest node.
+                previous_runtime = yaml.safe_dump(self.runtime(parse_subscription(previous_nodes.encode('utf-8'))),
+                                                  allow_unicode=True, sort_keys=False)
             previous_config = dict(self.config)
-            was_running = self.running()
             try:
                 atomic_text(nodes_file, yaml.safe_dump({'proxies': nodes}, allow_unicode=True, sort_keys=False))
                 atomic_text(runtime_file, runtime)
@@ -311,9 +466,10 @@ class ClashManager:
                     self.config['rotation'] = rotation
                 self.save()
             except (ClashError, OSError):
-                self.config = previous_config
                 if not was_running:
                     self.stop()
+                self.config = previous_config
+                self.save()
                 if previous_nodes is not None:
                     atomic_text(nodes_file, previous_nodes)
                 else:
@@ -332,25 +488,30 @@ class ClashManager:
             return len(names)
 
     def select(self, name, *, automatic=False):
-        with self.lock:
+        with self.guard():
             self.reload()
             if name not in {node['name'] for node in self.nodes() if not is_notice(node['name'])}:
                 raise ClashError('请选择订阅中的有效节点。')
             self.start()
-            self.api('/proxies/' + GROUP, 'PUT', {'name': name})
-            self.config['selected'] = name
+            self.reload()
+            self.api(self._group_path(), 'PUT', {'name': name})
+            if self.worker_slot:
+                self.config['worker_nodes'][str(self.worker_slot)] = name
+            else:
+                self.config['selected'] = name
             rotation = self.rotation()
-            if rotation['enabled'] and not automatic:
+            if rotation['enabled'] and not automatic and not self.worker_slot:
                 rotation.update(id=secrets.token_hex(16),
                                 start_index=rotation['nodes'].index(name) if name in rotation['nodes'] else 0)
                 self.config['rotation'] = rotation
             self.save()
 
     def snapshot(self, expected=None):
-        with self.lock:
+        with self.guard():
             self.reload()
             self.start()
-            current = self.api('/proxies/' + GROUP).get('now')
+            self.reload()
+            current = self.api(self._group_path()).get('now')
             if not current or (expected is not None and current != expected):
                 raise ClashError('代理节点已改变，请重新创建下载任务。')
             snapshot = {'directory': str(self.directory), 'node': current, 'proxy': self.proxy_url,
@@ -364,7 +525,7 @@ class ClashManager:
         rotation = queued.get('rotation')
         if not rotation or not rotation.get('enabled'):
             return self.snapshot(expected=queued['node'])
-        with self.lock:
+        with self.guard():
             self.reload()
             if rotation != self.rotation():
                 raise ClashError('自动轮换配置已改变，请重新创建下载任务。')
@@ -374,28 +535,18 @@ class ClashManager:
             index = (rotation['start_index'] + completed // rotation['every']) % len(rotation['nodes'])
             node = rotation['nodes'][index]
             self.start()
-            if self.api('/proxies/' + GROUP).get('now') != node:
+            if self.api(self._group_path()).get('now') != node:
                 self.select(node, automatic=True)
             snapshot = self.snapshot(expected=node)
             snapshot['rotation_completed'] = completed
             return snapshot
 
     def for_worker(self, slot):
+        if type(slot) is not int or not 0 <= slot < MAX_WORKERS:
+            raise ValueError('下载槽编号必须为 0 到 15。')
         if slot == 0:
             return self
-        with self.lock:
-            self.reload()
-            child = ClashManager(self.directory / 'workers' / str(slot), binary=self.binary)
-            source = (self.directory / 'nodes.yaml').read_bytes()
-            destination = child.directory / 'nodes.yaml'
-            if not destination.is_file() or destination.read_bytes() != source:
-                if child.running():
-                    child.stop()
-                atomic_text(destination, source.decode('utf-8'))
-            child.config['rotation'] = self.rotation()
-            child.config['subscription_id'] = self.config.get('subscription_id', '')
-            child.save()
-            return child
+        return ClashManager(self.directory, binary=self.binary, worker_slot=slot)
 
     def test_delays(self, name=None):
         with self.lock:
@@ -452,13 +603,15 @@ class ClashManager:
             self.reload()
             running = self.running()
             nodes = self.nodes()
-            selected = self.config['selected']
+            selected = (self.config['worker_nodes'].get(str(self.worker_slot), self.config['selected'])
+                        if self.worker_slot else self.config['selected'])
             if running:
                 try:
-                    selected = self.api('/proxies/' + GROUP).get('now', selected)
+                    selected = self.api(self._group_path()).get('now', selected)
                 except ClashError:
                     running = False
             return {'installed': self.binary.is_file(), 'running': running,
+                    'architecture': 'shared_listeners',
                     'subscription_saved': bool(self.config['subscription_url']),
                     'subscription_host': urlsplit(self.config['subscription_url']).hostname or '',
                     'updated_at': self.config['updated_at'], 'selected': selected,

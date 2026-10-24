@@ -343,7 +343,11 @@ class RotationTests(unittest.TestCase):
                 path = item['url'].split('192.0.2.1')[1]
                 self.assertEqual({node for node, url in requests if path in url}, {item['progress']['proxy_node']})
         child_manager = self.manager.for_worker(1)
-        self.assertNotEqual(child_manager.config['proxy_port'], self.manager.config['proxy_port'])
+        self.assertNotEqual(child_manager.proxy_port, self.manager.proxy_port)
+        self.assertEqual(child_manager.directory, self.manager.directory)
+        self.assertEqual(child_manager.config['control_port'], self.manager.config['control_port'])
+        self.assertEqual(child_manager.owned_process().pid, self.manager.owned_process().pid)
+        self.assertFalse((self.manager.directory / 'workers').exists())
         self.manager.stop()
         self.assertFalse(child_manager.status()['running'])
 

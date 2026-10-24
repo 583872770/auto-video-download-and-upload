@@ -81,7 +81,7 @@ def register_statistics(app, store):
     def methods_export(rows, filename):
         buffer = StringIO(newline='')
         writer = csv.writer(buffer)
-        writer.writerow(['下载方式', '参与任务', '成功任务(含测试)', '失败任务', '测试成功', '跳过任务', '未完成',
+        writer.writerow(['下载提供方', '尝试次数', '成功尝试(含测试)', '失败尝试', '测试成功', '跳过任务', '未完成',
                          '成功率(%)', '交付视频数', '交付精确字节数(计费)', '测试视频数', '测试精确字节数(不计费)',
                          '全部完成视频数', '全部完成精确字节数', '自动切换任务数'])
         for row in rows:

@@ -36,23 +36,23 @@ class MethodStatisticsContract:
         for index, job in enumerate(jobs):
             self.assertEqual(job['payload']['download_session_id'], identity)
             path = self.final_file(f'{index}.mp4', 101 * (index + 1))
+            if index == 2:
+                self.store.statistics.methods.fallback(job['id'])
             with ThreadPoolExecutor(2) as pool:
                 results = list(pool.map(lambda _: self.store.statistics.record_file(
                     job['id'], path, test_mode=index == 2), range(2)))
             self.assertEqual(sorted(results), [False, True])
             if index == 2:
                 path.unlink()
-                self.store.statistics.methods.fallback(job['id'])
             self.store.finish(job['id'], result={'test_mode': index == 2,
                 'download_method': 'yt_dlp' if index == 2 else 'yt5s', 'fallback_used': index == 2}, worker_id=self.store.owner)
         rows = self.methods(identity)
-        self.assertEqual(set(rows), {'yt_dlp', 'yt5s', 'yt5s_fallback'})
-        for method, size in [('yt_dlp', 101), ('yt5s', 202)]:
-            self.assertEqual((rows[method]['attempted'], rows[method]['succeeded'], rows[method]['file_bytes']), (1, 1, size))
-        third = rows['yt5s_fallback']
-        self.assertEqual((third['file_bytes'], third['test_file_bytes'], third['test_succeeded'], third['fallback_tasks']), (0, 303, 1, 1))
-        self.assertEqual(third['downloaded_file_bytes_exact'], '303')
-        self.assertEqual(third['success_rate'], 100)
+        self.assertEqual(set(rows), {'yt_dlp', 'yt5s'})
+        self.assertEqual((rows['yt_dlp']['attempted'], rows['yt_dlp']['succeeded'], rows['yt_dlp']['file_bytes']), (2, 1, 101))
+        self.assertEqual((rows['yt_dlp']['file_bytes'], rows['yt_dlp']['test_file_bytes'], rows['yt_dlp']['test_succeeded'], rows['yt_dlp']['fallback_tasks']), (101, 303, 1, 1))
+        self.assertEqual(rows['yt_dlp']['downloaded_file_bytes_exact'], '404')
+        self.assertEqual(rows['yt_dlp']['success_rate'], 100)
+        self.assertEqual((rows['yt5s']['attempted'], rows['yt5s']['succeeded'], rows['yt5s']['failed'], rows['yt5s']['file_bytes']), (2, 1, 1, 202))
         self.assertEqual(self.methods(), rows)
         self.assertEqual(TaskStore(self.store.directory).statistics.method_summary(identity), list(rows.values()))
         self.assertEqual(self.overview()['summary']['file_bytes'], 303)
@@ -63,7 +63,7 @@ class MethodStatisticsContract:
         identity = job['payload']['download_session_id']
         self.store.statistics.methods.fallback(job['id'])
         self.store.finish(job['id'], error='both providers failed', retryable=True, worker_id=self.store.owner)
-        row = self.methods(identity)['yt5s_fallback']
+        row = self.methods(identity)['yt_dlp']
         self.assertEqual((row['attempted'], row['running'], row['failed'], row['unfinished'], row['fallback_tasks']), (1, 0, 0, 1, 1))
         with self.store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == job['id']).values(available_at=0))
@@ -71,14 +71,14 @@ class MethodStatisticsContract:
         self.assertEqual(again['payload']['download_session_id'], identity)
         self.store.statistics.methods.fallback(job['id'])
         self.store.release(job['id'], self.store.owner, 'cookie expired', delay=0)
-        row = self.methods(identity)['yt5s_fallback']
+        row = self.methods(identity)['yt_dlp']
         self.assertEqual((row['attempted'], row['running'], row['unfinished'], row['fallback_tasks']), (1, 0, 1, 1))
         self.assertIsNotNone(self.claim())
         self.store.finish(job['id'], error='permanent failure', worker_id=self.store.owner)
         self.assertFalse(self.store.finish(job['id'], error='duplicate', worker_id=self.store.owner))
         with self.assertRaises(DownloadLeaseLost):
             self.store.statistics.methods.fallback(job['id'])
-        row = self.methods(identity)['yt5s_fallback']
+        row = self.methods(identity)['yt_dlp']
         self.assertEqual((row['attempted'], row['failed'], row['running'], row['unfinished'], row['fallback_tasks']), (1, 1, 0, 0, 1))
         self.assertEqual(row['success_rate'], 0)
 
@@ -113,7 +113,7 @@ class MethodStatisticsContract:
         with self.store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == jobs[0]['id']).values(lease_until=0))
         self.store.recover(expired_only=True)
-        row = self.methods(identity)['yt5s_fallback']
+        row = self.methods(identity)['yt5s']
         self.assertEqual((row['attempted'], row['running'], row['failed']), (4, 3, 0))
         with self.store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == jobs[0]['id']).values(available_at=0))
@@ -126,7 +126,7 @@ class MethodStatisticsContract:
 
         with ThreadPoolExecutor(4) as pool:
             list(pool.map(finish, jobs))
-        row = self.methods(identity)['yt5s_fallback']
+        row = self.methods(identity)['yt_dlp']
         self.assertEqual((row['attempted'], row['running'], row['succeeded'], row['fallback_tasks']), (4, 0, 4, 4))
 
     def test_customer_filter_and_csv_exports_keep_method_numbers_exact(self):
@@ -138,20 +138,20 @@ class MethodStatisticsContract:
             self.store.statistics.record_file(job['id'], self.final_file(f'{index}.mp4', index + 100))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
         rows = self.methods(query='客户 A')
-        self.assertEqual([rows[key]['file_bytes'] for key in ('yt_dlp', 'yt5s', 'yt5s_fallback')], [100, 0, 102])
+        self.assertEqual([rows[key]['file_bytes'] for key in ('yt_dlp', 'yt5s')], [100, 102])
         self.assertEqual(sum(row['attempted'] for row in self.methods(query='%').values()), 0)
         exported = self.client.get('/api/statistics/methods/export', query_string={'q': '客户 A'})
         self.assertEqual(exported.status_code, 200)
         self.assertTrue(exported.data.startswith(b'\xef\xbb\xbf'))
         csv_rows = list(csv.DictReader(StringIO(exported.data.decode('utf-8-sig'))))
-        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '0', '102'])
+        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '102'])
         size = 9007199254740993
         with self.store.connect() as db:
             db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(file_bytes=size))
             db.execute(method_totals.update().where(method_totals.c.session_id == identity).values(file_bytes=size))
         response = self.client.get('/api/statistics/sessions/' + identity + '/export?kind=methods')
         self.assertIn(str(size), response.data.decode('utf-8-sig'))
-        self.assertEqual(self.methods(identity)['yt5s_fallback']['file_bytes_exact'], str(size))
+        self.assertEqual(self.methods(identity)['yt5s']['file_bytes_exact'], str(size))
 
     def test_old_schema_creates_new_tables_without_reclassifying_historical_bytes(self):
         self.job()
@@ -169,7 +169,7 @@ class MethodStatisticsContract:
         self.store.db.initialize()
         rows = self.methods(identity)
         self.assertEqual((rows['unknown']['file_bytes'], rows['unknown']['test_file_bytes'], rows['unknown']['succeeded']), (999, 777, 1))
-        self.assertEqual(sum(rows[method]['attempted'] for method in ('yt_dlp', 'yt5s', 'yt5s_fallback')), 0)
+        self.assertEqual(sum(rows[method]['attempted'] for method in ('yt_dlp', 'yt5s')), 0)
         self.assertEqual(self.overview()['summary'], before)
         self.assertTrue(self.overview()['method_tracking_since'])
 

@@ -7,9 +7,8 @@ from webapp.database import download_sessions as sessions, method_tasks, method_
 from webapp.statistics import COUNTERS, OUTCOMES, with_test_sizes
 
 METHODS = {
-    'yt_dlp': '方式一：yt-dlp',
-    'yt5s': '方式二：yt5s',
-    'yt5s_fallback': '方式三：yt5s 优先，失败用 yt-dlp',
+    'yt_dlp': 'yt-dlp',
+    'yt5s': 'yt5s',
     'unknown': '历史未分类',
 }
 FIELDS = (*COUNTERS, 'test_file_count', 'test_file_bytes', 'fallback_tasks')
@@ -40,9 +39,10 @@ class MethodStatistics:
         if current:
             return current
         config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
-        method = config.get('download_method', 'yt_dlp')
-        if method not in METHODS:
-            method = 'unknown'
+        selected = config.get('download_method', 'yt_dlp')
+        # Track the provider currently handling the task. A fallback task starts
+        # as yt5s and is moved to yt-dlp when the second provider begins.
+        method = 'yt_dlp' if selected == 'yt_dlp' else 'yt5s' if selected in ('yt5s', 'yt5s_fallback') else 'unknown'
         current = dict(session_id=identity, task_id=row['id'], method=method, status=status, fallback_used=0)
         db.execute(method_tasks.insert().values(**current))
         changes = {'attempted': 1}
@@ -86,7 +86,15 @@ class MethodStatistics:
             if identity:
                 self.store.statistics._active(db)
                 current = self.ensure(db, row, identity)
-                self.change(db, row, identity, current['status'], fallback_used=True)
+                if current['method'] in ('yt5s', 'yt5s_fallback') and not current['fallback_used']:
+                    # Record the failed yt5s attempt, then start a separate
+                    # yt-dlp attempt. Both providers therefore get real rates.
+                    changes = {'running': -1, 'failed': 1}
+                    self.add(db, identity, 'yt5s', changes)
+                    self.db.ensure(db, method_totals, {'session_id': identity, 'method': 'yt_dlp'})
+                    self.add(db, identity, 'yt_dlp', {'attempted': 1, 'running': 1, 'fallback_tasks': 1})
+                    db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
+                        method_tasks.c.task_id == row['id']).values(method='yt_dlp', status='running', fallback_used=1))
 
     def summary(self, db, totals, *, identity=None, query=''):
         statement = select(method_totals.c.method, *(func.sum(method_totals.c[key]).label(key) for key in FIELDS))

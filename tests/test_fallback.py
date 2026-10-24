@@ -224,8 +224,9 @@ class FallbackContract:
             drain(self.store.directory)
         self.assertEqual((self.store.get(task['id'])['status'], self.store.get(task['id'])['attempts']), ('queued', 0))
         self.assertTrue(self.store.downloads_paused())
-        third = self.client.get('/api/statistics').json['methods'][2]
-        self.assertEqual((third['attempted'], third['fallback_tasks'], third['unfinished'], third['failed']), (1, 1, 1, 0))
+        methods = {row['method']: row for row in self.client.get('/api/statistics').json['methods']}
+        self.assertEqual((methods['yt5s']['attempted'], methods['yt5s']['failed']), (1, 1))
+        self.assertEqual((methods['yt_dlp']['attempted'], methods['yt_dlp']['fallback_tasks'], methods['yt_dlp']['unfinished']), (1, 1, 1))
 
     def test_control_and_local_storage_errors_never_start_fallback(self):
         self.cookie()
@@ -251,8 +252,9 @@ class FallbackContract:
                 execute('download', job['payload'], values.append, store=self.store, task_id=task['id'])
         self.assertNotIn('PRIVATE_TOKEN', str(values) + str(log.call_args_list))
         self.store.finish(task['id'], error='HTTP 503', worker_id=self.store.owner)
-        third = self.client.get('/api/statistics').json['methods'][2]
-        self.assertEqual((third['attempted'], third['failed'], third['fallback_tasks']), (1, 1, 1))
+        methods = {row['method']: row for row in self.client.get('/api/statistics').json['methods']}
+        self.assertEqual((methods['yt5s']['attempted'], methods['yt5s']['failed']), (1, 1))
+        self.assertEqual((methods['yt_dlp']['attempted'], methods['yt_dlp']['failed'], methods['yt_dlp']['fallback_tasks']), (1, 1, 1))
 
     def test_real_fallback_transfer_bills_exact_bytes_once_and_test_mode_cleans(self):
         self.cookie()
@@ -323,10 +325,11 @@ class FallbackContract:
         totals = self.client.get('/api/statistics').json['summary']
         self.assertEqual((totals['file_count'], int(totals['file_bytes'])), (1, len(content)))
         methods = self.client.get('/api/statistics').json['methods']
-        self.assertEqual(methods[0]['attempted'], 0)  # Native transfer still belongs to selected mode three.
-        third = methods[2]
-        self.assertEqual((third['attempted'], third['succeeded'], third['skipped'], third['test_succeeded'], third['fallback_tasks']), (3, 1, 1, 1, 2))
-        self.assertEqual((third['file_bytes'], third['test_file_bytes'], third['downloaded_file_bytes']),
+        by_provider = {row['method']: row for row in methods}
+        self.assertEqual((by_provider['yt5s']['attempted'], by_provider['yt5s']['failed'], by_provider['yt5s']['skipped']), (3, 2, 1))
+        provider = by_provider['yt_dlp']
+        self.assertEqual((provider['attempted'], provider['succeeded'], provider['test_succeeded'], provider['fallback_tasks']), (2, 1, 1, 2))
+        self.assertEqual((provider['file_bytes'], provider['test_file_bytes'], provider['downloaded_file_bytes']),
                          (len(content), len(content), len(content) * 2))
         self.assertTrue(all(value is None or value.startswith('bytes=0-') for value in Handler.ranges))
 

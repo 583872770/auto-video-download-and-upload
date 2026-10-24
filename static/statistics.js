@@ -19,7 +19,7 @@
   });
 
   function renderMethods(target, rows) {
-    $(target).innerHTML = (rows || []).map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${row.method === 'yt5s_fallback' ? '切换后仍计入方式三' : row.method === 'unknown' ? '升级前未记录下载方式' : '按任务保存的方式归类'}</small></td><td><b>${integer(row.attempted)}</b><small>进行中 ${integer(row.running)}</small></td><td><b>${integer(successes(row))} / ${integer(row.failed)}</b><small>含测试成功 ${integer(row.test_succeeded)} · 成功率 ${row.success_rate === null ? '—' : `${row.success_rate}%`}</small></td><td>${integer(row.skipped)} / ${integer(row.unfinished)}</td><td><b>${gb(row.file_bytes)}</b><small>${integer(row.file_count)} 个视频 · ${integer(row.file_bytes_exact)} 字节</small></td><td><b>${gb(row.test_file_bytes)}</b><small>${integer(row.test_file_count)} 个视频 · ${integer(row.test_file_bytes_exact)} 字节 · 不计费</small></td><td><b>${gb(row.downloaded_file_bytes)}</b><small>${integer(row.downloaded_file_count)} 个视频 · ${integer(row.downloaded_file_bytes_exact)} 字节</small></td><td>${row.method === 'yt5s_fallback' ? integer(row.fallback_tasks) : '—'}</td></tr>`).join('');
+    $(target).innerHTML = (rows || []).map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${row.method === 'unknown' ? '升级前未记录实际下载提供方' : row.method === 'yt_dlp' && row.fallback_tasks ? `包含 ${integer(row.fallback_tasks)} 个由 yt5s 切换过来的任务` : '按实际处理该视频的下载提供方归类'}</small></td><td><b>${integer(row.attempted)}</b><small>进行中 ${integer(row.running)}</small></td><td><b>${integer(successes(row))} / ${integer(row.failed)}</b><small>含测试成功 ${integer(row.test_succeeded)} · 成功率 ${row.success_rate === null ? '—' : `${row.success_rate}%`}</small></td><td>${integer(row.skipped)} / ${integer(row.unfinished)}</td><td><b>${gb(row.file_bytes)}</b><small>${integer(row.file_count)} 个视频 · ${integer(row.file_bytes_exact)} 字节</small></td><td><b>${gb(row.test_file_bytes)}</b><small>${integer(row.test_file_count)} 个视频 · ${integer(row.test_file_bytes_exact)} 字节 · 不计费</small></td><td><b>${gb(row.downloaded_file_bytes)}</b><small>${integer(row.downloaded_file_count)} 个视频 · ${integer(row.downloaded_file_bytes_exact)} 字节</small></td><td>${row.method === 'yt_dlp' ? integer(row.fallback_tasks) : '—'}</td></tr>`).join('');
   }
 
   function renderOverview(data) {
@@ -33,7 +33,7 @@
     $('#statistics-summary-export').href = `/api/statistics/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     $('#statistics-methods-export').href = `/api/statistics/methods/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     renderMethods('#statistics-methods', data.methods);
-    $('#statistics-methods-since').textContent = `下载方式统计起始于 ${formatDate(data.method_tracking_since, true)}。按任务保存的方式分类；方式三切换后仍计入方式三，自动切换按任务去重。旧记录显示为历史未分类。成功率 = 成功任务（含测试）÷ 成功与失败任务之和。`;
+    $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。每次实际尝试分别计入 yt5s 或 yt-dlp；方式三先计一次 yt5s 失败，再计一次 yt-dlp 尝试。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
     $('#statistics-since').textContent = `计费大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。历史任务未补算大小；金额按精确字节计算，按会话四舍五入到分。`;
     if (!stats.pricingDirty) fill($('#statistics-pricing-form'), data.pricing);
     const active = data.active;
