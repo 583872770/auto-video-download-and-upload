@@ -1,0 +1,15 @@
+FROM python:3.13-slim-bookworm
+ENV PYTHONUNBUFFERED=1 PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
+    DISPLAY=:99 YT5S_PROBE_CONTAINER=1 YT5S_BROWSER=/usr/bin/chromium
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       ca-certificates chromium xvfb x11vnc novnc websockify ffmpeg fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/yt5s-probe-requirements.txt /opt/yt5s/requirements.txt
+RUN python -m pip install --no-cache-dir -r /opt/yt5s/requirements.txt
+COPY scripts/probe_yt5s.py /opt/yt5s/scripts/probe_yt5s.py
+COPY webapp/yt5s.py /opt/yt5s/webapp/yt5s.py
+COPY docker/start-yt5s-probe.sh /opt/yt5s/start-probe.sh
+WORKDIR /opt/yt5s
+EXPOSE 6080
+ENTRYPOINT ["/bin/sh", "/opt/yt5s/start-probe.sh"]

@@ -102,6 +102,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from Download import build_ydl_options, download_cookie_session, require_download_tools
         progress = DownloadProgress(report_progress or (lambda value: None))
         progress.state['worker_slot'] = worker_slot
+        method_two = config.get('download_method', 'yt_dlp') == 'yt5s'
+        progress.state['download_method'] = 'yt5s' if method_two else 'yt_dlp'
         progress.save(force=True)
         failure = DownloadFailure()
         test_mode = config.get('storage_mode') == 'test'
@@ -154,7 +156,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
-        if store and youtube:
+        if store and youtube and not method_two:
             progress.state.update(stage='checking_login')
             progress.save(force=True)
             auth = YouTubeAuth(store)
@@ -211,12 +213,22 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         try:
             with download_cookie_session(options) as session_options:
                 with ReportingDownloader(session_options) as downloader:
-                    failed = downloader.download(urls)
+                    if method_two:
+                        from webapp.yt5s import resolve
+                        def stage(value):
+                            progress.state.update(stage=value, speed=None, eta=None)
+                            progress.save(force=True)
+                        for url in urls:
+                            info = resolve(url, config, base, store.directory if store else base / '.cache', stage)
+                            downloader.process_ie_result(info, download=True)
+                        failed = downloader._download_retcode
+                    else:
+                        failed = downloader.download(urls)
         except yt_dlp.utils.DownloadError as error:
-            if store and youtube and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
+            if store and youtube and not method_two and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
                 raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
             raise RuntimeError(failure.message(error)) from error
-        if store and youtube and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
+        if store and youtube and not method_two and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
             raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
         if failed:
             raise RuntimeError(failure.message())

@@ -51,3 +51,6 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 @media(max-width:650px){.bulk-import-row{padding:14px 17px;flex-wrap:wrap}.catalog-toolbar{padding:0 17px 17px;flex-wrap:wrap;gap:10px}.catalog-toolbar input{flex-basis:100%}.pagination{gap:12px;padding:17px}.scale-fields{grid-template-columns:1fr}}
 @media(max-width:1000px){.rotation-nodes{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){#clash-rotation-form{padding:0 17px 17px}.rotation-nodes{grid-template-columns:1fr}.rotation-options{align-items:flex-start;flex-direction:column;gap:15px}.rotation-footer{flex-wrap:wrap}.rotation-panel{margin-bottom:17px}}
+.download-method-row { margin-bottom: 20px; }
+.download-method-row select { width: 100%; min-height: 42px; padding: 8px 12px; border: 1px solid #dedee3; border-radius: 9px; background: #fff; color: inherit; font: inherit; }
+.download-method-row .micro-copy { margin: 9px 0 0; line-height: 1.7; }

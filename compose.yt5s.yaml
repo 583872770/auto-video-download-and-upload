@@ -1,0 +1,9 @@
+# Add to compose.yaml to enable download method two in the actual Web app.
+services:
+  app:
+    build:
+      args:
+        WITH_YT5S_BROWSER: "1"
+    shm_size: 512m
+    ports:
+      - "127.0.0.1:${YT5S_DESKTOP_PORT:-6080}:6080"

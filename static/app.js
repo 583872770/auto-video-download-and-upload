@@ -6,6 +6,7 @@ const csrf = $('meta[name="csrf-token"]').content;
 const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
 let clashBusy = false;
 let downloadSubmitting = false;
+let downloadMethodBusy = false;
 let nodeSignature = '';
 let rotationDraft = null;
 let rotationDirty = false;
@@ -105,7 +106,7 @@ function openMedia(name) {
   if (item.playable) player.play().catch(() => {});
 }
 function taskRows(tasks) {
-  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time">${escapeHTML(formatDate(task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
 }
 function taskStatus(task) {
   return ['download', 'import'].includes(task.action) && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status) ? (task.status === 'running' ? '正在停止' : '已停止') : statusNames[task.status] || task.status;
@@ -124,7 +125,7 @@ function progressLabel(task) {
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
-  return { checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { waiting_browser: '等待方式二浏览器', waiting_verification: '方式二 · 等待网站验证', converting: '方式二 · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -195,15 +196,17 @@ function renderStatus() {
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
   $('#environment-note').textContent = !tools.ffmpeg || !tools.ffprobe ? '缺少 FFmpeg / ffprobe' : !tools.node && !tools.deno ? '缺少 JS 运行时' : `Python ${state.status.python}`;
   renderYouTubeLogin();
+  const methodTwo = state.config?.download_method === 'yt5s';
+  renderDownloadMethod();
   $$('[data-youtube-status]').forEach(element => {
     const auth = state.status.youtube?.auth;
-    element.textContent = auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
+    element.textContent = methodTwo ? '方式二不使用 YouTube Cookie' : auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
   const auth = state.status.youtube?.auth;
-  $('#youtube-auth-status').textContent = auth?.message || '下载前将自动检测 YouTube 登录状态。';
-  $('#youtube-auth-status').classList.toggle('error', !!auth && !['valid', 'unchecked'].includes(auth.state));
-  $('#youtube-auth-check').disabled = authChecking || !!state.status.youtube?.login?.active;
-  $('#youtube-auth-check').textContent = authChecking ? '正在检测…' : '检测登录';
+  $('#youtube-auth-status').textContent = methodTwo ? '方式二通过 yt5s 网站解析，可能需要在服务器浏览器中完成网站验证。' : auth?.message || '下载前将自动检测 YouTube 登录状态。';
+  $('#youtube-auth-status').classList.toggle('error', !methodTwo && !!auth && !['valid', 'unchecked'].includes(auth.state));
+  $('#youtube-auth-check').disabled = methodTwo || authChecking || !!state.status.youtube?.login?.active;
+  $('#youtube-auth-check').textContent = methodTwo ? '方式二无需登录检测' : authChecking ? '正在检测…' : '检测登录';
 }
 let authChecking = false;
 $('#youtube-auth-check').addEventListener('click', async () => {
@@ -223,7 +226,7 @@ function renderYouTubeLogin() {
   const queue = state.status?.download_queue;
   const busy = youtubeLoginBusy || !!login?.active;
   const needsStop = !!queue && (queue.running > 0 || (!queue.paused && queue.queued > 0));
-  $('#download-form button[type=submit]').disabled = downloadSubmitting || !!login?.active;
+  $('#download-form button[type=submit]').disabled = downloadSubmitting || downloadMethodBusy || !!login?.active;
   $('#youtube-login-start').disabled = !login || busy || needsStop;
   $('#youtube-login-start').textContent = login?.active ? '登录进行中…' : login?.state === 'idle' ? '打开登录窗口' : '重新打开登录窗口';
   $('#youtube-login-cancel').hidden = !login?.active;
@@ -338,7 +341,32 @@ function fillConfig(config) {
     element.value = Array.isArray(value) ? value.join('\n') : value ?? '';
   }
   renderStorageSettings();
+  renderDownloadMethod();
 }
+function renderDownloadMethod() {
+  const method = state.config?.download_method || 'yt_dlp';
+  $('#download-method').value = method;
+  $('#download-method').disabled = downloadMethodBusy || !state.config;
+  const tools = state.status?.tools;
+  const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
+  $('#download-method-note').textContent = method === 'yt5s'
+    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${missing ? '当前环境缺少浏览器或显示环境，Linux 请启用浏览器版 Docker 编排。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
+    : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
+}
+$('#download-method').addEventListener('change', async event => {
+  const method = event.target.value;
+  downloadMethodBusy = true;
+  renderYouTubeLogin();
+  $('#download-method').disabled = true;
+  try {
+    await api('/api/config', { method: 'PUT', body: { download_method: method } });
+    state.config.download_method = method;
+    $('#settings-download-method').value = method;
+    toast(`已切换为${method === 'yt5s' ? '方式二：yt5s' : '方式一：yt-dlp'}，对新任务生效。`);
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+  finally { downloadMethodBusy = false; renderDownloadMethod(); renderStatus(); }
+});
 function renderStorageSettings() {
   const test = $('#storage-mode').value === 'test';
   $$('[data-local-storage]').forEach(label => {
@@ -437,7 +465,7 @@ async function updateTaskDetail() {
   const [task, logs] = await Promise.all([api(`/api/tasks/${taskId}`), api(`/api/tasks/${taskId}/logs?offset=${state.logOffset}`)]);
   if (state.selectedTask !== taskId) return;
   $('#task-dialog-title').textContent = actionNames[task.action] || task.action;
-  $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>`;
+  $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>${task.started_at ? `<span>开始于 ${escapeHTML(formatDate(task.started_at, true))}</span>` : ''}${task.finished_at ? `<span>结束于 ${escapeHTML(formatDate(task.finished_at, true))}</span>` : ''}`;
   $('#task-error').hidden = !task.error;
   $('#task-error').textContent = task.error || '';
   $('#task-download-progress').innerHTML = ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
@@ -485,7 +513,7 @@ $('#download-form').addEventListener('submit', event => {
     const button = $('button[type="submit"]', event.target);
     const label = button.innerHTML;
     downloadSubmitting = true;
-    button.textContent = '正在检查登录并提交…';
+    button.textContent = state.config?.download_method === 'yt5s' ? '正在提交方式二任务…' : '正在检查登录并提交…';
     let batch;
     try { batch = await api('/api/downloads', { method: 'POST', body: { urls: $('#download-urls').value, scope: 'download' } }); }
     finally { downloadSubmitting = false; button.innerHTML = label; }

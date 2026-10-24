@@ -22,7 +22,7 @@ from Utils.paths import io_path
 from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
 from main import VIDEO_SUFFIXES
-from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, save_settings, urls_from, validate_settings
+from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, save_settings, urls_from, validate_settings, validate_method_urls
 from webapp.catalog import MediaCatalog
 from webapp.tasks import TaskRunner, TaskStore
 from webapp.clash import ClashError, ClashManager
@@ -168,6 +168,13 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             accounts[platform] = {'saved': valid, 'visibility': config.get(f'{platform}_visibility', 'public')}
         tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'node', 'deno')}
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
+        from webapp.yt5s import browser_executable
+        try:
+            tools['yt5s_browser'] = bool(browser_executable(
+                str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''))
+        except RuntimeError:
+            tools['yt5s_browser'] = False
+        tools['yt5s_display'] = os.name == 'nt' or bool(os.environ.get('DISPLAY'))
         youtube_file = resolve_path(base, config['youtube_cookie']) if config.get('youtube_cookie') else None
         youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
                    'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
@@ -175,6 +182,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(tools=tools, accounts=accounts, python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        workers=store.workers(), worker_count=config.get('worker_count', 1), download_queue=store.download_queue(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
+                       download_method=config.get('download_method', 'yt_dlp'),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 
     from webapp.youtube_login import YouTubeLogin, LoginBusy
@@ -189,7 +197,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
-        if not is_youtube(urls):
+        if config.get('download_method', 'yt_dlp') == 'yt5s' or not is_youtube(urls):
             return None
         options = {'force': force}
         if config.get('proxy_mode') == 'clash':
@@ -202,7 +210,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         with media_lock:
             require_login_idle()
             config, base = settings()
-            result = verify_youtube(config, base, ['https://www.youtube.com/'], force=True)
+            result = verify_youtube({**config, 'download_method': 'yt_dlp'}, base, ['https://www.youtube.com/'], force=True)
             youtube_auth.clear_block()
         return jsonify(auth=result, message=result['message'])
 
@@ -413,6 +421,12 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
             if upcoming and upcoming[0].get('url'):
                 config, base = settings()
+                queued = store.get(upcoming[0]['id'], private=True)['payload']
+                config = {**config, **queued.get('config', {})}
+                runtime = store.runtime()
+                if 'youtube_cookie' in runtime:
+                    config['youtube_cookie'] = runtime['youtube_cookie']
+                base = Path(queued.get('base', base))
                 verify_youtube(config, base, [upcoming[0]['url']], force=True)
             youtube_auth.clear_block()
             store.set_downloads_paused(False)
@@ -490,6 +504,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             payload['scope'] = 'download'
         if action == 'download':
             payload['urls'] = urls_from(data.get('urls') or config.get('url'))
+            validate_method_urls(config, payload['urls'])
         with media_lock:
             if action == 'download':
                 require_login_idle()

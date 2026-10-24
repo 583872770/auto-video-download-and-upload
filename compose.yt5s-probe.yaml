@@ -1,0 +1,25 @@
+# Independent experiment. Does not start or mount the application/database.
+name: yt5s-linux-probe
+services:
+  probe:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.yt5s-probe
+    init: true
+    restart: "no"
+    shm_size: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "127.0.0.1:${YT5S_DESKTOP_PORT:-6080}:6080"
+    environment:
+      YT5S_VIDEO_ID: ${YT5S_VIDEO_ID:-npNnbj46_ik}
+      YT5S_QUALITY: ${YT5S_QUALITY:-360}
+      YT5S_TIMEOUT: ${YT5S_TIMEOUT:-180}
+      YT5S_MAX_MIB: ${YT5S_MAX_MIB:-128}
+      YT5S_PROXY: ${YT5S_PROXY:-}
+    volumes:
+      - type: bind
+        source: ${YT5S_PROBE_RESULTS:-./docker-data/yt5s-probe}
+        target: /results
+    stop_grace_period: 15s

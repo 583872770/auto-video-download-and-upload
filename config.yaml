@@ -54,3 +54,4 @@ min_free_gb: 2
 shard_downloads: true
 max_log_mb: 10
 log_retention_days: 0
+download_method: yt5s

@@ -35,6 +35,12 @@ Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
 _finished = tasks.c.status.in_(('succeeded', 'failed', 'interrupted'))
 Index('ix_tasks_finished_seq', tasks.c.seq, postgresql_where=_finished, sqlite_where=_finished).ddl_if(dialect=('postgresql', 'sqlite'))
+Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq,
+      sqlite_where=_finished).ddl_if(dialect='sqlite')
+Index('ix_tasks_finished_time_desc', tasks.c.finished_at.desc().nulls_last(), tasks.c.seq.desc(),
+      postgresql_where=_finished).ddl_if(dialect='postgresql')
+Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, tasks.c.seq,
+      mysql_length={'finished_at': 40}).ddl_if(dialect='mysql')
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
 Index('ix_tasks_video_prefix', tasks.c.video_id, postgresql_ops={'video_id': 'varchar_pattern_ops'}).ddl_if(dialect=('postgresql', 'sqlite'))

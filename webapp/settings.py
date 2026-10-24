@@ -19,9 +19,11 @@ DEFAULTS = {
     'douyin_tags': [], 'kuaishou_tags': [],
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
+    'download_method': 'yt_dlp', 'yt5s_quality': '360',
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
-                   'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode'}
+                   'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
+                   'download_method', 'yt5s_quality'}
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000)}
 
@@ -49,6 +51,10 @@ def urls_from(value):
 def validate_settings(config, *, download_only=False):
     from Utils.download_storage import storage_mode
     storage_mode(config)
+    if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s'):
+        raise ValueError('请选择有效的下载方式。')
+    if config.get('yt5s_quality', '360') not in ('360', '720'):
+        raise ValueError('方式二画质请选择 360p 或 720p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():
@@ -101,6 +107,13 @@ def validate_settings(config, *, download_only=False):
         if not isinstance(tags, list) or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 100 for tag in tags):
             raise ValueError('话题必须为非空文本组成的列表，每个不超过 100 字。')
     return config
+
+
+def validate_method_urls(config, urls):
+    if config.get('download_method', 'yt_dlp') == 'yt5s':
+        from webapp.store import source_identity
+        if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
+            raise ValueError('方式二目前仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

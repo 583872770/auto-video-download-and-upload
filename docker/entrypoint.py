@@ -45,6 +45,9 @@ def main():
     if not command:
         raise ValueError('An application command is required')
     os.chdir(ROOT)
+    if os.environ.get('YT5S_BROWSER_ENABLED') == '1':
+        from browser_desktop import start_desktop
+        start_desktop()
     os.execvpe(command[0], command, os.environ)
 
 

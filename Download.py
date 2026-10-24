@@ -64,7 +64,9 @@ def build_ydl_options(config, base):
         if not config.get('_resolved_clash_proxy'):
             raise ValueError('请通过 Web 页面创建使用 Clash 订阅代理的下载任务。')
         options['proxy'] = config['_resolved_clash_proxy']
-    if config.get('youtube_cookie'):
+    if config.get('download_method', 'yt_dlp') == 'yt5s':
+        options.update(format='best', writesubtitles=False, writeautomaticsub=False, ignoreerrors=False)
+    elif config.get('youtube_cookie'):
         cookie = resolve_path(base, config['youtube_cookie'])
         if not cookie.is_file():
             raise FileNotFoundError(f'YouTube Cookie 文件不存在：{cookie}')

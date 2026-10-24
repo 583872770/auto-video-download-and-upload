@@ -3,7 +3,11 @@
 需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
 支持 Linux amd64、arm64；构建时需要访问 Docker Hub、Debian 软件源、PyPI 和 GitHub。
 
+页面支持切换“方式一：yt-dlp”和“方式二：yt5s（实验）”。Linux 使用方式二需增加浏览器编排：`docker compose -f compose.yaml -f compose.yt5s.yaml up -d --build`，安装 Chromium、虚拟显示和网页远程桌面。部署及独立验证步骤见 [YT5S_LINUX.md](YT5S_LINUX.md)。
+
 ## 启动
+
+**使用已有远程 MySQL：** 请按 [远程数据库部署步骤](MYSQL.md#linux-docker-连接远程-mysql) 使用 `compose.remote-mysql.yaml` 和 `.env.remote-mysql.example`。下列默认步骤会启动内置 MySQL 容器。
 
 在项目根目录执行：
 

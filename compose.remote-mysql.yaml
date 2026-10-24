@@ -1,0 +1,40 @@
+name: youtube-downloader
+
+# Standalone configuration: use instead of compose.yaml.
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-5000}:5000"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      VIDEO_WEB_HOSTS: ${VIDEO_WEB_HOSTS:-localhost,127.0.0.1,[::1]}
+      MYSQL_HOST: ${MYSQL_HOST:?请在 .env 中设置远程 MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
+      MYSQL_USER: ${MYSQL_USER:-video}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+    volumes:
+      - app_config:/data/config
+      - app_state:/app/.cache/web
+      - type: bind
+        source: ${VIDEO_DOWNLOAD_DIR:-./docker-data/videos}
+        target: /data/videos
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_config:
+  app_state:

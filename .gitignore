@@ -13,4 +13,5 @@ cookies.txt
 .env
 .env.*
 !.env.example
+!.env.remote-mysql.example
 docker-data/

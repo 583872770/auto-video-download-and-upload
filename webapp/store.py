@@ -1,4 +1,5 @@
 """Indexed, paginated task store with transactional counters and leased claims."""
+import base64
 import codecs
 from collections import Counter
 from datetime import datetime
@@ -186,8 +187,38 @@ class TaskStore:
             statement = statement.where(tasks.c.status.in_(statuses))
         if batch_id:
             statement = statement.where(tasks.c.batch_id == batch_id)
-        if cursor:
-            statement = statement.where(tasks.c.seq > int(cursor) if order == 'asc' else tasks.c.seq < int(cursor))
+        if finished_only:
+            # Completion order differs from submission order in large queues and
+            # with parallel downloads. Sequence breaks equal-second time ties.
+            finished = tasks.c.finished_at
+            time_order = finished.asc() if order == 'asc' else finished.desc()
+            if self.db.postgres:
+                time_order = time_order.nulls_first() if order == 'asc' else time_order.nulls_last()
+            ordering = [time_order, tasks.c.seq.asc() if order == 'asc' else tasks.c.seq.desc()]
+            if cursor:
+                try:
+                    if len(cursor) > 512 or not cursor.startswith('h.'):
+                        raise ValueError
+                    timestamp, sequence = json.loads(base64.urlsafe_b64decode(cursor[2:].encode()))
+                    if (timestamp is not None and (not isinstance(timestamp, str) or len(timestamp) > 64)) or type(sequence) is not int:
+                        raise ValueError
+                except (ValueError, TypeError, UnicodeError):
+                    raise ValueError('任务记录分页标记无效，请返回第一页。') from None
+                after_sequence = tasks.c.seq > sequence if order == 'asc' else tasks.c.seq < sequence
+                if timestamp is None:
+                    after = and_(finished.is_(None), after_sequence)
+                    if order == 'asc':
+                        after = or_(after, finished.is_not(None))
+                else:
+                    after = or_(finished > timestamp if order == 'asc' else finished < timestamp,
+                                and_(finished == timestamp, after_sequence))
+                    if order != 'asc':
+                        after = or_(after, finished.is_(None))
+                statement = statement.where(after)
+        else:
+            ordering = [tasks.c.seq.asc() if order == 'asc' else tasks.c.seq.desc()]
+            if cursor:
+                statement = statement.where(tasks.c.seq > int(cursor) if order == 'asc' else tasks.c.seq < int(cursor))
         if query:
             escaped = query.casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
             video_query = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
@@ -195,9 +226,14 @@ class TaskStore:
                                              tasks.c.id.startswith(escaped, escape='\\'),
                                              tasks.c.title.startswith(escaped, escape='\\')))
         with self.connect() as db:
-            rows = db.execute(statement.order_by(tasks.c.seq.asc() if order == 'asc' else tasks.c.seq.desc()).limit(limit + 1)).mappings().all()
+            rows = db.execute(statement.order_by(*ordering).limit(limit + 1)).mappings().all()
+            next_cursor = None
+            if len(rows) > limit:
+                last = rows[limit - 1]
+                next_cursor = ('h.' + base64.urlsafe_b64encode(json.dumps([last['finished_at'], last['seq']]).encode()).decode()
+                               if finished_only else str(last['seq']))
             return {'items': [self.decode(row) for row in rows[:limit]],
-                    'next_cursor': str(rows[limit - 1]['seq']) if len(rows) > limit else None}
+                    'next_cursor': next_cursor}
 
     def list(self, limit=100, actions=None):
         return self.page(limit=min(limit, 100), actions=actions)['items']

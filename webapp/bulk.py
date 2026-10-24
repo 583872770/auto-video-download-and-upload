@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from webapp.database import imports
-from webapp.settings import urls_from
+from webapp.settings import urls_from, validate_method_urls
 
 CHUNK = 500
 MAX_LINE = 16384
@@ -88,6 +88,7 @@ def run_import(store, payload, report):
             try:
                 value = row[column_index].strip()
                 url = urls_from([value])[0]
+                validate_method_urls(batch_payload.get('config', {}), [url])
                 chunk.append({**batch_payload, 'urls': [url]})
             except (ValueError, IndexError):
                 invalid += 1

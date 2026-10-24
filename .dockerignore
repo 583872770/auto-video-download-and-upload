@@ -21,6 +21,7 @@
 !scripts/
 !scripts/login_youtube.py
 !scripts/migrate_mysql.py
+!scripts/probe_yt5s.py
 !docker/
 !docker/**
 **/__pycache__/
