@@ -3,6 +3,8 @@ FROM node:22-bookworm-slim AS javascript
 
 FROM python:3.13-slim-bookworm
 ARG WITH_YT5S_BROWSER=0
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUTF8=1 \
@@ -11,7 +13,12 @@ ENV PYTHONUNBUFFERED=1 \
     YT5S_BROWSER_ENABLED=${WITH_YT5S_BROWSER}
 WORKDIR /app
 
-RUN apt-get update \
+# The Bookworm base image uses the deb822 sources file.
+RUN sed -i \
+      -e "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" \
+      -e "s|https://deb.debian.org|${DEBIAN_MIRROR}|g" \
+      /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        ca-certificates ffmpeg tzdata \
     && if [ "$WITH_YT5S_BROWSER" = "1" ]; then \
@@ -21,7 +28,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=javascript /usr/local/bin/node /usr/local/bin/node
 COPY requirements.lock.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.lock.txt
+RUN python -m pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.lock.txt
 
 COPY docker/install_mihomo.py /tmp/install_mihomo.py
 RUN python /tmp/install_mihomo.py \

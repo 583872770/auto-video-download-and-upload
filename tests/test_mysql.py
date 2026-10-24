@@ -1,9 +1,10 @@
-"""Run queue, login, media and storage contracts against an isolated MySQL 8 DB.
+"""Run queue, login, media and storage contracts against isolated MySQL 5.7/8 DBs.
 
 Set VIDEO_TEST_MYSQL_URL to a test administrator URL, never the application URL.
 Every test creates and drops its own randomly named database.
 """
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 import json
 import os
 from pathlib import Path
@@ -11,11 +12,12 @@ import re
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DataError
+from sqlalchemy.exc import DataError, OperationalError
 from sqlalchemy.pool import NullPool
 
 from app import create_app
@@ -23,7 +25,7 @@ from tests import test_controls, test_scale
 from tests.test_storage import StorageContract
 from tests.test_task_views import TaskViewContract
 from tests.test_youtube_auth import AuthContract
-from webapp.database import reservations, tasks
+from webapp.database import batches, imports, reservations, tasks
 
 
 class MySQLFixture:
@@ -45,7 +47,8 @@ class MySQLFixture:
         self.admin = admin
         self.addCleanup(admin.dispose)
         with admin.begin() as db:
-            db.exec_driver_sql(f'CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin')
+            self.collation = 'utf8mb4_0900_bin' if admin.dialect.server_version_info >= (8, 0, 21) else 'utf8mb4_bin'
+            db.exec_driver_sql(f'CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE {self.collation}')
 
         def cleanup():
             with admin.begin() as db:
@@ -66,6 +69,39 @@ class MySQLFixture:
 
 
 class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
+    def test_deadlock_retry_rolls_back_counters_and_attempts(self):
+        from pymysql.err import OperationalError as MySQLError
+        task = self.store.create('download', {'config': {}, 'base': str(self.root)})
+        transition = self.store._transition
+        calls = 0
+        def deadlock_after_counter_update(db, row, status):
+            nonlocal calls
+            calls += 1
+            transition(db, row, status)
+            if calls == 1:
+                raise OperationalError('simulated deadlock', {}, MySQLError(1213, 'deadlock'))
+        with patch.object(self.store, '_transition', side_effect=deadlock_after_counter_update):
+            claimed = self.store.claim('retry-owner')
+        self.assertEqual(calls, 2)
+        self.assertEqual((claimed['id'], claimed['attempts']), (task['id'], 1))
+        self.assertEqual(self.store.counts(), {'queued': 0, 'running': 1, 'total': 1})
+
+    def test_text_defaults_survive_sparse_inserts_and_reinitialization(self):
+        from webapp.store import TaskStore
+        with self.store.connect() as db:
+            db.execute(tasks.insert().values(id='a' * 32, seq=1, action='check', status='queued',
+                                            created_at='2026-10-24T12:00:00+08:00', payload='{}'))
+            db.execute(batches.insert().values(id='b' * 32, seq=1, created_at='2026-10-24T12:00:00+08:00'))
+            db.execute(imports.insert().values(id='c' * 32, path=str(self.root / 'input.txt')))
+        # Re-run DDL explicitly: opening an already-cached engine alone would
+        # not exercise idempotent initialization and conditional index DDL.
+        self.store.db.initialize()
+        reopened = TaskStore(self.store.directory)
+        self.assertEqual(reopened.get('a' * 32)['title'], '')
+        with reopened.connect() as db:
+            self.assertEqual(db.execute(select(batches.c.name)).scalar_one(), '')
+            self.assertEqual(db.execute(select(imports.c.samples)).scalar_one(), '[]')
+
     def test_case_sensitive_ids_emoji_long_snapshots_and_no_silent_truncation(self):
         payload = {'config': {'fixture': '中😀' * 40000}, 'base': str(self.root)}
         jobs = self.store.create_batch([{**payload, 'urls': [f'https://youtu.be/{value}']}
@@ -99,6 +135,8 @@ class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
         self.assertEqual(owners, {row['id'] for group in created for row in group})
 
     def test_skip_locked_claims_a_different_task_without_waiting(self):
+        if not self.store.db.supports_skip_locked:
+            self.skipTest('MySQL 5.7 uses blocking row locks; covered by the waiting-claim test')
         created = self.store.create_batch([{'config': {}, 'base': str(self.root),
                                            'urls': [f'https://example.test/{index}.mp4']} for index in range(2)])
         with self.store.connect() as db:
@@ -106,6 +144,33 @@ class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
             with ThreadPoolExecutor(1) as pool:
                 claimed = pool.submit(self.store.claim, 'parallel-owner').result(timeout=5)
             self.assertEqual(claimed['id'], created[1]['id'])
+
+    def test_waiting_claim_rechecks_status_after_first_task_is_claimed(self):
+        if self.store.db.supports_skip_locked:
+            self.skipTest('Blocking fallback is only used on MySQL 5.7')
+        created = self.store.create_batch([{'config': {}, 'base': str(self.root),
+                                           'urls': [f'https://example.test/{index}.mp4']} for index in range(2)])
+        entered = Event()
+        def before_sql(connection, cursor, statement, parameters, context, executemany):
+            if 'FOR UPDATE' in statement:
+                entered.set()
+        with ThreadPoolExecutor(1) as pool:
+            # Release the transaction before awaiting the future or exiting
+            # the executor, including when assertions inside the block fail.
+            with self.store.connect() as db:
+                first = db.execute(select(tasks).where(tasks.c.id == created[0]['id']).with_for_update()).mappings().one()
+                event.listen(self.store.db.engine, 'before_cursor_execute', before_sql)
+                try:
+                    pending = pool.submit(self.store.claim, 'second-owner')
+                    self.assertTrue(entered.wait(timeout=5))
+                    with self.assertRaises(TimeoutError):
+                        pending.result(timeout=0.25)
+                finally:
+                    event.remove(self.store.db.engine, 'before_cursor_execute', before_sql)
+                self.store._transition(db, first, 'running')
+                db.execute(tasks.update().where(tasks.c.id == first['id']).values(status='running', worker_id='first-owner'))
+            self.assertEqual(pending.result(timeout=5)['id'], created[1]['id'])
+        self.assertEqual(self.store.counts()['running'], 2)
 
 
 class MySQLControlTests(MySQLFixture, test_controls.ControlContract, unittest.TestCase):
@@ -129,7 +194,7 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
     def empty_target(self):
         name = 'test_migration_' + uuid.uuid4().hex[:16]
         with self.admin.begin() as db:
-            db.exec_driver_sql(f'CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin')
+            db.exec_driver_sql(f'CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE {self.collation}')
         def cleanup():
             with self.admin.begin() as db:
                 db.exec_driver_sql(f'DROP DATABASE `{name}`')

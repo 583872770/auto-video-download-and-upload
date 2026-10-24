@@ -1,7 +1,9 @@
 # Docker Compose 部署
 
 需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
-支持 Linux amd64、arm64；构建时需要访问 Docker Hub、Debian 软件源、PyPI 和 GitHub。
+支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用阿里云镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取，Mihomo 仍从 GitHub 下载。
+
+主应用和方式二独立测试镜像均支持构建参数 `DEBIAN_MIRROR`（如 `https://mirrors.aliyun.com`，不带 `/debian`）和 `PIP_INDEX_URL`（完整的 `/simple` 地址）。如需切换源，可在 `docker compose build` 中传入 `--build-arg DEBIAN_MIRROR=... --build-arg PIP_INDEX_URL=...`。
 
 页面支持切换“方式一：yt-dlp”和“方式二：yt5s（实验）”。Linux 使用方式二需增加浏览器编排：`docker compose -f compose.yaml -f compose.yt5s.yaml up -d --build`，安装 Chromium、虚拟显示和网页远程桌面。部署及独立验证步骤见 [YT5S_LINUX.md](YT5S_LINUX.md)。
 
@@ -55,7 +57,7 @@ Mihomo 控制端口和代理端口仅监听应用容器内部的回环地址，�
 配置模板只在第一次启动时复制，之后在网页保存的设置和 Cookie 不会被覆盖。
 页面的指定目录应填写 **容器路径 `/data/videos`**，宿主机路径在 `.env` 中修改；更改目录映射不会搬迁原有文件。
 测试模式下载到状态卷内，完成后清理文件。任务记录仍保存在 MySQL。
-数据库采用 InnoDB、`utf8mb4_0900_bin` 排序规则，YouTube 视频 ID 区分大小写。应用使用独立账号，MySQL 健康检查确认该账号可以连接目标库后才启动应用。
+默认 MySQL 8.4 数据库采用 InnoDB、`utf8mb4_0900_bin` 排序规则，YouTube 视频 ID 区分大小写。远程 MySQL 5.7.9+ 也可使用，应用会自动选择兼容的建表和加锁方式，详见 [MYSQL.md](MYSQL.md)。默认编排中应用使用独立账号，MySQL 健康检查确认该账号可以连接目标库后才启动应用。
 本机管理或迁移需要数据库端口时，可附加 `-f compose.mysql-local.yaml`，将 MySQL 仅映射到宿主机 `127.0.0.1:13306`；详见 [MYSQL.md](MYSQL.md)。
 
 整个配置目录使用卷挂载，支持页面原子保存配置。需要检查配置时：

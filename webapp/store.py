@@ -13,6 +13,7 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import OperationalError
 
 from webapp.database import (Database, archive, batches, counters, imports, reservations,
                              rotations, settings, snapshots, tasks, workers)
@@ -316,9 +317,26 @@ class TaskStore:
             return (row['succeeded'] + (row['failed'] if count_failures else 0)) if row else 0
 
     def _locked(self, statement, *, skip=False):
-        return statement if self.db.sqlite else statement.with_for_update(skip_locked=skip)
+        # MySQL 5.7 waits for the row lock, then rechecks the queued predicate.
+        # Claim transactions commit before downloads start, so only dispatch
+        # waits; workers still download concurrently without duplicate claims.
+        return statement if self.db.sqlite else statement.with_for_update(
+            skip_locked=skip and self.db.supports_skip_locked)
 
     def claim(self, worker_id=None, actions=None, exclude=None, lease_seconds=60):
+        # A blocking 5.7 locking scan can deadlock with a transaction changing
+        # the queue's status index. InnoDB rolls back the losing transaction;
+        # retry the entire claim (including counters), never just its SELECT.
+        for attempt in range(5):
+            try:
+                return self._claim(worker_id, actions, exclude, lease_seconds)
+            except OperationalError as error:
+                code = error.orig.args[0] if error.orig.args else None
+                if not self.db.mysql or code != 1213 or attempt == 4:
+                    raise
+                time.sleep(0.01 * 2 ** attempt)
+
+    def _claim(self, worker_id, actions, exclude, lease_seconds):
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')

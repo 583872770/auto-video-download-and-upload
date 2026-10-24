@@ -24,7 +24,7 @@ tasks = Table('tasks', metadata,
     Column('created_at', Text, nullable=False), Column('started_at', Text), Column('finished_at', Text),
     Column('payload', Text, nullable=False), Column('result', Text), Column('error', Text), Column('progress', Text),
     Column('batch_id', String(32)), Column('video_id', String(256)), Column('source_key', String(128)),
-    Column('url', Text), Column('title', Text, nullable=False, server_default=text("('')")),
+    Column('url', Text), Column('title', Text, nullable=False, default='', server_default=text("('')")),
     Column('worker_id', String(128)), Column('lease_until', Float),
     Column('attempts', Integer, nullable=False, server_default='0'),
     Column('max_attempts', Integer, nullable=False, server_default='3'),
@@ -60,7 +60,7 @@ sequences = Table('sequence_counters', metadata, Column('key', String(32), prima
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
 batches = Table('batches', metadata, Column('id', String(32), primary_key=True),
                 Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', Text, nullable=False),
-                Column('name', Text, nullable=False, server_default=text("('')")))
+                Column('name', Text, nullable=False, default='', server_default=text("('')")))
 reservations = Table('download_reservations', metadata, Column('key', String(128), primary_key=True),
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),
@@ -76,7 +76,7 @@ imports = Table('imports', metadata, Column('id', String(32), primary_key=True),
                 Column('added', BigInteger, nullable=False, server_default='0'),
                 Column('duplicates', BigInteger, nullable=False, server_default='0'),
                 Column('invalid', BigInteger, nullable=False, server_default='0'),
-                Column('samples', Text, nullable=False, server_default=text("('[]')")),
+                Column('samples', Text, nullable=False, default='[]', server_default=text("('[]')")),
                 Column('finished', Integer, nullable=False, server_default='0'))
 media = Table('media_catalog', metadata, Column('id', String(64), primary_key=True),
               Column('root', RootPath, nullable=False), Column('name', Text, nullable=False),
@@ -139,8 +139,8 @@ class Database:
                 try:
                     if self.mysql:
                         with engine.connect():
-                            if engine.dialect.is_mariadb or engine.dialect.server_version_info < (8, 0, 21):
-                                raise ValueError('请使用 MySQL 8.0.21 或更新版本，推荐 MySQL 8.4。')
+                            if engine.dialect.is_mariadb or engine.dialect.server_version_info < (5, 7, 9):
+                                raise ValueError('请使用 MySQL 5.7.9 或更新版本，推荐 MySQL 8.4。')
                     self.initialize()
                 except Exception:
                     engine.dispose()
@@ -159,6 +159,30 @@ class Database:
     @property
     def sqlite(self):
         return self.engine.dialect.name == 'sqlite'
+
+    @property
+    def supports_skip_locked(self):
+        return self.postgres or (self.mysql and self.engine.dialect.server_version_info >= (8, 0, 1))
+
+    def schema(self):
+        if not self.mysql or self.engine.dialect.server_version_info >= (8, 0, 21):
+            return metadata
+        # Keep shared metadata immutable: this process may open 5.7, 8.x and
+        # SQLite databases together (including during a database migration).
+        schema = MetaData()
+        for original in metadata.tables.values():
+            table = original.to_metadata(schema)
+            table.dialect_options['mysql'].update(collate='utf8mb4_bin', row_format='DYNAMIC')
+            for column in table.c:
+                if isinstance(column.type.dialect_impl(self.engine.dialect), LONGTEXT):
+                    # 5.7 cannot give TEXT a server default. Python defaults on
+                    # the source columns supply values for application inserts.
+                    column.server_default = None
+            original_indexes = {index.name: index for index in original.indexes}
+            for index in table.indexes:
+                # SQLAlchemy to_metadata does not copy conditional index DDL.
+                index._ddl_if = original_indexes[index.name]._ddl_if
+        return schema
 
     def insert(self, table):
         return (mysql_insert if self.mysql else pg_insert if self.postgres else sqlite_insert)(table)
@@ -221,8 +245,9 @@ class Database:
                 if 'seq' not in existing:
                     db.exec_driver_sql('UPDATE tasks SET seq = rowid')
                     old = True
-        metadata.create_all(self.engine)
-        for index in tasks.indexes:
+        schema = self.schema()
+        schema.create_all(self.engine)
+        for index in schema.tables['tasks'].indexes:
             index.create(self.engine, checkfirst=True)
         with self.engine.begin() as db:
             self.ensure(db, settings, {'key': 'downloads_paused', 'value': 'false'})
