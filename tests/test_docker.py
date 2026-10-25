@@ -63,6 +63,16 @@ class MihomoDownloadTests(unittest.TestCase):
 
 
 class DockerBootstrapTests(unittest.TestCase):
+    def test_empty_database_config_enters_setup_without_starting_browser(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(entrypoint, 'initialize_config') as initialize, \
+                patch.object(entrypoint.os, 'umask'), patch.object(entrypoint.os, 'chdir'), \
+                patch.object(entrypoint.os, 'execvpe') as execute, \
+                patch.object(entrypoint.sys, 'argv', ['entrypoint.py', 'python', 'app.py']):
+            entrypoint.main()
+            self.assertNotIn('VIDEO_DATABASE_URL', execute.call_args.args[2])
+            self.assertEqual(execute.call_args.args[:2], ('python', ['python', 'app.py']))
+            initialize.assert_called_once_with('/data/config')
+
     def test_password_special_characters_survive_url_encoding(self):
         env = {'MYSQL_DATABASE': 'video_downloads', 'MYSQL_USER': 'video',
                'MYSQL_PASSWORD': 'p@ss:/?#%$ &+秘密'}

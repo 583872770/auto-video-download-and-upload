@@ -37,11 +37,18 @@ def source_identity(url):
 
 
 class TaskStore:
-    def __init__(self, directory, database_url=None):
-        self.db = Database(directory, database_url)
+    def __init__(self, directory, database_url=None, *, startup_report=None):
+        self.db = Database(directory, database_url, startup_report=startup_report)
         self.directory = self.db.directory
         self.database = self.directory / 'tasks.sqlite3'
         self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}'
+        self.fleet = None
+        runtime = self.directory / 'fleet-runtime.json'
+        if runtime.is_file():
+            from webapp.fleet import Fleet
+            saved = json.loads(runtime.read_text(encoding='utf-8'))
+            fleet = Fleet(self, saved['role'], identity=saved['id'])
+            fleet.boot_id = saved['boot_id']
         from webapp.statistics import DownloadStatistics
         self.statistics = DownloadStatistics(self)
         from webapp.lists import DownloadLists
@@ -120,7 +127,7 @@ class TaskStore:
         values = dict(id=task_id, seq=seq, action=action, status='queued', created_at=now(),
                       payload=self._pack(db, payload), batch_id=batch_id, video_id=video_id, source_key=source_key,
                       url=url, title='', attempts=0, max_attempts=payload.get('config', {}).get('download_attempts', 3),
-                      available_at=0)
+                      available_at=0, target_instance_id=self.fleet.id if self.fleet and action != 'download' else None)
         db.execute(tasks.insert().values(**values))
         self._transition(db, {**values, 'status': None}, 'queued')
         return task_id
@@ -300,6 +307,12 @@ class TaskStore:
             tasks.c.status.in_(('queued', 'running')), ~held).limit(1)).first() is not None
 
     def download_connection_busy(self):
+        if self.fleet and self.fleet.role == 'worker':
+            with self.connect() as db:
+                running = db.execute(select(tasks.c.id).where(tasks.c.instance_id == self.fleet.id,
+                    tasks.c.status == 'running', tasks.c.action == 'download').limit(1)).first()
+                return bool(running or (not self.fleet.row(db)['paused'] and not self.downloads_paused(db)
+                                        and self._released_queued_count(db)))
         with self.connect() as db:
             downloads, checks = self._counts(db, ['action:download']), self._counts(db, ['action:check'])
             return bool(downloads.get('running', 0) or checks.get('running', 0) or checks.get('queued', 0)
@@ -330,8 +343,11 @@ class TaskStore:
         with self.connect() as db:
             paused = self.downloads_paused(db)
             counts = {}
+            stamp = self.fleet.clock(db) if self.fleet else time.time()
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
                                   ('regular', ('check',))):
+                if self.fleet and role == 'download' and (self.fleet.role == 'manager' or not self.fleet.admission(db, lock=False)):
+                    continue
                 if not self._counts(db, ['action:' + action for action in actions]).get('queued', 0):
                     continue
                 if role == 'download' and (paused or not self._released_queued_count(db)):
@@ -339,7 +355,11 @@ class TaskStore:
                 # Only the number of available worker slots matters, not the
                 # size of a potentially multi-million-video backlog.
                 statement = select(tasks.c.id).where(tasks.c.action.in_(actions),
-                    tasks.c.status == 'queued', tasks.c.available_at <= time.time(), self.released_condition()).limit(16)
+                    tasks.c.status == 'queued', tasks.c.available_at <= stamp, self.released_condition()).limit(16)
+                if self.fleet:
+                    statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
+                        and_(tasks.c.target_instance_id.is_(None), tasks.c.action == 'download' if self.fleet.role == 'worker'
+                             else tasks.c.action == 'import')))
                 count = len(db.execute(statement).all())
                 if count:
                     counts[role] = count
@@ -365,13 +385,15 @@ class TaskStore:
             if paused:
                 self.statistics.settle(db, stop=True)
 
-    def activate_download_lists(self):
+    def activate_download_lists(self, expected_policy_version=None):
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             db.execute(select(settings.c.key).where(settings.c.key == 'downloads_paused').with_for_update())
             if self.media_clear_busy(db):
                 raise ValueError('素材库正在清空，请完成后再开始下载。')
+            if self.fleet:
+                self.fleet.activate(db, expected_policy_version)
             # Release the new lists and resume claims in one transaction.
             self.lists.release(db)
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))
@@ -399,7 +421,9 @@ class TaskStore:
             row = db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().one()
             self._transition(db, row, 'running')
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
-                status='running', started_at=now(), worker_id=self.owner, lease_until=time.time() + 60, attempts=1))
+                status='running', started_at=now(), worker_id=self.owner,
+                instance_id=self.fleet.id if self.fleet else None,
+                lease_until=(self.fleet.clock(db) if self.fleet else time.time()) + 60, attempts=1))
         return self.get(task_id)
 
     def download_queue(self):
@@ -433,15 +457,19 @@ class TaskStore:
             value = {'cutoff_seq': cutoff, 'config': connection, 'updated_at': now()}
             if connection['proxy_mode'] == 'clash':
                 value['clash'] = clash
-            db.execute(self.db.upsert(settings, dict(key='download_connection_override',
+            db.execute(self.db.upsert(settings, dict(key=self._connection_key(),
                 value=json.dumps(value, ensure_ascii=False)), ['key']))
         return {'mode': connection['proxy_mode'], 'updated_at': value['updated_at']}
+
+    def _connection_key(self):
+        prefix = ('i:' + hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':') if self.fleet else ''
+        return prefix + 'download_connection_override'
 
     def download_connection(self):
         """Public summary; proxy credentials and controller paths stay private."""
         with self.connect() as db:
             saved = db.execute(select(settings.c.value).where(
-                settings.c.key == 'download_connection_override')).scalar_one_or_none()
+                settings.c.key == self._connection_key())).scalar_one_or_none()
         value = json.loads(saved) if saved else None
         return {'mode': value['config']['proxy_mode'], 'updated_at': value['updated_at']} if value else None
 
@@ -461,6 +489,8 @@ class TaskStore:
         if db is None:
             with self.connect() as connection:
                 return self.effective_download_payload(task_id, payload, connection)
+        if self.fleet:
+            return self.fleet.execution(payload, db)
         current = db.execute(select(settings.c.value).where(settings.c.key == 'download_settings')).scalar_one_or_none()
         if current:
             value = json.loads(current)
@@ -488,15 +518,17 @@ class TaskStore:
     def stop_running_downloads(self, terminate):
         """Stop only verified owners, then release their tasks under the same row lock."""
         with self.connect() as db:
-            owners = db.execute(select(tasks.c.id, tasks.c.worker_id).where(
-                tasks.c.status == 'running', tasks.c.action == 'download').limit(64)).all()
+            statement = select(tasks.c.id, tasks.c.worker_id).where(tasks.c.status == 'running', tasks.c.action == 'download')
+            if self.fleet:
+                statement = statement.where(tasks.c.instance_id == self.fleet.id)
+            owners = db.execute(statement.limit(64)).all()
         stopped = 0
         for task_id, owner in owners:
             with self.connect() as db:
                 if self.db.sqlite:
                     db.exec_driver_sql('BEGIN IMMEDIATE')
                 # Resume and new claims cannot pass until the old executor is gone.
-                if not self.downloads_paused(db, lock=True):
+                if not self.downloads_paused(db, lock=True) and not (self.fleet and self.fleet.row(db)['stop_requested']):
                     break
                 row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id))).mappings().first()
                 if not row or row['status'] != 'running' or row['worker_id'] != owner or not terminate(owner):
@@ -543,7 +575,16 @@ class TaskStore:
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
-            statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= time.time())
+            stamp = self.fleet.clock(db) if self.fleet else time.time()
+            statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
+            if self.fleet:
+                statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
+                    and_(tasks.c.target_instance_id.is_(None), tasks.c.action == 'download' if self.fleet.role == 'worker'
+                         else tasks.c.action == 'import')))
+                if self.fleet.role == 'manager' or not self.fleet.admission(db):
+                    statement = statement.where(tasks.c.action != 'download')
+            elif db.execute(select(settings.c.key).where(settings.c.key == 'fleet_enabled')).first():
+                return None  # Old single-instance executors must not bypass fleet admission.
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
@@ -562,6 +603,8 @@ class TaskStore:
             values = dict(status='running', worker_id=worker_id or self.owner,
                           started_at=now(), finished_at=None, lease_until=time.time() + lease_seconds,
                           attempts=row['attempts'] + 1, error=None)
+            if self.fleet:
+                values.update(instance_id=self.fleet.id, lease_until=self.fleet.clock(db) + lease_seconds)
             if row['action'] == 'download':
                 payload = self.decode(row, private=True, db=db)['payload']
                 previous_config = (payload.get('config', {})
@@ -575,7 +618,10 @@ class TaskStore:
                 payload['_restart_transfer'] = bool(payload.get('_restart_transfer') or (
                     previous_config is not None and any(
                         previous_config.get(key) != payload.get('config', {}).get(key) for key in transfer_keys)))
+                if self.fleet and row.get('instance_id') and row['instance_id'] != self.fleet.id:
+                    payload['_restart_transfer'] = True
                 values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
+                values['policy_version'] = payload.get('policy_version')
                 row = {**row, 'payload': self._pack(db, payload), '_previous_download_method': previous_method}
                 identity = self.statistics.begin(db, row)
                 values['payload'] = json.dumps({**json.loads(row['payload']), 'download_session_id': identity}, ensure_ascii=False)
@@ -585,17 +631,27 @@ class TaskStore:
 
     def heartbeat(self, task_id, worker_id, lease_seconds=60):
         with self.connect() as db:
-            return db.execute(tasks.update().where(tasks.c.id == task_id, tasks.c.status == 'running',
-                              tasks.c.worker_id == worker_id).values(lease_until=time.time() + lease_seconds)).rowcount > 0
+            if self.fleet and self.fleet.row(db)['boot_id'] != self.fleet.boot_id:
+                return False
+            stamp = self.fleet.clock(db) if self.fleet else time.time()
+            statement = tasks.update().where(tasks.c.id == task_id, tasks.c.status == 'running',
+                                             tasks.c.worker_id == worker_id)
+            if self.fleet:
+                statement = statement.where(tasks.c.lease_until > stamp)
+            return db.execute(statement.values(lease_until=stamp + lease_seconds)).rowcount > 0
 
     def release(self, task_id, worker_id, reason, delay=30):
         with self.connect() as db:
             row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id,
                              tasks.c.worker_id == worker_id, tasks.c.status == 'running'))).mappings().first()
             if row:
+                if self.fleet and (self.fleet.row(db)['boot_id'] != self.fleet.boot_id
+                                  or not row['lease_until'] or row['lease_until'] <= self.fleet.clock(db)):
+                    return False
                 self._transition(db, row, 'queued')
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
-                    lease_until=None, attempts=max(0, row['attempts'] - 1), available_at=time.time() + delay, error=reason))
+                    lease_until=None, attempts=max(0, row['attempts'] - 1),
+                    available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay, error=reason))
                 self.statistics.transition(db, row, 'paused', reason)
                 self.statistics.settle(db)
 
@@ -607,6 +663,10 @@ class TaskStore:
         if progress.get('title'):
             values['title'] = str(progress['title']).casefold()
         with self.connect() as db:
+            if self.fleet and worker_id:
+                if self.fleet.row(db)['boot_id'] != self.fleet.boot_id:
+                    return False
+                statement = statement.where(tasks.c.lease_until > self.fleet.clock(db))
             return db.execute(statement.values(**values)).rowcount > 0
 
     def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False):
@@ -617,6 +677,9 @@ class TaskStore:
             if not row or row['status'] not in ('queued', 'running'):
                 return False
             if worker_id and (row['worker_id'] != worker_id or row['status'] != 'running'):
+                return False
+            if self.fleet and worker_id and (not row['lease_until'] or row['lease_until'] <= self.fleet.clock(db)
+                    or self.fleet.row(db)['boot_id'] != self.fleet.boot_id):
                 return False
             retry = bool(error and retryable and row['attempts'] < row['max_attempts'])
             status = 'queued' if retry else 'failed' if error else 'succeeded'
@@ -630,7 +693,7 @@ class TaskStore:
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
                 status=status, finished_at=None if retry else now(), result=json.dumps(result, ensure_ascii=False) if result else None,
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
-                available_at=time.time() + min(300, 5 * 2 ** max(0, row['attempts'] - 1)) if retry else 0,
+                available_at=(self.fleet.clock(db) if self.fleet else time.time()) + min(300, 5 * 2 ** max(0, row['attempts'] - 1)) if retry else 0,
                 lease_until=None, worker_id=None))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
@@ -638,6 +701,8 @@ class TaskStore:
                 fallback_used=bool(progress.get('fallback_used') or (result or {}).get('fallback_used')))
             if not retry and row['action'] == 'download':
                 self.lists.outcome(db, row, outcome)
+                if self.fleet:
+                    self._counter(db, 'instance:' + self.fleet.id, outcome, 1)
             self.statistics.settle(db)
             if not retry:
                 generation = progress.get('rotation_id')
@@ -655,14 +720,14 @@ class TaskStore:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'running')
             if expired_only:
-                statement = statement.where(or_(tasks.c.lease_until < time.time(), tasks.c.lease_until.is_(None)))
+                statement = statement.where(or_(tasks.c.lease_until < (self.fleet.clock(db) if self.fleet else time.time()), tasks.c.lease_until.is_(None)))
             rows = db.execute(self._locked(statement.limit(1000), skip=True)).mappings().all()
             for row in rows:
                 retry = expired_only and row['action'] in ('download', 'import', 'index') and row['attempts'] < row['max_attempts']
                 status = 'queued' if retry else 'interrupted'
                 self._transition(db, row, status)
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,
-                    available_at=time.time() + 2 if retry else 0, finished_at=None if retry else now(),
+                    available_at=(self.fleet.clock(db) if self.fleet else time.time()) + 2 if retry else 0, finished_at=None if retry else now(),
                     error='执行进程已退出，等待恢复。' if retry else '执行进程已退出。'))
                 self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
                 if not retry:
@@ -672,14 +737,19 @@ class TaskStore:
 
     def worker_status(self, worker_id, slot, state, task_id=None, message=''):
         with self.connect() as db:
+            if self.fleet:
+                slot = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':' + str(slot)
             values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state, task_id=task_id, message=message)
             db.execute(self.db.upsert(workers, values, ['id']))
 
     def workers(self):
         with self.connect() as db:
             latest = {}
-            for row in db.execute(select(workers).where(workers.c.heartbeat > time.time() - 90)
-                                  .order_by(workers.c.heartbeat.desc()).limit(500)).mappings():
+            statement = select(workers).where(workers.c.heartbeat > time.time() - 90)
+            if self.fleet and self.fleet.role == 'worker':
+                prefix = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':'
+                statement = statement.where(workers.c.slot.startswith(prefix, autoescape=True))
+            for row in db.execute(statement.order_by(workers.c.heartbeat.desc()).limit(500)).mappings():
                 latest.setdefault(row['slot'], dict(row))
             return list(latest.values())
 
@@ -690,6 +760,8 @@ class TaskStore:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))
 
     def runtime(self):
+        if self.fleet:
+            return self.fleet.local_settings()['config']
         with self.connect() as db:
             value = db.execute(select(settings.c.value).where(settings.c.key == 'runtime')).scalar_one_or_none()
             return json.loads(value) if value else {}
@@ -706,7 +778,8 @@ class TaskStore:
         path = Path(base) / 'videos.txt'
         if not path.is_file():
             return
-        key = 'archive:' + hashlib.sha256(str(path.resolve()).encode()).hexdigest()
+        source = (self.fleet.id + '\0' if self.fleet else '') + str(path.resolve())
+        key = 'archive:' + hashlib.sha256(source.encode()).hexdigest()
         with self.connect() as db:
             offset = db.execute(select(settings.c.value).where(settings.c.key == key)).scalar_one_or_none()
         offset = int(offset or 0)

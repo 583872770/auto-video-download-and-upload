@@ -3,6 +3,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
+const serviceRole = $('meta[name="service-role"]')?.content || 'all';
 const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
 let clashBusy = false;
 let downloadSubmitting = false;
@@ -26,6 +27,7 @@ const actionNames = { download: '下载视频', check: '下载环境检查', imp
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
+  instances: ['下载实例', '多台机器，一个下载队列', '统一管理实例并发、运行状态和暂停指令。'],
   overview: ['下载概览', 'YouTube 视频，一处下载', '导入客户清单，选择下载策略，按成品文件大小结算。'],
   media: ['素材库', '下载的视频，都在这里', '查看本机保存的视频原片、封面和文件大小。'],
   tasks: ['任务记录', '每一次下载，都有记录', '查看已结束的下载与环境检查记录，以及执行结果和日志。'],
@@ -61,6 +63,7 @@ function toast(message, error = false) {
 }
 async function api(path, options = {}) {
   const headers = { 'X-CSRF-Token': csrf, ...options.headers };
+  if (state.instanceId) headers['X-Instance-ID'] = state.instanceId;
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(options.body);
@@ -89,13 +92,14 @@ function emptyState(title, description, button = false) {
 }
 function renderMedia() {
   const count = state.overview.media.count || 0;
-  ['stat-media', 'nav-media-count', 'recent-media-count', 'all-media-count'].forEach(id => { $(`#${id}`).textContent = count; });
-  const cards = items => `<div class="media-grid">${items.map(item => `<button type="button" class="media-card" data-media="${escapeHTML(item.name)}" aria-label="${item.playable ? '播放' : '查看'}：${escapeHTML(item.title || item.name)}"><span class="media-image">${item.cover ? `<img src="/media/covers/${encodeURIComponent(item.cover)}" alt="${escapeHTML(item.title || item.name)}的封面" loading="lazy">` : icon('film')}${item.playable ? `<span class="media-play">${icon('play')}</span>` : ''}<span class="media-type">${item.playable ? escapeHTML(item.name.split('.').pop().toUpperCase()) : '待合并'}</span></span><span class="media-info"><span class="media-name" title="${escapeHTML(item.name)}">${escapeHTML(item.title || item.name)}</span><span class="media-meta"><span>${bytes(item.size)}</span><span>${item.playable ? '点击播放' : '音视频尚未合并'}</span></span></span></button>`).join('')}</div>`;
+  ['stat-media', 'nav-media-count', 'recent-media-count'].forEach(id => { $(`#${id}`).textContent = count; });
+  $('#all-media-count').textContent = state.mediaTotal ?? count;
+  const cards = items => `<div class="media-grid">${items.map(item => `<button type="button" class="media-card" data-media="${escapeHTML(item.name)}" data-media-instance="${escapeHTML(item.instance_id || '')}" aria-label="${item.playable ? '播放' : '查看'}：${escapeHTML(item.title || item.name)}"><span class="media-image">${item.cover ? `<img src="${mediaAddress('covers', item.cover, item.instance_id)}" alt="${escapeHTML(item.title || item.name)}的封面" loading="lazy">` : icon('film')}${item.playable ? `<span class="media-play">${icon('play')}</span>` : ''}<span class="media-type">${item.playable ? escapeHTML(item.name.split('.').pop().toUpperCase()) : '待合并'}</span></span><span class="media-info"><span class="media-name" title="${escapeHTML(item.name)}">${escapeHTML(item.title || item.name)}</span><span class="media-meta"><span>${bytes(item.size)}</span><span>${item.playable ? '点击播放' : '音视频尚未合并'}</span></span></span></button>`).join('')}</div>`;
   $('#recent-media').innerHTML = state.overview.recent_media.length ? cards(state.overview.recent_media) : emptyState('还没有下载的视频', '在上方粘贴 YouTube 链接，开始第一次下载。');
   $('#all-media').innerHTML = state.media.length ? cards(state.media) : emptyState('素材库还是空的', '下载完成后，视频与封面会出现在这里。', true);
 }
-function openMedia(name) {
-  const item = [...state.media, ...state.overview.recent_media].find(media => media.name === name);
+function openMedia(name, instanceId) {
+  const item = [...state.media, ...state.overview.recent_media].find(media => media.name === name && (!instanceId || media.instance_id === instanceId));
   if (!item) return;
   const player = $('#media-player');
   const warning = $('#media-player-error');
@@ -104,17 +108,17 @@ function openMedia(name) {
   warning.hidden = item.playable;
   warning.textContent = item.playable ? '' : '音视频尚未合并，请检查下载任务日志和 FFmpeg 安装情况。';
   player.hidden = !item.playable;
-  const url = `/media/videos/${encodeURIComponent(item.name)}`;
+  const url = mediaAddress('videos', item.name, item.instance_id);
   $('#media-download').href = url;
   $('#media-download').download = item.name;
-  if (item.cover) player.poster = `/media/covers/${encodeURIComponent(item.cover)}`;
+  if (item.cover) player.poster = mediaAddress('covers', item.cover, item.instance_id);
   else player.removeAttribute('poster');
   if (item.playable) player.src = url;
   $('#media-dialog').showModal();
   if (item.playable) player.play().catch(() => {});
 }
 function taskRows(tasks) {
-  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
 }
 function taskStatus(task) {
   return task.action === 'download' && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status) ? (task.status === 'running' ? '正在暂停' : '已暂停') : statusNames[task.status] || task.status;
@@ -162,7 +166,7 @@ function renderBatches() {
   const queue = state.status?.download_queue || {};
   $('#batch-count').textContent = tasks.length;
   $('#batch-summary').textContent = `${queue.paused ? '下载已停止' : '正在下载 ' + tasks.length + ' 个'} · 排队 ${queue.queued || 0} 个 · 仅显示当前正在下载的视频，完成后可在任务记录中查看`;
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
+  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
   renderPagination();
 }
 function renderPagination() {
@@ -495,10 +499,10 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     const stamp = Date.now();
     const due = (name, visible, interval) => !poll || (visible && (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
     const requests = {
-      media: due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
+      media: (serviceRole !== 'manager' || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
       tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
       status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
-      clash: due('clash', view === 'clash', 15000) ? '/api/clash' : null,
+      clash: (serviceRole !== 'manager' || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
       overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
       active: due('active', view === 'overview', 2000) ? '/api/tasks?view=active&limit=100&order=asc' : null,
     };
@@ -517,7 +521,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     const { media, tasks, clash, overview, active } = data;
     const mediaBefore = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]);
     if (overview) { state.overview = overview; state.counts = overview.counts; }
-    if (media) { state.media = media.items; pages.media.next = media.next_cursor; }
+    if (media) { state.media = media.items; state.mediaTotal = media.total; pages.media.next = media.next_cursor; }
     if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
     if (data.status) state.status = data.status;
     if (clash) state.clash = clash;
@@ -559,14 +563,14 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
 });
 
-const startupNames = { checking_database: '连接数据库', reading_queue: '读取待处理清单', preparing_proxy: '准备代理节点', checking_environment: '检查下载工具', checking_login: '验证 YouTube Cookie', releasing_queue: '放行队列并启动进程' };
+const startupNames = { checking_instances: '检查下载实例及其环境', checking_database: '连接数据库', reading_queue: '读取待处理清单', preparing_proxy: '准备代理节点', checking_environment: '检查下载工具', checking_login: '验证 YouTube Cookie', releasing_queue: '放行队列并启动进程' };
 function renderStartup() {
   const value = state.startup;
   $('#download-startup').hidden = !value || value.state === 'idle';
   if (!value || value.state === 'idle') return;
   const labels = { running: '启动检查中', succeeded: '启动检查已完成', failed: '启动未完成', cancelled: '启动已取消' };
   $('#startup-title').textContent = `${value.state === 'running' && value.cancel_requested ? '正在取消启动' : labels[value.state] || value.state} · ${value.elapsed || 0} 秒`;
-  $('#startup-steps').innerHTML = (value.steps || []).map((step, index) => `<li class="${value.state === 'running' && index === value.steps.length - 1 ? 'is-current' : ''}"><span>${startupNames[step.stage] || step.stage}</span><b>${step.elapsed || 0} 秒</b></li>`).join('');
+  $('#startup-steps').innerHTML = (value.steps || []).map((step, index) => `<li class="${value.state === 'running' && index === value.steps.length - 1 ? 'is-current' : ''}"><span>${escapeHTML(startupNames[step.stage] || step.stage.replace(/^instance_ready:/, '实例就绪：'))}</span><b>${Number(step.elapsed) || 0} 秒</b></li>`).join('');
   $('#startup-message').textContent = (value.message || '检查通过后自动执行；可点击暂停取消启动。') + (value.slowest ? ` 当前耗时最长：${startupNames[value.slowest] || value.slowest}。` : '');
   $('#download-startup').classList.toggle('startup-failed', value.state === 'failed');
 }
@@ -681,7 +685,7 @@ document.addEventListener('click', event => {
   const task = event.target.closest('[data-task]');
   if (task) openTask(task.dataset.task);
   const media = event.target.closest('[data-media]');
-  if (media) openMedia(media.dataset.media);
+  if (media) openMedia(media.dataset.media, media.dataset.mediaInstance);
   const selectNode = event.target.closest('[data-node-select]');
   if (selectNode && !selectNode.disabled) clashAction(async () => {
     await api('/api/clash/select', { method: 'POST', body: { name: selectNode.dataset.nodeSelect } });
@@ -888,6 +892,7 @@ async function init() {
   renderMedia(); renderTasks();
   setView(location.hash.slice(1) || 'overview');
   try {
+    await initializeFleet();
     const config = await api('/api/config');
     fillConfig(config.config);
     const url = config.config.url;

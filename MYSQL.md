@@ -11,10 +11,12 @@
 全新部署先复制模板（已有 `.env` 时直接编辑，避免覆盖原配置）：
 
 ```bash
-cp .env.example .env
+cp .env.remote-mysql.example .env
 ```
 
-在 `.env` 中填写远程数据库信息：
+推荐启动后访问 `/setup`，输入启动日志中的部署设置访问码，直接填写远程数据库信息并测试连接。首次保存会启动业务服务；之后自动读取本机状态目录的 `deployment.json`，运行中修改需重启服务。管理后台与下载实例填写相同的数据库。
+
+也兼容在 `.env` 中填写远程数据库信息（页面保存的配置优先）：
 
 ```dotenv
 MYSQL_HOST=你的数据库IP或域名
@@ -68,10 +70,11 @@ MySQL 5.7 使用 InnoDB、DYNAMIC 行格式，需启用 `innodb_large_prefix` �
 mysql+pymysql://video:密码@127.0.0.1:3306/video_downloads?charset=utf8mb4
 ```
 
-直接运行 `app.py` 会自动读取项目根目录 `.env` 中的 MySQL 配置，也支持 `--env-file 文件路径`；PyCharm 中将该参数填入“脚本参数”。密码使用原始值，建议用单引号包裹，无需手动 URL 编码。进程环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`，并传给后台进程。不会修改旧连接文件或自动迁移数据。
+直接运行 `app.py`，推荐打开 `http://127.0.0.1:5000/setup` 配置 MySQL，密码填写原始值即可。PyCharm 无需额外参数。
 
-默认状态目录 `.cache/web` 优先读取环境变量 `VIDEO_DATABASE_URL`（本地启动时也可由上述 `MYSQL_*` 自动生成），随后读取 `.cache/web/database.json` 中的 `url`。两个入口都支持 MySQL。
-自定义状态目录从该目录的 `database.json` 读取。不要把连接串写入 `config.yaml` 或提交到 Git。
+若未保存页面配置，也会读取项目根目录 `.env`，支持 `--env-file 文件路径`；PyCharm 中将该参数填入“脚本参数”。密码使用原始值，建议用单引号包裹，无需手动 URL 编码。进程环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`。页面保存后以 `deployment.json` 为准，并把实际连接传给后台进程。不会自动迁移已有数据。
+
+旧的 `database.json` 仍供迁移工具和直接调用数据库接口使用；通过 `app.py` 启动时请在页面或环境变量中配置 MySQL。未配置时进入设置向导，不会新建业务 SQLite 数据库。不要把连接串写入 `config.yaml` 或提交到 Git。
 
 对于全新部署，可设置环境变量再启动：
 
@@ -98,6 +101,14 @@ folder.mkdir(parents=True, exist_ok=True)
 
 这会生成独立的目标连接文件，不会切换现有应用。新项目确认没有原有任务后，可将它复制为 `.cache/web/database.json`；已有数据则先按下面步骤迁移。
 数据库账号需要能创建表和索引；应用启动不会自动创建数据库或安装 MySQL 系统服务。
+
+## 首次升级耗时与失败提示
+
+连接测试成功只代表账号可以连接并执行查询，后续仍需检查、升级表结构。MySQL 5.7 对百万条任务表增加字段或索引时，可能持续数分钟。应用为升级使用独立连接，单次读取等待上限为 30 分钟；普通下载查询仍保留原有短超时。待添加的任务归属字段会合并为一次 ALTER，减少重复重建。
+
+不同实例通过数据库命名锁串行升级；启动前也检查旧进程尚未结束的 ALTER / CREATE INDEX。遇到“数据库仍在升级或等待表结构锁”，先等待现有升级完成，再保存启动，不要反复提交或同时启动多个旧版本实例。连接超时不一定代表 MySQL 已取消后台 ALTER。
+
+保存部署配置后，初始化在后台执行，设置页显示当前阶段。失败时页面给出原因和处理建议，可展开技术详情查看 MySQL 错误码和代码位置；同样的脱敏诊断写入本机状态目录的 `deployment-error.json`，数据库密码不会记录到该文件。
 
 ## 从旧 SQLite 迁移到 MySQL
 

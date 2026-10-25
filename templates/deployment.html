@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}"><meta name="deployment-unlocked" content="{{ 'true' if unlocked else 'false' }}">
+  <title>部署设置 · 帧流 Frameflow</title>
+  <link rel="stylesheet" href="/setup-static/deployment.css"><script src="/setup-static/deployment.js" defer></script>
+</head>
+<body><main class="setup-shell">
+  <header><a class="brand" href="/">帧流 <span>FRAMEFLOW</span></a><a href="/" id="back-link" hidden>返回工作台 ↗</a></header>
+  <div class="setup-heading"><p class="eyebrow">SERVICE SETUP</p><h1>在页面上，配置这台机器<span>。</span></h1><p>选择角色、连接共享 MySQL，保存后自动记住。以后使用同一条启动命令即可。</p></div>
+  <section class="panel" id="unlock-panel" {% if unlocked %}hidden{% endif %}>
+    <h2>打开部署设置</h2><p class="muted">在本机启动日志中找到“部署设置访问码”，填入下方。每台机器有自己的访问码。</p>
+    <form id="unlock-form"><label>部署设置访问码<input id="access-code" type="password" autocomplete="current-password" required autofocus></label><button type="submit">进入配置</button></form>
+  </section>
+  <form id="deployment-form" hidden>
+    <p id="deployment-state" class="notice" role="status" hidden></p>
+    <section id="deployment-error" class="panel" hidden><h2 id="deployment-error-title"></h2><p id="deployment-error-remedy"></p><details><summary>查看技术详情</summary><pre id="deployment-error-details"></pre></details></section>
+    <section class="panel"><span class="step">01 / ROLE</span><h2>这台机器做什么</h2>
+      <label>服务角色<select name="role" id="deployment-role"><option value="manager">管理后台 · 导入清单、管理实例、查看统计</option><option value="worker">下载实例 · 从共享队列领取并下载视频</option><option value="all">单机模式 · 本机管理和下载</option></select></label>
+      <p class="muted" id="role-description"></p>
+      <div class="fields"><label>显示名称<input name="instance_name" maxlength="100" placeholder="例如：下载服务器 A"></label><label>实例 ID（可选）<input name="instance_id" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="留空自动生成，重启保持不变"></label></div>
+      <label id="instance-url-field" hidden>实例访问地址<input name="instance_url" type="url" placeholder="例如：http://10.0.0.12:5000"><small>填写管理后台能够访问的这台下载机器的地址，不要填写 0.0.0.0。</small></label>
+      <label id="web-hosts-field">允许访问页面的域名 / IP<input name="web_hosts" required placeholder="localhost,127.0.0.1,download.example.com"><small>当前访问地址会自动补入，多个主机用逗号分隔，不带协议和端口。</small></label>
+    </section>
+    <section class="panel"><span class="step">02 / SHARED MYSQL</span><h2>连接共享 MySQL</h2><p class="muted">管理后台与所有下载实例连接同一个数据库。支持 MySQL 5.7.9 及以上。</p>
+      <div class="fields"><label>数据库地址<input name="mysql_host" required placeholder="域名或 IP，不带协议"></label><label>端口<input name="mysql_port" type="number" min="1" max="65535" value="3306" required></label><label>数据库名称<input name="mysql_database" required autocomplete="off"></label><label>用户名<input name="mysql_user" required autocomplete="off"></label></div>
+      <label>数据库密码<input name="mysql_password" id="mysql-password" type="password" autocomplete="new-password" placeholder="填写原始密码，无需转义"><small id="password-note">密码只保存在本机，不会在页面回显。</small></label>
+      <button type="button" class="secondary" id="test-database">测试数据库连接</button>
+    </section>
+    <section class="panel note-panel"><h2>配置如何生效</h2><p>首次保存后在后台初始化服务，完成后即可进入工作台；已经运行的服务修改后，重启本机服务生效。下载目录、Cookie、代理和并发仍在工作台中配置。</p><p class="muted">Docker 的宿主机端口与目录映射仍在 Compose 中设置。页面配置保存到本机持久化状态目录，优先于 .env 中的默认值。</p></section>
+    <div class="save-bar"><span id="save-description">先测试连接，再保存部署配置。</span><button type="submit" id="save-deployment">保存并启动服务</button></div>
+    <div id="setup-success" class="panel success" hidden><h2>部署配置已保存</h2><p id="success-message"></p><a href="/" id="enter-workbench">进入管理后台 ↗</a><p id="worker-next" hidden>请打开管理后台的“下载实例”页面，找到这台机器并恢复领取任务。当前页面仍可用于修改本机部署配置。</p></div>
+  </form>
+  <p id="setup-feedback" role="status" aria-live="polite"></p>
+</main></body></html>

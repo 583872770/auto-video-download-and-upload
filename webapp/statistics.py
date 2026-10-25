@@ -162,7 +162,9 @@ class DownloadStatistics:
         if not size:
             return False
         # A delivered path is registered once across retries and sessions.
-        identity = hashlib.sha256(((task_id + '\0' if test_mode else '') + str(path)).encode('utf-8')).hexdigest()
+        logical = (task_id + ('\0test' if test_mode else '\0delivery')) if self.store.fleet else (
+            (task_id + '\0' if test_mode else '') + str(path))
+        identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
         ledger = test_files if test_mode else deliveries
         with self.store.connect() as db:
             if self.db.sqlite:
@@ -171,6 +173,10 @@ class DownloadStatistics:
             if not task or task['status'] != 'running' or task['worker_id'] != self.store.owner:
                 from webapp.downloads import DownloadLeaseLost
                 raise DownloadLeaseLost('任务租约已失效，无法登记下载文件。')
+            if self.store.fleet and (not task['lease_until'] or task['lease_until'] <= self.store.fleet.clock(db)
+                    or self.store.fleet.row(db)['boot_id'] != self.store.fleet.boot_id):
+                from webapp.downloads import DownloadLeaseLost
+                raise DownloadLeaseLost('任务租约已过期，无法登记下载文件。')
             session_id = json.loads(task['payload']).get('download_session_id')
             if not session_id:
                 return False  # Jobs already executing during an upgrade have no reliable session.
@@ -189,6 +195,11 @@ class DownloadStatistics:
                     file_count=sessions.c.file_count + 1, file_bytes=sessions.c.file_bytes + size))
             self.methods.record_file(db, task, session_id, size, test_mode)
             self.store.lists.record_file(db, task, size, test_mode)
+            if self.store.fleet:
+                scope = 'instance:' + self.store.fleet.id
+                prefix = 'test_file' if test_mode else 'file'
+                self.store._counter(db, scope, prefix + '_count', 1)
+                self.store._counter(db, scope, prefix + '_bytes', size)
         return True
 
     def session_rows(self, db, cursor=None, query='', limit=21):

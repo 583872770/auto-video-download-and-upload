@@ -7,7 +7,7 @@ def main():
     try:
         # Ignore outbound proxy settings for the container's own HTTP server.
         with build_opener(ProxyHandler({})).open(
-                'http://127.0.0.1:5000/api/tasks?view=active&limit=1', timeout=5) as response:
+                'http://127.0.0.1:5000/health', timeout=5) as response:
             return 0 if response.status == 200 else 1
     except Exception:
         return 1

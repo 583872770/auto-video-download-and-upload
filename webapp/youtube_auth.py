@@ -91,13 +91,19 @@ class YouTubeAuth:
         self.directory.mkdir(parents=True, exist_ok=True)
 
     def _read(self, key, default=None):
+        key = self._key(key)
         with self.store.connect() as db:
             value = db.execute(select(settings.c.value).where(settings.c.key == key)).scalar_one_or_none()
         return json.loads(value) if value else default
 
     def _write(self, key, value):
+        key = self._key(key)
         with self.store.connect() as db:
             db.execute(self.store.db.upsert(settings, dict(key=key, value=json.dumps(value, ensure_ascii=False)), ['key']))
+
+    def _key(self, key):
+        fleet = self.store.fleet
+        return f'i:{hashlib.sha256(fleet.id.encode()).hexdigest()[:16]}:{key}' if fleet else key
 
     def invalidate(self):
         self._write('youtube_auth_generation', uuid.uuid4().hex)
@@ -111,6 +117,11 @@ class YouTubeAuth:
         return self._read('youtube_auth_block')
 
     def block(self, result):
+        if self.store.fleet:
+            self.store.fleet.control(self.store.fleet.id, {'action': 'drain'})
+            self._write('youtube_auth_block', result)
+            self.store.fleet.beat(result['message'])
+            return
         with self.store.connect() as db:
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true'))
             value = json.dumps(result, ensure_ascii=False)

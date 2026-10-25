@@ -21,7 +21,7 @@ from sqlalchemy.exc import DataError, OperationalError
 from sqlalchemy.pool import NullPool
 
 from app import create_app
-from tests import test_controls, test_scale
+from tests import test_controls, test_scale, test_fleet
 from tests.test_storage import StorageContract
 from tests.test_task_views import TaskViewContract
 from tests.test_youtube_auth import AuthContract
@@ -66,6 +66,13 @@ class MySQLFixture:
         self.headers = {'X-CSRF-Token': token}
         self.store = self.app.extensions['task_store']
         self.catalog = self.app.extensions['media_catalog']
+
+
+class MySQLFleetTests(MySQLFixture, test_fleet.FleetTests):
+    def setUp(self):
+        MySQLFixture.setUp(self)
+        self.url = self.store.db.url
+        self.setup_fleet()
 
 
 class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):

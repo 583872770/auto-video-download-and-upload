@@ -4,18 +4,20 @@
 
 项目只保留 YouTube 下载流程，正式部署使用远程 MySQL 5.7.9+ 或 MySQL 8.x。
 
+支持“一个管理后台 + 多个下载实例 + 共享 MySQL”：启动后在 `/setup` 页面选择服务角色、配置 MySQL 和实例地址。页面集中管理全局并发、实例并发、暂停及本机资源，完整部署和升级步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。全新部署默认选中管理后台，也可选择单机模式。
+
 ## Docker 部署
 
 项目只有一个 Compose 编排文件，内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC，连接远程 MySQL：
 
 ```bash
 cp .env.remote-mysql.example .env
-# 编辑 .env，填写 MYSQL_HOST、MYSQL_DATABASE、MYSQL_USER、MYSQL_PASSWORD
+# .env 只需按需调整宿主机端口和视频目录，数据库在页面填写
 docker compose -f compose.remote-mysql.yaml config --quiet
 docker compose -f compose.remote-mysql.yaml up -d --build
 ```
 
-访问 `http://127.0.0.1:5000`。服务器部署时，可在 `.env` 设置 `WEB_BIND_IP`、`WEB_PORT` 和 `VIDEO_DOWNLOAD_DIR`。完整说明见 [DOCKER.md](DOCKER.md)、[MYSQL.md](MYSQL.md) 和 [YT5S_LINUX.md](YT5S_LINUX.md)。
+访问 `http://127.0.0.1:5000/setup`，输入启动日志中的“部署设置访问码”，在页面测试 MySQL 连接并保存。服务器部署时，可在 `.env` 设置 `WEB_BIND_IP`、`WEB_PORT` 和 `VIDEO_DOWNLOAD_DIR`。完整说明见 [DOCKER.md](DOCKER.md)、[MYSQL.md](MYSQL.md) 和 [YT5S_LINUX.md](YT5S_LINUX.md)。
 
 ## 本地启动
 
@@ -23,10 +25,16 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock.txt
-.\.venv\Scripts\python.exe app.py --port 5000 --config config.yaml
+.\.venv\Scripts\python.exe app.py
 ```
 
-本地启动自动读取项目目录的 `.env`，使用其中的 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD` 连接 MySQL，密码填写原始值并建议用单引号包裹。也可添加 `--env-file .env.remote-mysql` 指定其他文件（PyCharm 填在“脚本参数”中）。系统环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`，其次读取状态目录中的 `database.json`。这些设置都未提供时才使用 SQLite 开发测试模式。已有旧数据库不会自动迁移。
+打开 `http://127.0.0.1:5000/setup`，输入终端打印的部署设置访问码，选择管理后台、下载实例或单机模式，再填写 MySQL。下载实例填写管理端能访问的实例地址，ID 留空自动生成。PyCharm 直接运行 `app.py` 即可，无需填写角色和数据库启动参数。
+
+首次保存会启动服务，配置保存在本机状态目录的 `deployment.json`，以后用同一条命令启动。已运行服务修改部署配置后需重启，当前下载不会被保存操作中断；工作台侧栏可重新进入“部署设置”。访问码保存在同目录 `deployment.key`，每次启动都会打印。
+
+启动时先提供设置页，再后台连接 MySQL、检查表结构及初始化实例。终端会打印当前阶段；数据库响应慢时仍可打开 `/setup` 查看阶段和等待时间，失败后可在页面修正配置并重试。
+
+已有 `.env` 配置仍可读取；也可用 `--env-file` 指定其他文件。页面保存配置优先于环境文件，显式 CLI 角色和实例参数优先于页面。未配置数据库时只显示设置向导，不创建业务 SQLite 数据库；已有数据库不会自动迁移。服务监听地址/端口、Docker 宿主机端口和卷映射仍由启动命令或 Compose 设置。
 
 ## 页面功能
 

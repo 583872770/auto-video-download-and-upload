@@ -25,9 +25,11 @@ def cleanup_logs(store, days, limit=500):
         return 0
     cutoff = (datetime.now().astimezone() - timedelta(days=days)).isoformat(timespec='seconds')
     with store.connect() as db:
-        ids = db.execute(select(tasks.c.id).where(tasks.c.logs_pruned == 0, tasks.c.finished_at < cutoff,
+        statement = select(tasks.c.id).where(tasks.c.logs_pruned == 0, tasks.c.finished_at < cutoff,
                          tasks.c.status.in_(('succeeded', 'failed', 'interrupted')))
-                         .order_by(tasks.c.finished_at).limit(limit)).scalars().all()
+        if store.fleet:
+            statement = statement.where(tasks.c.instance_id == store.fleet.id)
+        ids = db.execute(statement.order_by(tasks.c.finished_at).limit(limit)).scalars().all()
     removed = 0
     for task_id in ids:
         path = store.log_path(task_id)

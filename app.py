@@ -1,4 +1,7 @@
 ﻿"""Flask web console. Run `python app.py`, then open http://127.0.0.1:5000."""
+if __name__ == '__main__':
+    print('正在加载视频工作台…', flush=True)
+
 import argparse
 import importlib.util
 import json
@@ -34,9 +37,11 @@ from webapp.environment import DownloadEnvironmentRequired, require_fallback_env
 ACTIONS = ('download', 'check')
 
 
-def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=None):
+def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=None,
+               role=None, instance_id=None, instance_url='', instance_name=None, database_url=None,
+               startup_report=None):
     configure_runtime()
-    if state_dir is None or env_file is not None:
+    if not database_url and (state_dir is None or env_file is not None or role in ('manager', 'worker')):
         from webapp.bootstrap import configure_database_environment
         configure_database_environment(env_file)
     app = Flask(__name__)
@@ -45,7 +50,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     # static JavaScript/CSS immediately after restarting the service.
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
     config_path = Path(config_path or DEFAULT_CONFIG).resolve()
-    store = TaskStore(state_dir or ROOT / '.cache' / 'web')
+    cluster = (role or os.environ.get('VIDEO_SERVICE_ROLE')) in ('manager', 'worker')
+    store = TaskStore(state_dir or ROOT / '.cache' / 'web', database_url or (
+        os.environ.get('VIDEO_DATABASE_URL') if cluster else None), startup_report=startup_report)
+    if startup_report:
+        startup_report('数据库已就绪，正在初始化素材库与实例配置…')
     secret_file = store.directory / 'session.key'
     try:
         with secret_file.open('xb') as output:
@@ -64,6 +73,22 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     media_lock = threading.RLock()
     clash = ClashManager(store.directory / 'clash')
     app.extensions['clash'] = clash
+    service_role = role or os.environ.get('VIDEO_SERVICE_ROLE', 'all')
+    if service_role not in ('all', 'manager', 'worker'):
+        raise ValueError('服务角色必须是 all、manager 或 worker。')
+    fleet = None
+    if service_role != 'all':
+        from webapp.fleet import Fleet
+        fleet = Fleet(store, service_role, identity=instance_id, url=instance_url, name=instance_name)
+        initial, initial_base = load_config(config_path)
+        fleet.initialize({**DEFAULTS, **initial}, initial_base, clash.directory)
+        if service_role == 'worker':
+            app.config['TRUSTED_HOSTS'] = None  # Agent calls use instance addresses and bearer authentication.
+    elif store.fleet:
+        raise ValueError('此状态目录已属于集群实例，请明确使用 --role manager 或 --role worker。')
+    app.extensions['fleet'] = fleet
+    if startup_report:
+        startup_report('实例配置已就绪，正在加载接口与任务调度…')
     youtube_auth = YouTubeAuth(store)
     app.extensions['youtube_auth'] = youtube_auth
     from webapp.startup import DownloadStartup
@@ -72,14 +97,27 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     def settings():
         with settings_lock:
-            return load_config(config_path)
+            config, base = load_config(config_path)
+            if fleet:
+                policy = fleet.policy()
+                if policy:
+                    config.update(policy['config'])
+                if service_role == 'worker':
+                    config.update(json.loads(fleet.row()['limits']))
+            return config, base
 
     def sync_runtime(config, base):
+        if fleet:
+            fleet.save_local({**DEFAULTS, **config}, base, clash.directory)
+            if service_role == 'manager':
+                fleet.save_policy({**DEFAULTS, **config})
+            return
         cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
         store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
         store.set_download_settings({**DEFAULTS, **config}, base, clash.directory)
 
-    sync_runtime(*settings())
+    if not fleet:
+        sync_runtime(*settings())
 
     def body():
         data = request.get_json(silent=True)
@@ -89,12 +127,29 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.before_request
     def csrf_protection():
+        if fleet and service_role == 'worker':
+            if request.path == '/health' and request.method == 'GET':
+                return None
+            token = request.headers.get('Authorization', '').removeprefix('Bearer ')
+            if not secrets.compare_digest(token, fleet.token):
+                return jsonify(error='下载实例只接受管理端认证请求。'), 403
+            return None
         if 'csrf' not in session:
             session['csrf'] = secrets.token_urlsafe(32)
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
             token = request.headers.get('X-CSRF-Token', '')
             if not secrets.compare_digest(token, session['csrf']):
                 return jsonify(error='页面会话已失效，请刷新后重试。'), 403
+
+    @app.get('/health')
+    def health():
+        with store.connect() as db:
+            db.exec_driver_sql('SELECT 1')
+        return jsonify(status='ok', role=service_role)
+
+    if fleet:
+        from webapp.fleet_routes import register_fleet
+        register_fleet(app, fleet)
 
     @app.after_request
     def response_headers(response):
@@ -133,11 +188,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/')
     def index():
-        return render_template('index.html', csrf=session['csrf'])
+        return render_template('index.html', csrf=session['csrf'], service_role=service_role)
 
     @app.get('/api/config')
     def read_config():
         config, base = settings()
+        if fleet and service_role == 'manager':
+            from webapp.fleet_routes import selected_configuration
+            config = selected_configuration(fleet, config)
         editable = {key: config.get(key, default) for key, default in DEFAULTS.items()}
         editable['download_methods'] = download_methods(config)
         return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)))
@@ -145,6 +203,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.put('/api/config')
     def update_config():
         data = body()
+        if fleet and service_role == 'manager':
+            from webapp.fleet_routes import update_configuration
+            return update_configuration(fleet, data, settings()[0])
         if any(key not in DEFAULTS for key in data):
             raise ValueError('包含不支持在页面修改的配置项。')
         with media_lock, settings_lock:
@@ -166,6 +227,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             elif 'download_method' in data:
                 config['download_methods'] = None  # Compatibility with old clients/configuration.
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
+            if fleet and service_role == 'worker':
+                limits = {key: config[key] for key in ('worker_count', 'yt5s_browser_count', 'min_free_gb') if key in data}
+                if limits:
+                    fleet.control(fleet.id, limits)
             save_settings(config_path, config)
             sync_runtime(config, config_path.parent)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
@@ -388,6 +453,25 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         config, base = settings()
         root = video_directory(config, base)
         accounting = store.statistics.dashboard()
+        if fleet and service_role == 'manager':
+            from sqlalchemy import func, select
+            from webapp.database import media as catalog_media, roots as catalog_roots, instances as fleet_instances
+            with store.connect() as db:
+                current_roots = []
+                for identity, value in db.execute(select(fleet_instances.c.id, fleet_instances.c.config)
+                                                  .where(fleet_instances.c.role == 'worker')):
+                    directory = json.loads(value).get('directory')
+                    if directory:
+                        current_roots.append('@' + identity + '|' + directory)
+                total = db.execute(select(func.coalesce(func.sum(catalog_roots.c.count), 0)).where(catalog_roots.c.root.in_(current_roots))).scalar_one()
+                recent = [dict(row) for row in db.execute(select(catalog_media).where(catalog_media.c.root.in_(current_roots))
+                          .order_by(catalog_media.c.modified.desc()).limit(4)).mappings()]
+            for item in recent:
+                item['instance_id'] = item['root'][1:].split('|', 1)[0]
+            return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
+                download_counts=store.counts(actions=('download',)), accounting=accounting,
+                media={'count': total}, recent_media=recent,
+                recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
         return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
                        download_counts=store.counts(actions=('download',)), accounting=accounting,
                        media=catalog.root_status(root), recent_media=catalog.page(root, limit=4)['items'],
@@ -489,6 +573,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.post('/api/downloads/resume')
     def resume_downloads():
+        if fleet and service_role == 'manager':
+            return jsonify(startup.start(activate_downloads)), 202
         with media_lock:
             require_login_idle()
             queue = store.download_queue()
@@ -521,6 +607,15 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             raise ValueError('下载进程正在停止，请稍后再开始。')
         if not queue['queued'] and not queue['importing']:
             raise ValueError('没有待处理的视频，请先添加清单。')
+        if fleet and service_role == 'manager':
+            from webapp.fleet_routes import preflight_instances
+            stage('checking_instances')
+            policy_version = preflight_instances(fleet, stage, cancelled)
+            if cancelled.is_set():
+                raise InterruptedError('启动已取消。')
+            stage('releasing_queue')
+            store.activate_download_lists(expected_policy_version=policy_version)
+            return
         require_login_idle()
         config, base = settings()
         stage('reading_queue')
@@ -614,12 +709,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             payload['urls'] = urls_from(data.get('urls') or config.get('url'))
             validate_method_urls(config, payload['urls'])
         with media_lock:
-            if action == 'download':
+            local_download = action == 'download' and not (fleet and service_role == 'manager')
+            if local_download:
                 require_login_idle()
-            if action == 'download' and config.get('proxy_mode') == 'clash':
+            if local_download and config.get('proxy_mode') == 'clash':
                 payload['clash'] = clash.snapshot()
             if action == 'download':
-                verify_youtube(config, base, payload['urls'], payload.get('clash'))
+                if local_download:
+                    verify_youtube(config, base, payload['urls'], payload.get('clash'))
                 payload.pop('config', None)
                 payload.pop('clash', None)
             if batch:
@@ -654,7 +751,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     clash.start()
                 except ClashError as error:
                     clash.last_error = str(error)
-        threading.Thread(target=restore_clash, name='restore-clash', daemon=True).start()
+        if service_role != 'manager':
+            threading.Thread(target=restore_clash, name='restore-clash', daemon=True).start()
         runner = TaskRunner(store, lambda: settings()[0])
         runner.start()
         app.extensions['task_runner'] = runner
@@ -667,9 +765,25 @@ if __name__ == '__main__':
     parser.add_argument('--port', default=5000, type=int)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--env-file', type=Path, help='数据库环境文件，默认读取项目目录中的 .env')
+    parser.add_argument('--role', choices=('all', 'manager', 'worker'), help='manager 管理端；worker 下载实例；all 兼容单机模式')
+    parser.add_argument('--state', type=Path, help='实例独立状态目录')
+    parser.add_argument('--instance-id', help='固定实例 ID，不同实例必须不同')
+    parser.add_argument('--instance-url', default='', help='管理端能访问的下载实例地址')
+    parser.add_argument('--instance-name', help='页面展示名称')
     args = parser.parse_args()
-    from waitress import serve
+    from waitress import create_server
+    from webapp.deployment import DeploymentGateway
+    service = DeploymentGateway(args.config, args.state or ROOT / '.cache' / 'web', env_file=args.env_file,
+                                role=args.role, instance_id=args.instance_id, instance_url=args.instance_url,
+                                instance_name=args.instance_name)
+    server = create_server(service, host=args.host, port=args.port, threads=8,
+                           max_request_body_size=8 * 1024 ** 3, channel_timeout=300)
     print(f'视频工作台：http://{args.host}:{args.port}', flush=True)
-    serve(create_app(args.config, env_file=args.env_file), host=args.host, port=args.port, threads=8,
-          max_request_body_size=8 * 1024 ** 3, channel_timeout=300)
+    print(f'部署设置：http://{args.host}:{args.port}/setup', flush=True)
+    print(f'部署设置访问码：{service.access_code}', flush=True)
+    service.start()
+    try:
+        server.run()
+    finally:
+        server.close()
 

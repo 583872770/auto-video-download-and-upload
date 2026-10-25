@@ -19,8 +19,8 @@
 cp .env.remote-mysql.example .env
 ```
 
-编辑 `.env`，填写远程数据库的 `MYSQL_HOST`、`MYSQL_DATABASE`、`MYSQL_USER` 和 `MYSQL_PASSWORD`。
-保留密码两侧的单引号，可以避免 `$`、`#` 被 Compose 解释；不要使用示例密码。
+推荐在启动后的 `/setup` 页面填写远程 MySQL、服务角色和实例地址，数据库环境变量可以留空。
+已有 `.env` 的数据库设置仍兼容；页面保存后优先使用页面配置。若使用环境变量填密码，保留两侧单引号，避免 `$`、`#` 被 Compose 解释。
 `VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
 含空格的目录用引号包围。默认保存到项目的 `docker-data/videos`。
 
@@ -33,8 +33,8 @@ docker compose -f compose.remote-mysql.yaml ps
 docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
 ```
 
-访问 <http://127.0.0.1:5000>。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
-首次构建会安装依赖，首次启动会在远程数据库创建表。确认 `app` 显示 `healthy` 后使用。
+访问 <http://127.0.0.1:5000/setup>，输入日志中的“部署设置访问码”，测试 MySQL 连接并保存。可选择管理后台、下载实例或单机模式，集群步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
+首次构建会安装依赖。未配置时容器正常提供设置页，健康检查也会通过；首次保存时才连接远程数据库创建表并启动业务服务。配置保存到持久化状态卷的 `deployment.json`；以后启动自动读取。运行中修改部署配置，保存后需执行 `docker compose -f compose.remote-mysql.yaml restart app` 生效。
 
 首次使用在页面上传 YouTube Netscape Cookie 文件，然后检测登录；需要代理时，在“代理与节点”中导入订阅，选择节点并设置自动轮换。
 原有 Cookie 校验、批量进度、停止/继续、并行下载和三种保存选项沿用现有功能，其中网盘仍为待开发。
@@ -49,12 +49,12 @@ docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
 Mihomo 只运行一个内核，各下载槽使用独立的本地监听端口和节点选择组，仍可独立选择、轮换节点。控制端口和全部代理端口仅监听应用容器内部的回环地址，无需增加 Docker 端口映射，所有节点管理继续通过现有页面进行。
 
 从旧的多内核版本升级时，先在页面“停止全部下载”，等待当前任务退出，再使用原来的项目名、`--env-file` 和 Compose 文件组合执行 `up -d --build`，保留已有卷。首次使用代理时会准备各下载槽的监听端口，并停止经进程身份校验确认属于本项目的旧 worker 内核；保留订阅、Cookie、队列和各槽轮换计数。之后调整下载进程数不会重载 Mihomo。
-并行数量在页面设置为 1–16；当前使用文件锁和本机进程管理，部署时保留一个 `app` 容器。
+每个实例的并行数量在页面设置为 1–16；每台服务器保留一个 `app` 容器，多台服务器通过共享 MySQL 协作。
 
 | 数据 | 保存位置 |
 | --- | --- |
 | 配置、上传的 Cookie、命令行下载归档 | `app_config` 命名卷，容器内 `/data/config` |
-| 任务日志、会话密钥、订阅、节点和轮换状态、测试下载临时文件 | `app_state` 命名卷，容器内 `/app/.cache/web` |
+| 部署配置和访问码、任务日志、会话密钥、订阅、节点和轮换状态、测试下载临时文件 | `app_state` 命名卷，容器内 `/app/.cache/web` |
 | 任务、批次、索引、下载去重和轮换计数 | 远程 MySQL 数据库 |
 | 视频、封面、字幕、元数据 | `VIDEO_DOWNLOAD_DIR` 指定的宿主机目录，映射到 `/data/videos` |
 
@@ -83,11 +83,9 @@ YouTube“独立浏览器登录”仍建议在自己的正常浏览器登录后�
 
 ```dotenv
 WEB_BIND_IP=0.0.0.0
-VIDEO_WEB_HOSTS=localhost,127.0.0.1,[::1],192.168.1.10,video.example.com
 ```
 
-把示例 IP / 域名替换成实际访问地址，保留 `127.0.0.1` 供健康检查使用，主机列表中不带协议或端口。
-运行 `docker compose -f compose.remote-mysql.yaml up -d` 应用修改。项目没有用户账号登录，服务器部署应通过已有身份验证的 HTTPS 反向代理访问。
+运行 `docker compose -f compose.remote-mysql.yaml up -d` 应用端口映射修改。进入 `/setup` 后，“允许访问页面的域名 / IP”会自动补入当前主机，也可手动填写实际域名/IP，保留 `127.0.0.1` 供健康检查使用；已经运行的服务保存后重启生效。宿主机端口、监听 IP 和卷映射由 Docker 决定，不能在容器页面内修改。项目没有业务用户账号登录，服务器部署应通过已有身份验证的 HTTPS 反向代理访问。
 
 ## 停止、恢复与更新
 
@@ -125,4 +123,4 @@ docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web ./backup/stat
 构建上下文排除了本机配置、`.cache`、`.tools`、Cookie、视频和 `.env`。
 同一主机、相同路径下迁移旧 SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
 旧数据库文件不会自动转换或删除；确认迁移和备份前请保留原数据。
-此编排保持当前的单机调度架构，能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。
+此编排每台机器启动一个服务，可在页面配置为管理端或下载实例，共享 MySQL。能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。

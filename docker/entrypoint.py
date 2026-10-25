@@ -39,15 +39,15 @@ def initialize_config(directory, template=ROOT / 'docker/config.yaml'):
 
 def main():
     os.umask(0o077)
-    os.environ['VIDEO_DATABASE_URL'] = database_url(os.environ)
+    # With no database configured yet, the application serves its setup wizard.
+    if all(os.environ.get(key) for key in ('MYSQL_HOST', 'MYSQL_DATABASE', 'MYSQL_USER', 'MYSQL_PASSWORD')):
+        os.environ['VIDEO_DATABASE_URL'] = database_url(os.environ)
     initialize_config('/data/config')
     command = sys.argv[1:]
     if not command:
         raise ValueError('An application command is required')
     os.chdir(ROOT)
-    if os.environ.get('YT5S_BROWSER_ENABLED') == '1':
-        from browser_desktop import start_desktop
-        start_desktop()
+    # The selected role starts the desktop after visual setup has completed.
     os.execvpe(command[0], command, os.environ)
 
 

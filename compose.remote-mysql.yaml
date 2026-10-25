@@ -16,12 +16,16 @@ services:
       - "127.0.0.1:${YT5S_DESKTOP_PORT:-6080}:6080"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      VIDEO_SERVICE_ROLE: ${VIDEO_SERVICE_ROLE:-}
+      VIDEO_INSTANCE_ID: ${VIDEO_INSTANCE_ID:-}
+      VIDEO_INSTANCE_NAME: ${VIDEO_INSTANCE_NAME:-}
+      VIDEO_INSTANCE_URL: ${VIDEO_INSTANCE_URL:-}
       VIDEO_WEB_HOSTS: ${VIDEO_WEB_HOSTS:-localhost,127.0.0.1,[::1]}
-      MYSQL_HOST: ${MYSQL_HOST:?请在 .env 中设置远程 MYSQL_HOST}
+      MYSQL_HOST: ${MYSQL_HOST:-}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
       MYSQL_USER: ${MYSQL_USER:-video}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
     volumes:
       - app_config:/data/config
       - app_state:/app/.cache/web

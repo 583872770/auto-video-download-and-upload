@@ -8,6 +8,24 @@ import psutil
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def terminate_own_descendants():
+    """Clean up this executor before losing its lease; retain persistent Mihomo."""
+    process = psutil.Process()
+    proxy = (ROOT / '.tools/mihomo' / ('mihomo.exe' if os.name == 'nt' else 'mihomo')).resolve()
+    # A second pass catches children spawned while the first tree was collected.
+    for _ in range(2):
+        try:
+            children = process.children(recursive=True)
+        except psutil.Error:
+            return
+        for child in reversed(children):
+            try:
+                if Path(child.exe()).resolve() != proxy:
+                    child.kill()
+            except (psutil.Error, OSError):
+                continue
+
+
 def terminate_worker(owner, directory):
     if not owner:
         return False

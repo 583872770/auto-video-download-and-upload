@@ -18,6 +18,14 @@ class MediaCatalog:
     def __init__(self, store):
         self.store, self.db = store, store.db
 
+    def root_key(self, root):
+        path = str(Path(root).resolve())
+        return f'@{self.store.fleet.id}|{path}' if self.store.fleet else path
+
+    @staticmethod
+    def physical_root(key):
+        return key.split('|', 1)[1] if key.startswith('@') and '|' in key else key
+
     def describe(self, path, root):
         path, root = Path(path).resolve(), Path(root).resolve()
         if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
@@ -46,9 +54,10 @@ class MediaCatalog:
         cover = next((path.parent / (stem + ext) for ext in IMAGE_SUFFIXES if (path.parent / (stem + ext)).is_file()), None)
         stat = path.stat()
         logical = (path.parent.relative_to(root) / stem).as_posix()
-        identity = hashlib.sha256((str(root) + '\x00' + logical).encode()).hexdigest()
+        root_key = self.root_key(root)
+        identity = hashlib.sha256((root_key + '\x00' + logical).encode()).hexdigest()
         title = str(info.get('title') or stem)
-        return dict(id=identity, root=str(root), name=path.relative_to(root).as_posix(), logical_key=logical,
+        return dict(id=identity, root=root_key, name=path.relative_to(root).as_posix(), logical_key=logical,
                     title=title, search_title=title.casefold()[:512], video_id=str(info.get('id') or '')[:256] or None,
                     size=stat.st_size, modified=stat.st_mtime, cover=cover.relative_to(root).as_posix() if cover else None,
                     playable=int(not track), status='incomplete' if track else 'ready',
@@ -71,7 +80,7 @@ class MediaCatalog:
             previous = {row['id']: row for row in db.execute(select(media).where(media.c.id.in_(combined))).mappings()}
             for key, value in list(combined.items()):
                 old = previous.get(key)
-                if old and (Path(old['root']) / old['name']).is_file() and (old['playable'] > value['playable'] or
+                if old and (Path(self.physical_root(old['root'])) / old['name']).is_file() and (old['playable'] > value['playable'] or
                             (not value['playable'] and old['name'].endswith('.mp4') and not value['name'].endswith('.mp4'))):
                     combined[key] = {**old, 'scan_id': scan_id}
             values = list(combined.values())
@@ -91,13 +100,13 @@ class MediaCatalog:
 
     def root_status(self, root):
         with self.store.connect() as db:
-            row = db.execute(select(roots).where(roots.c.root == str(Path(root).resolve()))).mappings().first()
+            row = db.execute(select(roots).where(roots.c.root == self.root_key(root))).mappings().first()
             return dict(row) if row else {'count': 0, 'bytes': 0, 'last_indexed': None, 'scanned': 0}
 
     def page(self, root, *, limit=24, cursor=None, query=''):
         if not 1 <= limit <= 100:
             raise ValueError('每页素材条数必须在 1 到 100 之间。')
-        statement = select(media).where(media.c.root == str(Path(root).resolve()))
+        statement = select(media).where(media.c.root == self.root_key(root))
         if cursor:
             try:
                 modified, identity = json.loads(base64.urlsafe_b64decode(cursor.encode()))
@@ -112,17 +121,19 @@ class MediaCatalog:
             statement = statement.where(or_(media.c.search_title.startswith(escaped, escape='\\'), media.c.video_id == query))
         with self.store.connect() as db:
             rows = db.execute(statement.order_by(media.c.modified.desc(), media.c.id.desc()).limit(limit + 1)).mappings().all()
-            items = [{**row, 'playable': bool(row['playable']), 'prepared': bool(row['prepared'])} for row in rows[:limit]]
+            items = [{**row, 'playable': bool(row['playable']), 'prepared': bool(row['prepared']),
+                      'instance_id': self.store.fleet.id if self.store.fleet else None} for row in rows[:limit]]
         cursor = base64.urlsafe_b64encode(json.dumps([items[-1]['modified'], items[-1]['id']]).encode()).decode() if len(rows) > limit else None
         return {'items': items, 'next_cursor': cursor, 'total': self.root_status(root)['count']}
 
     def reindex(self, root, report=None):
         root = Path(root).resolve()
+        root_key = self.root_key(root)
         scan_id = uuid.uuid4().hex
         started = time.time()
         with self.store.connect() as db:
-            self.db.ensure(db, roots, {'root': str(root), 'count': 0, 'bytes': 0, 'scanned': 0})
-            db.execute(roots.update().where(roots.c.root == str(root)).values(scan_id=scan_id, scanned=0))
+            self.db.ensure(db, roots, {'root': root_key, 'count': 0, 'bytes': 0, 'scanned': 0})
+            db.execute(roots.update().where(roots.c.root == root_key).values(scan_id=scan_id, scanned=0))
         pending, scanned = [], 0
 
         def walk(folder):
@@ -149,10 +160,10 @@ class MediaCatalog:
                     report({'stage': 'indexing', 'scanned': scanned, 'title': '同步素材索引'})
         self.upsert(pending, scan_id)
         with self.store.connect() as db:
-            stale = and_(media.c.root == str(root), media.c.indexed_at < started,
+            stale = and_(media.c.root == root_key, media.c.indexed_at < started,
                          or_(media.c.scan_id != scan_id, media.c.scan_id.is_(None)))
             removed, size = db.execute(select(func.count(), func.coalesce(func.sum(media.c.size), 0)).where(stale)).one()
             db.execute(media.delete().where(stale))
-            db.execute(roots.update().where(roots.c.root == str(root)).values(count=roots.c.count - removed,
+            db.execute(roots.update().where(roots.c.root == root_key).values(count=roots.c.count - removed,
                 bytes=roots.c.bytes - size, scanned=scanned, last_indexed=now(), scan_id=None))
         return {'message': f'素材索引同步完成，扫描 {scanned} 个文件。', 'scanned': scanned}

@@ -42,12 +42,20 @@ class TaskRunner:
         last_recovery = 0
         last_error = 0
         last_cleanup = 0
+        last_beat = 0
         while not self.stop.is_set():
             try:
                 if time.time() - last_recovery > 15:
                     self.store.recover(expired_only=True)
                     last_recovery = time.time()
                 config = self.settings()
+                if self.store.fleet:
+                    if time.monotonic() - last_beat >= 5:
+                        if not self.store.fleet.beat():
+                            self.stop.set()
+                            continue
+                        last_beat = time.monotonic()
+                    config = self.store.fleet.local_settings()['config']
                 count = max(1, min(16, int(config.get('worker_count', 1))))
                 if time.monotonic() - last_cleanup >= 60:
                     from web_worker import worker_lock
@@ -56,12 +64,15 @@ class TaskRunner:
                         if acquired:
                             cleanup_logs(self.store, config.get('log_retention_days', 0))
                     last_cleanup = time.monotonic()
-                if self.store.downloads_paused():
+                if self.store.downloads_paused() or (self.store.fleet and self.store.fleet.should_stop()):
                     from webapp.control import stop_downloads
                     stop_downloads(self.store)
                 role_counts = self.store.runnable_counts()
                 roles = set(role_counts)
-                if role_counts.get('download'):
+                if self.store.fleet and self.store.fleet.role == 'manager':
+                    roles.discard('download')
+                    roles.discard('regular')
+                if role_counts.get('download') and (not self.store.fleet or self.store.fleet.role == 'worker'):
                     roles.add('regular')
                 if roles:
                     for slot in [-1, *range(count)]:
@@ -75,7 +86,8 @@ class TaskRunner:
                             continue
                         if time.monotonic() - self.last_started.get(slot, 0) < 5:
                             continue
-                        env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1')
+                        env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1',
+                                   VIDEO_WORKER_DATABASE_URL=self.store.db.url)
                         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
                         process = subprocess.Popen(
                             [sys.executable, '-u', str(ROOT / 'web_worker.py'), '--state', str(self.store.directory),

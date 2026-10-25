@@ -1,4 +1,5 @@
 """Shared schema and transactional SQL for MySQL (with SQLite test support)."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ from sqlalchemy import (BigInteger, Column, Float as SAFloat, Index, Integer, Me
 from sqlalchemy.dialects.mysql import DOUBLE, LONGTEXT, insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import SQLAlchemyError
 
 ROOT = Path(__file__).resolve().parents[1]
 # MySQL FLOAT loses seconds at Unix-epoch magnitudes; leases and media cursors
@@ -26,6 +28,7 @@ tasks = Table('tasks', metadata,
     Column('batch_id', String(32)), Column('video_id', String(256)), Column('source_key', String(128)),
     Column('url', Text), Column('title', Text, nullable=False, default='', server_default=text("('')")),
     Column('worker_id', String(128)), Column('lease_until', Float),
+    Column('instance_id', String(64)), Column('target_instance_id', String(64)), Column('policy_version', BigInteger),
     Column('attempts', Integer, nullable=False, server_default='0'),
     Column('max_attempts', Integer, nullable=False, server_default='3'),
     Column('logs_pruned', Integer, nullable=False, server_default='0'),
@@ -44,6 +47,8 @@ Index('ix_tasks_video_prefix', tasks.c.video_id)
 Index('ix_tasks_id_prefix', tasks.c.id)
 Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)
+Index('ix_tasks_instance_status', tasks.c.instance_id, tasks.c.status, tasks.c.action)
+Index('ix_tasks_target_queue', tasks.c.target_instance_id, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_seq', tasks.c.seq, unique=True)
 Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at, mysql_length={'finished_at': 40})
 snapshots = Table('task_snapshots', metadata, Column('id', String(64), primary_key=True), Column('payload', Text, nullable=False))
@@ -72,6 +77,15 @@ archive = Table('download_archive', metadata, Column('key', String(512), primary
 workers = Table('workers', metadata, Column('id', String(128), primary_key=True), Column('slot', String(64)),
                 Column('pid', Integer), Column('heartbeat', Float), Column('task_id', String(32)),
                 Column('state', String(24)), Column('message', Text))
+instances = Table('download_instances', metadata,
+    Column('id', String(64), primary_key=True), Column('name', String(100), nullable=False),
+    Column('role', String(16), nullable=False), Column('host', String(200), nullable=False),
+    Column('pid', Integer, nullable=False), Column('boot_id', String(32), nullable=False),
+    Column('heartbeat', Float, nullable=False), Column('url', Text, nullable=False), Column('token', Text, nullable=False),
+    Column('config', Text, nullable=False), Column('limits', Text, nullable=False),
+    Column('paused', Integer, nullable=False, server_default='0'),
+    Column('stop_requested', Integer, nullable=False, server_default='0'),
+    Column('error', Text, nullable=False))
 imports = Table('imports', metadata, Column('id', String(32), primary_key=True),
                 Column('path', Text, nullable=False), Column('name', Text), Column('kind', String(8)),
                 Column('offset', BigInteger, nullable=False, server_default='0'),
@@ -162,8 +176,13 @@ _lock = threading.Lock()
 _engines = {}
 
 
+class SchemaUpgradeInProgress(RuntimeError):
+    """Another initializer or an older server-side DDL is still running."""
+
+
 class Database:
-    def __init__(self, directory, url=None):
+    def __init__(self, directory, url=None, *, startup_report=None):
+        self.startup_report = startup_report or (lambda message: None)
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         config = self.directory / 'database.json'
@@ -287,16 +306,62 @@ class Database:
         return end - count + 1
 
     def initialize(self):
+        if not self.mysql:
+            return self._initialize_schema(self.engine)
+        # MySQL 5.7 may rebuild a large table for ADD COLUMN. Its DDL connection
+        # needs a separate timeout, while normal download queries stay bounded.
+        engine = create_engine(self.url, poolclass=NullPool, hide_parameters=True,
+            isolation_level='READ COMMITTED', connect_args={
+                'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 1800, 'write_timeout': 60})
+        lock_name = 'video_schema_' + hashlib.sha256(engine.url.database.encode('utf-8')).hexdigest()[:40]
+        try:
+            with engine.connect() as guard:
+                self.startup_report('正在检查数据库升级状态…')
+                acquired = guard.execute(text('SELECT GET_LOCK(:name, 10)'), {'name': lock_name}).scalar_one()
+                if acquired != 1:
+                    raise SchemaUpgradeInProgress('另一个实例正在升级数据库。')
+                try:
+                    # Old versions did not take our advisory lock. An ALTER can
+                    # continue on MySQL after that client hit its read timeout.
+                    pending = guard.execute(text("SELECT ID FROM information_schema.PROCESSLIST "
+                        "WHERE DB=DATABASE() AND ID<>CONNECTION_ID() AND LOWER(INFO) REGEXP "
+                        "'^[[:space:]]*(alter[[:space:]]+table|create[[:space:]]+(unique[[:space:]]+)?index)' "
+                        "LIMIT 1")).first()
+                    if pending:
+                        raise SchemaUpgradeInProgress('MySQL 中仍有表结构升级正在执行或等待锁。')
+                    self._initialize_schema(engine)
+                finally:
+                    try:
+                        guard.execute(text('SELECT RELEASE_LOCK(:name)'), {'name': lock_name})
+                    except SQLAlchemyError:
+                        # A disconnected guard releases the named lock itself.
+                        pass
+        finally:
+            engine.dispose()
+
+    def _initialize_schema(self, engine):
         old = False
-        if self.engine.dialect.name == 'sqlite' and inspect(self.engine).has_table('tasks'):
-            existing = {col['name'] for col in inspect(self.engine).get_columns('tasks')}
+        if inspect(engine).has_table('tasks'):
+            existing_columns = {col['name'] for col in inspect(engine).get_columns('tasks')}
+            additions = [f'ADD COLUMN {key} {sqltype}' for key, sqltype in
+                         {'instance_id': 'VARCHAR(64)', 'target_instance_id': 'VARCHAR(64)',
+                          'policy_version': 'BIGINT'}.items() if key not in existing_columns]
+            with engine.begin() as db:
+                if additions and self.mysql:
+                    self.startup_report('正在升级任务表；MySQL 5.7 大表可能需要数分钟，请等待，不要重复启动…')
+                    db.exec_driver_sql('ALTER TABLE tasks ' + ', '.join(additions))
+                elif additions:
+                    for addition in additions:
+                        db.exec_driver_sql('ALTER TABLE tasks ' + addition)
+        if engine.dialect.name == 'sqlite' and inspect(engine).has_table('tasks'):
+            existing = {col['name'] for col in inspect(engine).get_columns('tasks')}
             additions = {'seq': 'BIGINT', 'progress': 'TEXT', 'batch_id': 'VARCHAR(32)',
                          'video_id': 'VARCHAR(256)', 'source_key': 'VARCHAR(128)', 'url': 'TEXT',
                          'title': "TEXT NOT NULL DEFAULT ''", 'worker_id': 'VARCHAR(128)', 'lease_until': 'FLOAT',
                          'attempts': 'INTEGER NOT NULL DEFAULT 0', 'max_attempts': 'INTEGER NOT NULL DEFAULT 3',
                          'logs_pruned': 'INTEGER NOT NULL DEFAULT 0',
                          'available_at': 'FLOAT NOT NULL DEFAULT 0'}
-            with self.engine.begin() as db:
+            with engine.begin() as db:
                 for key, sqltype in additions.items():
                     if key not in existing:
                         db.exec_driver_sql(f'ALTER TABLE tasks ADD COLUMN {key} {sqltype}')
@@ -304,10 +369,11 @@ class Database:
                     db.exec_driver_sql('UPDATE tasks SET seq = rowid')
                     old = True
         schema = self.schema()
-        schema.create_all(self.engine)
+        self.startup_report('正在检查数据库表和索引；首次升级期间请等待…')
+        schema.create_all(engine)
         for index in schema.tables['tasks'].indexes:
-            index.create(self.engine, checkfirst=True)
-        with self.engine.begin() as db:
+            index.create(engine, checkfirst=True)
+        with engine.begin() as db:
             self.ensure(db, settings, {'key': 'downloads_paused', 'value': 'false'})
             self.ensure(db, settings, {'key': 'download_statistics_active', 'value': ''})
             self.ensure(db, settings, {'key': 'download_statistics_since',
@@ -318,7 +384,7 @@ class Database:
                                       'value': datetime.now().astimezone().isoformat(timespec='seconds')})
         if old:
             # One-time upgrade only; regular requests never enumerate task history.
-            with self.engine.begin() as db:
+            with engine.begin() as db:
                 maximum = db.exec_driver_sql('SELECT COALESCE(MAX(seq), 0) FROM tasks').scalar_one()
                 self.ensure(db, sequences, {'key': 'task', 'value': maximum})
                 for row in db.exec_driver_sql('SELECT action, status, COUNT(*) AS n FROM tasks GROUP BY action, status').mappings():

@@ -4,10 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
+  <meta name="service-role" content="{{ service_role }}">
   <meta name="theme-color" content="#202520">
   <title>帧流 Frameflow · YouTube 下载工作台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23202520'/%3E%3Cpath d='M12 10h17v5H17v5h10v5H17v7h-5z' fill='%23edc56a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='fleet.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='statistics.js') }}" defer></script>
   <script src="{{ url_for('static', filename='lists.js') }}" defer></script>
@@ -35,19 +37,21 @@
 
   <aside class="sidebar" id="sidebar">
     <a class="brand" href="/" aria-label="帧流首页"><span class="brand-mark"><span></span><span></span><span></span></span><span>帧流<span class="brand-en">FRAMEFLOW</span></span></a>
-    <div class="workspace-label">个人工作空间 <span>LOCAL</span></div>
+    <div class="workspace-label">{{ '统一下载管理' if service_role == 'manager' else '个人工作空间' }} <span>{{ 'CLUSTER' if service_role == 'manager' else 'LOCAL' }}</span></div>
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><svg><use href="#i-download"/></svg>下载概览<span class="nav-dot"></span></button>
+      <button class="nav-item" id="fleet-nav" data-view="instances" hidden><svg><use href="#i-server"/></svg>下载实例</button>
       <button class="nav-item" data-view="media"><svg><use href="#i-film"/></svg>素材库<span class="nav-count" id="nav-media-count">0</span></button>
       <button class="nav-item" data-view="tasks"><svg><use href="#i-list"/></svg>任务记录<span class="nav-count" id="nav-task-count">0</span></button>
       <button class="nav-item" data-view="statistics"><svg><use href="#i-list"/></svg>下载统计与计费</button>
       <button class="nav-item" data-view="clash"><svg><use href="#i-server"/></svg>代理与节点</button>
       <button class="nav-item" data-view="settings"><svg><use href="#i-settings"/></svg>下载设置</button>
+      {% if config.DEPLOYMENT_SETUP_AVAILABLE %}<a class="nav-item" href="/setup"><svg><use href="#i-server"/></svg>部署设置</a>{% endif %}
     </nav>
     <div class="sidebar-source"><div class="side-section-title">下载来源 <span>01</span></div>
       <div class="account-row"><span class="platform-icon youtube">▶</span><span>YouTube<small data-youtube-status>读取状态中</small></span><button class="account-login" data-open="youtube-login-dialog">登录 YouTube ↗</button></div>
     </div>
-    <div class="sidebar-bottom"><div class="local-avatar"><svg><use href="#i-server"/></svg></div><div>本地工作台<small>你的素材，由你掌控</small></div><span class="online-dot"></span></div>
+    <div class="sidebar-bottom"><div class="local-avatar"><svg><use href="#i-server"/></svg></div><div>{{ '集群管理后台' if service_role == 'manager' else '本地工作台' }}<small>你的素材，由你掌控</small></div><span class="online-dot"></span></div>
   </aside>
 
   <div class="workspace">
@@ -55,6 +59,7 @@
     <main><p id="connection-warning" class="clash-notice" hidden role="alert"></p>
       <div class="page-heading"><div><p class="eyebrow">YOUR YOUTUBE DOWNLOAD SPACE</p><h1 id="page-title">YouTube 视频，一处下载<span class="heading-dot">.</span></h1><p id="page-description">粘贴视频或播放列表链接，原片和配套资源自动保存到本机。</p></div><div class="youtube-auth-actions" data-cookie-actions><button type="button" class="button button-dark" data-open="youtube-login-dialog"><svg><use href="#i-link"/></svg>浏览器登录</button><button class="button button-white" data-open="youtube-cookie-dialog"><svg><use href="#i-upload"/></svg>上传 Cookie 文件</button></div></div>
 
+      <div id="fleet-selection-bar" class="panel fleet-selection" hidden><label>当前下载实例 <select id="fleet-selection" aria-label="当前下载实例"></select></label><p id="fleet-selection-note" class="micro-copy"></p></div>
       <section id="overview-view" class="view">
         <div class="stats-grid dashboard-grid">
           <article class="stat-card"><div class="stat-label">待处理视频</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">添加清单后点击开始下载</div></article>
@@ -84,6 +89,7 @@
         <div class="bottom-grid"><section class="panel"><div class="panel-heading"><div class="inline-heading"><h2>任务动态</h2><span class="live-label"><span class="online-dot"></span>实时更新</span></div><button class="text-button" data-view="tasks">全部记录 ↗</button></div><div id="recent-tasks"></div></section><section class="note-panel"><span class="section-kicker">FROM LINK TO LIBRARY.</span><h3>从客户清单，<br>到交付账单。</h3><p>按清单管理客户交付。<br>下载记录自动去重，计费大小精确累计。</p><div class="note-art" aria-hidden="true"><span></span><span></span><span><svg><use href="#i-play"/></svg></span></div></section></div>
       </section>
 
+      <section id="instances-view" class="view" hidden><div class="panel fleet-budget"><h2>集群并发上限</h2><form id="fleet-global-form" class="media-library-actions"><label>全局最多执行任务数 <input id="fleet-global-limit" type="number" min="1" max="10000" value="32" required></label><button type="submit" class="button button-dark">保存全局上限</button></form><p class="micro-copy">每个实例同时受全局上限和自身并发上限约束。解析、转换和传输都占用任务名额。</p></div><div id="fleet-instances"></div></section>
       <section id="media-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>全部素材 <span class="count-pill" id="all-media-count">0</span></h2><p class="panel-subtitle" id="media-directory"></p></div><div class="media-library-actions"><button class="button button-white" id="refresh-media"><svg><use href="#i-refresh"/></svg>同步本地文件</button><button type="button" class="button button-danger" id="clear-media">清空素材库</button></div></div><div class="catalog-toolbar"><input id="media-search" type="search" placeholder="按标题前缀或完整视频 ID 搜索" aria-label="搜索素材"><span>每页 24 条 · 按下载时间排列</span></div><div id="all-media"></div><div class="pagination"><button type="button" class="button button-white" data-page="media" data-direction="prev">上一页</button><span id="media-page-label"></span><button type="button" class="button button-white" data-page="media" data-direction="next">下一页</button></div></div></section>
 
       <section id="tasks-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>下载与检查记录</h2><p class="panel-subtitle">按结束时间倒序展示已结束的任务，支持分页、结果筛选与搜索。</p></div><select id="task-filter" aria-label="筛选任务"><option value="all">全部结果</option><option value="succeeded">已完成</option><option value="failed">失败 / 中断</option></select></div><div class="catalog-toolbar"><input id="task-search" type="search" placeholder="视频 ID、任务 ID 或标题前缀" aria-label="搜索任务"><span>每页 50 条</span></div><div id="all-tasks"></div><div class="pagination"><button type="button" class="button button-white" data-page="tasks" data-direction="prev">上一页</button><span id="tasks-page-label"></span><button type="button" class="button button-white" data-page="tasks" data-direction="next">下一页</button></div></div></section>
@@ -141,7 +147,7 @@
         <section class="panel"><div class="panel-heading"><div><h2>订阅节点 <span class="count-pill" id="clash-node-count">0</span></h2><p class="panel-subtitle" id="clash-test-progress">延迟测试不会切换当前节点；测试结果不代表实际下载速度。</p></div><button class="button button-white" id="clash-test-all" type="button"><svg><use href="#i-clock"/></svg>全部测速</button></div><div class="clash-toolbar"><input id="clash-node-search" type="search" placeholder="搜索节点名称或协议" aria-label="搜索节点"><select id="clash-node-sort" aria-label="节点排序"><option value="original">订阅顺序</option><option value="delay">延迟从低到高</option><option value="name">按名称排序</option></select></div><div id="clash-nodes"></div></section>
       </section>
 
-      <footer class="page-footer"><span>FRAMEFLOW <span class="footer-divider">/</span> 为每一帧，找到下一站。</span><span>Flask · 本地运行</span></footer>
+      <footer class="page-footer"><span>FRAMEFLOW <span class="footer-divider">/</span> 为每一帧，找到下一站。</span><span>Flask · {{ '集群管理' if service_role == 'manager' else '本地运行' }}</span></footer>
     </main>
   </div>
 

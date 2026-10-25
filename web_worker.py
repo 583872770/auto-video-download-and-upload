@@ -381,7 +381,7 @@ def drain(directory, slot=0, role='all'):
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost
     from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
-    store = TaskStore(directory)
+    store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
         if not acquired:
@@ -412,18 +412,39 @@ def drain(directory, slot=0, role='all'):
                     store.import_archive(base)
             store.worker_status(store.owner, name, 'running', task['id'])
             heartbeat_stop = threading.Event()
+            lease_deadline = [time.monotonic() + 45]
 
-            def heartbeat(task_id=task['id']):
-                while not heartbeat_stop.wait(10):
+            def abandon():
+                from webapp.control import terminate_own_descendants
+                try:
+                    terminate_own_descendants()
+                finally:
+                    os._exit(2)
+
+            def heartbeat(task_id=task['id'], stop=heartbeat_stop, deadline=lease_deadline):
+                while not stop.wait(10):
                     try:
-                        if not store.heartbeat(task_id, store.owner):
+                        renewal_started = time.monotonic()
+                        owned = store.heartbeat(task_id, store.owner)
+                        if stop.is_set():
                             return
+                        if not owned:
+                            abandon()
+                        deadline[0] = renewal_started + 45
                         store.worker_status(store.owner, name, 'running', task_id)
                     except Exception:
-                        pass
+                        pass  # The independent watchdog also covers blocked SQL calls.
+
+            def watchdog(stop=heartbeat_stop, deadline=lease_deadline):
+                while not stop.wait(1):
+                    if time.monotonic() >= deadline[0]:
+                        abandon()  # Stop before the 60-second lease can be reassigned.
 
             heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
             heartbeat_thread.start()
+            watchdog_thread = threading.Thread(target=watchdog, daemon=True) if store.fleet else None
+            if watchdog_thread:
+                watchdog_thread.start()
 
             def report(value):
                 if not store.update_progress(task['id'], value, store.owner):
@@ -442,7 +463,11 @@ def drain(directory, slot=0, role='all'):
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
                 except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
-                    store.set_downloads_paused(True)
+                    if store.fleet:
+                        store.fleet.control(store.fleet.id, {'action': 'drain'})
+                        store.fleet.beat(str(error))
+                    else:
+                        store.set_downloads_paused(True)
                     store.release(task['id'], store.owner, str(error), delay=0)
                     print(f'下载环境检查未通过，队列已停止，任务保留：{error}', flush=True)
                     break
@@ -468,6 +493,8 @@ def drain(directory, slot=0, role='all'):
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)
+                    if watchdog_thread:
+                        watchdog_thread.join(timeout=2)
                     store.worker_status(store.owner, name, 'idle')
             from webapp.maintenance import trim_log
             trim_log(store, task['id'], runtime.get('max_log_mb', config.get('max_log_mb', 10)))
