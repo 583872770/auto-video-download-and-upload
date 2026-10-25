@@ -367,9 +367,40 @@ class TaskStore:
 
     def activate_download_lists(self):
         with self.connect() as db:
+            if self.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
+            db.execute(select(settings.c.key).where(settings.c.key == 'downloads_paused').with_for_update())
+            if self.media_clear_busy(db):
+                raise ValueError('素材库正在清空，请完成后再开始下载。')
             # Release the new lists and resume claims in one transaction.
             self.lists.release(db)
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))
+
+    def media_clear_busy(self, db=None):
+        if db is None:
+            with self.connect() as connection:
+                return self.media_clear_busy(connection)
+        counts = self._counts(db, ['action:clear_media'])
+        return bool(counts.get('queued', 0) or counts.get('running', 0))
+
+    def start_media_clear(self, payload):
+        with self.connect() as db:
+            if self.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
+            db.execute(select(settings.c.key).where(settings.c.key == 'downloads_paused').with_for_update())
+            if not self.downloads_paused(db) or self._counts(db, ['action:download']).get('running', 0):
+                raise ValueError('请先暂停全部下载，并等待所有实例的下载任务停止后再清空素材库。')
+            if self.media_clear_busy(db):
+                raise ValueError('素材库正在清空，请勿重复提交。')
+            indexing = self._counts(db, ['action:index'])
+            if indexing.get('queued', 0) or indexing.get('running', 0):
+                raise ValueError('请等待素材索引同步完成后再清空。')
+            task_id = self._create(db, 'clear_media', payload, self.db.sequence(db, 'task'))
+            row = db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().one()
+            self._transition(db, row, 'running')
+            db.execute(tasks.update().where(tasks.c.id == task_id).values(
+                status='running', started_at=now(), worker_id=self.owner, lease_until=time.time() + 60, attempts=1))
+        return self.get(task_id)
 
     def download_queue(self):
         with self.connect() as db:
@@ -513,9 +544,13 @@ class TaskStore:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= time.time())
+            # Destructive cleanup runs only in the Web instance that accepted confirmation.
+            statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
             if self.downloads_paused(db, lock=True) or not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
+            if self.media_clear_busy(db):
+                statement = statement.where(~tasks.c.action.in_(('download', 'index')))
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:

@@ -149,6 +149,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             raise ValueError('包含不支持在页面修改的配置项。')
         with media_lock, settings_lock:
             config, _ = settings()
+            if any(key in data for key in ('path', 'dir', 'storage_mode')) and store.media_clear_busy():
+                return jsonify(error='素材库正在清空，完成后再修改保存目录或保存方式。'), 409
             if 'storage_mode' in data and data['storage_mode'] != config.get('storage_mode', 'local'):
                 queue = store.download_queue()
                 if queue['running'] or (queue['queued'] and not queue['paused']):
@@ -323,15 +325,62 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/api/media')
     def media():
         config, base = settings()
-        root = Path(io_path(video_directory(config, base)))
+        root = Path(io_path(video_directory(config, base))).resolve()
         return jsonify(**catalog.page(root, limit=int(request.args.get('limit', 24)),
                        cursor=request.args.get('cursor'), query=request.args.get('q', '')[:200]), directory=str(root),
                        indexing=catalog.root_status(root))
 
     @app.post('/api/media/reindex')
     def reindex_media():
+        if store.media_clear_busy():
+            return jsonify(error='素材库正在清空，完成后再同步本地文件。'), 409
         config, base = settings()
         task = store.create('index', {'config': config, 'base': str(base), 'scope': 'download'})
+        return jsonify(task), 202
+
+    @app.post('/api/media/clear')
+    def clear_media_library():
+        from webapp.media_cleanup import clear_media, validate_clear_root
+        data = body()
+        if data.get('confirmation') != '清空':
+            raise ValueError('请输入“清空”确认删除素材文件。')
+        with media_lock, settings_lock:
+            config, base = settings()
+            protected = [ROOT, config_path, store.directory]
+            if config.get('youtube_cookie'):
+                protected.append(resolve_path(base, config['youtube_cookie']))
+            root = validate_clear_root(video_directory(config, base), protected)
+            if data.get('directory') != str(root):
+                raise ValueError('素材目录已变化，请刷新页面后重新确认。')
+            try:
+                task = store.start_media_clear({'base': str(base), 'directory': str(root)})
+            except ValueError as error:
+                return jsonify(error=str(error)), 409
+
+        def run_clear():
+            stopped = threading.Event()
+            def heartbeat():
+                while not stopped.wait(10):
+                    try:
+                        if not store.heartbeat(task['id'], store.owner):
+                            return
+                    except Exception:
+                        return
+            keeper = threading.Thread(target=heartbeat, name='media-clear-heartbeat', daemon=True)
+            keeper.start()
+            try:
+                def report(value):
+                    if not store.update_progress(task['id'], value, store.owner):
+                        raise RuntimeError('清空任务租约已失效，清理已停止。')
+                validate_clear_root(root, protected)
+                result = clear_media(catalog, root, report)
+                store.finish(task['id'], result=result, worker_id=store.owner)
+            except Exception as error:
+                store.finish(task['id'], error=str(error), worker_id=store.owner)
+            finally:
+                stopped.set()
+                keeper.join(timeout=2)
+        threading.Thread(target=run_clear, name='media-clear', daemon=True).start()
         return jsonify(task), 202
 
     @app.get('/api/overview')
@@ -339,10 +388,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         config, base = settings()
         root = video_directory(config, base)
         accounting = store.statistics.dashboard()
-        return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index')),
+        return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
                        download_counts=store.counts(actions=('download',)), accounting=accounting,
                        media=catalog.root_status(root), recent_media=catalog.page(root, limit=4)['items'],
-                       recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index'), finished_only=True)['items'])
+                       recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
 
     @app.get('/media/videos/<path:name>')
     def video(name):
@@ -412,7 +461,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/api/tasks')
     def tasks():
-        actions = ('download', 'check', 'import', 'index') if request.args.get('scope') == 'download' else None
+        actions = ('download', 'check', 'import', 'index', 'clear_media') if request.args.get('scope') == 'download' else None
         active = request.args.get('view') == 'active'
         if active:
             actions = ('download',)
@@ -465,6 +514,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     def activate_downloads(stage, cancelled):
         stage('checking_database')
+        if store.media_clear_busy():
+            raise ValueError('素材库正在清空，请完成后再开始下载。')
         queue = store.download_queue()
         if queue['paused'] and queue['running']:
             raise ValueError('下载进程正在停止，请稍后再开始。')

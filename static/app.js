@@ -22,7 +22,7 @@ const pages = Object.fromEntries(['tasks', 'media'].map(name => [name, { cursor:
 state.overview = { recent_media: [], recent_tasks: [], media: { count: 0 } };
 state.batchTasks = [];
 
-const actionNames = { download: '下载视频', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引' };
+const actionNames = { download: '下载视频', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
@@ -649,7 +649,7 @@ async function updateTaskDetail() {
   $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>${task.started_at ? `<span>开始于 ${escapeHTML(formatDate(task.started_at, true))}</span>` : ''}${task.finished_at ? `<span>结束于 ${escapeHTML(formatDate(task.finished_at, true))}</span>` : ''}`;
   $('#task-error').hidden = !task.error;
   $('#task-error').textContent = task.error ? readableError(task.error) : '';
-  $('#task-download-progress').innerHTML = ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
+  $('#task-download-progress').innerHTML = task.action === 'clear_media' ? `<p class="micro-copy">已删除 ${Number(task.progress?.deleted_files || 0)} 个文件 · 释放 ${bytes(task.progress?.deleted_bytes || 0)}${task.progress?.failed_files ? ` · ${Number(task.progress.failed_files)} 个文件未能删除` : ''}</p>` : ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
   const result = task.result;
   if (result?.message) { $('#task-result').innerHTML = `<div class="result-summary">${escapeHTML(result.message)}</div>`; }
   if (logs.text) {
@@ -737,6 +737,33 @@ $('#youtube-cookie-form').addEventListener('submit', event => {
 });
 $('#check-environment').addEventListener('click', event => runButton(event.currentTarget, () => startTask('check')));
 $('#refresh-media').addEventListener('click', event => runButton(event.currentTarget, async () => { const task = await api('/api/media/reindex', { method: 'POST' }); toast('已开始同步本地文件，完成后素材库会自动更新。'); await openTask(task.id); }));
+$('#clear-media').addEventListener('click', event => runButton(event.currentTarget, async () => {
+  const media = await api('/api/media?limit=1');
+  state.clearMediaDirectory = media.directory;
+  $('#media-clear-directory').textContent = `当前目录：${media.directory} · 已索引 ${media.total} 个素材`;
+  $('#media-clear-confirmation').value = '';
+  $('#media-clear-submit').disabled = true;
+  $('#media-clear-dialog').showModal();
+  $('#media-clear-confirmation').focus();
+}));
+$('#media-clear-confirmation').addEventListener('input', event => {
+  $('#media-clear-submit').disabled = event.target.value !== '清空';
+});
+$('#media-clear-form').addEventListener('submit', event => {
+  event.preventDefault();
+  runButton($('#media-clear-submit'), async () => {
+    const task = await api('/api/media/clear', { method: 'POST', body: {
+      confirmation: $('#media-clear-confirmation').value, directory: state.clearMediaDirectory,
+    } });
+    $('#media-clear-dialog').close();
+    const player = $('#media-player');
+    player.pause(); player.removeAttribute('src'); player.load();
+    resetPage('media');
+    toast('已开始后台清空素材库，可在任务详情中查看进度。');
+    await openTask(task.id);
+    await refresh();
+  });
+});
 $('#task-filter').addEventListener('change', () => { resetPage('tasks'); refresh(); });
 document.addEventListener('click', event => {
   const button = event.target.closest('[data-page]');

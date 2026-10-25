@@ -96,5 +96,9 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .list-totals span,.list-totals small{display:block;color:var(--muted);font-size:10px;line-height:1.8}.list-totals strong{display:block;font-size:19px;font-weight:550;margin:7px 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .list-exports{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:7px}.list-exports a{text-decoration:none;font-size:11px}.list-editor .accounting-form{padding:12px 0 0}.list-editor .accounting-form .micro-copy{flex-basis:100%;margin:0}
 #connection-warning{margin-bottom:20px}#settings-save-state{font-size:11px;line-height:1.7;max-width:60%}
+.media-library-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.button-danger{background:#fff5f3;color:#a64035;border:1px solid #e6bdb7}.button-danger:hover{background:#fce7e3}
+.media-clear-confirm{display:grid;gap:10px;margin:22px 0;font-size:13px}.media-clear-confirm input{padding:11px 12px;border:1px solid var(--line);border-radius:6px;font:inherit}
+#media-clear-dialog p{line-height:1.8}#media-clear-directory{overflow-wrap:anywhere}
 @media(max-width:900px){.stats-grid.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.service-strip .environment-card{margin-left:0}}
 @media(max-width:650px){.dashboard-size{font-size:24px}.service-strip{padding:12px;font-size:10px;gap:8px}.strategy-save .button{width:100%}.list-inputs{grid-template-columns:1fr}.startup-panel{margin:0 17px 18px}.startup-panel ol{grid-template-columns:1fr}.customer-list{padding:18px 17px}.customer-lists .catalog-toolbar{padding:0 17px 17px}.list-totals{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.list-totals strong{font-size:17px}.customer-list-heading h3{font-size:14px}.download-queue-controls{padding:0 17px 16px;gap:10px}.download-queue-controls .button{flex:1;white-space:nowrap}.download-queue-controls .micro-copy{flex-basis:100%}}

@@ -130,7 +130,7 @@ class MediaCatalog:
                 return
             with os.scandir(folder) as entries:
                 for entry in entries:
-                    if entry.is_symlink():
+                    if entry.is_symlink() or Path(entry.path).is_junction():
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         if not entry.name.endswith('.parts') and not entry.name.startswith('.'):
