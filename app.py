@@ -34,8 +34,11 @@ from webapp.environment import DownloadEnvironmentRequired, require_fallback_env
 ACTIONS = ('download', 'check')
 
 
-def create_app(config_path=None, state_dir=None, *, start_worker=True):
+def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=None):
     configure_runtime()
+    if state_dir is None or env_file is not None:
+        from webapp.bootstrap import configure_database_environment
+        configure_database_environment(env_file)
     app = Flask(__name__)
     app.json.ensure_ascii = False
     # Development and local deployments should see edited templates and
@@ -612,9 +615,10 @@ if __name__ == '__main__':
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', default=5000, type=int)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument('--env-file', type=Path, help='数据库环境文件，默认读取项目目录中的 .env')
     args = parser.parse_args()
     from waitress import serve
     print(f'视频工作台：http://{args.host}:{args.port}', flush=True)
-    serve(create_app(args.config), host=args.host, port=args.port, threads=8,
+    serve(create_app(args.config, env_file=args.env_file), host=args.host, port=args.port, threads=8,
           max_request_body_size=8 * 1024 ** 3, channel_timeout=300)
 

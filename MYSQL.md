@@ -68,7 +68,9 @@ MySQL 5.7 使用 InnoDB、DYNAMIC 行格式，需启用 `innodb_large_prefix` �
 mysql+pymysql://video:密码@127.0.0.1:3306/video_downloads?charset=utf8mb4
 ```
 
-默认状态目录 `.cache/web` 优先读取环境变量 `VIDEO_DATABASE_URL`，随后读取 `.cache/web/database.json` 中的 `url`。两个入口都支持 MySQL。
+直接运行 `app.py` 会自动读取项目根目录 `.env` 中的 MySQL 配置，也支持 `--env-file 文件路径`；PyCharm 中将该参数填入“脚本参数”。密码使用原始值，建议用单引号包裹，无需手动 URL 编码。进程环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`，并传给后台进程。不会修改旧连接文件或自动迁移数据。
+
+默认状态目录 `.cache/web` 优先读取环境变量 `VIDEO_DATABASE_URL`（本地启动时也可由上述 `MYSQL_*` 自动生成），随后读取 `.cache/web/database.json` 中的 `url`。两个入口都支持 MySQL。
 自定义状态目录从该目录的 `database.json` 读取。不要把连接串写入 `config.yaml` 或提交到 Git。
 
 对于全新部署，可设置环境变量再启动：

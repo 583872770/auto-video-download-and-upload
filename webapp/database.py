@@ -175,7 +175,7 @@ class Database:
         if self.url.startswith('mysql://'):
             self.url = self.url.replace('mysql://', 'mysql+pymysql://', 1)
         if not self.url.startswith(('sqlite:///', 'mysql+pymysql://')):
-            raise ValueError('数据库仅支持 MySQL。')
+            raise ValueError('数据库仅支持 MySQL。请检查 VIDEO_DATABASE_URL 或 .cache/web/database.json 中的旧连接；本地启动可在项目 .env 中配置 MYSQL_HOST、MYSQL_DATABASE、MYSQL_USER、MYSQL_PASSWORD。')
         with _lock:
             if self.url not in _engines:
                 options = {'connect_args': {'timeout': 30}} if self.url.startswith('sqlite:') else {}

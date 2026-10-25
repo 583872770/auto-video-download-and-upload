@@ -26,7 +26,7 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 .\.venv\Scripts\python.exe app.py --port 5000 --config config.yaml
 ```
 
-本地启动默认使用状态目录中的 SQLite 便携模式，仅用于开发和测试；生产环境请设置 `VIDEO_DATABASE_URL` 或使用 Docker 连接 MySQL。
+本地启动自动读取项目目录的 `.env`，使用其中的 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD` 连接 MySQL，密码填写原始值并建议用单引号包裹。也可添加 `--env-file .env.remote-mysql` 指定其他文件（PyCharm 填在“脚本参数”中）。系统环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`，其次读取状态目录中的 `database.json`。这些设置都未提供时才使用 SQLite 开发测试模式。已有旧数据库不会自动迁移。
 
 ## 页面功能
 

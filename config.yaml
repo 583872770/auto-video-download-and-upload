@@ -1,20 +1,25 @@
-# Local development defaults. Production Docker uses /data/config/config.yaml.
 path: videos
 dir: ''
 url: ''
-storage_mode: local
-proxy_mode: direct
 proxy: ''
+proxy_mode: direct
 youtube_cookie: ''
-worker_count: 1
+browser_executable: ''
+download_format: ''
+js_runtimes: null
+worker_count: 8
 download_attempts: 3
 min_free_gb: 2
-shard_downloads: true
-max_log_mb: 10
 log_retention_days: 0
-download_method: yt_dlp
+max_log_mb: 10
+shard_downloads: true
+storage_mode: local
+download_method: downmp3
 yt5s_quality: '360'
 yt5s_browser_count: 2
+download_methods:
+- downmp3
+- yt5s
 fragment_concurrency: 4
 downmp3_quality: '720'
 downmp3_timeout: 300
