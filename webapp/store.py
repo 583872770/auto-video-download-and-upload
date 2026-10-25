@@ -43,6 +43,8 @@ class TaskStore:
         self.database = self.directory / 'tasks.sqlite3'
         self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}'
         self.fleet = None
+        from webapp.modes import single_state
+        self.single = single_state(self.directory)
         runtime = self.directory / 'fleet-runtime.json'
         if runtime.is_file():
             from webapp.fleet import Fleet
@@ -576,6 +578,19 @@ class TaskStore:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             stamp = self.fleet.clock(db) if self.fleet else time.time()
+            if self.fleet or self.single:
+                db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
+            mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
+            if self.fleet and mode != 'true':
+                return None
+            if self.fleet:
+                from webapp.modes import single_state
+                if (single_state(self.directory) or {}).get('status') == 'requested':
+                    return None  # Freeze local claims until the requested restart.
+            if not self.fleet and mode is not None:
+                from webapp.modes import mode_key
+                if mode != mode_key(self.single):
+                    return None
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
             if self.fleet:
                 statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
@@ -583,8 +598,6 @@ class TaskStore:
                          else tasks.c.action == 'import')))
                 if self.fleet.role == 'manager' or not self.fleet.admission(db):
                     statement = statement.where(tasks.c.action != 'download')
-            elif db.execute(select(settings.c.key).where(settings.c.key == 'fleet_enabled')).first():
-                return None  # Old single-instance executors must not bypass fleet admission.
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())

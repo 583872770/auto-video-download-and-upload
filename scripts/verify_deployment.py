@@ -82,6 +82,57 @@ def verify_slow_start(page, root, config, output, *, failure=False):
         thread.join(timeout=5)
 
 
+def verify_role_recovery(page, root, config, output):
+    directory = root / 'cluster-recovery-state'
+    directory.mkdir()
+    write_profile(directory / 'fleet-runtime.json', {'role': 'worker', 'id': 'original-download-node', 'boot_id': 'fixture-boot'})
+    write_profile(directory / 'deployment.json', {
+        'role': 'all', 'instance_id': '', 'instance_name': '原下载实例', 'instance_url': '',
+        'mysql_host': 'fixture.example.test', 'mysql_port': 3306, 'mysql_database': 'fixture',
+        'mysql_user': 'fixture', 'mysql_password': 'fixture-password', 'web_hosts': 'localhost,127.0.0.1'})
+    calls = []
+
+    def factory(*args, **kwargs):
+        calls.append(kwargs)
+        return Flask('recovered-worker')
+
+    gateway = DeploymentGateway(config, directory, load_environment=False, app_factory=factory)
+    server = make_server('127.0.0.1', 0, gateway, threaded=True, request_handler=QuietHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        page.goto(f'http://127.0.0.1:{server.server_port}/setup', wait_until='networkidle')
+        page.locator('#access-code').fill(gateway.access_code)
+        page.locator('#unlock-form button').click()
+        expect(page.locator('#cluster-state-note')).to_contain_text('下载实例')
+        expect(page.locator('#cluster-state-note')).to_contain_text('original-download-node')
+        expect(page.locator('#deployment-role')).to_have_value('worker')
+        expect(page.locator('#deployment-role option[value="all"]')).not_to_have_attribute('disabled', '')
+        expect(page.locator('[name=instance_id]')).to_have_value('original-download-node')
+        page.locator('#deployment-role').select_option('manager')
+        page.locator('[name=instance_id]').fill('edited-node')
+        page.locator('#restore-instance').click()
+        expect(page.locator('#deployment-role')).to_have_value('worker')
+        expect(page.locator('[name=instance_id]')).to_have_value('original-download-node')
+        expect(page.locator('#instance-url-field')).to_be_visible()
+        assert not calls
+        page.screenshot(path=str(output / 'setup-role-recovery.png'), full_page=True)
+        page.set_viewport_size({'width': 390, 'height': 844})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(output / 'setup-role-recovery-mobile.png'), full_page=True)
+        page.locator('#save-deployment').click()
+        expect(page.locator('#setup-success')).to_be_visible(timeout=10000)
+        expect(page.locator('#deployment-error')).to_be_hidden()
+        assert calls[0]['role'] == 'worker'
+        assert calls[0]['instance_id'] == 'original-download-node'
+        page.set_viewport_size({'width': 1440, 'height': 1080})
+    finally:
+        if gateway.initialization:
+            gateway.initialization.join(timeout=5)
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def main():
     output = ROOT / '.cache/validation' / ('deployment-' + uuid.uuid4().hex[:10])
     output.mkdir(parents=True)
@@ -150,8 +201,25 @@ def main():
                     assert gateway.running_role == 'manager'
                     assert len(apps) == 1
                     page.screenshot(path=str(output / 'setup-restart.png'), full_page=True)
+                    page.locator('#deployment-role').select_option('all')
+                    expect(page.locator('#single-transition-field')).to_be_visible()
+                    expect(page.locator('#single-transition-confirm')).not_to_be_checked()
+                    page.locator('#single-transition-confirm').check()
+                    page.locator('#save-deployment').click()
+                    expect(page.locator('#success-message')).to_contain_text('单机转换配置已保存')
+                    expect(page.locator('#deployment-role')).to_have_value('all')
+                    expect(page.locator('#single-transition-field')).to_be_hidden()
+                    assert gateway.running_role == 'manager'
+                    page.screenshot(path=str(output / 'setup-single-pending.png'), full_page=True)
+                    restarted = DeploymentGateway(config, root / 'state', load_environment=False, app_factory=factory)
+                    restarted.start()
+                    restarted.initialization.join(timeout=10)
+                    assert restarted.running_role == 'all', restarted.startup_error
+                    assert restarted.active.extensions['task_store'].fleet is None
+                    assert restarted.active.extensions['task_store'].downloads_paused()
                     verify_slow_start(page, root, config, output)
                     verify_slow_start(page, root, config, output, failure=True)
+                    verify_role_recovery(page, root, config, output)
                     assert not errors, errors
                 finally:
                     browser.close()

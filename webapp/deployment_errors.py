@@ -5,6 +5,15 @@ import traceback
 from urllib.parse import quote, quote_plus
 
 from webapp.database import SchemaUpgradeInProgress
+from webapp.modes import ModeTransitionError
+
+
+class ClusterRoleConflict(ValueError):
+    def __init__(self, role, identity):
+        self.role, self.identity = role, identity
+        label = {'manager': '管理后台', 'worker': '下载实例'}[role]
+        super().__init__(f'此状态目录已属于集群实例，原角色为“{label}”，实例 ID 为 {identity}。'
+                         '请在部署设置中确认单机转换，或恢复原实例配置后保存。')
 
 
 def explain_startup_error(error, stage, profile):
@@ -14,7 +23,17 @@ def explain_startup_error(error, stage, profile):
     summary = '服务初始化失败。'
     remedy = '展开下方技术详情查看失败阶段和代码位置，将详情提供给维护人员；无需反复修改数据库密码或实例 ID。'
     detail = ''
-    if isinstance(error, SchemaUpgradeInProgress):
+    if isinstance(error, ClusterRoleConflict):
+        label = {'manager': '管理后台', 'worker': '下载实例'}[error.role]
+        summary = '当前状态目录属于集群实例，不能直接改为单机模式。'
+        remedy = (f'可点击“恢复原实例配置”恢复“{label}”和实例 ID {error.identity}；'
+                  '需要单机时，选择单机模式、勾选转换确认，再保存并重启。')
+        if error.role == 'worker':
+            remedy += '下载实例还需填写管理端可访问的实例地址。'
+    elif isinstance(error, ModeTransitionError):
+        summary = str(error)
+        remedy = '处理上述原因后，在部署设置中保存单机配置重试；已保存的转换请求会在下次重启时继续执行。'
+    elif isinstance(error, SchemaUpgradeInProgress):
         summary = '数据库仍在升级或等待表结构锁。'
         remedy = '先等待现有数据库升级完成，再点“保存并启动服务”；不要反复提交或同时启动多个实例，不需要修改实例 ID 和密码。'
     elif code in (2006, 2013, 1205) and any(word in stage for word in ('升级', '表结构', '索引')):
@@ -43,6 +62,11 @@ def explain_startup_error(error, stage, profile):
         summary = '本机 config.yaml 格式不正确。'
         remedy = '检查配置文件的缩进、冒号和引号；修正 YAML 格式后重新保存启动。'
         detail = message
+    elif isinstance(error, OSError) and '浏览器桌面' in stage:
+        summary = '浏览器桌面环境启动失败。'
+        remedy = ('检查容器内 /tmp/xvfb.log、/tmp/x11vnc.log 和 /tmp/novnc.log；'
+                  '确认镜像安装了 Chromium、Xvfb、x11vnc 和 websockify，再重试。')
+        detail = f'系统错误码：{error.errno}' if error.errno is not None else ''
     elif isinstance(error, PermissionError):
         summary = '本机文件或目录没有读写权限。'
         remedy = '确认启动账号可以读写配置目录、状态目录和素材目录，Docker 中需检查对应卷的权限。'

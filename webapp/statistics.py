@@ -162,7 +162,7 @@ class DownloadStatistics:
         if not size:
             return False
         # A delivered path is registered once across retries and sessions.
-        logical = (task_id + ('\0test' if test_mode else '\0delivery')) if self.store.fleet else (
+        logical = (task_id + ('\0test' if test_mode else '\0delivery')) if self.store.fleet or self.store.single else (
             (task_id + '\0' if test_mode else '') + str(path))
         identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
         ledger = test_files if test_mode else deliveries

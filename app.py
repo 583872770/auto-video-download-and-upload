@@ -55,6 +55,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         os.environ.get('VIDEO_DATABASE_URL') if cluster else None), startup_report=startup_report)
     if startup_report:
         startup_report('数据库已就绪，正在初始化素材库与实例配置…')
+    if (role or os.environ.get('VIDEO_SERVICE_ROLE', 'all')) == 'all' and store.single:
+        if startup_report:
+            startup_report('正在检查单机转换条件并恢复本机配置…')
+        from webapp.modes import prepare_single
+        prepare_single(store, config_path)
     secret_file = store.directory / 'session.key'
     try:
         with secret_file.open('xb') as output:

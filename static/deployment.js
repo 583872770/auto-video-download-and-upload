@@ -31,6 +31,10 @@ function renderRole() {
   form.elements.instance_url.required = role === 'worker';
   if (role === 'worker' && !form.elements.instance_url.value) form.elements.instance_url.value = location.origin;
   $('#role-description').textContent = {manager:'管理后台只做管理与导入，视频由下载实例保存。整个集群使用一个管理后台。',worker:'这台机器只执行下载。配置完成后会自动注册到共享 MySQL，管理端即可看到。',all:'适合只用一台机器，同时提供管理页面与视频下载。'}[role];
+  const converting = role === 'all' && Boolean(current?.cluster_state) && !current?.single_conversion;
+  $('#single-transition-field').hidden = !converting;
+  $('#single-transition-confirm').disabled = !converting;
+  $('#single-transition-confirm').required = converting;
 }
 async function load() {
   current = await api('/api/deployment');
@@ -40,9 +44,23 @@ async function load() {
   form.elements.web_hosts.value = [...hosts].join(',');
   $('#mysql-password').required = !current.password_saved;
   if (current.password_saved) { $('#mysql-password').placeholder = '已保存，留空保持原密码'; $('#password-note').textContent = '已保存密码不会回显。留空保持原密码，填写新密码则替换。'; }
+  renderClusterState();
+  if (current.cluster_state && form.elements.role.value === 'all' && !current.single_conversion) restoreInstance();
   renderStatus();
   $('#unlock-panel').hidden = true; form.hidden = false;
   renderRole();
+}
+function renderClusterState() {
+  const state = current.cluster_state;
+  $('#cluster-state-note').hidden = !state;
+  if (state) $('#cluster-state-description').textContent = `这份状态目录原角色：${state.role === 'manager' ? '管理后台' : '下载实例'}；实例 ID：${state.instance_id}。可以选择单机模式并勾选转换确认，保存后重启。`;
+}
+function restoreInstance() {
+  if (!current.cluster_state) return;
+  form.elements.role.value = current.cluster_state.role;
+  form.elements.instance_id.value = current.cluster_state.instance_id;
+  renderRole();
+  feedback('已恢复原角色和实例 ID，请检查配置后点击保存启动。');
 }
 function renderStatus() {
   renderDiagnostic(current.diagnostic);
@@ -69,6 +87,7 @@ async function pollStartup() {
   pollTimer = null;
   try {
     current = await api('/api/deployment');
+    renderClusterState();
     renderStatus();
     if (!current.starting && current.running) {
       $('#setup-success').hidden = false;
@@ -87,10 +106,12 @@ async function pollStartup() {
 function values() {
   const data = Object.fromEntries(new FormData(form));
   data.mysql_port = Number(data.mysql_port);
+  data.single_transition = !$('#single-transition-confirm').disabled && $('#single-transition-confirm').checked;
   return data;
 }
 $('#unlock-form').addEventListener('submit', event => { event.preventDefault(); run(async () => { await api('/api/deployment/unlock', {code:$('#access-code').value.trim()}); $('#access-code').value = ''; await load(); feedback('已打开部署设置。'); }); });
 $('#deployment-role').addEventListener('change', renderRole);
+$('#restore-instance').addEventListener('click', restoreInstance);
 $('#test-database').addEventListener('click', () => { if (form.reportValidity()) run(async () => { feedback('正在测试 MySQL 连接…'); feedback((await api('/api/deployment/test', values())).message); }); });
 form.addEventListener('submit', event => { event.preventDefault(); run(async () => {
   feedback('正在验证并保存配置…');

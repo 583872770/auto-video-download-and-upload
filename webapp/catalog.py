@@ -20,7 +20,8 @@ class MediaCatalog:
 
     def root_key(self, root):
         path = str(Path(root).resolve())
-        return f'@{self.store.fleet.id}|{path}' if self.store.fleet else path
+        identity = self.store.fleet.id if self.store.fleet else (self.store.single or {}).get('instance_id')
+        return f'@{identity}|{path}' if identity else path
 
     @staticmethod
     def physical_root(key):

@@ -10,8 +10,9 @@ def start_desktop():
     os.environ.update(DISPLAY=':99', YT5S_BROWSER='/usr/bin/chromium', YT5S_CONTAINER_BROWSER='1')
     children = []
     try:
-        children.append(subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1280x900x24', '-nolisten', 'tcp'],
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        with (Path('/tmp') / 'xvfb.log').open('ab') as log:
+            children.append(subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1280x900x24', '-nolisten', 'tcp'],
+                                             stdout=log, stderr=log))
         deadline = time.monotonic() + 10
         while True:
             try:
@@ -36,4 +37,10 @@ def start_desktop():
         for child in children:
             if child.poll() is None:
                 child.terminate()
+        for child in children:
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
         raise

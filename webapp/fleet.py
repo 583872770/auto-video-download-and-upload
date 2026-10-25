@@ -55,8 +55,12 @@ class Fleet:
 
     def initialize(self, config, base, clash_directory):
         with self.store.connect() as db:
-            self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             self.store.db.ensure(db, settings, {'key': 'fleet_budget', 'value': '32'})
+            db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).scalar_one()
+            mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
+            if mode and mode.startswith('standalone:'):
+                raise ValueError('此数据库已切为单机模式，不能再启动集群实例连接此任务队列。')
+            self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             initial = {'version': 1, 'config': {k: config[k] for k in POLICY_FIELDS if k in config}}
             if self.role == 'manager':
                 self.store.db.ensure(db, settings, {'key': 'fleet_policy', 'value': json.dumps(initial)})

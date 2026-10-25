@@ -24,6 +24,37 @@ installer_spec = importlib.util.spec_from_file_location('docker_install_mihomo',
 installer = importlib.util.module_from_spec(installer_spec)
 installer_spec.loader.exec_module(installer)
 
+desktop_spec = importlib.util.spec_from_file_location('docker_browser_desktop', ROOT / 'docker/browser_desktop.py')
+desktop = importlib.util.module_from_spec(desktop_spec)
+desktop_spec.loader.exec_module(desktop)
+
+
+class BrowserDesktopTests(unittest.TestCase):
+    def test_partial_startup_logs_xvfb_and_reaps_all_children_before_retry(self):
+        display, vnc, novnc = MagicMock(), MagicMock(), MagicMock()
+        display.poll.return_value = None
+        vnc.poll.return_value = 1
+        novnc.poll.return_value = None
+        display.wait.side_effect = [desktop.subprocess.TimeoutExpired('Xvfb', 3), 0]
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.dict(os.environ, {}, clear=True), \
+                patch.object(desktop, 'Path', return_value=Path(temporary)), \
+                patch.object(desktop.socket, 'AF_UNIX', 1, create=True), \
+                patch.object(desktop.socket, 'socket'), \
+                patch.object(desktop.time, 'sleep'), \
+                patch.object(desktop.subprocess, 'Popen', side_effect=[display, vnc, novnc]) as launch:
+            with self.assertRaisesRegex(OSError, 'Browser desktop startup failed'):
+                desktop.start_desktop()
+            self.assertTrue((Path(temporary) / 'xvfb.log').is_file())
+            self.assertIsNot(launch.call_args_list[0].kwargs['stderr'], desktop.subprocess.DEVNULL)
+        display.terminate.assert_called_once()
+        novnc.terminate.assert_called_once()
+        vnc.terminate.assert_not_called()
+        display.kill.assert_called_once()
+        self.assertEqual(display.wait.call_count, 2)
+        vnc.wait.assert_called_once_with(timeout=3)
+        novnc.wait.assert_called_once_with(timeout=3)
+
 
 class MihomoDownloadTests(unittest.TestCase):
     def test_disconnect_and_bad_checksum_fall_back_to_verified_source(self):
