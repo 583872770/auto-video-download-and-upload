@@ -30,7 +30,8 @@ services:
       - app_config:/data/config
       - app_state:/app/.cache/web
       - type: bind
-        source: ${VIDEO_DOWNLOAD_DIR:-./docker-data/videos}
+        # Docker 引擎所在 Linux 服务器的绝对路径，避免 Windows 展开相对路径。
+        source: ${VIDEO_DOWNLOAD_DIR:-/srv/youtube-videos}
         target: /data/videos
     healthcheck:
       test: ["CMD", "python", "/app/docker/healthcheck.py"]

@@ -22,9 +22,11 @@ cp .env.remote-mysql.example .env
 推荐在启动后的 `/setup` 页面填写远程 MySQL、服务角色和实例地址，数据库环境变量可以留空。
 已有 `.env` 的数据库设置仍兼容；页面保存后优先使用页面配置。若使用环境变量填密码，保留两侧单引号，避免 `$`、`#` 被 Compose 解释。
 `VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
-含空格的目录用引号包围。默认保存到项目的 `docker-data/videos`。
+含空格的目录用引号包围。默认保存到 Docker 引擎所在 Linux 服务器的 `/srv/youtube-videos`。
 
 这里的“宿主机”是 **Docker 引擎所在的机器**。如果 Windows 上的 PyCharm 连接远程 Linux Docker，`.env` 应填写服务器上的绝对目录，例如 `VIDEO_DOWNLOAD_DIR=/srv/youtube-videos`。不要填写 Windows 路径或保留 `./docker-data/videos`，后者可能被本地 Compose 展开成 `D:\...` 后传给 Linux，报 `invalid volume specification`。目录位于服务器，不会自动映射到 Windows；网页中的保存目录仍填 `/data/videos`。修改后重新运行 Compose 的 `up -d` 即可，无需重新构建镜像。
+
+已有 `.env` 或 PyCharm 运行配置中的 `VIDEO_DOWNLOAD_DIR` 会覆盖默认值。如果仍报 `D:\...` 路径错误，请检查运行配置中的环境变量、指定的 `--env-file`，将其中的视频目录也改为服务器绝对路径。更换挂载目录不会自动搬迁已有视频；已有素材时应填写其实际所在的服务器目录。
 
 ```powershell
 docker compose -f compose.remote-mysql.yaml config --quiet
