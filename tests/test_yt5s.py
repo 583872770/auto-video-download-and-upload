@@ -191,7 +191,9 @@ class Yt5sTests(unittest.TestCase):
             created = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
         self.assertEqual(created.status_code, 202, created.json)
         task = self.store.get(created.json['items'][0]['id'], private=True)
-        self.assertEqual(task['payload']['config']['download_method'], 'yt5s')
+        self.assertNotIn('config', task['payload'])
+        effective = self.store.effective_download_payload(task['id'], task['payload'])
+        self.assertEqual(effective['config']['download_method'], 'yt5s')
         self.assertEqual(self.client.get('/api/status').json['download_method'], 'yt5s')
         bad = self.client.post('/api/downloads', json={'urls': 'https://www.youtube.com/playlist?list=PLtest'}, headers=self.headers)
         self.assertEqual(bad.status_code, 400)
@@ -200,16 +202,17 @@ class Yt5sTests(unittest.TestCase):
         result = self.client.post('/api/downloads', json={'urls': '2Gu7q-KUXCk'}, headers=self.headers)
         self.assertEqual(result.status_code, 409)  # Method one still requires login.
 
-    def test_resume_uses_queued_provider_after_default_is_changed(self):
+    def test_resume_uses_current_provider_after_default_is_changed(self):
         self.method('yt5s')
         self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
         self.store.set_downloads_paused(True)
         self.method('yt_dlp')
-        with patch.object(self.app.extensions['youtube_auth'], 'require', side_effect=AssertionError('queued method two')):
+        with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={}) as auth:
             result = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(result.status_code, 200, result.json)
+        auth.assert_called_once()
         self.assertFalse(self.store.downloads_paused())
-        # The inverse must not let an old method-one task skip login checking.
+        # The inverse uses current method two without requiring old method-one Cookie.
         self.store.create('download', {'config': {'download_method': 'yt_dlp', 'proxy_mode': 'direct'},
                                        'base': str(self.root), 'urls': ['https://youtu.be/2Gu7q-KUXCk']})
         first = self.store.page(actions=('download',), status='queued', order='asc')['items'][0]
@@ -217,8 +220,8 @@ class Yt5sTests(unittest.TestCase):
         self.method('yt5s')
         self.store.set_downloads_paused(True)
         result = self.client.post('/api/downloads/resume', headers=self.headers)
-        self.assertEqual(result.status_code, 409)
-        self.assertTrue(self.store.downloads_paused())
+        self.assertEqual(result.status_code, 200)
+        self.assertFalse(self.store.downloads_paused())
 
     def test_invalid_provider_and_quality_do_not_persist(self):
         before = self.config.read_bytes()
@@ -235,18 +238,18 @@ class Yt5sTests(unittest.TestCase):
             self.assertIn('compose.remote-mysql.yaml', result.json['error'])
             imported = self.client.post('/api/downloads/import', headers=self.headers,
                                         data={'file': (BytesIO(b'npNnbj46_ik\n'), 'videos.txt')})
-            self.assertEqual(imported.status_code, 409, imported.json)
-            self.assertEqual(self.store.counts()['total'], 0)
-            self.assertFalse((self.store.directory / 'imports').exists())
+            self.assertEqual(imported.status_code, 202, imported.json)
+            self.assertEqual(self.store.counts()['total'], 1)
+            self.assertTrue((self.store.directory / 'imports').exists())
         created = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
         self.assertEqual(created.status_code, 202, created.json)
         self.store.set_downloads_paused(True)
-        self.method('yt_dlp')  # Resume must check the queued task's method.
+        self.method('yt5s')  # Resume checks the current page's browser environment.
         with patch('webapp.yt5s.display_available', return_value=False):
             result = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(result.status_code, 409, result.json)
         self.assertIn('显示环境', result.json['error'])
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 2, 'running': 0})
 
     def test_worker_missing_browser_pauses_and_requeues_without_failure(self):
         from web_worker import drain
@@ -287,6 +290,7 @@ class Yt5sTests(unittest.TestCase):
 
         for status, maximum, expected in ((502, 3, 'queued'), (503, 1, 'failed'), (403, 3, 'failed')):
             with self.subTest(status=status, maximum=maximum):
+                self.client.put('/api/config', json={'download_attempts': maximum}, headers=self.headers)
                 task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos',
                                                                  'download_attempts': maximum},
                                                      'base': str(self.root), 'urls': [VIDEO]})

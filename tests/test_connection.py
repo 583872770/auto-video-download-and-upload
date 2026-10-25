@@ -16,6 +16,7 @@ from web_worker import execute
 
 class ConnectionContract:
     def old_task(self):
+        self.client.put('/api/config', json={'download_method': 'yt5s'}, headers=self.headers)
         payload = {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s',
                               'yt5s_quality': '360', 'youtube_cookie': 'Cookies/original.txt'},
                    'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']}
@@ -33,7 +34,7 @@ class ConnectionContract:
     def test_requires_csrf_pause_drained_queue_and_idle_login(self):
         page = self.client.get('/').text
         self.assertIn('id="clash-apply-connection"', page)
-        self.assertIn('将当前连接应用到排队任务</button>', page)
+        self.assertIn('检查当前连接</button>', page)
         self.assertEqual(self.client.post('/api/downloads/connection').status_code, 403)
         task, old = self.old_task()
         self.assertTrue(self.client.get('/api/clash').json['connection_apply_locked'])
@@ -82,20 +83,21 @@ class ConnectionContract:
             self.assertEqual(list(db.execute(select(snapshots)).all()), saved_snapshots)
         reopened = TaskStore(self.store.directory)
         effective = reopened.effective_download_payload(task['id'], old)
-        self.assertEqual(effective['config'], {**old['config'], 'proxy_mode': 'clash', 'proxy': ''})
-        self.assertEqual(effective['clash'], clash)
+        self.assertEqual(effective['config']['proxy_mode'], 'clash')
+        self.assertEqual(effective['config']['download_method'], 'yt5s')
+        self.assertEqual(effective['clash'], {'directory': clash['directory']})
         self.assertEqual(effective['urls'], old['urls'])
         self.assertEqual(old, before)
         self.assertEqual(reopened.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
 
-    def test_cutoff_new_tasks_keep_snapshots_and_reapply_replaces_connection(self):
+    def test_both_old_and_new_pending_tasks_use_current_connection(self):
         task, old = self.old_task()
         self.store.set_downloads_paused(True)
         clash = self.use_clash()
         with patch.object(self.app.extensions['clash'], 'snapshot', return_value=clash):
             self.assertEqual(self.apply().status_code, 200)
         newer = self.store.create('download', {**old, 'urls': ['https://www.youtube.com/watch?v=2Gu7q-KUXCk']})
-        self.assertEqual(self.store.effective_download_payload(newer['id'], old), old)
+        self.assertEqual(self.store.effective_download_payload(newer['id'], old)['config']['proxy_mode'], 'clash')
         manual = 'http://user:fixture-secret@127.0.0.1:9999'
         self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'manual', 'proxy': manual},
                                         headers=self.headers).status_code, 200)
@@ -118,7 +120,7 @@ class ConnectionContract:
         with patch.object(self.app.extensions['clash'], 'snapshot', side_effect=ClashError('fixture failure')):
             self.assertEqual(self.apply().status_code, 502)
         self.assertEqual(self.store.download_connection(), previous)
-        self.assertEqual(self.store.effective_download_payload(task['id'], old)['config']['proxy_mode'], 'direct')
+        self.assertEqual(self.store.effective_download_payload(task['id'], old)['config']['proxy_mode'], 'clash')
         self.assertTrue(self.store.downloads_paused())
 
     def test_worker_and_resume_preflight_receive_effective_connection(self):
@@ -131,21 +133,20 @@ class ConnectionContract:
             execute('download', old, store=self.store, task_id=task['id'], worker_slot=1)
         used = run.call_args.args[1]
         self.assertEqual(used['config']['proxy_mode'], 'clash')
-        self.assertEqual(used['clash'], clash)
+        self.assertEqual(used['clash'], {'directory': clash['directory']})
         self.assertEqual(used['config']['download_method'], 'yt5s')
-        # Preflight method one must receive the applied proxy, even when the
-        # page's current configuration has subsequently changed back to direct.
+        # A prior connection check must never override the current page config.
         first = {**old, 'config': {**old['config'], 'download_method': 'yt_dlp'}}
         with self.store.connect() as db:
             packed = self.store._pack(db, first)
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(payload=packed))
-        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct'},
+        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_method': 'yt_dlp'},
                                         headers=self.headers).status_code, 200)
         with patch('webapp.youtube_auth.YouTubeAuth.require', return_value={}) as auth:
             response = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(auth.call_args.kwargs['proxy'], clash['proxy'])
-        self.assertEqual(auth.call_args.kwargs['node'], clash['node'])
+        self.assertNotIn('proxy', auth.call_args.kwargs)
+        self.assertEqual(auth.call_args.args[0]['proxy_mode'], 'direct')
         self.assertEqual(old['config']['proxy_mode'], 'direct')
 
     def test_pending_import_creates_new_downloads_with_applied_connection(self):
@@ -163,9 +164,11 @@ class ConnectionContract:
         self.assertEqual(len(jobs), 2)
         for job in jobs:
             payload = self.store.get(job['id'], private=True)['payload']
-            self.assertEqual(payload['config']['proxy_mode'], 'clash')
-            self.assertEqual(payload['clash'], clash)
-        self.assertEqual(task['payload']['config']['proxy_mode'], 'direct')
+            self.assertNotIn('config', payload)
+            self.assertNotIn('clash', payload)
+            effective = self.store.effective_download_payload(job['id'], payload)
+            self.assertEqual(effective['config']['proxy_mode'], 'clash')
+        self.assertNotIn('config', task['payload'])
 
     def test_method_two_browser_receives_clash_proxy_for_each_worker(self):
         task, old = self.old_task()
@@ -177,6 +180,7 @@ class ConnectionContract:
         for slot in (0, 1):
             resolved = {**clash, 'proxy': f'http://127.0.0.1:{17890 + slot}'}
             with self.subTest(slot=slot), patch('webapp.clash.ClashManager.for_worker', return_value=manager), \
+                    patch('webapp.clash.ClashManager.snapshot', return_value=clash), \
                     patch('webapp.clash.ClashManager.select'), \
                     patch('webapp.clash.ClashManager.download_snapshot', return_value=resolved), \
                     patch('webapp.downloader.require_download_tools'), \

@@ -32,13 +32,6 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .rotation-node-delay{flex-shrink:0;color:#829274;font-size:10px;white-space:nowrap}
 .rotation-node-delay.delay-ok{color:#62884d}
 .rotation-node-delay.delay-failed{color:#b06c55}
-.live-logs-panel{margin-top:17px}
-.live-log-item{border-top:1px solid var(--line);padding:12px 0}
-.live-log-item:first-child{border-top:0}
-.live-log-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px;font-size:11px}
-.live-log-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.live-log-heading span{color:#829274;flex-shrink:0}
-.live-log-item pre{max-height:180px;margin:0;overflow:auto;padding:10px 12px;border-radius:5px;background:#202520;color:#dce7d4;font:11px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .rotation-node b{display:grid;place-items:center;flex-shrink:0;width:20px;height:20px;border-radius:50%;background:#e5edda;color:#6d8554;font-size:10px}
 .rotation-status{font-size:12px;line-height:1.9;color:#6d8554;overflow-wrap:anywhere}
 .rotation-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px}

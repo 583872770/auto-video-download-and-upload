@@ -33,7 +33,7 @@
     $('#statistics-summary-export').href = `/api/statistics/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     $('#statistics-methods-export').href = `/api/statistics/methods/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     renderMethods('#statistics-methods', data.methods);
-    $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。每次实际尝试分别计入 yt5s 或 yt-dlp；方式三先计一次 yt5s 失败，再计一次 yt-dlp 尝试。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
+    $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。按 yt5s、yt-dlp、downmp3 分别统计；方式三先计一次 yt5s 失败，再计一次 yt-dlp 尝试。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
     $('#statistics-since').textContent = `计费大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。历史任务未补算大小；金额按精确字节计算，按会话四舍五入到分。`;
     if (!stats.pricingDirty) fill($('#statistics-pricing-form'), data.pricing);
     const active = data.active;

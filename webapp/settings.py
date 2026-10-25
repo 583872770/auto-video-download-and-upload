@@ -15,13 +15,15 @@ DEFAULTS = {
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
     'download_method': 'yt_dlp', 'yt5s_quality': '360', 'yt5s_browser_count': 2,
     'fragment_concurrency': 4,
+    'downmp3_quality': '720', 'downmp3_timeout': 300,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
-                   'download_method', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency'}
+                   'download_method', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
+                   'downmp3_quality', 'downmp3_timeout'}
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
-                  'fragment_concurrency': (1, 16)}
+                  'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800)}
 
 
 def urls_from(value):
@@ -47,10 +49,12 @@ def urls_from(value):
 def validate_settings(config, *, download_only=False):
     from Utils.download_storage import storage_mode
     storage_mode(config)
-    if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s', 'yt5s_fallback'):
+    if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s', 'yt5s_fallback', 'downmp3'):
         raise ValueError('请选择有效的下载方式。')
     if config.get('yt5s_quality', '360') not in ('360', '720'):
         raise ValueError('方式二画质请选择 360p 或 720p。')
+    if config.get('downmp3_quality', '720') not in ('360', '480', '720', '1080'):
+        raise ValueError('方式四画质请选择 360p、480p、720p 或 1080p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():
@@ -79,10 +83,12 @@ def validate_settings(config, *, download_only=False):
 
 
 def validate_method_urls(config, urls):
-    if config.get('download_method', 'yt_dlp') in ('yt5s', 'yt5s_fallback'):
+    method = config.get('download_method', 'yt_dlp')
+    if method in ('yt5s', 'yt5s_fallback', 'downmp3'):
         from webapp.store import source_identity
         if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            raise ValueError('方式二、方式三仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
+            label = '方式四' if method == 'downmp3' else '方式二、方式三'
+            raise ValueError(label + '仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

@@ -1,9 +1,9 @@
-'use strict';
+﻿'use strict';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
-const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', liveLogs: {}, polling: false, detailBusy: false };
+const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
 let clashBusy = false;
 let downloadSubmitting = false;
 let downloadMethodBusy = false;
@@ -127,17 +127,21 @@ function progressLabel(task) {
   if (task.status === 'interrupted') return '已中断';
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
+  if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
+  if (stage === 'waiting_api_conversion') return 'downmp3 · 远端转换中（尚未下载）';
   return { checking_environment: '方式三 · 检查下载环境', switching_provider: '方式三 · 正在切换到 yt-dlp', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
   const active = task.status === 'running';
   const stopped = task.status === 'queued' && data.stage === 'paused';
-  const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(data.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
-  const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? '大小未知' : `${percentage.toFixed(1)}%`;
+  const converting = active && data.stage === 'waiting_api_conversion';
+  const measured = converting ? data.provider_percent : data.percent;
+  const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(measured) ? Math.max(0, Math.min(100, measured)) : null;
+  const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待远端转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
   const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—';
-  const provider = data.download_method === 'yt5s' ? 'yt5s' : data.download_method === 'yt_dlp' ? 'yt-dlp' : '';
+  const provider = { yt5s: 'yt5s', yt_dlp: 'yt-dlp', downmp3: 'downmp3' }[data.download_method] || '';
   return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>下载器 <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${data.fallback_reason ? `<p class="micro-copy">yt5s 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
@@ -147,35 +151,6 @@ function renderBatches() {
   $('#batch-summary').textContent = `${queue.paused ? '下载已停止' : '正在下载 ' + tasks.length + ' 个'} · 排队 ${queue.queued || 0} 个 · 仅显示当前正在下载的视频，完成后可在任务记录中查看`;
   $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(task.error)}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
   renderPagination();
-}
-function renderLiveLogs() {
-  const container = $('#live-task-logs');
-  if (!container) return;
-  const items = state.batchTasks.filter(task => state.liveLogs[task.id]);
-  container.innerHTML = items.length ? items.map(task => {
-    const entry = state.liveLogs[task.id];
-    const title = task.progress?.title || task.video_id || task.id.slice(0, 8);
-    return `<article class="live-log-item"><div class="live-log-heading"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(progressLabel(task))}</span></div><pre>${escapeHTML(entry.text || '等待日志…')}</pre></article>`;
-  }).join('') : '<p class="micro-copy">当前没有运行中的任务日志。任务开始后，这里会实时显示下载进程正在执行的步骤。</p>';
-}
-async function updateLiveLogs(tasks) {
-  const activeIds = new Set(tasks.map(task => task.id));
-  for (const id of Object.keys(state.liveLogs)) {
-    if (!activeIds.has(id)) delete state.liveLogs[id];
-  }
-  await Promise.all(tasks.map(async task => {
-    const previous = state.liveLogs[task.id] || { text: '', offset: 0 };
-    try {
-      const logs = await api(`/api/tasks/${task.id}/logs?offset=${previous.offset}`);
-      if (logs.text) previous.text = (previous.text + logs.text).slice(-24000);
-      previous.offset = logs.offset;
-      state.liveLogs[task.id] = previous;
-    } catch (error) {
-      // The task may finish between the active-list and log requests.
-      if (error.message !== '任务不存在') throw error;
-    }
-  }));
-  renderLiveLogs();
 }
 function renderPagination() {
   for (const [name, page] of Object.entries(pages)) {
@@ -225,22 +200,25 @@ function renderTasks() {
 function renderStatus() {
   if (!state.status) return;
   const { tools } = state.status;
-  const ready = tools.ffmpeg && tools.ffprobe && (tools.node || tools.deno);
+  const methodFour = state.config?.download_method === 'downmp3';
+  const ready = methodFour ? tools.ffprobe : tools.ffmpeg && tools.ffprobe && (tools.node || tools.deno);
   $('.environment-card').classList.toggle('warning', !ready);
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
-  $('#environment-note').textContent = !tools.ffmpeg || !tools.ffprobe ? '缺少 FFmpeg / ffprobe' : !tools.node && !tools.deno ? '缺少 JS 运行时' : `Python ${state.status.python}`;
+  $('#environment-note').textContent = methodFour ? (tools.ffprobe ? 'API 下载 · 无需浏览器和 JS 运行时' : '缺少 ffprobe') : !tools.ffmpeg || !tools.ffprobe ? '缺少 FFmpeg / ffprobe' : !tools.node && !tools.deno ? '缺少 JS 运行时' : `Python ${state.status.python}`;
   renderYouTubeLogin();
   const methodTwo = state.config?.download_method === 'yt5s';
+  const noCookie = methodTwo || methodFour;
+  const externalLabel = methodFour ? '方式四' : '方式二';
   renderDownloadMethod();
   $$('[data-youtube-status]').forEach(element => {
     const auth = state.status.youtube?.auth;
-    element.textContent = methodTwo ? '方式二不使用 YouTube Cookie' : auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
+    element.textContent = noCookie ? `${externalLabel}不使用 YouTube Cookie` : auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
   const auth = state.status.youtube?.auth;
-  $('#youtube-auth-status').textContent = methodTwo ? '方式二通过 yt5s 网站解析，可能需要在服务器浏览器中完成网站验证。' : auth?.message || '下载前将自动检测 YouTube 登录状态。';
-  $('#youtube-auth-status').classList.toggle('error', !methodTwo && !!auth && !['valid', 'unchecked'].includes(auth.state));
-  $('#youtube-auth-check').disabled = methodTwo || authChecking || !!state.status.youtube?.login?.active;
-  $('#youtube-auth-check').textContent = methodTwo ? '方式二无需登录检测' : authChecking ? '正在检测…' : '检测登录';
+  $('#youtube-auth-status').textContent = methodFour ? '方式四直接调用 downmp3 转换接口，无需 YouTube Cookie 或浏览器。' : methodTwo ? '方式二通过 yt5s 网站解析，可能需要在服务器浏览器中完成网站验证。' : auth?.message || '下载前将自动检测 YouTube 登录状态。';
+  $('#youtube-auth-status').classList.toggle('error', !noCookie && !!auth && !['valid', 'unchecked'].includes(auth.state));
+  $('#youtube-auth-check').disabled = noCookie || authChecking || !!state.status.youtube?.login?.active;
+  $('#youtube-auth-check').textContent = noCookie ? `${externalLabel}无需登录检测` : authChecking ? '正在检测…' : '检测登录';
 }
 let authChecking = false;
 $('#youtube-auth-check').addEventListener('click', async () => {
@@ -304,13 +282,13 @@ function renderClash() {
   $('#proxy-mode-select').value = data.mode;
   $('#proxy-mode-select').disabled = clashBusy || (data.connection_edit_locked ?? data.locked);
   $('#clash-selected').textContent = data.selected || '尚未选择节点';
-  $('#clash-connection-info').textContent = (data.mode === 'clash' ? '新任务使用 Clash 所选节点。' : data.mode === 'direct' ? '新任务直接连接网络。' : '新任务使用“下载设置”中的手动代理地址。') + '已有排队任务请点击下方按钮应用当前连接。';
+  $('#clash-connection-info').textContent = (data.mode === 'clash' ? '待处理任务开始时使用 Clash 当前节点或轮换配置。' : data.mode === 'direct' ? '待处理任务开始时直接连接网络。' : '待处理任务开始时使用“下载设置”中的当前手动代理地址。') + '连接设置保存后自动生效，无需重新导入清单。';
   $('#clash-apply-connection').disabled = clashBusy || data.connection_apply_locked;
   const applied = data.download_connection;
   const appliedMode = applied?.mode === 'clash' ? 'Clash' : applied?.mode === 'manual' ? '手动代理' : '直连';
   $('#clash-apply-note').textContent = clashBusy ? '正在处理代理操作，请稍候…'
-    : (applied ? `上次应用：${formatDate(applied.updated_at, true)} · ${appliedMode}。` : '')
-      + (data.connection_apply_reason || '应用后队列保持暂停；点击“继续下载”后生效，无需重新导入清单。');
+    : (applied ? `上次检查：${formatDate(applied.updated_at, true)} · ${appliedMode}。` : '')
+      + (data.connection_apply_reason || '待处理任务自动使用当前连接；检查不会启动下载。');
   $('#download-proxy-note').textContent = data.mode === 'clash' ? `Clash · ${data.selected || '尚未配置'}${data.rotation?.enabled ? ` · 每 ${data.rotation.every} 个视频轮换` : ''}` : data.mode === 'direct' ? '下载连接：直连' : `下载连接：${state.config?.proxy ? '手动代理' : '直连'}`;
   $('#clash-lock-note').hidden = !data.locked;
   $('#clash-error').hidden = !data.error;
@@ -399,10 +377,13 @@ function renderDownloadMethod() {
   const missing = tools && (!tools.yt5s_browser || !tools.yt5s_display);
   const browsers = `独立浏览器并发上限 ${state.config?.yt5s_browser_count ?? 2}，整体下载进程 ${state.config?.worker_count ?? 1}。`;
   $('#download-method-note').textContent = method === 'yt5s_fallback'
-    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。${browsers}开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建。' : ''}切换仅影响新任务。`
+    ? `方式三：优先 yt5s（${state.config?.yt5s_quality || '360'}p），解析或下载失败后自动改用 yt-dlp（方式一画质配置）。${browsers}开始前检查浏览器、FFmpeg、JS 运行时和 YouTube Cookie。${missing ? '当前缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建。' : ''}待处理任务开始时使用当前配置。`
     : method === 'yt5s'
-    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${browsers}${missing ? '当前环境缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}切换仅影响新任务。`
-    : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。切换仅影响新任务。';
+    ? `方式二：yt5s · ${state.config?.yt5s_quality || '360'}p · 无需 YouTube Cookie。${browsers}${missing ? '当前环境缺少浏览器或显示环境，请使用 compose.remote-mysql.yaml 重新构建部署。' : '网站可能要求验证，建议先小批量测试。'}待处理任务开始时使用当前配置。`
+    : method === 'downmp3'
+    ? `方式四：downmp3 · ${state.config?.downmp3_quality || '720'}p · 无需浏览器和 YouTube Cookie。先等待远端转换，再下载到服务器；转换最长等待 ${state.config?.downmp3_timeout ?? 300} 秒。使用当前代理节点和下载进程数，完成后用 ffprobe 校验。待处理任务开始时使用当前配置。`
+    : '方式一：yt-dlp，下载前检测 YouTube Cookie 登录。待处理任务开始时使用当前配置。';
+  $('#download-method-note').textContent += ' 包括已导入、排队和暂停后继续的任务；运行中的任务保持本次启动配置。进度中的“下载器”显示实际使用的服务。';
 }
 $('#download-method').addEventListener('change', async event => {
   const method = event.target.value;
@@ -413,7 +394,8 @@ $('#download-method').addEventListener('change', async event => {
     await api('/api/config', { method: 'PUT', body: { download_method: method } });
     state.config.download_method = method;
     $('#settings-download-method').value = method;
-    toast(`已切换为${method === 'yt5s_fallback' ? '方式三：yt5s → yt-dlp' : method === 'yt5s' ? '方式二：yt5s' : '方式一：yt-dlp'}，对新任务生效。`);
+    const labels = { yt_dlp: '方式一：yt-dlp', yt5s: '方式二：yt5s', yt5s_fallback: '方式三：yt5s → yt-dlp', downmp3: '方式四：downmp3' };
+    toast(`已切换为${labels[method]}，待处理任务开始执行时生效；运行中的任务继续完成。`);
     await refresh();
   } catch (error) { toast(error.message, true); }
   finally { downloadMethodBusy = false; renderDownloadMethod(); renderStatus(); }
@@ -456,10 +438,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
     if (data.status) state.status = data.status;
     if (clash) state.clash = clash;
-    if (active) {
-      state.batchTasks = active.items;
-      await updateLiveLogs(active.items);
-    }
+    if (active) state.batchTasks = active.items;
     if ((media || overview) && mediaBefore !== JSON.stringify([state.media, state.overview.media, state.overview.recent_media])) renderMedia();
     if (tasks || overview || active || data.status) renderTasks();
     if (clash) renderClash();
@@ -597,7 +576,7 @@ $('#download-form').addEventListener('submit', event => {
     const button = $('button[type="submit"]', event.target);
     const label = button.innerHTML;
     downloadSubmitting = true;
-    button.textContent = state.config?.download_method === 'yt5s_fallback' ? '正在检查环境与登录…' : state.config?.download_method === 'yt5s' ? '正在提交方式二任务…' : '正在检查登录并提交…';
+    button.textContent = state.config?.download_method === 'downmp3' ? '正在提交方式四任务…' : state.config?.download_method === 'yt5s_fallback' ? '正在检查环境与登录…' : state.config?.download_method === 'yt5s' ? '正在提交方式二任务…' : '正在检查登录并提交…';
     let batch;
     try { batch = await api('/api/downloads', { method: 'POST', body: { urls: $('#download-urls').value, scope: 'download' } }); }
     finally { downloadSubmitting = false; button.innerHTML = label; }

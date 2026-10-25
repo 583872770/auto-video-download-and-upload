@@ -26,6 +26,7 @@ class FallbackContract:
     method = test_yt5s.Yt5sTests.method
 
     def cookie(self):
+        self.method('yt5s_fallback')
         response = self.client.post('/api/youtube/cookie', headers=self.headers,
             data={'cookie': (BytesIO(COOKIE), 'cookies.txt')})
         self.assertEqual(response.status_code, 201, response.json)
@@ -47,20 +48,20 @@ class FallbackContract:
             check.assert_called_once()  # one real preflight per batch, even after cached failure
         self.assertEqual(self.store.counts()['total'], 2)
         self.store.set_downloads_paused(True)
-        self.method('yt5s')  # Existing jobs retain their automatic provider.
+        self.method('yt5s')  # Pending jobs now use current method two.
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture expired')):
             response = self.client.post('/api/downloads/resume', headers=self.headers)
-        self.assertEqual(response.status_code, 409, response.json)
-        self.assertTrue(self.store.downloads_paused())
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertFalse(self.store.downloads_paused())
         self.assertEqual(self.store.download_queue()['queued'], 2)
         self.method('yt5s_fallback')
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture expired')):
             response = self.client.post('/api/downloads/import', headers=self.headers,
                 data={'file': (BytesIO(b'npNnbj46_ik\n'), 'videos.txt')})
-        self.assertEqual(response.status_code, 409)
-        self.assertFalse((self.store.directory / 'imports').exists())
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue((self.store.directory / 'imports').exists())
 
-    def test_bulk_import_checks_once_and_retains_provider(self):
+    def test_bulk_import_defers_preflight_and_provider_selection(self):
         from webapp.bulk import run_import
 
         self.method('yt5s_fallback')
@@ -71,10 +72,10 @@ class FallbackContract:
             self.assertEqual(response.status_code, 202, response.json)
             task = self.store.get(response.json['id'], private=True)
             result = run_import(self.store, task['payload'], lambda value: None)
-        check.assert_called_once()
+        check.assert_not_called()
         self.assertEqual(result['added'], 2)
         for task in self.store.page(actions=('download',))['items']:
-            self.assertEqual(self.store.get(task['id'], private=True)['payload']['config']['download_method'], 'yt5s_fallback')
+            self.assertNotIn('config', self.store.get(task['id'], private=True)['payload'])
 
     def test_missing_tools_or_browser_blocks_batch_import_and_resume(self):
         self.method('yt5s_fallback')
@@ -85,9 +86,9 @@ class FallbackContract:
                 self.assertEqual(response.status_code, 409, response.json)
                 response = self.client.post('/api/downloads/import', headers=self.headers,
                     data={'file': (BytesIO(b'npNnbj46_ik'), 'videos.txt')})
-                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.status_code, 202)
                 check.assert_not_called()
-        self.assertEqual(self.store.counts()['total'], 0)
+        self.assertEqual(self.store.counts()['total'], 2)
         self.store.create('download', self.payload())
         self.store.set_downloads_paused(True)
         with patch('app.require_fallback_environment', side_effect=DownloadEnvironmentRequired('missing JS')):
@@ -297,7 +298,8 @@ class FallbackContract:
 
         identity = None
         for mode in ('local', 'local', 'test'):
-            self.store.set_runtime({'storage_mode': mode})
+            response = self.client.put('/api/config', json={'storage_mode': mode}, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.json)
             task = self.store.create('download', self.payload(storage_mode=mode))
             job = self.store.claim(self.store.owner, actions=('download',))
             values = []

@@ -108,7 +108,7 @@ class LoginContract:
             self.assertEqual(self.post(endpoint, json=data).status_code, 409)
         self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct'}, headers=self.headers).status_code, 409)
         self.assertEqual(self.post('/api/youtube/cookie', data={'cookie': (io.BytesIO(COOKIE), 'cookie.txt')}).status_code, 409)
-        self.assertEqual(self.post('/api/downloads/import', data={'file': (io.BytesIO(b'npNnbj46_ik'), 'ids.txt')}).status_code, 409)
+        self.assertEqual(self.post('/api/downloads/import', data={'file': (io.BytesIO(b'npNnbj46_ik'), 'ids.txt')}).status_code, 202)
         self.assertEqual(self.post('/api/youtube/login/cancel').status_code, 200)
         self.manager.thread.join(timeout=8)
         self.assertEqual(self.manager.status()['state'], 'cancelled')

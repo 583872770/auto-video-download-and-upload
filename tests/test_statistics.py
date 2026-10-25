@@ -22,6 +22,11 @@ from web_worker import execute
 
 class StatisticsContract:
     def job(self, video='npNnbj46_ik', **config):
+        # Set the page's current settings for the next execution, rather than
+        # relying on a queued task's config to select its provider.
+        from webapp.settings import DEFAULTS
+        self.store.set_download_settings({**DEFAULTS, 'path': 'videos', 'proxy_mode': 'direct', **config},
+                                         self.root, self.store.directory / 'clash')
         return self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', **config},
             'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=' + video]})
 
@@ -310,7 +315,8 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
             if index == 3:
                 with self.store.connect() as db:
                     db.execute(archive.delete())  # A pre-existing file must not be billed without its archive entry.
-            self.store.set_runtime({'storage_mode': mode})
+            response = self.client.put('/api/config', json={'storage_mode': mode}, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.json)
             self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', 'storage_mode': mode},
                 'base': str(self.root), 'urls': [f'http://127.0.0.1:{server.server_port}/{name}.mp4']})
             job = self.claim()

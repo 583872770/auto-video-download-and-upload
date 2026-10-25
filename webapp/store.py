@@ -362,17 +362,38 @@ class TaskStore:
         value = json.loads(saved) if saved else None
         return {'mode': value['config']['proxy_mode'], 'updated_at': value['updated_at']} if value else None
 
-    def effective_download_payload(self, task_id, payload):
+    def set_download_settings(self, config, base, clash_directory):
+        """One current configuration shared by all pending downloads."""
+        value = {'config': config, 'base': str(base), 'clash_directory': str(clash_directory)}
+        with self.connect() as db:
+            db.execute(self.db.upsert(settings, dict(key='download_settings',
+                value=json.dumps(value, ensure_ascii=False)), ['key']))
+
+    def effective_download_payload(self, task_id, payload, db=None):
+        # A claimed task keeps its start configuration until this attempt ends.
+        if payload.get('_execution_settings'):
+            return payload
         if not task_id:
             return payload
-        with self.connect() as db:
-            saved = db.execute(select(settings.c.value).where(
-                settings.c.key == 'download_connection_override')).scalar_one_or_none()
-            if not saved:
-                return payload
-            value = json.loads(saved)
-            eligible = db.execute(select(tasks.c.id).where(tasks.c.id == task_id,
-                tasks.c.seq <= value['cutoff_seq'], tasks.c.action.in_(('download', 'import')))).first()
+        if db is None:
+            with self.connect() as connection:
+                return self.effective_download_payload(task_id, payload, connection)
+        current = db.execute(select(settings.c.value).where(settings.c.key == 'download_settings')).scalar_one_or_none()
+        if current:
+            value = json.loads(current)
+            result = {**payload, 'config': value['config'], 'base': value['base']}
+            result.pop('clash', None)
+            if value['config'].get('proxy_mode') == 'clash':
+                result['clash'] = {'directory': value['clash_directory']}
+            return result
+        # Compatibility for standalone stores without a Web configuration.
+        saved = db.execute(select(settings.c.value).where(
+            settings.c.key == 'download_connection_override')).scalar_one_or_none()
+        if not saved:
+            return payload
+        value = json.loads(saved)
+        eligible = db.execute(select(tasks.c.id).where(tasks.c.id == task_id,
+            tasks.c.seq <= value['cutoff_seq'], tasks.c.action.in_(('download', 'import')))).first()
         if not eligible:
             return payload
         result = {**payload, 'config': {**payload.get('config', {}), **value['config']}}
@@ -454,8 +475,23 @@ class TaskStore:
                           started_at=now(), finished_at=None, lease_until=time.time() + lease_seconds,
                           attempts=row['attempts'] + 1, error=None)
             if row['action'] == 'download':
+                payload = self.decode(row, private=True, db=db)['payload']
+                previous_config = (payload.get('config', {})
+                                   if payload.get('_execution_settings') or row['attempts'] else None)
+                previous_method = previous_config.get('download_method', 'yt_dlp') if previous_config is not None else None
+                payload.pop('_execution_settings', None)
+                payload.pop('download_session_id', None)
+                payload = self.effective_download_payload(row['id'], payload, db)
+                payload['_execution_settings'] = True
+                transfer_keys = ('download_method', 'download_format', 'yt5s_quality', 'downmp3_quality')
+                payload['_restart_transfer'] = bool(payload.get('_restart_transfer') or (
+                    previous_config is not None and any(
+                        previous_config.get(key) != payload.get('config', {}).get(key) for key in transfer_keys)))
+                values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
+                row = {**row, 'payload': self._pack(db, payload), '_previous_download_method': previous_method}
                 identity = self.statistics.begin(db, row)
                 values['payload'] = json.dumps({**json.loads(row['payload']), 'download_session_id': identity}, ensure_ascii=False)
+                row.pop('_previous_download_method', None)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
             return self.decode({**row, **values}, private=True, db=db)
 

@@ -16,3 +16,5 @@ download_method: yt_dlp
 yt5s_quality: '360'
 yt5s_browser_count: 2
 fragment_concurrency: 4
+downmp3_quality: '720'
+downmp3_timeout: 300

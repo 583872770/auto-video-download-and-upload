@@ -34,7 +34,8 @@ Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
 Index('ix_tasks_dispatch', tasks.c.action, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
-Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq)
+Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq,
+      mysql_length={'finished_at': 40})
 Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, tasks.c.seq,
       mysql_length={'finished_at': 40})
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)

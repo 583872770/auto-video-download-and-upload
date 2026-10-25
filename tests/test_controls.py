@@ -35,7 +35,7 @@ class ControlContract:
             update.assert_not_called()
             self.store.stop_running_downloads(lambda owner: True)
             state = self.client.get('/api/clash').json
-            self.assertTrue(state['locked'])  # Manual node changes remain locked.
+            self.assertFalse(state['locked'])  # Pending work no longer binds its node.
             self.assertFalse(state['subscription_locked'])
             self.assertEqual(state['subscription_lock_reason'], '')
             response = self.client.post('/api/clash/subscription', json=url, headers=self.headers)
@@ -68,12 +68,16 @@ class ControlContract:
         self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)
         self.store.stop_running_downloads(lambda owner: True)
         state = self.client.get('/api/clash').json
-        self.assertTrue(state['locked'])
+        self.assertFalse(state['locked'])
         self.assertFalse(state['rotation_locked'])
         response = self.client.post('/api/clash/rotation', json=config, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
         self.assertEqual(self.store.get(task['id'])['attempts'], 0)
+        with patch.object(manager, 'select') as select_node:
+            response = self.client.post('/api/clash/select', json={'name': 'B'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        select_node.assert_called_once_with('B')
         with patch.object(self.app.extensions['youtube_login'], 'status', return_value={'active': True}):
             self.assertTrue(self.client.get('/api/clash').json['rotation_locked'])
             self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)

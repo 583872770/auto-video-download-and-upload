@@ -1,4 +1,4 @@
-﻿"""Incremental accounting by the method saved in each task's config snapshot."""
+﻿"""Incremental accounting by the provider selected when execution starts."""
 import json
 
 from sqlalchemy import func, select
@@ -9,6 +9,7 @@ from webapp.statistics import COUNTERS, OUTCOMES, with_test_sizes
 METHODS = {
     'yt_dlp': 'yt-dlp',
     'yt5s': 'yt5s',
+    'downmp3': 'downmp3',
     'unknown': '历史未分类',
 }
 FIELDS = (*COUNTERS, 'test_file_count', 'test_file_bytes', 'fallback_tasks')
@@ -36,13 +37,25 @@ class MethodStatistics:
     def ensure(self, db, row, identity, status='running'):
         current = db.execute(select(method_tasks).where(method_tasks.c.session_id == identity,
             method_tasks.c.task_id == row['id'])).mappings().first()
-        if current:
+        if current and row.get('_previous_download_method') is None:
             return current
         config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
         selected = config.get('download_method', 'yt_dlp')
         # Track the provider currently handling the task. A fallback task starts
         # as yt5s and is moved to yt-dlp when the second provider begins.
-        method = 'yt_dlp' if selected == 'yt_dlp' else 'yt5s' if selected in ('yt5s', 'yt5s_fallback') else 'unknown'
+        method = 'yt5s' if selected == 'yt5s_fallback' else selected if selected in METHODS else 'unknown'
+        if current:
+            previous = row.get('_previous_download_method')
+            if previous is not None and previous != selected and current['method'] != method:
+                # Retrying with a new provider preserves the previous provider's
+                # bytes and unfinished attempt in this session.
+                if current['status'] == 'running':
+                    self.add(db, identity, current['method'], {'running': -1})
+                db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
+                    method_tasks.c.task_id == row['id']).values(method=method, status='pending', fallback_used=0))
+                self.add(db, identity, method, {'attempted': 1})
+                return {**current, 'method': method, 'status': 'pending', 'fallback_used': 0}
+            return current
         current = dict(session_id=identity, task_id=row['id'], method=method, status=status, fallback_used=0)
         db.execute(method_tasks.insert().values(**current))
         changes = {'attempted': 1}

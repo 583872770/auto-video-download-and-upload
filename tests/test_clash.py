@@ -54,7 +54,7 @@ class ClashTests(unittest.TestCase):
             task = self.post('/api/tasks', {'action': 'download', 'urls': 'https://example.test/video.mp4'})
         self.assertEqual(task.status_code, 202)
         saved = self.app.extensions['task_store'].get(task.json['id'], private=True)
-        self.assertEqual(saved['payload']['clash']['node'], 'Test Node')
+        self.assertNotIn('clash', saved['payload'])
         self.assertNotIn('PRIVATE_SUBSCRIPTION', json.dumps(saved))
         self.assertNotIn('PRIVATE_CONTROLLER', json.dumps(saved))
 
@@ -173,7 +173,8 @@ class ClashTests(unittest.TestCase):
         subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')], cwd=ROOT,
                        capture_output=True, check=True, timeout=30)
         self.assertEqual(store.get(task['id'])['status'], 'failed')
-        self.assertIn('节点已改变', store.get(task['id'])['error'])
+        self.assertNotIn('节点已改变', store.get(task['id'])['error'])
+        self.assertEqual(store.get(task['id'])['progress']['proxy_node'], '节点 / A')
         self.manager.select('节点 B')
         before = (self.manager.directory / 'nodes.yaml').read_bytes()
         fixture['content'] = yaml.safe_dump({'proxies': [
@@ -198,7 +199,7 @@ class ClashTests(unittest.TestCase):
         self.assertTrue(self.manager.running())
         # Update a paused queue after its selected node is removed from the subscription.
         task = self.post('/api/tasks', {'action': 'download', 'urls': 'http://192.0.2.1/updated/download.mp4'}).json
-        previous_subscription = store.get(task['id'], private=True)['payload']['clash']['subscription_id']
+        previous_subscription = self.manager.config['subscription_id']
         store.set_downloads_paused(True)
         fixture['content'] = yaml.safe_dump({'proxies': [
             {'name': 'New Node', 'type': 'http', 'server': '127.0.0.1', 'port': server.server_port}]}).encode()

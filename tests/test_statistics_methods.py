@@ -26,12 +26,15 @@ class MethodStatisticsContract:
         self.assertEqual(response.status_code, 200, response.json)
         return {row['method']: row for row in response.json['methods']}
 
-    def test_selected_snapshot_groups_three_modes_and_test_sizes_without_double_counting(self):
+    def test_start_configuration_groups_three_modes_and_test_sizes_without_double_counting(self):
         for index, method in enumerate(('yt_dlp', 'yt5s', 'yt5s_fallback')):
             self.job(f'{index:011d}', download_method=method, storage_mode='test' if index == 2 else 'local')
-        # Changing the current setting does not change queued snapshots.
-        self.store.set_runtime({'download_method': 'yt_dlp'})
-        jobs = [self.claim() for _ in range(3)]
+        from webapp.settings import DEFAULTS
+        jobs = []
+        for method in ('yt_dlp', 'yt5s', 'yt5s_fallback'):
+            self.store.set_download_settings({**DEFAULTS, 'download_method': method},
+                                             self.root, self.store.directory / 'clash')
+            jobs.append(self.claim())
         identity = jobs[0]['payload']['download_session_id']
         for index, job in enumerate(jobs):
             self.assertEqual(job['payload']['download_session_id'], identity)
@@ -47,7 +50,7 @@ class MethodStatisticsContract:
             self.store.finish(job['id'], result={'test_mode': index == 2,
                 'download_method': 'yt_dlp' if index == 2 else 'yt5s', 'fallback_used': index == 2}, worker_id=self.store.owner)
         rows = self.methods(identity)
-        self.assertEqual(set(rows), {'yt_dlp', 'yt5s'})
+        self.assertEqual(set(rows), {'yt_dlp', 'yt5s', 'downmp3'})
         self.assertEqual((rows['yt_dlp']['attempted'], rows['yt_dlp']['succeeded'], rows['yt_dlp']['file_bytes']), (2, 1, 101))
         self.assertEqual((rows['yt_dlp']['file_bytes'], rows['yt_dlp']['test_file_bytes'], rows['yt_dlp']['test_succeeded'], rows['yt_dlp']['fallback_tasks']), (101, 303, 1, 1))
         self.assertEqual(rows['yt_dlp']['downloaded_file_bytes_exact'], '404')
@@ -144,7 +147,7 @@ class MethodStatisticsContract:
         self.assertEqual(exported.status_code, 200)
         self.assertTrue(exported.data.startswith(b'\xef\xbb\xbf'))
         csv_rows = list(csv.DictReader(StringIO(exported.data.decode('utf-8-sig'))))
-        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '102'])
+        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '102', '0'])
         size = 9007199254740993
         with self.store.connect() as db:
             db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(file_bytes=size))

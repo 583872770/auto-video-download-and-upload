@@ -7,7 +7,7 @@ import time
 from sqlalchemy import select
 
 from webapp.database import imports
-from webapp.settings import urls_from, validate_method_urls
+from webapp.settings import urls_from
 
 CHUNK = 2000
 REPORT_INTERVAL = 1.0
@@ -35,7 +35,8 @@ def run_import(store, payload, report):
     if not path.resolve().is_relative_to((store.directory / 'imports').resolve()):
         raise ValueError('导入文件路径无效。')
     total = path.stat().st_size
-    batch_payload = {key: value for key, value in payload.items() if key not in ('import_id', 'urls')}
+    batch_payload = {key: value for key, value in payload.items()
+                     if key not in ('import_id', 'urls', 'config', 'clash', '_execution_settings')}
     batch_payload.update(batch_id=identity, batch_name=job['name'])
     shared_snapshot = store.prepare_snapshot(batch_payload)
     column_index = job['column_index']
@@ -105,7 +106,6 @@ def run_import(store, payload, report):
             try:
                 value = row[column_index].strip()
                 url = urls_from([value])[0]
-                validate_method_urls(batch_payload.get('config', {}), [url])
                 chunk.append({**batch_payload, 'urls': [url]})
             except (ValueError, IndexError):
                 invalid += 1

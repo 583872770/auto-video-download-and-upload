@@ -83,7 +83,8 @@ class ScaleTests(unittest.TestCase):
         self.assertGreater(reports[0]['speed'], 0)
         self.assertEqual(result['added'], total)
         restored = self.store.get(self.store.page(actions=['download'], limit=1)['items'][0]['id'], private=True)
-        self.assertEqual(restored['payload']['config'], task['payload']['config'])
+        self.assertNotIn('config', restored['payload'])
+        self.assertNotIn('config', task['payload'])
         self.assertEqual(restored['payload']['batch_id'], task['payload']['import_id'])
 
     def test_failed_import_chunk_rolls_back_tasks_reservations_counters_and_checkpoint(self):
@@ -173,6 +174,7 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual(self.store.counts()['succeeded'], 30)
 
     def test_network_retries_back_off_but_permanent_failures_finish(self):
+        self.client.put('/api/config', json={'download_attempts': 2}, headers=self.headers)
         task = self.store.create('download', {'config': {'download_attempts': 2}, 'base': str(self.root)})
         self.store.claim('worker')
         self.store.finish(task['id'], error='HTTP Error 503', retryable=True, worker_id='worker')

@@ -5,7 +5,7 @@ from webapp.clash import ClashError
 from webapp.settings import save_settings
 
 
-def register_clash(app, manager, store, media_lock, settings_lock, settings, config_path):
+def register_clash(app, manager, store, media_lock, settings_lock, settings, config_path, sync_runtime):
     @app.errorhandler(ClashError)
     def clash_error(error):
         return jsonify(error=str(error)), 502
@@ -17,13 +17,13 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         login = app.extensions.get('youtube_login')
         if login and login.status()['active']:
             abort(409, description='请先完成或取消 YouTube 登录，再修改代理或节点。')
-        locked = rotation_locked() if rotation or subscription else store.pending()
+        locked = rotation_locked()
         if locked:
             if subscription:
                 abort(409, description='请先停止全部下载并等待当前任务结束，再更新订阅。')
             if rotation:
                 abort(409, description='请先停止全部下载并等待当前任务结束，再修改轮换配置。')
-            abort(409, description='请等待下载队列结束后再修改轮换配置、更新订阅、手动切换节点或停止代理。')
+            abort(409, description='请先停止全部下载并等待当前任务结束，再切换节点或停止代理。')
 
     def status():
         config, _ = settings()
@@ -47,7 +47,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         connection_reason = ('请先完成或取消 YouTube 登录，再应用当前连接。' if login_active else
                              '请先停止全部下载并等待当前任务结束，再应用当前连接。' if paused_changes_locked or not queue['paused'] else
                              '当前没有排队的下载或导入任务。' if not queue['queued'] else '')
-        return {**data, 'locked': store.pending() or login_active,
+        return {**data, 'locked': paused_changes_locked,
                 'connection_edit_locked': paused_changes_locked,
                 'connection_apply_locked': bool(connection_reason),
                 'connection_apply_reason': connection_reason,
@@ -79,7 +79,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
                 connection = store.apply_download_connection(config, snapshot)
             except ValueError as error:
                 abort(409, description=str(error))
-        return jsonify(message='当前连接已应用到已有排队任务，队列保持暂停；点击“继续下载”后生效。',
+        return jsonify(message='当前连接检查通过，待处理任务开始执行时会自动读取页面当前连接。',
                        download_connection=connection)
 
     @app.post('/api/clash/subscription')
@@ -92,9 +92,10 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
             idle(subscription=True)
             count = manager.import_subscription(data.get('url', ''))
             with settings_lock:
-                config, _ = settings()
+                config, base = settings()
                 config['proxy_mode'] = 'clash'
                 save_settings(config_path, config)
+                sync_runtime(config, base)
         return jsonify(message=f'订阅已更新，共 {count} 个节点，下载已启用 Clash 代理。', **status())
 
     @app.post('/api/clash/start')

@@ -86,11 +86,13 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.post_task('download', urls='file:///private').status_code, 400)
         self.assertEqual(len(self.store.list()), 0)
 
-    def test_config_snapshot_does_not_change_with_settings(self):
+    def test_pending_task_binds_settings_when_execution_starts(self):
         task = self.post_task('download', urls='https://example.com/video.mp4').json
         self.client.put('/api/config', json={'path': 'another-folder'}, headers=self.headers)
         stored = TaskStore(self.root / 'state').get(task['id'], private=True)
-        self.assertEqual(stored['payload']['config']['path'], 'videos')
+        self.assertNotIn('config', stored['payload'])
+        started = self.store.claim(self.store.owner)
+        self.assertEqual(started['payload']['config']['path'], 'another-folder')
         self.assertEqual(stored['payload']['base'], str(self.root))
         self.assertNotIn('payload', self.client.get(f'/api/tasks/{task["id"]}').json)
         self.assertEqual(self.client.get('/api/tasks/no-such-task/logs').status_code, 404)
@@ -212,6 +214,7 @@ class WebTests(unittest.TestCase):
             task = self.post_task('download', urls='https://www.youtube.com/watch?v=example').json
         from webapp.downloader import build_ydl_options
         payload = self.store.get(task['id'], private=True)['payload']
+        payload = self.store.effective_download_payload(task['id'], payload)
         options = build_ydl_options(payload['config'], Path(payload['base']))
         self.assertEqual(options['cookiefile'], str(target))
         for response in (response, self.client.get('/api/status'), self.client.get('/api/config')):

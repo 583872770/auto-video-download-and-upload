@@ -29,7 +29,7 @@ from webapp.clash import ClashError, ClashManager
 from webapp.clash_routes import register_clash
 from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
-from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
+from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment, require_downmp3_environment
 
 ACTIONS = ('download', 'check')
 
@@ -71,6 +71,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     def sync_runtime(config, base):
         cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
         store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
+        store.set_download_settings({**DEFAULTS, **config}, base, clash.directory)
 
     sync_runtime(*settings())
 
@@ -156,7 +157,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             sync_runtime(config, config_path.parent)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 youtube_auth.invalidate()
-        return jsonify(message='配置已保存，浏览器并发上限对等待中的任务生效；保存方式对尚未开始的下载生效，下载方式等设置对新任务生效。')
+        return jsonify(message='配置已保存，待处理任务开始执行时使用当前配置；运行中的任务保持本次启动配置。')
 
     @app.get('/api/status')
     def status():
@@ -199,6 +200,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
 
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
         method = config.get('download_method', 'yt_dlp')
+        if method == 'downmp3':
+            require_downmp3_environment()
+            return None
         if method == 'yt5s':
             require_browser_environment(config, base)
             return None
@@ -430,15 +434,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 upcoming = store.page(limit=1, actions=('import',), status='queued', order='asc')['items']
             if upcoming:
                 config, base = settings()
-                queued = store.effective_download_payload(upcoming[0]['id'],
-                    store.get(upcoming[0]['id'], private=True)['payload'])
-                config = {**config, **queued.get('config', {})}
-                runtime = store.runtime()
-                if 'youtube_cookie' in runtime:
-                    config['youtube_cookie'] = runtime['youtube_cookie']
-                base = Path(queued.get('base', base))
+                queued = store.get(upcoming[0]['id'], private=True)['payload']
+                if upcoming[0]['action'] == 'download':
+                    validate_method_urls(config, queued['urls'])
                 verify_youtube(config, base, queued.get('urls') or ['https://www.youtube.com/'],
-                               queued.get('clash'), force=True)
+                               force=True)
             youtube_auth.clear_block()
             store.set_downloads_paused(False)
         return jsonify(message='已继续下载，排队任务将自动执行。', download_queue=store.download_queue())
@@ -449,18 +449,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         source = request.files.get('file')
         if not source or not source.filename or Path(source.filename).suffix.lower() not in ('.txt', '.csv'):
             raise ValueError('请选择 UTF-8 编码的 TXT 或 CSV 文件。')
-        config, base = settings()
-        config = {**DEFAULTS, **config}
-        validate_settings(config, download_only=True)
-        if config.get('download_method') == 'yt5s':
-            require_browser_environment(config, base)
-        payload = {'config': config, 'base': str(base), 'scope': 'download'}
-        with media_lock:
-            require_login_idle()
-            if config.get('proxy_mode') == 'clash':
-                payload['clash'] = clash.snapshot()
-            if config.get('download_method') == 'yt5s_fallback':
-                verify_youtube(config, base, ['https://www.youtube.com/'], payload.get('clash'))
+        _, base = settings()
+        payload = {'base': str(base), 'scope': 'download'}
         identity = uuid.uuid4().hex
         directory = store.directory / 'imports'
         directory.mkdir(parents=True, exist_ok=True)
@@ -470,7 +460,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             if not path.stat().st_size or path.stat().st_size > 1024 ** 3:
                 raise ValueError('导入文件不能为空，最大 1 GB。')
             with media_lock:
-                require_login_idle()
                 from webapp.bulk import create_import
                 task = create_import(store, identity, path, Path(source.filename).name, payload)
         except Exception:
@@ -502,7 +491,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         if action not in ACTIONS:
             raise ValueError('不支持的任务类型。')
         config, base = settings()
-        # Fill defaults in the snapshot only; opening the web app never rewrites YAML.
+        # Check the current environment; pending downloads bind settings at claim.
         config = {**DEFAULTS, **config}
         validate_settings(config, download_only=action == 'download' or (action == 'check' and data.get('scope') == 'download'))
         payload = {'config': config, 'base': str(base)}
@@ -518,6 +507,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 payload['clash'] = clash.snapshot()
             if action == 'download':
                 verify_youtube(config, base, payload['urls'], payload.get('clash'))
+                payload.pop('config', None)
+                payload.pop('clash', None)
             if batch:
                 batch_id = uuid.uuid4().hex
                 payloads = [{**payload, 'urls': [url], 'batch_id': batch_id} for url in payload['urls']]
@@ -525,7 +516,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             task = store.create(action, payload)
         return jsonify(task), 202
 
-    register_clash(app, clash, store, media_lock, settings_lock, settings, config_path)
+    register_clash(app, clash, store, media_lock, settings_lock, settings, config_path, sync_runtime)
     from webapp.statistics_routes import register_statistics
     register_statistics(app, store)
 

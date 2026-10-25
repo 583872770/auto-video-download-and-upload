@@ -40,14 +40,14 @@ def worker_lock(path):
 
 
 def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
-    if store and action in ('download', 'import'):
+    if store and action == 'download':
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
         return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
     payload = {**payload, '_task_id': task_id}
     from Utils.download_storage import DownloadWorkspace
     config = dict(payload['config'])
-    if store:
+    if store and not payload.get('_execution_settings'):
         runtime = store.runtime()
         if 'storage_mode' in runtime:
             config['storage_mode'] = runtime['storage_mode']
@@ -78,7 +78,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
     configure_runtime()
     from webapp.media import VIDEO_SUFFIXES
     from webapp.environment import check_download_environment
-    config, base = payload['config'], Path(payload['base'])
+    config, base = payload.get('config', {}), Path(payload['base'])
     if action == 'import':
         from webapp.bulk import run_import
         return run_import(store, payload, report_progress or (lambda value: None))
@@ -87,7 +87,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from Utils.config import video_directory
         return MediaCatalog(store).reindex(video_directory(config, base), report_progress)
     if action == 'check':
-        if check_download_environment():
+        if check_download_environment(config):
             raise RuntimeError('环境检查未通过，请根据日志补齐依赖。')
         return {'message': '环境检查通过'}
     if action == 'download':
@@ -101,12 +101,18 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         method = config.get('download_method', 'yt_dlp')
         automatic = method == 'yt5s_fallback'
         method_two = method == 'yt5s'
-        progress.state.update(download_method='yt5s' if method_two or automatic else 'yt_dlp',
+        method_four = method == 'downmp3'
+        from webapp.settings import validate_method_urls
+        validate_method_urls(config, payload['urls'])
+        progress.state.update(download_method='yt5s' if method_two or automatic else 'downmp3' if method_four else 'yt_dlp',
                               selected_download_method=method)
         progress.save(force=True)
+        method_label = {'yt_dlp': '方式一 · yt-dlp', 'yt5s': '方式二 · yt5s',
+                        'yt5s_fallback': '方式三 · yt5s → yt-dlp', 'downmp3': '方式四 · downmp3'}[method]
+        print(f'本任务下载方式：{method_label}（开始执行时读取页面配置）。', flush=True)
         failure = DownloadFailure()
         test_mode = config.get('storage_mode') == 'test'
-        if store:
+        if store and not payload.get('_execution_settings'):
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
@@ -127,7 +133,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             # Paused queues may contain millions of old snapshots. Resolve the
             # saved rotation here so changes also apply to existing queued work.
             manager.reload()
-            proxy = dict(proxy)
+            proxy = dict(proxy) if proxy.get('node') else manager.snapshot()
             previous_rotation = proxy.pop('rotation', None)
             current_rotation = manager.rotation()
             if current_rotation['enabled']:
@@ -164,7 +170,10 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             require_fallback_environment(config, base)
             if not store:
                 raise DownloadEnvironmentRequired('方式三请通过 Web 下载队列执行，以验证 YouTube 登录。')
-        if store and youtube and not method_two:
+        if method_four:
+            from webapp.environment import require_downmp3_environment
+            require_downmp3_environment()
+        if store and youtube and not (method_two or method_four):
             progress.state.update(stage='checking_login')
             progress.save(force=True)
             auth = YouTubeAuth(store)
@@ -186,6 +195,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             path = Path(io_path(filename)).resolve()
             if path.suffix.lower() not in VIDEO_SUFFIXES:
                 return
+            if method_four:
+                from webapp.yt5s import verify_media
+                verify_media(path)
             if catalog:
                 catalog.index_file(path, video_directory(config, base))
             if path in existing_files or str(path) in output_files:
@@ -252,7 +264,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             failure = DownloadFailure()
             provider_config = {**config, 'download_method': provider}
             options = build_ydl_options(provider_config, base)
-            if automatic and provider == 'yt_dlp':
+            if payload.get('_restart_transfer') or (automatic and provider == 'yt_dlp'):
                 # The providers can return different encodings for the same filename.
                 # Never append native bytes to an incomplete yt5s transfer.
                 options['continuedl'] = False
@@ -268,7 +280,18 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             try:
                 with download_cookie_session(options) as session_options:
                     with ReportingDownloader(session_options) as downloader:
-                        if provider == 'yt5s':
+                        if provider == 'downmp3':
+                            from webapp.downmp3 import resolve
+
+                            def api_stage(value, percent):
+                                progress.state.update(stage=value, provider_percent=percent, speed=None, eta=None)
+                                progress.save(force=True)
+
+                            for url in addresses:
+                                info = resolve(url, provider_config, base, api_stage)
+                                downloader.process_ie_result(info, download=True)
+                            failed = downloader._download_retcode
+                        elif provider == 'yt5s':
                             from webapp.yt5s import resolve
 
                             def stage(value):
@@ -302,7 +325,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if automatic:
                 progress.state.update(fallback_used=False, fallback_reason='')
             try:
-                skipped_any |= attempt('yt5s' if automatic or method_two else 'yt_dlp', addresses)
+                skipped_any |= attempt('yt5s' if automatic or method_two else 'downmp3' if method_four else 'yt_dlp', addresses)
             except (RuntimeError, yt_dlp.utils.DownloadError) as error:
                 if not automatic or isinstance(error, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
                                                        YouTubeAuthRequired, DownloadLeaseLost)):
@@ -344,6 +367,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 
 def drain(directory, slot=0, role='all'):
+    from webapp.downmp3 import Downmp3Error
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost
@@ -357,7 +381,7 @@ def drain(directory, slot=0, role='all'):
         actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index') if role == 'regular' else None
         while task := store.claim(store.owner, actions=actions, exclude=exclude):
-            config, base = task['payload']['config'], Path(task['payload']['base'])
+            config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
             if slot > 0 and slot >= int(runtime.get('worker_count', 1)):
                 store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
@@ -365,8 +389,7 @@ def drain(directory, slot=0, role='all'):
             if task['action'] == 'download':
                 from Utils.config import video_directory
                 from Utils.download_storage import DownloadWorkspace
-                current_config = {**config, 'storage_mode': runtime.get('storage_mode', config.get('storage_mode', 'local'))}
-                workspace = DownloadWorkspace(current_config, store.directory, task['id'])
+                workspace = DownloadWorkspace(config, store.directory, task['id'])
                 target = video_directory(workspace.config, base)
                 target.mkdir(parents=True, exist_ok=True)
                 reserve_gb = int(runtime.get('min_free_gb', config.get('min_free_gb', 2)))
@@ -424,7 +447,7 @@ def drain(directory, slot=0, role='all'):
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = str(error) or type(error).__name__
-                    transient = (error.retryable if isinstance(error, WebsiteHTTPError) else
+                    transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error)) else
                                  isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)
