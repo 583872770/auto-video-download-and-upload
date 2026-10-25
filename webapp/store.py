@@ -483,7 +483,7 @@ class TaskStore:
                 payload.pop('download_session_id', None)
                 payload = self.effective_download_payload(row['id'], payload, db)
                 payload['_execution_settings'] = True
-                transfer_keys = ('download_method', 'download_format', 'yt5s_quality', 'downmp3_quality')
+                transfer_keys = ('download_method', 'download_methods', 'download_format', 'yt5s_quality', 'downmp3_quality')
                 payload['_restart_transfer'] = bool(payload.get('_restart_transfer') or (
                     previous_config is not None and any(
                         previous_config.get(key) != payload.get('config', {}).get(key) for key in transfer_keys)))

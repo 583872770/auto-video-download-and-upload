@@ -9,7 +9,7 @@ class DownloadEnvironmentRequired(RuntimeError):
 
 def require_downmp3_environment():
     if not shutil.which('ffprobe'):
-        raise DownloadEnvironmentRequired('方式四需要 ffprobe 校验视频和音频，请安装 FFmpeg 或重新构建 Docker 镜像。')
+        raise DownloadEnvironmentRequired('downmp3 需要 ffprobe 校验视频和音频，请安装 FFmpeg 或重新构建 Docker 镜像。')
 
 
 def require_fallback_environment(config, base):
@@ -30,13 +30,14 @@ def require_fallback_environment(config, base):
     if not ready:
         missing.append('JavaScript 运行时（Node.js / Deno）')
     if missing:
-        raise DownloadEnvironmentRequired('方式三环境检查未通过，缺少：' + '、'.join(missing)
+        raise DownloadEnvironmentRequired('下载器环境检查未通过，缺少：' + '、'.join(missing)
                                           + '。请安装依赖或重新构建 Docker 镜像后继续下载。')
 
 
 def check_download_environment(config=None):
     missing = []
-    api_only = (config or {}).get('download_method') == 'downmp3'
+    from webapp.settings import download_methods
+    api_only = download_methods(config or {}) == ['downmp3']
     modules = ('yaml', 'PIL', 'yt_dlp') if api_only else ('yaml', 'PIL', 'yt_dlp', 'yt_dlp_ejs')
     for module in modules:
         found = importlib.util.find_spec(module) is not None

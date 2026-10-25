@@ -3,7 +3,8 @@ import json
 
 from sqlalchemy import func, select
 
-from webapp.database import download_sessions as sessions, method_tasks, method_totals, tasks
+from webapp.database import download_sessions as sessions, method_tasks, method_totals, provider_tasks, tasks
+from webapp.settings import download_methods
 from webapp.statistics import COUNTERS, OUTCOMES, with_test_sizes
 
 METHODS = {
@@ -40,28 +41,48 @@ class MethodStatistics:
         if current and row.get('_previous_download_method') is None:
             return current
         config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
-        selected = config.get('download_method', 'yt_dlp')
-        # Track the provider currently handling the task. A fallback task starts
-        # as yt5s and is moved to yt-dlp when the second provider begins.
-        method = 'yt5s' if selected == 'yt5s_fallback' else selected if selected in METHODS else 'unknown'
+        method = download_methods(config)[0]
         if current:
-            previous = row.get('_previous_download_method')
-            if previous is not None and previous != selected and current['method'] != method:
+            if row.get('_previous_download_method') is not None and current['method'] != method:
+                self.remember(db, current)
                 # Retrying with a new provider preserves the previous provider's
                 # bytes and unfinished attempt in this session.
                 if current['status'] == 'running':
                     self.add(db, identity, current['method'], {'running': -1})
-                db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
-                    method_tasks.c.task_id == row['id']).values(method=method, status='pending', fallback_used=0))
-                self.add(db, identity, method, {'attempted': 1})
-                return {**current, 'method': method, 'status': 'pending', 'fallback_used': 0}
+                    self.remember(db, {**current, 'status': 'pending'})
+                return self.activate(db, row, identity, method, 'pending')
             return current
         current = dict(session_id=identity, task_id=row['id'], method=method, status=status, fallback_used=0)
         db.execute(method_tasks.insert().values(**current))
+        self.remember(db, current)
         changes = {'attempted': 1}
         if status in OUTCOMES:
             changes[status] = 1
         self.add(db, identity, method, changes)
+        return current
+
+    def remember(self, db, current):
+        self.db.ensure(db, provider_tasks, dict(current))
+        db.execute(provider_tasks.update().where(provider_tasks.c.session_id == current['session_id'],
+            provider_tasks.c.task_id == current['task_id'], provider_tasks.c.method == current['method']).values(
+                status=current['status'], fallback_used=current['fallback_used']))
+
+    def activate(self, db, row, identity, method, status, *, fallback=False):
+        previous = db.execute(select(provider_tasks).where(provider_tasks.c.session_id == identity,
+            provider_tasks.c.task_id == row['id'], provider_tasks.c.method == method)).mappings().first()
+        changes = {'attempted': 1} if previous is None else {}
+        if previous and previous['status'] in OUTCOMES:
+            changes[previous['status']] = -1
+        if status in OUTCOMES:
+            changes[status] = changes.get(status, 0) + 1
+        if fallback and not (previous and previous['fallback_used']):
+            changes['fallback_tasks'] = 1
+        self.add(db, identity, method, changes)
+        current = dict(session_id=identity, task_id=row['id'], method=method, status=status,
+                       fallback_used=int(fallback or bool(previous and previous['fallback_used'])))
+        self.remember(db, current)
+        db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
+            method_tasks.c.task_id == row['id']).values(method=method, status=status, fallback_used=current['fallback_used']))
         return current
 
     def change(self, db, row, identity, status, *, fallback_used=False):
@@ -80,13 +101,14 @@ class MethodStatistics:
         db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
             method_tasks.c.task_id == row['id']).values(status=status,
                 fallback_used=1 if fallback or current['fallback_used'] else 0))
+        self.remember(db, {**current, 'status': status, 'fallback_used': int(fallback or current['fallback_used'])})
 
     def record_file(self, db, row, identity, size, test_mode):
         current = self.ensure(db, row, identity)
         self.add(db, identity, current['method'],
                  {'test_file_count': 1, 'test_file_bytes': size} if test_mode else {'file_count': 1, 'file_bytes': size})
 
-    def fallback(self, task_id):
+    def fallback(self, task_id, provider='yt_dlp'):
         """Count a task once, including switches followed by failure or a pause."""
         with self.store.connect() as db:
             if self.db.sqlite:
@@ -99,15 +121,9 @@ class MethodStatistics:
             if identity:
                 self.store.statistics._active(db)
                 current = self.ensure(db, row, identity)
-                if current['method'] in ('yt5s', 'yt5s_fallback') and not current['fallback_used']:
-                    # Record the failed yt5s attempt, then start a separate
-                    # yt-dlp attempt. Both providers therefore get real rates.
-                    changes = {'running': -1, 'failed': 1}
-                    self.add(db, identity, 'yt5s', changes)
-                    self.db.ensure(db, method_totals, {'session_id': identity, 'method': 'yt_dlp'})
-                    self.add(db, identity, 'yt_dlp', {'attempted': 1, 'running': 1, 'fallback_tasks': 1})
-                    db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
-                        method_tasks.c.task_id == row['id']).values(method='yt_dlp', status='running', fallback_used=1))
+                if current['method'] != provider:
+                    self.change(db, row, identity, 'failed')
+                    self.activate(db, row, identity, provider, 'running', fallback=True)
 
     def summary(self, db, totals, *, identity=None, query=''):
         statement = select(method_totals.c.method, *(func.sum(method_totals.c[key]).label(key) for key in FIELDS))

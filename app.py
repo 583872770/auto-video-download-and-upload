@@ -22,7 +22,7 @@ from Utils.paths import io_path
 from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
 from webapp.media import VIDEO_SUFFIXES
-from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, save_settings, urls_from, validate_settings, validate_method_urls
+from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, download_methods, save_settings, urls_from, validate_settings, validate_method_urls
 from webapp.catalog import MediaCatalog
 from webapp.tasks import TaskRunner, TaskStore
 from webapp.clash import ClashError, ClashManager
@@ -133,6 +133,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     def read_config():
         config, base = settings()
         editable = {key: config.get(key, default) for key, default in DEFAULTS.items()}
+        editable['download_methods'] = download_methods(config)
         return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)))
 
     @app.put('/api/config')
@@ -152,6 +153,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 if store.pending(runnable=True) or store.download_queue()['running']:
                     return jsonify(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
             config.update(data)
+            if 'download_methods' in data:
+                config['download_method'] = download_methods(config)[0]
+            elif 'download_method' in data:
+                config['download_methods'] = None  # Compatibility with old clients/configuration.
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
             save_settings(config_path, config)
             sync_runtime(config, config_path.parent)
@@ -180,6 +185,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=store.download_queue(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
                        download_method=config.get('download_method', 'yt_dlp'),
+                       download_methods=download_methods(config),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 
     from webapp.youtube_login import YouTubeLogin, LoginBusy
@@ -199,18 +205,18 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(error=str(error), download_queue=store.download_queue()), 409
 
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
-        method = config.get('download_method', 'yt_dlp')
-        if method == 'downmp3':
+        methods = download_methods(config)
+        if 'downmp3' in methods:
             require_downmp3_environment()
-            return None
-        if method == 'yt5s':
-            require_browser_environment(config, base)
-            return None
-        if method == 'yt5s_fallback':
+        if 'yt5s' in methods and 'yt_dlp' in methods:
             require_fallback_environment(config, base)
+        elif 'yt5s' in methods:
+            require_browser_environment(config, base)
+        if 'yt_dlp' not in methods:
+            return None
         if not is_youtube(urls):
             return None
-        options = {'force': force or method == 'yt5s_fallback'}
+        options = {'force': force or len(methods) > 1}
         if config.get('proxy_mode') == 'clash':
             snapshot = snapshot or clash.snapshot()
             options.update(proxy=snapshot['proxy'], node=snapshot['node'])
@@ -221,7 +227,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         with media_lock:
             require_login_idle()
             config, base = settings()
-            result = verify_youtube({**config, 'download_method': 'yt_dlp'}, base, ['https://www.youtube.com/'], force=True)
+            result = verify_youtube({**config, 'download_methods': ['yt_dlp']}, base, ['https://www.youtube.com/'], force=True)
             youtube_auth.clear_block()
         return jsonify(auth=result, message=result['message'])
 

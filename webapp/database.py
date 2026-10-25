@@ -138,6 +138,13 @@ method_tasks = Table('download_method_tasks', metadata,
     Column('method', String(32), nullable=False), Column('status', String(24), nullable=False),
     Column('fallback_used', Integer, nullable=False, server_default='0'))
 
+# One row per provider/video/session keeps arbitrary fallback chains idempotent
+# across retries without rewriting existing ledgers or large task queues.
+provider_tasks = Table('download_provider_tasks', metadata,
+    Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
+    Column('method', String(32), primary_key=True), Column('status', String(24), nullable=False),
+    Column('fallback_used', Integer, nullable=False, server_default='0'))
+
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;
     # the NO PAD binary collation also preserves distinct trailing characters.

@@ -114,7 +114,7 @@ class CurrentSettingsTests(unittest.TestCase):
         self.save(download_method='downmp3')
         task = self.store.claim(self.store.owner, actions=('download',))
         with patch('webapp.downmp3.resolve') as resolve:
-            with self.assertRaisesRegex(ValueError, '方式四'):
+            with self.assertRaisesRegex(ValueError, 'downmp3'):
                 execute('download', task['payload'], store=self.store, task_id=task['id'])
         resolve.assert_not_called()
 

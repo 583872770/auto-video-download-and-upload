@@ -98,7 +98,7 @@ class Downmp3ResolverTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(Downmp3Error):
                 media_url(value)
         for value in ('https://youtube.com/playlist?list=PLfixture', 'https://example.com/video.mp4'):
-            with self.assertRaisesRegex(ValueError, '方式四'):
+            with self.assertRaisesRegex(ValueError, 'downmp3'):
                 validate_method_urls({'download_method': 'downmp3'}, [value])
 
 
@@ -111,7 +111,8 @@ class Downmp3WebTests(unittest.TestCase):
 
     def test_page_configuration_queue_import_and_resume_do_not_require_browser_or_cookie(self):
         page = self.client.get('/').text
-        self.assertEqual(page.count('<option value="downmp3">'), 2)
+        self.assertIn('id="download-method" class="provider-choices"', page)
+        self.assertIn('id="settings-download-method" class="provider-choices"', page)
         self.assertIn('name="downmp3_quality"', page)
         self.select(downmp3_quality='480', downmp3_timeout='180')
         before = self.config.read_bytes()

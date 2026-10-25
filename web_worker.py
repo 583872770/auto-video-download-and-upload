@@ -98,17 +98,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from webapp.downloader import build_ydl_options, download_cookie_session, require_download_tools
         progress = DownloadProgress(report_progress or (lambda value: None))
         progress.state['worker_slot'] = worker_slot
-        method = config.get('download_method', 'yt_dlp')
-        automatic = method == 'yt5s_fallback'
-        method_two = method == 'yt5s'
-        method_four = method == 'downmp3'
-        from webapp.settings import validate_method_urls
+        from webapp.settings import PROVIDERS, download_methods, validate_method_urls
+        methods = download_methods(config)
+        automatic = len(methods) > 1
         validate_method_urls(config, payload['urls'])
-        progress.state.update(download_method='yt5s' if method_two or automatic else 'downmp3' if method_four else 'yt_dlp',
-                              selected_download_method=method)
+        progress.state.update(download_method=methods[0], selected_download_methods=methods)
         progress.save(force=True)
-        method_label = {'yt_dlp': '方式一 · yt-dlp', 'yt5s': '方式二 · yt5s',
-                        'yt5s_fallback': '方式三 · yt5s → yt-dlp', 'downmp3': '方式四 · downmp3'}[method]
+        method_label = ' → '.join(PROVIDERS[method] for method in methods)
         print(f'本任务下载方式：{method_label}（开始执行时读取页面配置）。', flush=True)
         failure = DownloadFailure()
         test_mode = config.get('storage_mode') == 'test'
@@ -164,16 +160,19 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
-        if automatic:
+        if 'yt5s' in methods and 'yt_dlp' in methods:
             progress.state.update(stage='checking_environment')
             progress.save(force=True)
             require_fallback_environment(config, base)
             if not store:
-                raise DownloadEnvironmentRequired('方式三请通过 Web 下载队列执行，以验证 YouTube 登录。')
-        if method_four:
+                raise DownloadEnvironmentRequired('含 yt-dlp 的自动切换请通过 Web 下载队列执行，以验证 YouTube 登录。')
+        elif 'yt5s' in methods:
+            from webapp.yt5s import require_browser_environment
+            require_browser_environment(config, base)
+        if 'downmp3' in methods:
             from webapp.environment import require_downmp3_environment
             require_downmp3_environment()
-        if store and youtube and not (method_two or method_four):
+        if store and youtube and 'yt_dlp' in methods:
             progress.state.update(stage='checking_login')
             progress.save(force=True)
             auth = YouTubeAuth(store)
@@ -195,9 +194,16 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             path = Path(io_path(filename)).resolve()
             if path.suffix.lower() not in VIDEO_SUFFIXES:
                 return
-            if method_four:
+            if progress.state.get('download_method') == 'downmp3':
                 from webapp.yt5s import verify_media
-                verify_media(path)
+                try:
+                    verify_media(path)
+                except RuntimeError:
+                    # A rejected HTTP error page may already have its final MP4
+                    # name. Do not let another provider mistake it for a video.
+                    if path not in existing_files and str(path) not in output_files:
+                        path.unlink(missing_ok=True)
+                    raise
             if catalog:
                 catalog.index_file(path, video_directory(config, base))
             if path in existing_files or str(path) in output_files:
@@ -213,7 +219,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
         print(f'开始下载，共 {len(urls)} 个地址。', flush=True)
         if automatic:
-            print('方式三：环境与 YouTube 登录检查通过，优先使用 yt5s，失败时切换到 yt-dlp。', flush=True)
+            print(f'按优先级尝试：{method_label}；成功后不再尝试后续下载器。', flush=True)
         class ReportingDownloader(yt_dlp.YoutubeDL):
             skipped = False
 
@@ -264,16 +270,16 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             failure = DownloadFailure()
             provider_config = {**config, 'download_method': provider}
             options = build_ydl_options(provider_config, base)
-            if payload.get('_restart_transfer') or (automatic and provider == 'yt_dlp'):
+            if payload.get('_restart_transfer') or automatic:
                 # The providers can return different encodings for the same filename.
-                # Never append native bytes to an incomplete yt5s transfer.
+                # Never append bytes from another provider to an incomplete transfer.
                 options['continuedl'] = False
             if catalog:
                 options['download_archive'] = None
             options.update(post_hooks=[completed_file], progress_hooks=[progress.hook],
                            postprocessor_hooks=[progress.postprocess])
             require_download_tools(addresses, options)
-            progress.state.update(download_method=provider, stage='extracting', percent=0,
+            progress.state.update(download_method=provider, stage='extracting', percent=0, provider_percent=None,
                                   downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='')
             progress.streams = {}
             progress.save(force=True)
@@ -322,42 +328,40 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         skipped_any = False
         used_fallback = False
         for addresses in ([url] for url in urls) if automatic else [urls]:
-            if automatic:
-                progress.state.update(fallback_used=False, fallback_reason='')
-            try:
-                skipped_any |= attempt('yt5s' if automatic or method_two else 'downmp3' if method_four else 'yt_dlp', addresses)
-            except (RuntimeError, yt_dlp.utils.DownloadError) as error:
-                if not automatic or isinstance(error, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
-                                                       YouTubeAuthRequired, DownloadLeaseLost)):
-                    raise
-                # Local storage errors and loss of ownership are not provider failures.
-                cause = error
-                while cause:
-                    if isinstance(cause, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
-                                          YouTubeAuthRequired, DownloadLeaseLost)):
-                        raise cause
-                    if isinstance(cause, OSError) and cause.errno in (5, 13, 28, 30, 122):
-                        raise error
-                    cause = cause.__cause__ or cause.__context__
-                if any(term in str(error).lower() for term in ('no space left', 'disk full', 'permission denied', 'read-only file system')):
-                    raise
-                reason = clean_download_error(error)
-                used_fallback = True
-                if store and payload.get('_task_id'):
-                    store.statistics.methods.fallback(payload['_task_id'])
-                progress.state.update(stage='switching_provider', download_method='yt_dlp', fallback_used=True,
-                                      fallback_reason=reason, speed=None, eta=None)
-                progress.save(force=True)
-                print(f'方式三：yt5s 失败（{reason}）；切换到 yt-dlp，沿用当前代理节点。', flush=True)
+            progress.state.update(fallback_used=False, fallback_reason='', fallback_from='')
+            for index, provider in enumerate(methods):
                 try:
-                    # A browser verification/conversion may have taken several minutes.
-                    YouTubeAuth(store).require(config, base, **(
-                        {'proxy': snapshot['proxy'], 'node': snapshot['node']}
-                        if config.get('proxy_mode') == 'clash' else {}))
-                    skipped_any |= attempt('yt_dlp', addresses)
-                except Exception:
-                    print('方式三：yt5s 和 yt-dlp 均未完成下载，最终错误以 yt-dlp 为准。', flush=True)
-                    raise
+                    if index and provider == 'yt_dlp' and store and youtube:
+                        # Website conversion may have taken several minutes.
+                        YouTubeAuth(store).require(config, base, **(
+                            {'proxy': snapshot['proxy'], 'node': snapshot['node']}
+                            if config.get('proxy_mode') == 'clash' else {}))
+                    skipped_any |= attempt(provider, addresses)
+                    break
+                except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                    if index == len(methods) - 1:
+                        raise
+                    # Local storage errors, missing dependencies and loss of
+                    # ownership require intervention rather than another transfer.
+                    cause = error
+                    while cause:
+                        if isinstance(cause, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
+                                              YouTubeAuthRequired, DownloadLeaseLost)):
+                            raise cause
+                        if isinstance(cause, OSError) and cause.errno in (5, 13, 28, 30, 122):
+                            raise error
+                        cause = cause.__cause__ or cause.__context__
+                    if any(term in str(error).lower() for term in ('no space left', 'disk full', 'permission denied', 'read-only file system')):
+                        raise
+                    reason = clean_download_error(error)
+                    next_provider = methods[index + 1]
+                    used_fallback = True
+                    if store and payload.get('_task_id'):
+                        store.statistics.methods.fallback(payload['_task_id'], next_provider)
+                    progress.state.update(stage='switching_provider', download_method=next_provider, fallback_used=True,
+                                          fallback_reason=reason, fallback_from=PROVIDERS[provider], speed=None, eta=None)
+                    progress.save(force=True)
+                    print(f'{PROVIDERS[provider]} 失败（{reason}）；切换到 {PROVIDERS[next_provider]}，沿用当前代理节点。', flush=True)
         skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
         return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),

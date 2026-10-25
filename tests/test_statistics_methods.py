@@ -77,6 +77,7 @@ class MethodStatisticsContract:
         row = self.methods(identity)['yt_dlp']
         self.assertEqual((row['attempted'], row['running'], row['unfinished'], row['fallback_tasks']), (1, 0, 1, 1))
         self.assertIsNotNone(self.claim())
+        self.store.statistics.methods.fallback(job['id'])
         self.store.finish(job['id'], error='permanent failure', worker_id=self.store.owner)
         self.assertFalse(self.store.finish(job['id'], error='duplicate', worker_id=self.store.owner))
         with self.assertRaises(DownloadLeaseLost):

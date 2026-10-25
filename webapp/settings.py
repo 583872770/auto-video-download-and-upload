@@ -5,6 +5,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 YOUTUBE_PREFIX = 'https://www.youtube.com/watch?v='
+PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3'}
 
 import yaml
 
@@ -14,12 +15,13 @@ DEFAULTS = {
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
     'download_method': 'yt_dlp', 'yt5s_quality': '360', 'yt5s_browser_count': 2,
+    'download_methods': None,
     'fragment_concurrency': 4,
     'downmp3_quality': '720', 'downmp3_timeout': 300,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
-                   'download_method', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
+                   'download_method', 'download_methods', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
                    'downmp3_quality', 'downmp3_timeout'}
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
@@ -46,15 +48,29 @@ def urls_from(value):
     return urls
 
 
+def download_methods(config):
+    """Read an ordered provider list, including configurations saved before this UI."""
+    methods = config.get('download_methods')
+    if methods is None:
+        method = config.get('download_method', 'yt_dlp')
+        methods = ['yt5s', 'yt_dlp'] if method == 'yt5s_fallback' else [method]
+    if (not isinstance(methods, list) or not 1 <= len(methods) <= len(PROVIDERS)
+            or any(not isinstance(method, str) or method not in PROVIDERS for method in methods)
+            or len(set(methods)) != len(methods)):
+        raise ValueError('请至少选择一种下载器，并按优先级排列；下载器不能重复。')
+    return list(methods)
+
+
 def validate_settings(config, *, download_only=False):
     from Utils.download_storage import storage_mode
     storage_mode(config)
     if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s', 'yt5s_fallback', 'downmp3'):
         raise ValueError('请选择有效的下载方式。')
+    download_methods(config)
     if config.get('yt5s_quality', '360') not in ('360', '720'):
-        raise ValueError('方式二画质请选择 360p 或 720p。')
+        raise ValueError('yt5s 画质请选择 360p 或 720p。')
     if config.get('downmp3_quality', '720') not in ('360', '480', '720', '1080'):
-        raise ValueError('方式四画质请选择 360p、480p、720p 或 1080p。')
+        raise ValueError('downmp3 画质请选择 360p、480p、720p 或 1080p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():
@@ -71,7 +87,7 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('请选择有效的下载连接方式。')
     for key, default in DEFAULTS.items():
         value = config.get(key, default)
-        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url'):
+        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods'):
             continue
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')
@@ -83,12 +99,10 @@ def validate_settings(config, *, download_only=False):
 
 
 def validate_method_urls(config, urls):
-    method = config.get('download_method', 'yt_dlp')
-    if method in ('yt5s', 'yt5s_fallback', 'downmp3'):
+    if any(method != 'yt_dlp' for method in download_methods(config)):
         from webapp.store import source_identity
         if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            label = '方式四' if method == 'downmp3' else '方式二、方式三'
-            raise ValueError(label + '仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
+            raise ValueError('yt5s、downmp3 仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

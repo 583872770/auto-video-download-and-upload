@@ -38,7 +38,8 @@ class FallbackContract:
 
     def test_selection_and_preflight_for_new_batch_import_and_resume(self):
         self.method('yt5s_fallback')
-        self.assertEqual(self.client.get('/').text.count('value="yt5s_fallback"'), 2)
+        self.assertNotIn('value="yt5s_fallback"', self.client.get('/').text)
+        self.assertEqual(self.client.get('/api/config').json['config']['download_methods'], ['yt5s', 'yt_dlp'])
         self.cookie()
         for state in ('not_logged_in', 'network_error', 'valid'):
             with patch('webapp.youtube_auth.probe', return_value=(state, 'Fixture auth')) as check:
