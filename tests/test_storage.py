@@ -39,7 +39,7 @@ class StorageContract:
         self.store.stop_running_downloads(lambda owner: True)
         self.assertEqual(self.set_mode('test').status_code, 200)
         self.assertEqual(self.store.get(task['id'])['attempts'], 0)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
 
     def test_old_task_runs_in_test_mode_without_touching_existing_video_or_archive(self):
         import yt_dlp

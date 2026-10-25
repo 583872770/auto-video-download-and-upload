@@ -14,8 +14,10 @@ REPORT_INTERVAL = 1.0
 MAX_LINE = 16384
 
 
-def create_import(store, import_id, path, filename, payload):
+def create_import(store, import_id, path, filename, payload, list_data=None):
     with store.connect() as db:
+        if list_data is not None:
+            store.lists.create(db, import_id, list_data, filename[:200])
         db.execute(imports.insert().values(id=import_id, path=str(path), name=filename,
                    kind=Path(filename).suffix.lower().lstrip('.'), offset=0, column_index=0,
                    processed=0, added=0, duplicates=0, invalid=0, samples='[]', finished=0))

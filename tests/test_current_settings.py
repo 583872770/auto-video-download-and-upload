@@ -76,6 +76,7 @@ class CurrentSettingsTests(unittest.TestCase):
         run_import(self.store, task['payload'], lambda value: None)
         self.store.finish(task['id'], result={})
         self.save(download_method='yt5s', path='before')
+        self.store.activate_download_lists()
         first = self.store.claim(self.store.owner, actions=('download',))
         self.save(download_method='downmp3', path='after', download_attempts=8)
         with patch('web_worker._execute', return_value={'message': 'fixture'}) as work:
@@ -112,6 +113,7 @@ class CurrentSettingsTests(unittest.TestCase):
         run_import(self.store, imported['payload'], lambda value: None)
         self.store.finish(imported['id'], result={})
         self.save(download_method='downmp3')
+        self.store.activate_download_lists()
         task = self.store.claim(self.store.owner, actions=('download',))
         with patch('webapp.downmp3.resolve') as resolve:
             with self.assertRaisesRegex(ValueError, 'downmp3'):

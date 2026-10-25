@@ -49,7 +49,7 @@ class ControlContract:
         with patch.object(manager, 'import_subscription', side_effect=ClashError('fixture update failed')):
             self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 502)
         self.assertEqual(self.config.read_bytes(), config_before)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual((self.store.get(task['id'])['status'], self.store.get(task['id'])['attempts']), ('queued', 0))
 
     def test_paused_queue_unlocks_rotation_without_losing_jobs(self):
@@ -72,7 +72,7 @@ class ControlContract:
         self.assertFalse(state['rotation_locked'])
         response = self.client.post('/api/clash/rotation', json=config, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual(self.store.get(task['id'])['attempts'], 0)
         with patch.object(manager, 'select') as select_node:
             response = self.client.post('/api/clash/select', json={'name': 'B'}, headers=self.headers)
@@ -82,19 +82,22 @@ class ControlContract:
             self.assertTrue(self.client.get('/api/clash').json['rotation_locked'])
             self.assertEqual(self.client.post('/api/clash/rotation', json=config, headers=self.headers).status_code, 409)
 
-    def test_stop_persists_blocks_downloads_and_imports_but_not_checks(self):
+    def test_stop_persists_blocks_downloads_but_allows_imports_and_checks(self):
         payload = {'config': {}, 'base': str(self.root)}
         download = self.store.create('download', {**payload, 'urls': ['https://example.test/one.mp4']})
-        self.store.create('import', payload)
+        imported = self.store.create('import', payload)
         response = self.client.post('/api/downloads/stop')
         self.assertEqual(response.status_code, 403)
         self.assertFalse(self.store.downloads_paused())
         response = self.client.post('/api/downloads/stop', headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json['download_queue'], {'paused': True, 'running': 0, 'queued': 2})
+        self.assertEqual(response.json['download_queue'], {'paused': True, 'running': 0, 'queued': 1, 'waiting_lists': 0, 'importing': 1})
         self.assertTrue(TaskStore(self.store.directory).downloads_paused())
         self.assertTrue(self.store.pending())
-        self.assertFalse(self.store.pending(runnable=True))
+        self.assertTrue(self.store.pending(runnable=True))
+        self.assertFalse(self.store.download_connection_busy())
+        self.assertEqual(self.store.claim('worker')['id'], imported['id'])
+        self.store.finish(imported['id'], result={}, worker_id='worker')
         self.assertIsNone(self.store.claim('worker'))
         check = self.store.create('check', payload)
         self.assertEqual(self.store.claim('worker')['id'], check['id'])

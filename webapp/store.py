@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import OperationalError
 
-from webapp.database import (Database, archive, batches, counters, imports, reservations,
+from webapp.database import (Database, archive, batches, counters, download_lists, imports, reservations,
                              rotations, settings, snapshots, tasks, workers)
 
 
@@ -44,6 +44,8 @@ class TaskStore:
         self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}'
         from webapp.statistics import DownloadStatistics
         self.statistics = DownloadStatistics(self)
+        from webapp.lists import DownloadLists
+        self.lists = DownloadLists(self)
 
     def connect(self):
         return self.db.engine.begin()
@@ -121,8 +123,6 @@ class TaskStore:
                       available_at=0)
         db.execute(tasks.insert().values(**values))
         self._transition(db, {**values, 'status': None}, 'queued')
-        if action in ('download', 'import') and not self.downloads_paused(db):
-            self.statistics.ensure_session(db)
         return task_id
 
     def create(self, action, payload):
@@ -175,8 +175,6 @@ class TaskStore:
         self._counter(db, 'action:download', 'queued', len(rows))
         for batch_id, count in Counter(row['batch_id'] for row in rows if row['batch_id']).items():
             self._counter(db, 'batch:' + batch_id, 'queued', count)
-        if not self.downloads_paused(db):
-            self.statistics.ensure_session(db)
         return [row['id'] for row in rows]
 
     def get(self, task_id, private=False):
@@ -268,9 +266,44 @@ class TaskStore:
                                 ['action:' + action for action in actions] if actions else None)
 
     def pending(self, *, runnable=False):
-        actions = ('check', 'index') if runnable and self.downloads_paused() else None
-        values = self.counts(actions=actions)
-        return bool(values.get('queued', 0) + values.get('running', 0))
+        if not runnable:
+            values = self.counts()
+            return bool(values.get('queued', 0) + values.get('running', 0))
+        with self.connect() as db:
+            statement = select(tasks.c.id).where(tasks.c.status.in_(('queued', 'running')), self.released_condition())
+            if self.downloads_paused(db):
+                statement = statement.where(tasks.c.action != 'download')
+            elif not self._released_queued_count(db):
+                statement = statement.where(or_(tasks.c.action != 'download', tasks.c.status == 'running'))
+            return db.execute(statement.limit(1)).first() is not None
+
+    def _released_queued_count(self, db):
+        queued = self._counts(db, ['action:download']).get('queued', 0)
+        if not queued:
+            return 0
+        # Count held videos through their batch counters, rather than scanning
+        # millions of unreleased task rows on every scheduler tick.
+        held = db.execute(select(func.coalesce(func.sum(counters.c.value), 0)).select_from(
+            download_lists.join(counters, counters.c.scope == 'batch:' + download_lists.c.id)).where(
+                download_lists.c.released == 0, counters.c.status == 'queued')).scalar_one()
+        return max(0, queued - int(held))
+
+    def released_import_pending(self, db):
+        counts = self._counts(db, ['action:import'])
+        if not (counts.get('queued', 0) or counts.get('running', 0)):
+            return False
+        identity = func.json_extract(tasks.c.payload, '$.import_id')
+        if self.db.mysql:
+            identity = func.json_unquote(identity)
+        held = select(download_lists.c.id).where(download_lists.c.id == identity, download_lists.c.released == 0).exists()
+        return db.execute(select(tasks.c.id).where(tasks.c.action == 'import',
+            tasks.c.status.in_(('queued', 'running')), ~held).limit(1)).first() is not None
+
+    def download_connection_busy(self):
+        with self.connect() as db:
+            downloads, checks = self._counts(db, ['action:download']), self._counts(db, ['action:check'])
+            return bool(downloads.get('running', 0) or checks.get('running', 0) or checks.get('queued', 0)
+                        or (not self.downloads_paused(db) and self._released_queued_count(db)))
 
     def runnable_roles(self):
         """Dispatch only queues with a due task, including after retry backoff."""
@@ -282,11 +315,11 @@ class TaskStore:
             roles = set()
             for scope in queued:
                 action = scope.removeprefix('action:')
-                if paused and action in ('download', 'import'):
+                if action == 'download' and (paused or not self._released_queued_count(db)):
                     continue
                 due = db.execute(select(tasks.c.id).where(
                     tasks.c.action == action, tasks.c.status == 'queued',
-                    tasks.c.available_at <= time.time()).limit(1)).first()
+                    tasks.c.available_at <= time.time(), self.released_condition()).limit(1)).first()
                 if due:
                     roles.update(('download', 'regular') if action == 'download' else
                                  ('maintenance',) if action in ('import', 'index') else ('regular',))
@@ -296,15 +329,20 @@ class TaskStore:
         """Small due-count snapshot used to avoid launching idle worker slots."""
         with self.connect() as db:
             paused = self.downloads_paused(db)
-            statement = select(tasks.c.action).where(
-                tasks.c.status == 'queued', tasks.c.available_at <= time.time())
             counts = {}
-            for action in db.execute(statement).scalars():
-                if paused and action in ('download', 'import'):
+            for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
+                                  ('regular', ('check',))):
+                if not self._counts(db, ['action:' + action for action in actions]).get('queued', 0):
                     continue
-                role = ('download' if action == 'download' else
-                        'maintenance' if action in ('import', 'index') else 'regular')
-                counts[role] = counts.get(role, 0) + 1
+                if role == 'download' and (paused or not self._released_queued_count(db)):
+                    continue
+                # Only the number of available worker slots matters, not the
+                # size of a potentially multi-million-video backlog.
+                statement = select(tasks.c.id).where(tasks.c.action.in_(actions),
+                    tasks.c.status == 'queued', tasks.c.available_at <= time.time(), self.released_condition()).limit(16)
+                count = len(db.execute(statement).all())
+                if count:
+                    counts[role] = count
             return counts
 
     def downloads_paused(self, db=None, *, lock=False):
@@ -316,20 +354,33 @@ class TaskStore:
             statement = statement.with_for_update(read=True)
         return db.execute(statement).scalar_one() == 'true'
 
+    @staticmethod
+    def released_condition():
+        return or_(tasks.c.action != 'download', ~select(download_lists.c.id).where(
+            download_lists.c.id == tasks.c.batch_id, download_lists.c.released == 0).exists())
+
     def set_downloads_paused(self, paused):
         with self.connect() as db:
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true' if paused else 'false'))
             if paused:
                 self.statistics.settle(db, stop=True)
-            else:
-                counts = self._counts(db, ['action:download', 'action:import'])
-                if counts.get('queued', 0) or counts.get('running', 0):
-                    self.statistics.ensure_session(db)
+
+    def activate_download_lists(self):
+        with self.connect() as db:
+            # Release the new lists and resume claims in one transaction.
+            self.lists.release(db)
+            db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))
 
     def download_queue(self):
         with self.connect() as db:
-            counts = self._counts(db, ['action:download', 'action:import'])
-            return {'paused': self.downloads_paused(db), 'queued': counts.get('queued', 0), 'running': counts.get('running', 0)}
+            counts = self._counts(db, ['action:download'])
+            importing = self._counts(db, ['action:import'])
+            waiting_lists = db.execute(select(func.count()).select_from(download_lists).where(
+                download_lists.c.released == 0, or_(select(counters.c.scope).where(
+                    counters.c.scope == 'batch:' + download_lists.c.id, counters.c.status == 'queued', counters.c.value > 0).exists(),
+                    select(imports.c.id).where(imports.c.id == download_lists.c.id, imports.c.finished == 0).exists()))).scalar_one()
+            return {'paused': self.downloads_paused(db), 'queued': counts.get('queued', 0), 'running': counts.get('running', 0),
+                    'waiting_lists': waiting_lists, 'importing': importing.get('running', 0) + importing.get('queued', 0)}
 
     def apply_download_connection(self, config, clash=None):
         """Override existing jobs at execution time without rewriting their snapshots."""
@@ -341,10 +392,11 @@ class TaskStore:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             if not self.downloads_paused(db, lock=True):
                 raise ValueError('请先停止全部下载，再应用当前连接。')
-            counts = self._counts(db, ['action:download', 'action:import'])
+            counts = self._counts(db, ['action:download'])
             if counts.get('running', 0):
                 raise ValueError('当前下载进程尚未停止，请稍后再应用当前连接。')
-            if not counts.get('queued', 0):
+            importing = self._counts(db, ['action:import'])
+            if not (counts.get('queued', 0) or importing.get('queued', 0) or importing.get('running', 0)):
                 raise ValueError('当前没有排队的下载或导入任务。')
             cutoff = db.execute(select(func.max(tasks.c.seq))).scalar_one() or 0
             value = {'cutoff_seq': cutoff, 'config': connection, 'updated_at': now()}
@@ -406,7 +458,7 @@ class TaskStore:
         """Stop only verified owners, then release their tasks under the same row lock."""
         with self.connect() as db:
             owners = db.execute(select(tasks.c.id, tasks.c.worker_id).where(
-                tasks.c.status == 'running', tasks.c.action.in_(('download', 'import'))).limit(64)).all()
+                tasks.c.status == 'running', tasks.c.action == 'download').limit(64)).all()
         stopped = 0
         for task_id, owner in owners:
             with self.connect() as db:
@@ -461,8 +513,9 @@ class TaskStore:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= time.time())
-            if self.downloads_paused(db, lock=True):
-                statement = statement.where(~tasks.c.action.in_(('download', 'import')))
+            statement = statement.where(self.released_condition())
+            if self.downloads_paused(db, lock=True) or not self._released_queued_count(db):
+                statement = statement.where(tasks.c.action != 'download')
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:
@@ -548,6 +601,8 @@ class TaskStore:
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
             self.statistics.transition(db, row, outcome, error,
                 fallback_used=bool(progress.get('fallback_used') or (result or {}).get('fallback_used')))
+            if not retry and row['action'] == 'download':
+                self.lists.outcome(db, row, outcome)
             self.statistics.settle(db)
             if not retry:
                 generation = progress.get('rotation_id')

@@ -88,7 +88,7 @@ class ConnectionContract:
         self.assertEqual(effective['clash'], {'directory': clash['directory']})
         self.assertEqual(effective['urls'], old['urls'])
         self.assertEqual(old, before)
-        self.assertEqual(reopened.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(reopened.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
 
     def test_both_old_and_new_pending_tasks_use_current_connection(self):
         task, old = self.old_task()

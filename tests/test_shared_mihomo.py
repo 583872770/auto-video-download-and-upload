@@ -206,6 +206,16 @@ class SharedMihomoTests(unittest.TestCase):
     def test_upgrade_retains_main_core_retires_old_worker_and_preserves_selection(self):
         # Start a genuine pre-upgrade root and child, using the old runtime shape.
         legacy = ClashManager(self.manager.directory / 'workers' / '1', binary=BINARY)
+        # Both managers are constructed before either core binds a port. Assign
+        # separate ports so this fixture represents two real legacy cores.
+        from webapp.clash import free_port
+        for key in ('proxy_port', 'control_port'):
+            used = {self.manager.config['proxy_port'], self.manager.config['control_port'],
+                    legacy.config['proxy_port'], legacy.config['control_port']}
+            candidate = free_port(0)
+            while candidate in used:
+                candidate = free_port(0)
+            legacy.config[key] = candidate
         (legacy.directory / 'nodes.yaml').write_text(yaml.safe_dump({'proxies': self.nodes}), encoding='utf-8')
         legacy.config['selected'] = 'B'
         legacy.save()

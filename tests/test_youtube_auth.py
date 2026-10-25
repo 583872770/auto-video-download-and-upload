@@ -89,7 +89,7 @@ class AuthContract:
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture not logged in')):
             response = self.post('/api/downloads/resume')
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual(self.store.get(task['id'])['attempts'], 0)
         with patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture verified')):
             self.assertEqual(self.post('/api/downloads/resume').status_code, 200)
@@ -148,7 +148,7 @@ class AuthContract:
         current = self.store.get(task['id'])
         self.assertEqual((current['status'], current['attempts']), ('queued', 0))
         self.assertEqual(current['progress']['stage'], 'checking_login')
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual(self.client.get('/api/tasks?view=history').json['items'], [])
 
     def test_login_verified_before_extractor_and_cookie_rejection_stops_later_jobs(self):

@@ -29,6 +29,83 @@ def register_statistics(app, store):
             raise ValueError('请提交统计设置。')
         return value
 
+    @app.get('/api/statistics/lists')
+    def list_overview():
+        return jsonify(store.lists.page(request.args.get('cursor'), request.args.get('q', '')[:200]))
+
+    @app.put('/api/statistics/lists/<identity>')
+    def list_update(identity):
+        store.lists.update(identity, body())
+        return jsonify(message='客户、清单名称及整单计费设置已保存，跨暂停区间累计。')
+
+    @app.get('/api/statistics/lists/export')
+    def list_export():
+        query = request.args.get('q', '')[:200]
+
+        @stream_with_context
+        def generate():
+            yield '\ufeff'
+            buffer = StringIO(newline='')
+            writer = csv.writer(buffer)
+
+            def line(values):
+                buffer.seek(0)
+                buffer.truncate()
+                writer.writerow([csv_cell(value) for value in values])
+                return buffer.getvalue()
+
+            yield line(['清单ID', '客户', '清单名称', '创建时间', '视频任务', '待处理', '运行中', '成功', '失败',
+                        '测试成功', '跳过', '计费文件数', '计费精确字节', '测试文件数', '测试精确字节', '整单单价', '单位', '整单预计费用', '统计口径'])
+            cursor = None
+            while True:
+                page = store.lists.page(cursor, query, limit=1000)
+                for row in page['items']:
+                    if not row['tracked']:
+                        row = {**row, **dict.fromkeys(('file_count', 'file_bytes_exact', 'test_file_count',
+                            'test_file_bytes_exact', 'price', 'unit', 'amount'), '')}
+                    yield line([row[key] for key in ('id', 'customer', 'name', 'created_at', 'total', 'queued', 'running',
+                        'succeeded', 'failed', 'test_succeeded', 'skipped', 'file_count', 'file_bytes_exact',
+                        'test_file_count', 'test_file_bytes_exact', 'price', 'unit', 'amount')] + [
+                            '自创建累计；与会话费用不可叠加' if row['tracked'] else '历史清单无完整独立账本，未补算'])
+                if not page['next_cursor']:
+                    break
+                cursor = page['next_cursor']
+
+        return Response(generate(), mimetype='text/csv', headers={
+            'Content-Disposition': 'attachment; filename="customer-lists.csv"', 'Cache-Control': 'no-store'})
+
+    @app.get('/api/statistics/lists/<identity>/files/export')
+    def list_file_export(identity):
+        from sqlalchemy import select
+        from webapp.database import batches
+        with store.connect() as db:
+            if not db.execute(select(batches.c.id).where(batches.c.id == identity)).first():
+                abort(404, description='清单不存在。')
+        test = request.args.get('kind') == 'test'
+
+        @stream_with_context
+        def generate():
+            yield '\ufeff'
+            buffer = StringIO(newline='')
+            writer = csv.writer(buffer)
+            writer.writerow(['清单ID', '视频ID', '标题', '精确字节', '登记时间', '任务ID', '文件路径', '是否计费'])
+            yield buffer.getvalue()
+            cursor = None
+            while True:
+                rows = store.lists.files(identity, test=test, cursor=cursor)
+                for row in rows:
+                    buffer.seek(0)
+                    buffer.truncate()
+                    writer.writerow([csv_cell(value) for value in (identity, row['video_id'], row['title'], row['size'],
+                        row['created_at'], row['task_id'], row['path'], '否（测试文件已删除）' if test else '是')])
+                    yield buffer.getvalue()
+                if len(rows) < 1000:
+                    break
+                cursor = rows[-1]['seq']
+
+        return Response(generate(), mimetype='text/csv', headers={
+            'Content-Disposition': f'attachment; filename="list-{identity[:12]}-files.csv"', 'Cache-Control': 'no-store'})
+
     @app.get('/api/statistics', endpoint='statistics_overview')
     def overview():
         return jsonify(statistics.overview(request.args.get('cursor'), request.args.get('q', '')[:200]))
@@ -71,7 +148,7 @@ def register_statistics(app, store):
 
     @app.put('/api/statistics/pricing', endpoint='statistics_pricing')
     def defaults():
-        return jsonify(pricing=statistics.set_defaults(body()), message='默认计费单价已保存，对下一次下载会话生效。')
+        return jsonify(pricing=statistics.set_defaults(body()), message='默认单价已保存，对新清单和下一次下载会话生效。')
 
     @app.get('/api/statistics/sessions/<identity>', endpoint='statistics_details')
     def details(identity):

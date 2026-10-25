@@ -58,6 +58,13 @@ settings = Table('schema_settings', metadata, Column('key', String(128), primary
 batches = Table('batches', metadata, Column('id', String(32), primary_key=True),
                 Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', Text, nullable=False),
                 Column('name', Text, nullable=False, default='', server_default=text("('')")))
+download_lists = Table('download_lists', metadata,
+    Column('id', String(32), primary_key=True), Column('customer', String(200), nullable=False),
+    Column('name', String(200), nullable=False), Column('price', String(32), nullable=False),
+    Column('unit', String(8), nullable=False), Column('released', Integer, nullable=False, server_default='0'),
+    Column('tracking_since', String(40), nullable=False),
+    *(Column(name, BigInteger, nullable=False, server_default='0') for name in
+      ('file_count', 'file_bytes', 'test_file_count', 'test_file_bytes', 'test_succeeded', 'skipped')))
 reservations = Table('download_reservations', metadata, Column('key', String(128), primary_key=True),
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),

@@ -11,7 +11,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         return jsonify(error=str(error)), 502
 
     def rotation_locked():
-        return store.pending(runnable=True) or bool(store.download_queue()['running'])
+        return store.download_connection_busy()
 
     def idle(*, rotation=False, subscription=False):
         login = app.extensions.get('youtube_login')
@@ -46,7 +46,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         queue = store.download_queue()
         connection_reason = ('请先完成或取消 YouTube 登录，再应用当前连接。' if login_active else
                              '请先停止全部下载并等待当前任务结束，再应用当前连接。' if paused_changes_locked or not queue['paused'] else
-                             '当前没有排队的下载或导入任务。' if not queue['queued'] else '')
+                             '当前没有排队的下载或导入任务。' if not (queue['queued'] or queue['importing']) else '')
         return {**data, 'locked': paused_changes_locked,
                 'connection_edit_locked': paused_changes_locked,
                 'connection_apply_locked': bool(connection_reason),
@@ -71,7 +71,7 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
             queue = store.download_queue()
             if not queue['paused'] or queue['running']:
                 abort(409, description='请先停止全部下载并等待当前任务结束，再应用当前连接。')
-            if not queue['queued']:
+            if not (queue['queued'] or queue['importing']):
                 abort(409, description='当前没有排队的下载或导入任务。')
             config, _ = settings()
             snapshot = manager.snapshot() if config.get('proxy_mode') == 'clash' else None

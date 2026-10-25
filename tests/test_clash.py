@@ -206,7 +206,7 @@ class ClashTests(unittest.TestCase):
         updated = self.post('/api/clash/subscription')
         self.assertEqual(updated.status_code, 200, updated.json)
         self.assertNotEqual(self.manager.config['subscription_id'], previous_subscription)
-        self.assertEqual(store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual(self.post('/api/downloads/resume').status_code, 200)
         subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')], cwd=ROOT,
                        capture_output=True, check=True, timeout=30)

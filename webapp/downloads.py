@@ -61,6 +61,10 @@ class DownloadProgress:
         self.last_write = 0
         self.streams = {}
         self.formats = []
+        self.started_at = time.time()
+        self.stage_started_at = self.started_at
+        self.current_stage = None
+        self.stage_seconds = {}
         self.state = {'stage': 'extracting', 'percent': 0, 'downloaded_bytes': 0,
                       'total_bytes': None, 'speed': None, 'eta': None, 'title': '', 'format': ''}
         self.save(force=True)
@@ -73,6 +77,16 @@ class DownloadProgress:
         self.save(force=True)
 
     def save(self, force=False):
+        stamp = time.time()
+        stage = (self.state.get('download_method'), self.state.get('stage'))
+        if stage != self.current_stage:
+            if self.current_stage:
+                name = self.current_stage[1]
+                self.stage_seconds[name] = self.stage_seconds.get(name, 0) + max(0, stamp - self.stage_started_at)
+            self.stage_started_at, self.current_stage = stamp, stage
+        self.state.update(stage_started_at=self.stage_started_at, elapsed=round(stamp - self.started_at, 1),
+                          stage_seconds={**self.stage_seconds, self.state['stage']:
+                              round(self.stage_seconds.get(self.state['stage'], 0) + stamp - self.stage_started_at, 1)})
         if force or time.monotonic() - self.last_write >= 1.5:
             self.write(dict(self.state))
             self.last_write = time.monotonic()

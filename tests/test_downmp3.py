@@ -112,7 +112,8 @@ class Downmp3WebTests(unittest.TestCase):
     def test_page_configuration_queue_import_and_resume_do_not_require_browser_or_cookie(self):
         page = self.client.get('/').text
         self.assertIn('id="download-method" class="provider-choices"', page)
-        self.assertIn('id="settings-download-method" class="provider-choices"', page)
+        self.assertNotIn('id="settings-download-method"', page)
+        self.assertIn('id="save-download-strategy"', page)
         self.assertIn('name="downmp3_quality"', page)
         self.select(downmp3_quality='480', downmp3_timeout='180')
         before = self.config.read_bytes()

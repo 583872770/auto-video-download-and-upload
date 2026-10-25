@@ -81,6 +81,15 @@ class DownloadStatistics:
         value = db.execute(select(settings.c.value).where(settings.c.key == 'download_billing_defaults')).scalar_one_or_none()
         return json.loads(value) if value else {'price': '0', 'unit': 'GB'}
 
+    def dashboard(self):
+        with self.store.connect() as db:
+            sizes = db.execute(select(func.coalesce(func.sum(sessions.c.file_count), 0).label('file_count'),
+                func.coalesce(func.sum(sessions.c.file_bytes), 0).label('file_bytes'))).mappings().one()
+            testing = db.execute(select(func.coalesce(func.sum(test_totals.c.test_file_count), 0).label('test_file_count'),
+                func.coalesce(func.sum(test_totals.c.test_file_bytes), 0).label('test_file_bytes'))).mappings().one()
+        result = {key: int(value) for key, value in {**dict(sizes), **dict(testing)}.items()}
+        return {**result, 'file_bytes_exact': str(result['file_bytes']), 'test_file_bytes_exact': str(result['test_file_bytes'])}
+
     def ensure_session(self, db):
         identity = self._active(db)
         if identity:
@@ -138,8 +147,10 @@ class DownloadStatistics:
         if stop and row['status'] == 'active':
             db.execute(sessions.update().where(sessions.c.id == identity).values(status='stopping', stop_requested_at=stamp()))
         paused = stop or row['status'] == 'stopping'
-        counts = self.store._counts(db, ['action:download', 'action:import'])
-        if not row['running'] and (paused or not (counts.get('queued', 0) + counts.get('running', 0))):
+        # Unreleased customer lists must not extend an unrelated session.
+        pending = self.store._released_queued_count(db)
+        released_import = self.store.released_import_pending(db)
+        if not row['running'] and (paused or not (pending or released_import)):
             db.execute(sessions.update().where(sessions.c.id == identity).values(
                 status='paused' if paused else 'completed', ended_at=stamp()))
             db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
@@ -177,6 +188,7 @@ class DownloadStatistics:
                 db.execute(sessions.update().where(sessions.c.id == session_id).values(
                     file_count=sessions.c.file_count + 1, file_bytes=sessions.c.file_bytes + size))
             self.methods.record_file(db, task, session_id, size, test_mode)
+            self.store.lists.record_file(db, task, size, test_mode)
         return True
 
     def session_rows(self, db, cursor=None, query='', limit=21):

@@ -17,7 +17,13 @@ def require_fallback_environment(config, base):
     from webapp.yt5s import require_browser_environment
 
     require_browser_environment(config, base)
-    missing = [module for module in ('yt_dlp', 'yt_dlp_ejs', 'playwright')
+    if importlib.util.find_spec('playwright') is None:
+        raise DownloadEnvironmentRequired('下载器环境检查未通过，缺少：playwright。请安装依赖或重新构建 Docker 镜像。')
+    require_native_environment(config)
+
+
+def require_native_environment(config):
+    missing = [module for module in ('yt_dlp', 'yt_dlp_ejs')
                if importlib.util.find_spec(module) is None]
     missing.extend(binary for binary in ('ffmpeg', 'ffprobe') if not shutil.which(binary))
     runtimes = config.get('js_runtimes')

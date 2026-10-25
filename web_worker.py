@@ -60,6 +60,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             report_progress(dict(last_progress))
 
     try:
+        report({'stage': 'preparing_workspace'})
         result = _execute(action, {**payload, 'config': workspace.prepare()}, report,
                           rotation_completed, store, worker_slot)
         if workspace.test_mode:
@@ -121,6 +122,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 progress.save(force=True)
                 return {'message': '已下载过，跳过重复下载。', 'skipped': True}
         if config.get('proxy_mode') == 'clash':
+            progress.state.update(stage='preparing_proxy')
+            progress.save(force=True)
             from webapp.clash import ClashManager
             proxy = payload.get('clash')
             if not proxy:
@@ -160,6 +163,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
+        progress.state.update(stage='checking_environment')
+        progress.save(force=True)
         if 'yt5s' in methods and 'yt_dlp' in methods:
             progress.state.update(stage='checking_environment')
             progress.save(force=True)

@@ -249,7 +249,7 @@ class Yt5sTests(unittest.TestCase):
             result = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(result.status_code, 409, result.json)
         self.assertIn('显示环境', result.json['error'])
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 2, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 1, 'importing': 1})
 
     def test_worker_missing_browser_pauses_and_requeues_without_failure(self):
         from web_worker import drain
@@ -260,7 +260,7 @@ class Yt5sTests(unittest.TestCase):
             drain(self.store.directory)
         current = self.store.get(task['id'])
         self.assertEqual((current['status'], current['attempts']), ('queued', 0))
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0})
+        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
         self.assertEqual(self.client.get('/api/tasks?view=history').json['items'], [])
 
     def test_browser_preflight_resolves_explicit_path_and_reports_missing_display(self):

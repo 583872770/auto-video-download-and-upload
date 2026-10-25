@@ -63,6 +63,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     app.extensions['clash'] = clash
     youtube_auth = YouTubeAuth(store)
     app.extensions['youtube_auth'] = youtube_auth
+    from webapp.startup import DownloadStartup
+    startup = DownloadStartup()
+    app.extensions['download_startup'] = startup
 
     def settings():
         with settings_lock:
@@ -150,7 +153,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 require_login_idle()
             if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode')):
-                if store.pending(runnable=True) or store.download_queue()['running']:
+                if store.download_connection_busy():
                     return jsonify(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
             config.update(data)
             if 'download_methods' in data:
@@ -183,6 +186,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=store.download_queue(),
+                       connection_busy=store.download_connection_busy(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
                        download_method=config.get('download_method', 'yt_dlp'),
                        download_methods=download_methods(config),
@@ -232,7 +236,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
         return jsonify(auth=result, message=result['message'])
 
     def cookie_update_busy():
-        return store.pending(runnable=True) or bool(store.download_queue()['running'])
+        return store.download_connection_busy()
 
     def install_cookie(data):
         cookies = parse_youtube_cookie_file(data)
@@ -331,7 +335,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     def overview():
         config, base = settings()
         root = video_directory(config, base)
+        accounting = store.statistics.dashboard()
         return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index')),
+                       download_counts=store.counts(actions=('download',)), accounting=accounting,
                        media=catalog.root_status(root), recent_media=catalog.page(root, limit=4)['items'],
                        recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index'), finished_only=True)['items'])
 
@@ -421,11 +427,12 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
     @app.post('/api/downloads/stop')
     def stop_downloads():
         from webapp.control import stop_downloads as stop_workers
+        startup.cancel()
         with media_lock:
             store.set_downloads_paused(True)
             stop_workers(store)
             queue = store.download_queue()
-        message = '正在停止当前下载，排队任务已保留。' if queue['running'] else '下载已停止，队列和部分文件已保留。'
+        message = '正在暂停当前下载，排队任务已保留。' if queue['running'] else '下载已暂停，待处理清单和部分文件已保留。'
         return jsonify(message=message, download_queue=queue), 202 if queue['running'] else 200
 
     @app.post('/api/downloads/resume')
@@ -446,8 +453,54 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 verify_youtube(config, base, queued.get('urls') or ['https://www.youtube.com/'],
                                force=True)
             youtube_auth.clear_block()
-            store.set_downloads_paused(False)
+            store.activate_download_lists()
         return jsonify(message='已继续下载，排队任务将自动执行。', download_queue=store.download_queue())
+
+    @app.get('/api/downloads/startup')
+    def startup_status():
+        return jsonify(startup.status())
+
+    def activate_downloads(stage, cancelled):
+        stage('checking_database')
+        queue = store.download_queue()
+        if queue['paused'] and queue['running']:
+            raise ValueError('下载进程正在停止，请稍后再开始。')
+        if not queue['queued'] and not queue['importing']:
+            raise ValueError('没有待处理的视频，请先添加清单。')
+        require_login_idle()
+        config, base = settings()
+        stage('reading_queue')
+        upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
+        urls = [upcoming[0]['url']] if upcoming else ['https://www.youtube.com/']
+        if upcoming:
+            validate_method_urls(config, urls)
+        stage('preparing_proxy')
+        snapshot = clash.snapshot() if config.get('proxy_mode') == 'clash' else None
+        stage('checking_environment')
+        methods = download_methods(config)
+        if 'downmp3' in methods:
+            require_downmp3_environment()
+        if 'yt5s' in methods:
+            (require_fallback_environment if 'yt_dlp' in methods else require_browser_environment)(config, base)
+        elif 'yt_dlp' in methods:
+            from webapp.environment import require_native_environment
+            require_native_environment(config)
+        if 'yt_dlp' in methods and is_youtube(urls):
+            stage('checking_login')
+            youtube_auth.require(config, base, force=True, **(
+                {'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
+        with media_lock:
+            if cancelled.is_set():
+                raise InterruptedError('启动已取消，清单仍在待处理队列。')
+            if settings()[0] != config:
+                raise ValueError('启动检查期间配置发生变化，请按已保存的新配置重新开始。')
+            stage('releasing_queue')
+            youtube_auth.clear_block()
+            store.activate_download_lists()
+
+    @app.post('/api/downloads/start')
+    def start_downloads():
+        return jsonify(startup.start(activate_downloads)), 202
 
     @app.post('/api/downloads/import')
     def import_downloads():
@@ -467,7 +520,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 raise ValueError('导入文件不能为空，最大 1 GB。')
             with media_lock:
                 from webapp.bulk import create_import
-                task = create_import(store, identity, path, Path(source.filename).name, payload)
+                task = create_import(store, identity, path, Path(source.filename).name, payload, list_data=request.form)
         except Exception:
             path.unlink(missing_ok=True)
             raise
@@ -521,6 +574,19 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True):
                 return jsonify(batch_id=batch_id, items=store.create_batch(payloads)), 202
             task = store.create(action, payload)
         return jsonify(task), 202
+
+    @app.post('/api/downloads/queue')
+    def enqueue_downloads():
+        data = body()
+        urls = urls_from(data.get('urls'))
+        identity = uuid.uuid4().hex
+        _, base = settings()
+        with store.connect() as db:
+            store.lists.create(db, identity, data)
+            ids = store.insert_downloads(db, [{'base': str(base), 'scope': 'download', 'batch_id': identity,
+                'urls': [url]} for url in urls], deduplicate=True)
+        return jsonify(batch_id=identity, added=len(ids), duplicates=len(urls) - len(ids),
+                       message='已添加到待处理清单，点击开始下载后执行。'), 202
 
     register_clash(app, clash, store, media_lock, settings_lock, settings, config_path, sync_runtime)
     from webapp.statistics_routes import register_statistics
