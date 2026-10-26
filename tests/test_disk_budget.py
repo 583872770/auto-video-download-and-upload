@@ -1,20 +1,24 @@
 """Capacity contention, crash recovery, streaming limits and preserved ledgers."""
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 import json
 import multiprocessing
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from webapp.disk_budget import DiskBudget, DiskPressure, GIB, MIB, process_identity, size_of
+from webapp.disk_budget import DiskBudget, DiskPressure, DiskCoordinationBusy, GIB, MIB, file_lock, process_identity, size_of
 from webapp.maintenance import BoundedLog
 from tests import test_scale
 
@@ -27,6 +31,31 @@ def reserve_import(directory, ready, release):
             release.wait(15)
     except DiskPressure:
         ready.put(False)
+
+
+def exercise_disk_worker(directory, ready, start, results):
+    """Use independent SQLite connections/processes, just like real workers."""
+    ready.put(True)
+    if not start.wait(30):
+        results.put(('error', 'workers did not start'))
+        return
+    try:
+        budget = DiskBudget(directory, {'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        for attempt in range(8):
+            with budget.lease('imports', reserve=MIB) as lease:
+                lease.start_monitor()
+                for part in range(8):
+                    (lease.path / str(part)).write_bytes(b'x' * 8192)
+                    lease.check((part + 1) * 8192, force=True)
+                snapshot = budget.snapshot()
+                if snapshot['committed_bytes'] > snapshot['budget_bytes']:
+                    raise AssertionError('total capacity overcommitted')
+                for category in snapshot['categories'].values():
+                    if category['committed_bytes'] > category['budget_bytes']:
+                        raise AssertionError('category capacity overcommitted')
+        results.put(('ok', 8))
+    except BaseException as error:
+        results.put(('error', repr(error)))
 
 
 class DiskScanTests(unittest.TestCase):
@@ -61,6 +90,26 @@ class DiskScanTests(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     size_of(temporary)
 
+    def test_disappearing_parent_discards_credit_for_previously_scanned_children(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child = root / 'lease'
+            child.mkdir()
+            (child / 'data').write_bytes(b'x' * 4096)
+            original = os.scandir
+            def entries():
+                yield SimpleNamespace(path=str(child))
+                raise NotADirectoryError('parent replaced during enumeration')
+            @contextmanager
+            def changing():
+                yield entries()
+            def scan(path):
+                return changing() if Path(path) == root else original(path)
+            measured = {child: 0}
+            with patch('webapp.disk_budget.os.scandir', side_effect=scan):
+                self.assertEqual(size_of(root, measured=measured), 0)
+            self.assertEqual(measured[child], 0)
+
 
 class DiskBudgetTests(unittest.TestCase):
     def setUp(self):
@@ -68,6 +117,196 @@ class DiskBudgetTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.budget = DiskBudget(self.root, {'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+
+    def test_rejected_lock_contender_does_not_inspect_or_initialize_locked_file(self):
+        path = self.root / 'first-use.lock'
+        original = Path.stat
+        def metadata(target, *args, **kwargs):
+            if target == path:
+                raise AssertionError('contender must acquire ownership before initialization')
+            return original(target, *args, **kwargs)
+        with file_lock(path) as owned:
+            self.assertTrue(owned)
+            with patch.object(Path, 'stat', new=metadata):
+                with file_lock(path) as competing:
+                    self.assertFalse(competing)
+
+    def test_sixteen_processes_write_check_and_refresh_without_coordination_failures(self):
+        context = multiprocessing.get_context('spawn')
+        ready, results, start = context.Queue(), context.Queue(), context.Event()
+        processes = [context.Process(target=exercise_disk_worker,
+                     args=(str(self.root), ready, start, results)) for _ in range(16)]
+        try:
+            for process in processes:
+                process.start()
+            for _ in processes:
+                ready.get(timeout=45)
+            start.set()
+            # Exercise independent maintenance scans while workers admit/grow/exit.
+            for _ in range(20):
+                snapshot = self.budget.snapshot(force=True)
+                self.assertLessEqual(snapshot['committed_bytes'], snapshot['budget_bytes'])
+                time.sleep(0.02)
+            outcomes = [results.get(timeout=60) for _ in processes]
+            self.assertEqual(outcomes, [('ok', 8)] * 16)
+        finally:
+            start.set()
+            for process in processes:
+                if process.pid:
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join()
+            ready.close()
+            results.close()
+        snapshot = self.budget.snapshot(force=True)
+        self.assertEqual(snapshot['active'], {})
+        self.assertLess(snapshot['categories']['imports']['used_bytes'], 65536)
+
+    def test_unchanged_checks_and_children_do_not_write_database_pages(self):
+        changes = []
+        original = self.budget.connect
+        @contextmanager
+        def counted(**kwargs):
+            with original(**kwargs) as db:
+                before = db.total_changes
+                yield db
+                changes.append(db.total_changes - before)
+        with self.budget.lease('imports') as lease:
+            lease.check(force=True)
+            self.budget.snapshot(force=True)
+            with patch.object(self.budget, 'connect', new=counted), \
+                    patch('webapp.disk_budget.psutil.Process', return_value=SimpleNamespace(children=lambda **kw: [])):
+                for _ in range(5):
+                    lease.track_children()
+                    lease.check(force=True)
+                    self.budget.snapshot()
+        self.assertTrue(changes)
+        self.assertEqual(sum(changes), 0)
+
+    def test_slow_scan_does_not_hold_writer_lock_or_lose_new_reservations(self):
+        scanned, resume = threading.Event(), threading.Event()
+        original = size_of
+        def slow(path, **kwargs):
+            amount = original(path, **kwargs)
+            if Path(path) == self.root / 'test-downloads':
+                scanned.set()
+                if not resume.wait(10):
+                    raise AssertionError('scan not released')
+            return amount
+        with self.budget.lease('test', reserve=2 * MIB) as first:
+            (first.path / 'data').write_bytes(b'x' * 1000)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with patch('webapp.disk_budget.size_of', side_effect=slow):
+                    pending = pool.submit(self.budget._refresh_usage, True)
+                    try:
+                        self.assertTrue(scanned.wait(5))
+                        # Both a new constructor and a reservation must succeed
+                        # before the filesystem scan is allowed to finish.
+                        other = DiskBudget(self.root, self.budget.config)
+                        with other.lease('test', reserve=3 * MIB) as second:
+                            resume.set()
+                            pending.result(timeout=5)
+                            snapshot = self.budget.snapshot()
+                            self.assertGreaterEqual(snapshot['categories']['test']['committed_bytes'], 5 * MIB)
+                            with self.budget.connect(write=False) as db:
+                                row = db.execute('SELECT reserved,measured FROM leases WHERE id=?', (second.id,)).fetchone()
+                                self.assertEqual(tuple(row), (3 * MIB, 0))
+                    finally:
+                        resume.set()
+                    pending.result(timeout=5)
+
+    def test_measurement_credits_only_bytes_in_the_same_traversal(self):
+        with self.budget.lease('imports', reserve=MIB) as lease:
+            (lease.path / 'data').write_bytes(b'x' * 4096)
+            original = size_of
+            def growing(path, **kwargs):
+                amount = original(path, **kwargs)
+                if Path(path) == lease.path:
+                    (lease.path / 'late-data').write_bytes(b'x' * (MIB // 2))
+                return amount
+            with patch('webapp.disk_budget.size_of', side_effect=growing):
+                snapshot = self.budget.snapshot(force=True)
+            self.assertGreaterEqual(snapshot['categories']['imports']['committed_bytes'], MIB)
+            with self.budget.connect(write=False) as db:
+                measured = db.execute('SELECT measured FROM leases WHERE id=?', (lease.id,)).fetchone()[0]
+            self.assertLess(measured, MIB // 2)
+
+    def test_busy_database_is_resource_pressure_and_rejected_admission_releases_file_lock(self):
+        self.budget.snapshot()
+        lease = self.budget.lease('imports')
+        with self.budget.connect(), patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03):
+            with self.assertRaises(DiskCoordinationBusy):
+                lease.__enter__()
+        with file_lock(self.root / 'disk-locks' / (lease.id + '.lock')) as acquired:
+            self.assertTrue(acquired)
+        with self.budget.connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0], 0)
+
+    def test_existing_reservation_can_be_checked_while_another_writer_is_active(self):
+        with self.budget.lease('imports') as lease:
+            lease.check(force=True)
+            self.budget.snapshot(force=True)
+            with self.budget.connect(), patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03):
+                lease.check(force=True)
+                self.assertEqual(self.budget.snapshot()['active']['imports'], 1)
+
+    def test_watchdog_reports_lock_pressure_and_cleanup_preserves_original_error(self):
+        notified = threading.Event()
+        lease = self.budget.lease('imports')
+        lease.__enter__()
+        lease.estimate = lease.reserved + MIB
+        with self.budget.connect(), patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03):
+            lease.start_monitor(notified.set)
+            self.assertTrue(notified.wait(5), 'watchdog must report rather than die silently')
+            self.assertIsInstance(lease.error, DiskCoordinationBusy)
+            with self.assertRaises(DiskCoordinationBusy):
+                lease.__exit__(None, None, None)
+        with file_lock(self.root / 'disk-locks' / (lease.id + '.lock')) as acquired:
+            self.assertTrue(acquired, 'cleanup must always release ownership lock')
+
+    def test_unexpected_monitor_exception_is_logged_and_reported_to_execution(self):
+        notified = threading.Event()
+        lease = self.budget.lease('imports')
+        lease.__enter__()
+        with patch.object(lease, 'track_children', side_effect=sqlite3.OperationalError('unexpected fixture')), \
+                self.assertLogs('webapp.disk_budget', level='ERROR') as logs:
+            lease.start_monitor(notified.set)
+            self.assertTrue(notified.wait(5))
+        self.assertIn('unexpected fixture', '\n'.join(logs.output))
+        with self.assertRaises(DiskPressure):
+            lease.check()
+        with self.assertRaises(DiskPressure):
+            lease.__exit__(None, None, None)
+
+    def test_failed_child_tracking_during_exit_keeps_files_and_releases_lock(self):
+        lease = self.budget.lease('imports')
+        notified = threading.Event()
+        with self.assertRaisesRegex(RuntimeError, 'original error'):
+            with patch.object(lease, 'track_children', side_effect=DiskCoordinationBusy('busy')):
+                with lease:
+                    lease.on_pressure = notified.set
+                    # Newly discovered descendants may not have reached SQLite
+                    # when tracking fails; the retirement handoff must retain them.
+                    lease.children = [{'pid': os.getpid(), 'created': 0}]
+                    raise RuntimeError('original error')
+        self.assertTrue(notified.is_set())
+        self.assertTrue(lease.preserve)
+        self.assertTrue(lease.path.exists())
+        with self.budget.connect(write=False) as db:
+            row = db.execute('SELECT children FROM leases WHERE id=?', (lease.id,)).fetchone()
+            self.assertEqual(json.loads(row[0]), lease.children)
+        with file_lock(self.root / 'disk-locks' / (lease.id + '.lock')) as acquired:
+            self.assertTrue(acquired)
+
+    def test_metadata_cleanup_lock_does_not_replace_a_completed_result_with_retry(self):
+        lease = self.budget.lease('imports')
+        lease.__enter__()
+        with self.budget.connect(), patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03):
+            lease.__exit__(None, None, None)
+        self.assertFalse(lease.path.exists())
+        with file_lock(self.root / 'disk-locks' / (lease.id + '.lock')) as acquired:
+            self.assertTrue(acquired)
 
     def test_real_processes_cannot_reserve_the_same_capacity(self):
         context = multiprocessing.get_context('spawn')
@@ -235,6 +474,26 @@ class DiskWebTests(unittest.TestCase):
         self.assertEqual(saved['progress']['stage'], 'disk_wait')
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
         self.assertEqual(self.store.workers()[0]['state'], 'disk_wait')
+
+    def test_real_coordination_lock_is_requeued_without_failure_statistics(self):
+        from web_worker import drain
+        self.assertEqual(self.client.put('/api/config', json={'storage_mode': 'test', 'disk_min_free_gb': 0,
+            'disk_resume_free_gb': 0}, headers=self.headers).status_code, 200)
+        budget = DiskBudget(self.store.directory, self.store.runtime())
+        budget.snapshot()
+        task = self.store.create('download', {'config': {'storage_mode': 'test'}, 'base': str(self.root),
+                                            'urls': ['https://youtu.be/npNnbj46_ik']})
+        with closing(sqlite3.connect(budget.database)) as locker:
+            locker.execute('BEGIN IMMEDIATE')
+            with patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03), \
+                    patch('web_worker._execute', side_effect=AssertionError('must wait before downloading')):
+                drain(self.store.directory, role='download')
+        saved = self.store.get(task['id'])
+        self.assertEqual(saved['status'], 'queued')
+        self.assertEqual(saved['attempts'], 0)
+        self.assertEqual(saved['progress']['stage'], 'disk_wait')
+        self.assertIn('协调繁忙', saved['error'])
+        self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
 
     def test_completed_file_is_recovered_before_any_new_download(self):
         from web_worker import execute

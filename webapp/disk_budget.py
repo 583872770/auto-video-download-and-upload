@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import errno
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ import psutil
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
+COORDINATION_TIMEOUT = 5
+USAGE_INTERVAL = 5
 DISK_DEFAULTS = {
     'disk_budget_gb': 20, 'disk_test_budget_gb': 16,
     'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 512,
@@ -30,6 +33,10 @@ DISK_FIELDS = set(DISK_DEFAULTS)
 
 class DiskPressure(RuntimeError):
     """A recoverable resource condition, never a provider/video failure."""
+
+
+class DiskCoordinationBusy(DiskPressure):
+    """Local accounting could not be checked within the bounded lock wait."""
 
 
 def is_disk_full(error):
@@ -52,7 +59,7 @@ def safe_path(path, root):
     return path
 
 
-def size_of(path):
+def size_of(path, *, measured=None):
     """Count entry bytes; only traverse directories, never links or sockets."""
     path = Path(path)
     try:
@@ -64,16 +71,23 @@ def size_of(path):
         total = max(metadata.st_size, getattr(metadata, 'st_blocks', 0) * 512)
         # Chromium creates filesystem sockets alongside its temporary files.
         # FIFOs and device nodes likewise have metadata but no children.
-        if not stat.S_ISDIR(metadata.st_mode):
-            return total
-        total = max(total, 4096)
-        with os.scandir(path) as entries:
-            for entry in entries:
-                total += size_of(entry.path)
+        if stat.S_ISDIR(metadata.st_mode):
+            total = max(total, 4096)
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    total += size_of(entry.path, measured=measured)
+        if measured is not None and path in measured:
+            # Credit precisely the bytes included in this category traversal.
+            # A separate later lease scan could subtract bytes not counted yet.
+            measured[path] = total
         return total
     except (FileNotFoundError, NotADirectoryError):
         # Browser temp entries can disappear or change type during a scan.
         # Other I/O errors still surface instead of silently undercounting.
+        if measured is not None:
+            for target in measured:
+                if target == path or target.is_relative_to(path):
+                    measured[target] = 0
         return 0
 
 
@@ -83,9 +97,6 @@ def file_lock(path, *, blocking=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a+b') as stream:
-        if path.stat().st_size == 0:
-            stream.write(b'0')
-            stream.flush()
         deadline = time.monotonic() + (15 if blocking else 0)
         while True:
             stream.seek(0)
@@ -103,6 +114,11 @@ def file_lock(path, *, blocking=False):
                     return
                 time.sleep(0.05)
         try:
+            # Windows permits locking beyond EOF. Initialize only after taking
+            # that lock: a competing initializer must never write a locked byte.
+            if path.stat().st_size == 0:
+                stream.write(b'0')
+                stream.flush()
             yield True
         finally:
             stream.seek(0)
@@ -152,8 +168,12 @@ class DiskBudget:
         self.runtime = safe_path(self.directory / 'runtime', self.directory)
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.database = safe_path(self.directory / 'disk-budget.sqlite3', self.directory)
+        with self.connect(write=False) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if {'leases', 'state', 'requirements'} <= tables:
+            return
         with self.connect() as db:
-            db.executescript('''
+            for statement in '''
                 CREATE TABLE IF NOT EXISTS leases (
                     id TEXT PRIMARY KEY, category TEXT NOT NULL, path TEXT NOT NULL,
                     task TEXT, owner TEXT NOT NULL, children TEXT NOT NULL DEFAULT '[]',
@@ -163,21 +183,28 @@ class DiskBudget:
                 CREATE TABLE IF NOT EXISTS requirements (
                     task TEXT PRIMARY KEY, version TEXT NOT NULL, needed INTEGER NOT NULL,
                     interruptions INTEGER NOT NULL, free INTEGER NOT NULL);
-            ''')
+            '''.split(';'):
+                if statement.strip():
+                    db.execute(statement)
 
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.database, timeout=15)
+    def connect(self, *, write=True):
+        # SQLite's busy handler retries transient locks within this deadline.
+        db = sqlite3.connect(self.database, timeout=COORDINATION_TIMEOUT)
         db.row_factory = sqlite3.Row
         try:
-            db.execute('PRAGMA max_page_count=32768')  # Bound local coordination metadata to 128 MiB.
-            db.execute('BEGIN IMMEDIATE')
+            if write:
+                db.execute('PRAGMA max_page_count=32768')  # Bound metadata to 128 MiB.
+            db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
             yield db
             db.commit()
         except sqlite3.OperationalError as error:
             db.rollback()
             if 'full' in str(error).lower():
                 raise DiskPressure('本机磁盘协调记录或磁盘空间不足，等待清理。') from error
+            if (getattr(error, 'sqlite_errorcode', 0) & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or any(
+                    text in str(error).lower() for text in ('database is locked', 'database table is locked', 'database schema is locked')):
+                raise DiskCoordinationBusy('本机磁盘协调繁忙，等待后自动重试。') from error
             raise
         except BaseException:
             db.rollback()
@@ -205,17 +232,45 @@ class DiskBudget:
         return json.loads(row[0]) if row else default
 
     def _set(self, db, key, value):
-        db.execute('INSERT OR REPLACE INTO state VALUES (?,?)', (key, json.dumps(value)))
+        db.execute('''INSERT INTO state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                      WHERE state.value != excluded.value''', (key, json.dumps(value)))
 
-    def _usage(self, db, force=False):
-        cached = self._get(db, 'usage', {})
-        if force or time.time() - cached.get('time', 0) >= 5:
-            usage = {key: sum(size_of(path) for path in paths) for key, paths in self.roots().items()}
+    def _refresh_usage(self, force=False):
+        with self.connect(write=False) as db:
+            cached = self._get(db, 'usage', {})
+        if not force and cached and time.time() - cached['time'] < USAGE_INTERVAL:
+            return
+        # Serialize scanners, never downloads. No SQLite transaction spans I/O.
+        with file_lock(self.directory / 'disk-usage.lock', blocking=force or not cached) as acquired:
+            if not acquired:
+                if not cached or time.time() - cached['time'] >= 3 * USAGE_INTERVAL:
+                    raise DiskCoordinationBusy('本机磁盘用量核对繁忙，等待后自动重试。')
+                return
+            with self.connect(write=False) as db:
+                latest = self._get(db, 'usage', {})
+                rows = db.execute('SELECT id,category,path FROM leases').fetchall()
+            if latest and (latest['time'] > cached.get('time', 0) or (
+                    not force and time.time() - latest['time'] < USAGE_INTERVAL)):
+                return
+            usage, measurements = {}, {}
+            for category, roots in self.roots().items():
+                paths = [Path(row['path']) for row in rows if row['category'] == category]
+                # Overlapping/duplicate custom paths cannot both receive credit.
+                measured = {path: 0 for path in paths if not any(
+                    other != path and path.is_relative_to(other) for other in paths) and paths.count(path) == 1}
+                usage[category] = sum(size_of(path, measured=measured) for path in roots)
+                measurements.update((row['id'], measured.get(Path(row['path']), 0))
+                                    for row in rows if row['category'] == category)
             usage['logs'] += sum(size_of(p) for p in self.directory.glob('*.log'))
-            for row in db.execute('SELECT id,path FROM leases').fetchall():
-                db.execute('UPDATE leases SET measured=? WHERE id=?', (size_of(row['path']), row['id']))
-            cached = {'time': time.time(), 'bytes': usage}
-            self._set(db, 'usage', cached)
+            with self.connect() as db:
+                # New leases retain measured=0 and their full atomic reservation.
+                # Deleted leases simply leave a conservative overcount until refresh.
+                db.executemany('UPDATE leases SET measured=? WHERE id=? AND measured != ?',
+                               [(amount, identity, amount) for identity, amount in measurements.items()])
+                self._set(db, 'usage', {'time': time.time(), 'bytes': usage})
+
+    def _usage(self, db):
+        cached = self._get(db, 'usage')
         committed = dict(cached['bytes'])
         for row in db.execute('SELECT * FROM leases'):
             committed[row['category']] += max(0, row['reserved'] - row['measured'])
@@ -224,25 +279,28 @@ class DiskBudget:
     def _free(self):
         return shutil.disk_usage(self.directory).free
 
-    def _watermark(self, db):
+    def _watermark(self, db, *, persist=True):
         free = self._free()
         low = int(self.config['disk_min_free_gb']) * GIB
         high = int(self.config['disk_resume_free_gb']) * GIB
         waiting = self._get(db, 'low_space', False)
         waiting = free < (high if waiting else low)
-        self._set(db, 'low_space', waiting)
+        if persist:
+            self._set(db, 'low_space', waiting)
         return waiting, free
 
     def snapshot(self, *, force=False):
-        with self.connect() as db:
-            usage, committed = self._usage(db, force)
-            waiting, free = self._watermark(db)
+        self._refresh_usage(force)
+        with self.connect(write=False) as db:
+            usage, committed = self._usage(db)
+            waiting, free = self._watermark(db, persist=False)
+            watermark_changed = waiting != self._get(db, 'low_space', False)
             blocked = self._get(db, 'reason', '')
             if not waiting and not any(committed[k] >= v for k, v in self.limits.items()) and sum(committed.values()) < int(self.config['disk_budget_gb']) * GIB:
                 blocked = ''
             rows = db.execute('SELECT category,COUNT(*) n FROM leases GROUP BY category').fetchall()
             waiting_tasks = db.execute('SELECT COUNT(*) FROM requirements').fetchone()[0]
-            return dict(mode='software', directory=str(self.directory), free_bytes=free,
+            result = dict(mode='software', directory=str(self.directory), free_bytes=free,
                         total_bytes=shutil.disk_usage(self.directory).total,
                         used_bytes=sum(usage.values()), committed_bytes=sum(committed.values()),
                         budget_bytes=int(self.config['disk_budget_gb']) * GIB,
@@ -252,6 +310,10 @@ class DiskBudget:
                         active=dict((r['category'], r['n']) for r in rows),
                         waiting_tasks=waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
+        if watermark_changed:
+            with self.connect() as db:
+                self._watermark(db)
+        return result
 
     def publish(self, store, snapshot):
         from webapp.database import settings
@@ -282,56 +344,73 @@ class DiskBudget:
         return DiskLease(self, identity, category, safe_path(path, self.directory), task, reserve)
 
     def _reserve(self, lease, needed):
-        with self.connect() as db:
-            usage, committed = self._usage(db)
-            waiting, free = self._watermark(db)
-            old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
-            previous = old[0] if old else 0
-            required = db.execute('SELECT * FROM requirements WHERE task=?', (lease.task or '',)).fetchone()
-            if not old and lease.task and not required and db.execute('SELECT COUNT(*) FROM requirements').fetchone()[0] >= 10000:
-                raise DiskPressure('磁盘等待记录已达上限，请处理大视频预算后继续。')
-            if not old and required:
-                previous_version = json.loads(required['version'])
-                current_version = json.loads(self._version())
-                if previous_version.get('policy') == current_version['policy']:
-                    needed = max(needed, required['needed'])
-                    if required['version'] == self._version() and required['interruptions'] >= 3 and free < required['free'] + GIB:
-                        raise DiskPressure('同一磁盘预算下多次空间不足，等待提高预算或释放更多空间。')
-            extra = max(0, needed - previous)
-            unused = sum(max(0, row['reserved'] - row['measured']) for row in db.execute('SELECT reserved,measured FROM leases'))
-            if extra and free - unused - extra < int(self.config['disk_min_free_gb']) * GIB:
-                # Refresh before rejecting: bytes written since the previous
-                # sample have already consumed part of their reservations.
-                usage, committed = self._usage(db, force=True)
+        self._refresh_usage()
+        if lease.reserved >= needed:
+            # The common progress/watchdog path only validates an existing
+            # promise. It must not queue for a writer or generate journal I/O.
+            with self.connect(write=False) as db:
+                usage, committed = self._usage(db)
+                waiting, free = self._watermark(db, persist=False)
+                old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
+                if (old and old[0] >= needed and free >= int(self.config['disk_min_free_gb']) * GIB
+                        and waiting == self._get(db, 'low_space', False)
+                        and committed[lease.category] <= self.limits[lease.category]
+                        and sum(committed.values()) <= int(self.config['disk_budget_gb']) * GIB
+                        and all(usage[key] <= limit for key, limit in self.limits.items() if key != lease.category)):
+                    lease.reserved = old[0]
+                    return
+        for attempt in range(2):
+            if attempt:
+                self._refresh_usage(force=True)
+            with self.connect() as db:
+                usage, committed = self._usage(db)
+                waiting, free = self._watermark(db)
+                old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
+                previous = old[0] if old else 0
+                required = db.execute('SELECT * FROM requirements WHERE task=?', (lease.task or '',)).fetchone()
+                if not old and lease.task and not required and db.execute('SELECT COUNT(*) FROM requirements').fetchone()[0] >= 10000:
+                    raise DiskPressure('磁盘等待记录已达上限，请处理大视频预算后继续。')
+                if not old and required:
+                    previous_version = json.loads(required['version'])
+                    current_version = json.loads(self._version())
+                    if previous_version.get('policy') == current_version['policy']:
+                        needed = max(needed, required['needed'])
+                        if required['version'] == self._version() and required['interruptions'] >= 3 and free < required['free'] + GIB:
+                            raise DiskPressure('同一磁盘预算下多次空间不足，等待提高预算或释放更多空间。')
+                extra = max(0, needed - previous)
                 unused = sum(max(0, row['reserved'] - row['measured']) for row in db.execute('SELECT reserved,measured FROM leases'))
-            # Existing reservations can finish below the resume watermark, but
-            # never below the low watermark or by extending an exhausted budget.
-            low = int(self.config['disk_min_free_gb']) * GIB
-            reason = ''
-            if (waiting and not old) or free < low or (extra and free - unused - extra < low):
-                reason = '磁盘剩余空间不足，等待释放空间。'
-            elif committed[lease.category] + extra > self.limits[lease.category]:
-                reason = '本机临时文件分类预算不足，等待空间；大视频可能需要提高预算。'
-            elif sum(committed.values()) + extra > int(self.config['disk_budget_gb']) * GIB:
-                reason = '本机临时文件总预算不足，等待其他执行完成或自动清理。'
-            elif any(usage[key] > maximum for key, maximum in self.limits.items() if key != lease.category):
-                reason = '其他临时文件分类超出预算，等待自动清理。'
-            if reason:
-                # Persist a requirement only for an execution which actually held
-                # space; admission waits must not exhaust the interruption count.
-                if old and lease.task:
-                    count = required['interruptions'] + 1 if required and required['version'] == self._version() else 1
-                    db.execute('INSERT OR REPLACE INTO requirements VALUES (?,?,?,?,?)',
-                               (lease.task, self._version(), needed, count, free))
-                self._set(db, 'reason', reason)
-            else:
-                if old:
-                    db.execute('UPDATE leases SET reserved=? WHERE id=?', (max(previous, needed), lease.id))
+                if not attempt and extra and free - unused - extra < int(self.config['disk_min_free_gb']) * GIB:
+                    # Release the transaction before refreshing filesystem usage.
+                    continue
+                # Existing reservations can finish below the resume watermark, but
+                # never below the low watermark or by extending an exhausted budget.
+                low = int(self.config['disk_min_free_gb']) * GIB
+                reason = ''
+                if (waiting and not old) or free < low or (extra and free - unused - extra < low):
+                    reason = '磁盘剩余空间不足，等待释放空间。'
+                elif committed[lease.category] + extra > self.limits[lease.category]:
+                    reason = '本机临时文件分类预算不足，等待空间；大视频可能需要提高预算。'
+                elif sum(committed.values()) + extra > int(self.config['disk_budget_gb']) * GIB:
+                    reason = '本机临时文件总预算不足，等待其他执行完成或自动清理。'
+                elif any(usage[key] > maximum for key, maximum in self.limits.items() if key != lease.category):
+                    reason = '其他临时文件分类超出预算，等待自动清理。'
+                if reason:
+                    # Admission waits must not exhaust the interruption count.
+                    if old and lease.task:
+                        count = required['interruptions'] + 1 if required and required['version'] == self._version() else 1
+                        db.execute('INSERT OR REPLACE INTO requirements VALUES (?,?,?,?,?)',
+                                   (lease.task, self._version(), needed, count, free))
+                    self._set(db, 'reason', reason)
                 else:
-                    db.execute('INSERT INTO leases(id,category,path,task,owner,reserved,created) VALUES (?,?,?,?,?,?,?)',
-                               (lease.id, lease.category, str(lease.path), lease.task,
-                                json.dumps(process_identity()), needed, time.time()))
-                lease.reserved = max(previous, needed)
+                    if old:
+                        if needed > previous:
+                            db.execute('UPDATE leases SET reserved=? WHERE id=?', (needed, lease.id))
+                    else:
+                        db.execute('INSERT INTO leases(id,category,path,task,owner,reserved,created) VALUES (?,?,?,?,?,?,?)',
+                                   (lease.id, lease.category, str(lease.path), lease.task,
+                                    json.dumps(process_identity()), needed, time.time()))
+                    lease.reserved = max(previous, needed)
+            break
         if reason:
             raise DiskPressure(reason)
 
@@ -341,7 +420,7 @@ class DiskBudget:
         with file_lock(self.directory / 'disk-cleanup.lock') as acquired:
             if not acquired:
                 return self.snapshot()
-            with self.connect() as db:
+            with self.connect(write=False) as db:
                 rows = db.execute('SELECT * FROM leases').fetchall()
             for row in rows:
                 if time.time() - row['created'] < grace or alive(json.loads(row['owner'])):
@@ -392,7 +471,7 @@ class DiskBudget:
                 prune_disk_logs(store, self.config)
                 from sqlalchemy import select
                 from webapp.database import tasks
-                with self.connect() as db:
+                with self.connect(write=False) as db:
                     identities = [row[0] for row in db.execute('SELECT task FROM requirements')]
                 retained_tasks = set()
                 for offset in range(0, len(identities), 500):
@@ -402,7 +481,7 @@ class DiskBudget:
                 with self.connect() as db:
                     db.executemany('DELETE FROM requirements WHERE task=?', [(identity,) for identity in identities if identity not in retained_tasks])
             self._clean_diagnostics(grace)
-            with self.connect() as db:
+            with self.connect(write=False) as db:
                 retained = {row[0] for row in db.execute('SELECT id FROM leases')}
             for lock in (self.directory / 'disk-locks').glob('*.lock'):
                 if lock.stem in retained:
@@ -432,7 +511,7 @@ class DiskBudget:
         """A newly claimed owner can finish a complete file left before DB commit."""
         from sqlalchemy import select
         from webapp.database import tasks
-        with self.connect() as db:
+        with self.connect(write=False) as db:
             rows = db.execute("SELECT * FROM leases WHERE category='test' AND task=? ORDER BY created", (task_id,)).fetchall()
         for row in rows:
             if alive(json.loads(row['owner'])):
@@ -510,7 +589,7 @@ class DiskBudget:
         root = self.directory / 'test-downloads'
         if not root.is_dir() or root.is_symlink() or root.is_junction():
             return
-        with self.connect() as db:
+        with self.connect(write=False) as db:
             owned = {Path(r[0]) for r in db.execute('SELECT path FROM leases')}
         for path in root.iterdir():
             if not re.fullmatch('[0-9a-f]{32}', path.name) or not path.is_dir():
@@ -567,6 +646,8 @@ class DiskLease:
         self.last_check = 0
         self.estimate = 0
         self.children = []
+        self.recorded_children = '[]'
+        self.check_lock = threading.RLock()
         self.child_root_pid = None
         self.on_pressure = None
         self.preserve = False
@@ -581,13 +662,31 @@ class DiskLease:
             self.budget._reserve(self, self.initial)
             self.path.mkdir(parents=True, exist_ok=True)
         except BaseException:
-            with self.budget.connect() as db:
-                db.execute('UPDATE leases SET owner=? WHERE id=?', (json.dumps({'pid': os.getpid(), 'created': 0}), self.id))
-            self.lock.__exit__(None, None, None)
+            try:
+                if self.reserved:
+                    self._retire()
+            finally:
+                self.lock.__exit__(None, None, None)
             raise
         return self
 
+    def _retire(self):
+        """Best-effort handoff; retained accounting is safer than losing ownership."""
+        try:
+            with self.budget.connect() as db:
+                db.execute('UPDATE leases SET owner=?,children=? WHERE id=?',
+                           (json.dumps({'pid': os.getpid(), 'created': 0}), json.dumps(self.children), self.id))
+        except (DiskPressure, OSError):
+            # Keep the reservation if metadata is unavailable. The sweep can
+            # verify it after this process exits; never turn completion into retry.
+            pass
+
     def check(self, estimate=0, *, force=False):
+        # Progress callbacks and the watchdog share one reservation/estimate.
+        with self.check_lock:
+            return self._check(estimate, force=force)
+
+    def _check(self, estimate=0, *, force=False):
         if self.error:
             raise self.error
         self.estimate = max(self.estimate, int(estimate or 0))
@@ -633,9 +732,12 @@ class DiskLease:
                     pass
         except psutil.Error:
             pass
-        self.children = list(found.values())
-        with self.budget.connect() as db:
-            db.execute('UPDATE leases SET children=? WHERE id=?', (json.dumps(self.children), self.id))
+        self.children = sorted(found.values(), key=lambda child: child['pid'])
+        content = json.dumps(self.children)
+        if content != self.recorded_children:
+            with self.budget.connect() as db:
+                db.execute('UPDATE leases SET children=? WHERE id=? AND children != ?', (content, self.id, content))
+            self.recorded_children = content
 
     def start_monitor(self, on_pressure=None):
         self.on_pressure = on_pressure
@@ -644,8 +746,10 @@ class DiskLease:
                 try:
                     self.track_children()
                     self.check(force=True)
-                except (DiskPressure, OSError) as error:
+                except Exception as error:
                     self.error = error if isinstance(error, DiskPressure) else DiskPressure('磁盘资源检查失败，执行已停止。')
+                    if not isinstance(error, DiskPressure):
+                        logging.getLogger(__name__).exception('磁盘资源监控检查失败')
                     if self.on_pressure:
                         self.on_pressure()
                     return
@@ -656,23 +760,28 @@ class DiskLease:
         self.stop.set()
         if self.monitor:
             self.monitor.join(timeout=20)
-        if (self.error or kind) and self.on_pressure:
-            self.track_children()
-            self.on_pressure()
-            processes = []
-            for child in self.children:
-                if alive(child):
-                    try:
-                        processes.append(psutil.Process(child['pid']))
-                    except psutil.NoSuchProcess:
-                        pass
-            _, remaining = psutil.wait_procs(processes, timeout=5)
-            if remaining:
-                self.preserve = True
         try:
+            if self.monitor and self.monitor.is_alive():
+                self.preserve = True
+            if (self.error or kind) and self.on_pressure:
+                try:
+                    self.track_children()
+                except (DiskPressure, OSError):
+                    # Do not delete files if descendant tracking is unconfirmed.
+                    self.preserve = True
+                self.on_pressure()
+                processes = []
+                for child in self.children:
+                    if alive(child):
+                        try:
+                            processes.append(psutil.Process(child['pid']))
+                        except psutil.NoSuchProcess:
+                            pass
+                _, remaining = psutil.wait_procs(processes, timeout=5)
+                if remaining:
+                    self.preserve = True
             if self.preserve:
-                with self.budget.connect() as db:
-                    db.execute('UPDATE leases SET owner=? WHERE id=?', (json.dumps({'pid': os.getpid(), 'created': 0}), self.id))
+                self._retire()
             else:
                 if self.path.exists():
                     safe_path(self.path, self.budget.directory)
@@ -683,10 +792,9 @@ class DiskLease:
                     self.path.parent.rmdir()
                 except OSError:
                     pass
-        except OSError:
+        except (DiskPressure, OSError):
             # A later sweep verifies ownership and retries; accounting is retained.
-            with self.budget.connect() as db:
-                db.execute('UPDATE leases SET owner=? WHERE id=?', (json.dumps({'pid': os.getpid(), 'created': 0}), self.id))
+            self._retire()
         finally:
             self.lock.__exit__(kind, value, traceback)
             if not self.path.exists():

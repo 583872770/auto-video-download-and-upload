@@ -16,29 +16,9 @@ from webapp.tasks import TaskStore
 
 @contextmanager
 def worker_lock(path):
-    with path.open('a+b') as stream:
-        if path.stat().st_size == 0:
-            stream.write(b'0')
-            stream.flush()
-        stream.seek(0)
-        try:
-            if os.name == 'nt':
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            stream.seek(0)
-            if os.name == 'nt':
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    from webapp.disk_budget import file_lock
+    with file_lock(path) as acquired:
+        yield acquired
 
 
 def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
