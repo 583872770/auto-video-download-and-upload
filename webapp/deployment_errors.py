@@ -5,6 +5,7 @@ import traceback
 from urllib.parse import quote, quote_plus
 
 from webapp.database import SchemaUpgradeInProgress
+from webapp.fleet import InstanceIdentityConflict
 from webapp.modes import ModeTransitionError
 
 
@@ -23,7 +24,12 @@ def explain_startup_error(error, stage, profile):
     summary = '服务初始化失败。'
     remedy = '展开下方技术详情查看失败阶段和代码位置，将详情提供给维护人员；无需反复修改数据库密码或实例 ID。'
     detail = ''
-    if isinstance(error, ClusterRoleConflict):
+    if isinstance(error, InstanceIdentityConflict):
+        summary = f'实例 ID {error.identity} 已被登记主机 {error.host} 的在线服务使用。'
+        remedy = ('若为原容器重启，确认旧服务已停止后，等待 45 秒，再在部署页点击“保存并启动服务”。'
+                  '若为新增实例，请同时使用独立实例 ID 和独立状态卷，并检查已保存的部署配置。不要删除原状态卷。')
+        detail = message
+    elif isinstance(error, ClusterRoleConflict):
         label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[error.role]
         summary = '当前状态目录属于集群实例，不能直接改为单机模式。'
         remedy = (f'可点击“恢复原实例配置”恢复“{label}”和实例 ID {error.identity}；'

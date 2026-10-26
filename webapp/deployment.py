@@ -20,6 +20,7 @@ from werkzeug.exceptions import HTTPException
 
 from Utils.runtime import ROOT
 from webapp.deployment_errors import ClusterRoleConflict, explain_startup_error
+from webapp.fleet import InstanceIdentityConflict
 from webapp.modes import check_conversion, single_state
 
 ROLES = {'hybrid', 'manager', 'worker', 'all'}
@@ -220,7 +221,12 @@ class DeploymentGateway:
 
         def initialize():
             try:
-                self.activate(dict(self.profile))
+                profile = dict(self.profile)
+                try:
+                    self.activate(profile)
+                except InstanceIdentityConflict as error:
+                    self.wait_for_identity_lease(error)
+                    self.activate(profile)
                 self.startup_error = ''
                 self.failure = None
             except Exception as error:
@@ -236,6 +242,14 @@ class DeploymentGateway:
             self.starting = False
             self.lock.release()
             raise
+
+    def wait_for_identity_lease(self, error):
+        # Container PID/hostname reuse cannot prove that the previous owner is alive.
+        # Wait outside the transaction, then let Fleet check the latest heartbeat.
+        delay = error.retry_after + 1
+        self.report_startup(f'实例 ID {error.identity} 的旧心跳尚未过期，正在等待约 {delay:.0f} 秒后自动重试；'
+                            f'登记主机：{error.host}。若旧服务仍在线，将保持冲突保护。')
+        time.sleep(delay)
 
     @staticmethod
     def environment_profile():

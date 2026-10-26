@@ -24,6 +24,7 @@ from werkzeug.wrappers import Response
 from webapp.deployment import DeploymentGateway, test_mysql
 from webapp.database import SchemaUpgradeInProgress
 from webapp.deployment_errors import ClusterRoleConflict, explain_startup_error
+from webapp.fleet import InstanceIdentityConflict
 
 
 class DeploymentTests(unittest.TestCase):
@@ -530,6 +531,62 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.json)
         self.wait_for_initialization(gateway)
         self.assertIsNotNone(gateway.active)
+
+    def test_restart_waits_for_old_identity_then_recovers_without_blocking_setup(self):
+        self.gateway.path.write_text(json.dumps(self.values(instance_id='existing-node')), encoding='utf-8')
+        gateway = self.make_gateway(start=False)
+        attempts, entered, release = [], threading.Event(), threading.Event()
+        def factory(*args, **kwargs):
+            attempts.append(kwargs['instance_id'])
+            if len(attempts) == 1:
+                raise InstanceIdentityConflict('existing-node', 'old-container', 40)
+            return self.factory(*args, **kwargs)
+        def wait(error):
+            self.assertEqual(error.retry_after, 40)
+            entered.set()
+            self.assertTrue(release.wait(5))
+        gateway.app_factory = factory
+        client = Client(gateway, Response)
+        with patch.object(gateway, 'wait_for_identity_lease', side_effect=wait) as waiting:
+            try:
+                gateway.start()
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(client.get('/health').json['status'], 'starting')
+                self.assertEqual(client.get('/setup').status_code, 200)
+                gateway.start()
+                self.assertEqual(attempts, ['existing-node'])
+                self.assertIsNone(gateway.active)
+            finally:
+                release.set()
+                gateway.initialization.join(timeout=5)
+            waiting.assert_called_once()
+        self.assertEqual(attempts, ['existing-node'] * 2)
+        self.assertIsNotNone(gateway.active)
+        self.assertFalse(gateway.starting)
+        self.assertIsNone(gateway.failure)
+
+    def test_live_identity_conflict_stops_after_one_retry_and_keeps_saved_identity(self):
+        self.gateway.path.write_text(json.dumps(self.values(instance_id='duplicate-node')), encoding='utf-8')
+        gateway = self.make_gateway(start=False)
+        factory = MagicMock(side_effect=InstanceIdentityConflict('duplicate-node', 'still-running', 45))
+        gateway.app_factory = factory
+        with patch.object(gateway, 'wait_for_identity_lease') as waiting:
+            gateway.start()
+            gateway.initialization.join(timeout=5)
+        self.assertFalse(gateway.starting)
+        self.assertIsNone(gateway.active)
+        self.assertEqual(factory.call_count, 2)
+        waiting.assert_called_once()
+        self.assertIn('duplicate-node', gateway.failure['summary'])
+        self.assertIn('still-running', gateway.failure['summary'])
+        self.assertIn('45 秒', gateway.failure['remedy'])
+        self.assertEqual(json.loads(gateway.path.read_text())['instance_id'], 'duplicate-node')
+
+    def test_identity_wait_uses_remaining_lease_and_reports_stage(self):
+        with patch('webapp.deployment.time.sleep') as sleeping:
+            self.gateway.wait_for_identity_lease(InstanceIdentityConflict('node', 'old-container', 12.5))
+        sleeping.assert_called_once_with(13.5)
+        self.assertIn('自动重试', self.gateway.startup_stage)
 
     def test_cli_opens_setup_before_mysql_handshake_finishes(self):
         """A real CLI process must serve HTTP even when a MySQL socket stalls."""

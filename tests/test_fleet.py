@@ -321,6 +321,33 @@ class FleetTests(unittest.TestCase):
         self.assertFalse(self.a.update_progress(job['id'], {}, self.a.owner))
         self.assertFalse(self.a.finish(job['id'], result={}, worker_id=self.a.owner))
 
+    def test_container_pid_reuse_waits_for_heartbeat_expiry_before_registration(self):
+        from webapp.fleet import Fleet, InstanceIdentityConflict, ONLINE_SECONDS
+        old = self.a.fleet.row()
+        replacement = Fleet(self.b, 'worker', identity='alpha')
+        with patch('psutil.pid_exists', return_value=True), \
+                patch.object(replacement, 'clock', return_value=old['heartbeat'] + 2):
+            with self.assertRaises(InstanceIdentityConflict) as raised:
+                replacement.initialize({}, self.root, self.root / 'clash')
+        self.assertEqual(raised.exception.identity, 'alpha')
+        self.assertEqual(raised.exception.host, old['host'])
+        self.assertEqual(raised.exception.retry_after, ONLINE_SECONDS - 2)
+        self.assertEqual(self.a.fleet.row()['boot_id'], old['boot_id'])
+        # If the old container is actually alive, its renewed heartbeat prevents takeover.
+        renewed = old['heartbeat'] + ONLINE_SECONDS - 1
+        with self.a.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=renewed))
+        with patch('psutil.pid_exists', return_value=True), \
+                patch.object(replacement, 'clock', return_value=old['heartbeat'] + ONLINE_SECONDS + 1):
+            with self.assertRaises(InstanceIdentityConflict):
+                replacement.initialize({}, self.root, self.root / 'clash')
+        self.assertEqual(self.a.fleet.row()['boot_id'], old['boot_id'])
+        with patch('psutil.pid_exists', return_value=True), \
+                patch.object(replacement, 'clock', return_value=renewed + ONLINE_SECONDS + 1):
+            replacement.initialize({}, self.root, self.root / 'clash')
+        self.assertEqual(replacement.row()['boot_id'], replacement.boot_id)
+        self.assertFalse(self.a.fleet.beat())  # The old process cannot reclaim the new boot.
+
     def test_real_worker_subprocesses_download_into_their_own_directories(self):
         # Exercise runtime attachment and SQL connections in fresh interpreters,
         # using only a local fixture server; no external provider/production DB.

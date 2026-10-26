@@ -22,6 +22,14 @@ DOWNLOAD_ROLES = ('worker', 'hybrid')
 MANAGEMENT_ROLES = ('manager', 'hybrid')
 
 
+class InstanceIdentityConflict(ValueError):
+    def __init__(self, identity, host, retry_after):
+        self.identity, self.host = identity, host
+        self.retry_after = max(0, min(ONLINE_SECONDS, retry_after))
+        super().__init__(f'实例 ID 已在线：{identity}，登记主机：{host}。'
+                         '请为每个同时运行的实例使用独立状态目录及 VIDEO_INSTANCE_ID。')
+
+
 def database_time(db, mysql):
     return float(db.execute(text('SELECT UNIX_TIMESTAMP(NOW(6))')).scalar_one()) if mysql else time.time()
 
@@ -78,10 +86,11 @@ class Fleet:
             if self.can_manage:
                 self.store.db.ensure(db, settings, {'key': 'fleet_policy', 'value': json.dumps(initial)})
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
-            if previous and previous['heartbeat'] > self.clock(db) - ONLINE_SECONDS:
+            stamp = self.clock(db)
+            if previous and previous['heartbeat'] > stamp - ONLINE_SECONDS:
                 import psutil
                 if previous['host'] != socket.gethostname() or psutil.pid_exists(previous['pid']):
-                    raise ValueError('实例 ID 已在线，请为每个实例使用独立状态目录及 VIDEO_INSTANCE_ID。')
+                    raise InstanceIdentityConflict(self.id, previous['host'], previous['heartbeat'] + ONLINE_SECONDS - stamp)
             values = {'id': self.id, 'name': self.name[:100], 'role': self.role, 'host': socket.gethostname(),
                       'pid': os.getpid(), 'boot_id': self.boot_id, 'heartbeat': self.clock(db),
                       'url': self.url, 'token': self.token, 'config': '{}', 'limits': '{}',
