@@ -922,9 +922,9 @@ async function init() {
     const url = config.config.url;
     $('#download-urls').value = inputAsIds(url);
     updateInputCount();
-    await pollStartup();
-    await refresh();
-  } catch (error) { toast(`读取工作台失败：${error.message}`, true); }
+  } catch (error) { toast(`读取实例配置失败：${error.message}`, true); }
+  try { await pollStartup(); await refresh(); }
+  catch (error) { toast(`读取工作台失败：${error.message}`, true); }
   let failures = 0;
   setInterval(async () => {
     if (document.hidden) return;

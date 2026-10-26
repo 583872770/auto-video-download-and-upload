@@ -29,6 +29,11 @@ class UploadBody:
             yield chunk
 
 
+def instance_auth_error(row):
+    return (f'下载实例“{row["name"]}”拒绝了实例认证。请检查实例地址是否指向正确的下载服务、各实例版本是否一致，'
+            '以及反向代理是否保留 Authorization 请求头；这不是管理账户登录失效。')
+
+
 def rpc(fleet, target, path, *, method='GET', data=None, timeout=45):
     row = fleet.resolve_target(target)
     if row['id'] == fleet.id and path == '/api/fleet/preflight':
@@ -41,6 +46,8 @@ def rpc(fleet, target, path, *, method='GET', data=None, timeout=45):
     try:
         response = session.request(method, row['url'] + path, headers={'Authorization': 'Bearer ' + row['token']},
                                    json=data, timeout=(5, timeout), allow_redirects=False)
+        if response.status_code in (401, 403):
+            raise ValueError(instance_auth_error(row))
         try:
             value = response.json()
         except ValueError:
@@ -145,6 +152,10 @@ def register_fleet(app, fleet):
         except requests.RequestException:
             session.close()
             return jsonify(error='下载实例连接失败，请检查地址和网络。'), 503
+        if response.status_code in (401, 403):
+            response.close()
+            session.close()
+            return jsonify(error=instance_auth_error(row), error_type='instance_auth', instance_id=row['id']), 502
         def content():
             try:
                 # Keep media ranges and Content-Length consistent; do not decompress.

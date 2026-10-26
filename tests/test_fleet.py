@@ -217,6 +217,43 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(self.a.fleet.local_settings()['config']['path'], 'new-alpha')
         self.assertEqual(self.b.fleet.local_settings()['config']['path'], 'videos-beta')
 
+    def test_download_node_auth_failure_does_not_expire_management_login(self):
+        manager = self.apps['manager']
+        response = self.client.post('/api/auth/setup', headers=self.headers, json={
+            'username':'admin', 'password':'fixture-manager-password',
+            'bootstrap_key':manager.extensions['console_auth'].bootstrap_key})
+        self.assertEqual(response.status_code, 201, response.json)
+        # Simulate a worker URL incorrectly pointing back to the manager's login-protected API.
+        address = self.serve('manager')
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(url=address))
+        response = self.client.get('/api/config', headers={'X-Instance-ID':'alpha'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('拒绝了实例认证', response.json['error'])
+        self.assertNotIn('请先登录管理账户', response.json['error'])
+        response = self.client.get('/api/status', headers={'X-Instance-ID':'alpha'})
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json['error_type'], 'instance_auth')
+        self.assertEqual(response.json['instance_id'], 'alpha')
+        self.assertEqual(self.client.get('/api/auth/status').json['user']['username'], 'admin')
+        self.assertEqual(self.client.get('/api/jobs').status_code, 200)
+        self.assertEqual(self.client.get('/api/overview').status_code, 200)
+        # Correctly addressed workers continue to use the node credential, not browser cookies.
+        self.serve('alpha')
+        self.assertEqual(self.client.get('/api/config', headers={'X-Instance-ID':'alpha'}).status_code, 200)
+        self.assertEqual(self.client.get('/api/status', headers={'X-Instance-ID':'alpha'}).status_code, 200)
+
+    def test_another_machine_loopback_address_is_reported_before_sending_node_credential(self):
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(
+                url='http://127.0.0.1:5000', host='another-machine'))
+        with patch('requests.Session.request', side_effect=AssertionError('must not send credential')):
+            response = self.client.get('/api/config', headers={'X-Instance-ID':'alpha'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('本机回环地址', response.json['error'])
+        self.assertIn('/setup', response.json['error'])
+        self.assertEqual(self.client.get('/api/overview').status_code, 200)
+
     def test_cookie_upload_streams_to_selected_worker_only(self):
         self.serve('beta')
         cookie = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only-secret\n'

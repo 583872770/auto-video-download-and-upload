@@ -124,6 +124,32 @@ def main(hybrid=False):
                             page.screenshot(path=str(output / (identity + '-mobile.png')), full_page=True)
                             page.goto(address + '/jobs', wait_until='networkidle')
                             expect(page.locator('body')).to_contain_text('任务中心')
+                    # An authenticated manager must keep its session when a node URL is wrong.
+                    page.set_viewport_size({'width':1440,'height':1080})
+                    page.goto(manager_address + '/login')
+                    page.locator('[name=bootstrap_key]').fill(apps['manager'].extensions['console_auth'].bootstrap_key)
+                    page.locator('#login-form [name=username]').fill('admin')
+                    page.locator('#login-form [name=password]').fill('fixture-browser-password')
+                    page.locator('#login-form button').click()
+                    expect(page.locator('#center-view')).to_be_visible()
+                    with store.connect() as db:
+                        db.execute(update(instances).where(instances.c.id == 'alpha').values(url=manager_address))
+                    page.evaluate('localStorage.setItem("frameflow-instance:" + location.origin, "alpha")')
+                    page.goto(manager_address + '/#overview')
+                    expect(page.locator('#overview-view')).to_be_visible()
+                    expect(page.locator('#connection-warning')).to_contain_text('拒绝了实例认证')
+                    expect(page).to_have_url(manager_address + '/#overview')
+                    assert page.request.get(manager_address + '/api/auth/status').json()['user']['username'] == 'admin'
+                    assert page.request.get(manager_address + '/api/overview').ok
+                    page.screenshot(path=str(output / 'node-auth-error-keeps-management-login.png'), full_page=True)
+                    # Reproduce the cross-machine localhost registration seen in the real deployment.
+                    with store.connect() as db:
+                        db.execute(update(instances).where(instances.c.id == 'alpha').values(host='other-machine', url='http://127.0.0.1:5000'))
+                    page.reload()
+                    expect(page.locator('#connection-warning')).to_contain_text('本机回环地址')
+                    expect(page).to_have_url(manager_address + '/#overview')
+                    page.goto(manager_address + '/jobs')
+                    expect(page.locator('#center-view')).to_be_visible()
                     assert not errors, errors
                 finally:
                     browser.close()

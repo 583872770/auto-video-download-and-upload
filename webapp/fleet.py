@@ -264,4 +264,16 @@ class Fleet:
             row = db.execute(select(instances).where(instances.c.id == identity, instances.c.role.in_(DOWNLOAD_ROLES))).mappings().first()
             if not row or row['heartbeat'] < self.clock(db) - ONLINE_SECONDS or not row['url']:
                 raise ValueError('实例离线或未配置管理端可访问的 VIDEO_INSTANCE_URL。')
+            if row['id'] != self.id and row['host'] != socket.gethostname():
+                import ipaddress
+                from urllib.parse import urlsplit
+                hostname = (urlsplit(row['url']).hostname or '').lower()
+                try:
+                    address = ipaddress.ip_address(hostname)
+                    local_only = address.is_loopback or address.is_unspecified
+                except ValueError:
+                    local_only = hostname == 'localhost' or hostname.endswith('.localhost')
+                if local_only:
+                    raise ValueError(f'下载实例“{row["name"]}”登记了本机回环地址 {row["url"]}，管理端无法用它访问另一台机器。'
+                                     '请在该实例的 /setup 中改为管理端可访问的 IP 或域名，再重启该实例。')
             return dict(row)
