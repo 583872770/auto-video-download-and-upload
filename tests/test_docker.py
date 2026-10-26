@@ -32,6 +32,8 @@ desktop_spec.loader.exec_module(desktop)
 class BrowserDesktopTests(unittest.TestCase):
     def test_partial_startup_logs_xvfb_and_reaps_all_children_before_retry(self):
         display, vnc, novnc = MagicMock(), MagicMock(), MagicMock()
+        for child in (display, vnc, novnc):
+            child.stdout = BytesIO(b'fixture desktop log\n')
         display.poll.return_value = None
         vnc.poll.return_value = 1
         novnc.poll.return_value = None

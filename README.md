@@ -10,6 +10,8 @@
 
 本版统一了任务计费、编辑版本和控制范围，并增加管理账户。未设置账户时只允许本机直接访问；访问 `/login`，使用状态目录 `console-bootstrap.key` 中的初始设置码创建管理员。创建后所有管理页面均需登录，支持管理员、操作员和只读账户。升级说明见 [第一阶段改造说明](docs/redesign-phase-one.md)。
 
+长期运行可在“实例与环境 → 磁盘容量管理”设置临时文件总预算（默认 20 GiB）和分类上限，自动清理测试文件、缓存和日志。空间不足时等待恢复，保留下载统计及账本；容量范围与部署说明见 [DISK_MANAGEMENT.md](DISK_MANAGEMENT.md)。
+
 ## Docker 部署
 
 项目只有一个 Compose 编排文件，内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC，连接远程 MySQL：

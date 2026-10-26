@@ -101,7 +101,9 @@ class StorageContract:
         root = self.store.directory / 'test-downloads' / task['id']
 
         def download(downloader, urls):
-            (root / 'partial.part').write_bytes(b'failed partial')
+            target = Path(downloader.prepare_filename({'title': 'partial', 'id': 'failure', 'ext': 'mp4'}))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.with_suffix('.part').write_bytes(b'failed partial')
             raise yt_dlp.utils.DownloadError('HTTP Error 403: fixture denied')
 
         with patch.object(yt_dlp.YoutubeDL, 'download', download):
@@ -191,15 +193,17 @@ class WorkspaceTests(unittest.TestCase):
                 workspace.cleanup()
             self.assertEqual(sentinel.read_bytes(), b'keep')
 
-    def test_cleanup_failure_does_not_report_success(self):
+    def test_cleanup_failure_reports_pending_cleanup_without_failing_download(self):
         import yt_dlp
         from web_worker import execute
         with tempfile.TemporaryDirectory() as directory:
             payload = {'config': {'storage_mode': 'test', 'proxy_mode': 'direct'}, 'base': directory,
                        'urls': ['https://example.test/fixture.mp4']}
             with patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), \
-                 patch.object(DownloadWorkspace, 'cleanup', side_effect=PermissionError('fixture file in use')):
-                with self.assertRaises(PermissionError):
-                    execute('download', payload)
+                 patch('webapp.disk_budget.shutil.rmtree', side_effect=PermissionError('fixture file in use')):
+                result = execute('download', payload)
+                self.assertTrue(result['test_mode'])
+                self.assertFalse(result['files_deleted'])
+                self.assertIn('清理待重试', result['message'])
 
 

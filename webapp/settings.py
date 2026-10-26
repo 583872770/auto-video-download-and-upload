@@ -8,24 +8,29 @@ YOUTUBE_PREFIX = 'https://www.youtube.com/watch?v='
 PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3'}
 
 import yaml
+from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
 
 DEFAULTS = {
     'path': 'videos', 'dir': '', 'url': '', 'proxy': '', 'proxy_mode': 'manual', 'youtube_cookie': '',
     'browser_executable': '', 'download_format': '', 'js_runtimes': None,
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
-    'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
+    'log_retention_days': 0, 'max_log_mb': 2, 'shard_downloads': True, 'storage_mode': 'local',
     'download_method': 'yt_dlp', 'yt5s_quality': 'best', 'yt5s_browser_count': 2,
     'download_methods': None,
     'fragment_concurrency': 4,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
+    **DISK_DEFAULTS,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
                    'download_method', 'download_methods', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
                    'downmp3_quality', 'downmp3_timeout'}
+DOWNLOAD_FIELDS |= DISK_FIELDS
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800)}
+INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
+                       for key in DISK_FIELDS})
 
 
 def urls_from(value):
@@ -79,6 +84,10 @@ def validate_settings(config, *, download_only=False):
             raise ValueError(f'{key} 必须是 {minimum} 到 {maximum} 之间的整数。')
         if key in config:
             config[key] = value
+    if config.get('disk_resume_free_gb', 15) < config.get('disk_min_free_gb', 10):
+        raise ValueError('磁盘恢复水位不能低于暂停水位。')
+    if config.get('disk_upload_limit_mb', 256) > config.get('disk_import_budget_mb', 1024):
+        raise ValueError('单次上传上限不能大于导入临时文件预算。')
     if isinstance(config.get('shard_downloads'), str) and config['shard_downloads'] in ('true', 'false'):
         config['shard_downloads'] = config['shard_downloads'] == 'true'
     if type(config.get('shard_downloads', True)) is not bool:

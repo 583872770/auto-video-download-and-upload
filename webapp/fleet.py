@@ -11,12 +11,14 @@ import uuid
 from sqlalchemy import func, select, text
 
 from webapp.database import instances, settings, tasks, counters
+from webapp.disk_budget import DISK_FIELDS
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'fragment_concurrency', 'storage_mode'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
+LOCAL_FIELDS |= DISK_FIELDS
 ONLINE_SECONDS = 45
 DOWNLOAD_ROLES = ('worker', 'hybrid')
 MANAGEMENT_ROLES = ('manager', 'hybrid')
@@ -161,6 +163,9 @@ class Fleet:
         return result
 
     def admission(self, db, *, lock=True):
+        from webapp.disk_budget import resource_blocked
+        if resource_blocked(self.store, db):
+            return False
         statement = select(settings.c.value).where(settings.c.key == 'fleet_budget')
         budget = db.execute(statement.with_for_update() if lock else statement).scalar_one()
         # One short database lock serializes slot allocation across all instances.

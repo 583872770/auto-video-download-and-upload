@@ -120,7 +120,7 @@ def register_fleet(app, fleet):
         if not fleet.can_manage or g.fleet_rpc:
             return None
         path = request.path
-        resource = (path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube'))
+        resource = (path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube', '/api/disk'))
                     or path == '/api/downloads/connection'
                     or path == '/api/status' and selected_id())
         target = selected_id()

@@ -140,6 +140,7 @@ function progressLabel(task) {
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
   if (stage === 'preparing_workspace') return '准备保存目录';
+  if (stage === 'disk_wait') return '等待磁盘空间或临时文件预算';
   if (stage === 'preparing_proxy') return '准备代理节点';
   if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
   if (stage === 'waiting_api_conversion') return 'downmp3 · 远端转换中（尚未下载）';

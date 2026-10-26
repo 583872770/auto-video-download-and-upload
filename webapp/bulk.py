@@ -127,5 +127,11 @@ def run_import(store, payload, report):
             if processed >= CHUNK:
                 commit()
         commit(finished=True)
+    # The committed checkpoint, accepted videos, counters and invalid samples
+    # remain in MySQL; only the now-unneeded original upload is disposable.
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass  # The instance sweeper retries independently of the download queue.
     return {'message': f'导入完成：新增 {job["added"]}，重复 {job["duplicates"]}，无效 {job["invalid"]}。',
             **{key: job[key] for key in ('processed', 'added', 'duplicates', 'invalid')}, 'samples': samples, 'batch_id': identity}

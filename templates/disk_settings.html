@@ -1,0 +1,23 @@
+<div class="panel settings-panel disk-panel" id="disk-panel">
+  <div class="panel-heading"><div><span class="section-kicker">DISK STORAGE</span><h2>磁盘容量管理</h2>
+    <p class="panel-subtitle">按当前实例限制测试文件、浏览器缓存、上传临时文件和技术日志，保留数据库统计与账本。</p></div></div>
+  <p id="disk-summary" role="status" aria-live="polite">正在读取磁盘用量…</p>
+  <div id="disk-usage" class="micro-copy"></div>
+  <div class="scale-fields">
+    <label>临时文件总预算（GiB）<input name="disk_budget_gb" type="number" min="1" max="100000" required></label>
+    <label>测试下载预算（GiB）<input name="disk_test_budget_gb" type="number" min="1" max="100000" required><small>包含音视频分片和合并文件；并发数是上限，预算不足时会等待。</small></label>
+    <label>浏览器缓存预算（MiB）<input name="disk_browser_budget_mb" type="number" min="1" max="100000" required></label>
+    <label>全部日志预算（MiB）<input name="disk_log_budget_mb" type="number" min="1" max="100000" required></label>
+    <label>导入及上传临时文件预算（MiB）<input name="disk_import_budget_mb" type="number" min="1" max="100000" required></label>
+    <label>诊断及其他缓存预算（MiB）<input name="disk_cache_budget_mb" type="number" min="1" max="100000" required></label>
+    <label>磁盘暂停水位（GiB）<input name="disk_min_free_gb" type="number" min="0" max="100000" required><small>低于此剩余空间时停止本机新增下载，并清理可丢弃文件。</small></label>
+    <label>磁盘恢复水位（GiB）<input name="disk_resume_free_gb" type="number" min="0" max="100000" required><small>不低于暂停水位；恢复空间不会解除人工暂停。</small></label>
+    <label>单次清单上传上限（MiB）<input name="disk_upload_limit_mb" type="number" min="1" max="100000" required></label>
+    <label>成功任务日志保留（小时）<input name="disk_success_log_hours" type="number" min="1" max="100000" required></label>
+    <label>失败任务日志保留（天）<input name="disk_failure_log_days" type="number" min="1" max="100000" required><small>总量预算优先；简短错误原因和统计永久保留在数据库。</small></label>
+  </div>
+  <p class="micro-copy">当前为软件容量控制，突发写入可能短暂超额。严格上限需由宿主机配置文件系统配额。正式素材、数据库和 Docker 镜像单独规划容量。</p>
+  <p class="micro-copy">清单导入完成后自动删除原 TXT/CSV；视频 ID 和导入结果保留，CSV 中未入库的额外列请自行备份。</p>
+  <button type="button" class="button button-white" id="disk-cleanup">清理可丢弃文件</button>
+  <p id="disk-cleanup-result" class="micro-copy" role="status"></p>
+</div>

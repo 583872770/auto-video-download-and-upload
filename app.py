@@ -45,6 +45,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         from webapp.bootstrap import configure_database_environment
         configure_database_environment(env_file)
     app = Flask(__name__)
+    from webapp.disk_uploads import BudgetRequest
+    app.request_class = BudgetRequest
     app.json.ensure_ascii = False
     # Development and local deployments should see edited templates and
     # static JavaScript/CSS immediately after restarting the service.
@@ -115,6 +117,23 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 if fleet.can_download:
                     config.update(json.loads(fleet.row()['limits']))
             return config, base
+
+    app.extensions['disk_config'] = lambda: {**DEFAULTS, **settings()[0]}
+
+    from webapp.disk_budget import DiskBudget, DiskPressure
+
+    @app.errorhandler(DiskPressure)
+    def disk_pressure(error):
+        return jsonify(error=str(error), error_type='disk_wait'), 507
+
+    @app.get('/api/disk')
+    def disk_status():
+        return jsonify(DiskBudget(store.directory, settings()[0]).snapshot())
+
+    @app.post('/api/disk/cleanup')
+    def disk_cleanup():
+        result = DiskBudget(store.directory, settings()[0]).cleanup(store)
+        return jsonify(message='已检查并清理可安全删除的临时文件和过期日志，统计与素材保留。', disk=result)
 
     def sync_runtime(config, base):
         if fleet:
@@ -188,6 +207,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.errorhandler(OSError)
     def filesystem_error(error):
+        from webapp.disk_budget import is_disk_full
+        if is_disk_full(error):
+            return jsonify(error='磁盘空间或配额不足，请等待自动清理或释放空间。', error_type='disk_wait'), 507
         app.logger.exception('文件操作失败')
         return jsonify(error=f'文件操作失败：{error}'), 400
 
@@ -658,7 +680,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.post('/api/downloads/import')
     def import_downloads():
-        request.max_content_length = 1024 ** 3 + 1024 ** 2
+        config, _ = settings()
+        request.max_content_length = int(config.get('disk_upload_limit_mb', 256)) * 1024 ** 2 + 1024 ** 2
         source = request.files.get('file')
         if not source or not source.filename or Path(source.filename).suffix.lower() not in ('.txt', '.csv'):
             raise ValueError('请选择 UTF-8 编码的 TXT 或 CSV 文件。')
@@ -669,9 +692,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / (identity + Path(source.filename).suffix.lower())
         try:
-            source.save(path)
-            if not path.stat().st_size or path.stat().st_size > 1024 ** 3:
-                raise ValueError('导入文件不能为空，最大 1 GB。')
+            from webapp.disk_uploads import save_import
+            save_import(source, path, store, config)
             with media_lock:
                 from webapp.bulk import create_import
                 task = create_import(store, identity, path, Path(source.filename).name, payload, list_data=request.form)

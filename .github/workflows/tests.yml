@@ -32,3 +32,4 @@ jobs:
       - run: python scripts/verify_jobs.py
       - run: python scripts/verify_quality.py
       - run: python scripts/verify_resume.py
+      - run: python scripts/verify_disk_budget.py

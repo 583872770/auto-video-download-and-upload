@@ -17,7 +17,10 @@ def download_cookie_session(options):
     if not options.get('cookiefile'):
         yield options
         return
-    with tempfile.TemporaryDirectory(prefix='youtube-download-') as directory:
+    temporary_root = options.get('_temporary_directory')
+    if temporary_root:
+        Path(temporary_root).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='youtube-download-', dir=temporary_root) as directory:
         cookie = Path(directory) / 'cookies.txt'
         shutil.copyfile(options['cookiefile'], cookie)
         yield {**options, 'cookiefile': str(cookie)}
@@ -44,6 +47,8 @@ def build_ydl_options(config, base):
         'concurrent_fragment_downloads': int(config.get('fragment_concurrency', 4)),
         'http_chunk_size': 10 * 1024 * 1024,
         'windowsfilenames': True,
+        'cachedir': False,
+        '_temporary_directory': config.get('_temporary_directory'),
     }
     if config.get('shard_downloads'):
         options['outtmpl'] = str(video_directory(config, base) / '%(id).2s' / '%(id)s' / '%(title).120B [%(id)s].%(ext)s')

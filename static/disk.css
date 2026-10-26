@@ -1,0 +1,6 @@
+.disk-panel { margin-top: 24px; padding: 24px; }
+.disk-panel > .panel-heading { padding: 0; margin-bottom: 18px; }
+.disk-panel .scale-fields { padding: 0; margin: 20px 0; }
+#disk-summary { overflow-wrap: anywhere; }
+#disk-usage { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px 20px; }
+#disk-usage p { margin: 0; overflow-wrap: anywhere; }

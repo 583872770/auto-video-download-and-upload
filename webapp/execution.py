@@ -11,6 +11,7 @@ class ExecutionControlService:
         self.prepare_resume = None
 
     def status(self, queue=None):
+        from webapp.disk_budget import resource_blocked, resource_blocks
         queue = queue if queue is not None else self.store.download_queue()
         blockers = []
         if queue['paused']:
@@ -19,7 +20,7 @@ class ExecutionControlService:
             released = self.store._released_queued_count(db)
             if self.store.fleet:
                 from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
-                rows = db.execute(select(instances.c.paused).where(
+                rows = db.execute(select(instances.c.id, instances.c.paused).where(
                     instances.c.role.in_(DOWNLOAD_ROLES),
                     instances.c.heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS)).all()
                 if not rows:
@@ -28,6 +29,10 @@ class ExecutionControlService:
                 elif all(row.paused for row in rows):
                     blockers.append(dict(code='instances_paused', message=f'{len(rows)} 个在线下载实例均已暂停，请单独恢复至少一个实例。',
                         href='/#instances', label='恢复下载实例'))
+                elif len(resource_blocks(db, [row.id for row in rows if not row.paused])) == len([row for row in rows if not row.paused]):
+                    blockers.append(dict(code='disk_wait', message='下载实例正在等待磁盘空间恢复。', href='/#settings', label='查看磁盘管理'))
+            elif resource_blocked(self.store, db):
+                blockers.append(dict(code='disk_wait', message='本机正在等待磁盘空间恢复。', href='/#settings', label='查看磁盘管理'))
         if queue['queued'] and not released:
             blockers.append(dict(code='jobs_not_started', message='待处理视频所属任务尚未开始或已暂停，请在任务中心点击“开始 / 继续”。',
                 href='/jobs', label='前往任务中心'))

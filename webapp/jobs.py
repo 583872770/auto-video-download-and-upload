@@ -197,11 +197,17 @@ class Jobs:
         return dict(items=items, next_cursor=str(rows[limit-1].seq) if len(rows)>limit else None)
 
     def execution_context(self, db):
+        from webapp.disk_budget import resource_blocked, resource_blocks
         available = True
         if self.store.fleet:
             from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
-            available = bool(db.execute(select(instances.c.id).where(instances.c.role.in_(DOWNLOAD_ROLES),
-                instances.c.paused == 0, instances.c.heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS).limit(1)).first())
+            ids = db.execute(select(instances.c.id).where(instances.c.role.in_(DOWNLOAD_ROLES),
+                instances.c.paused == 0, instances.c.heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS)).scalars().all()
+            available = bool(ids)
+            if ids and len(resource_blocks(db, ids)) == len(ids):
+                available = 'disk_wait'
+        elif resource_blocked(self.store, db):
+            available = 'disk_wait'
         return self.store.downloads_paused(db), available
 
     @staticmethod
@@ -222,7 +228,8 @@ class Jobs:
         result['amount'] = str(charge(result['file_bytes'], result['price'], result['unit'])) if result['price_set'] else None
         result['file_bytes_exact'] = str(result['file_bytes'])
         result['test_file_bytes_exact'] = str(result['test_file_bytes'])
-        reason = ('系统已暂停领取' if paused else '没有在线且启用的下载实例' if not available else '')
+        reason = ('系统已暂停领取' if paused else '等待下载实例释放磁盘空间' if available == 'disk_wait' else
+                  '没有在线且启用的下载实例' if not available else '')
         result['waiting_reason'] = reason if result['released'] and result['queued'] else ''
         result['state'] = ('deleted' if result['deleted'] else 'archived' if result['archived'] else
             'draining' if not result['released'] and result['running'] else 'running' if result['running'] else
@@ -519,7 +526,8 @@ def register_jobs(app, store, settings, preflight):
     @app.post('/api/jobs/<identity>/imports')
     def job_import(identity):
         get(identity)
-        request.max_content_length=1024**3+1024**2
+        config,base=settings()
+        request.max_content_length=int(config.get('disk_upload_limit_mb',256))*1024**2+1024**2
         source=request.files.get('file')
         if not source or not source.filename or Path(source.filename).suffix.lower() not in ('.txt','.csv'):
             raise ValueError('请选择 UTF-8 的 TXT / CSV 文件。')
@@ -528,9 +536,8 @@ def register_jobs(app, store, settings, preflight):
         path=store.directory/'imports'/(import_id+Path(source.filename).suffix.lower())
         path.parent.mkdir(parents=True,exist_ok=True)
         try:
-            source.save(path)
-            if not path.stat().st_size or path.stat().st_size>1024**3:
-                raise ValueError('文件不能为空，最大 1 GB。')
+            from webapp.disk_uploads import save_import
+            save_import(source,path,store,config)
             with store.connect() as db:
                 jobs.require(db,identity)
                 value=jobs.ensure(db,identity,config)

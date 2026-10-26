@@ -15,7 +15,7 @@ def storage_mode(config):
 
 
 class DownloadWorkspace:
-    def __init__(self, config, state_directory, task_id=None):
+    def __init__(self, config, state_directory, task_id=None, attempt_id=None):
         self.test_mode = storage_mode(config) == 'test'
         self.config = dict(config)
         self.directory = None
@@ -26,6 +26,10 @@ class DownloadWorkspace:
             self.state_directory = Path(state_directory).resolve()
             self.root = self.state_directory / 'test-downloads'
             self.directory = self.root / identity
+            if attempt_id:
+                if not re.fullmatch(r'[0-9a-f]{32}', attempt_id):
+                    raise ValueError('测试下载执行标识无效。')
+                self.directory = self.directory / attempt_id
             self._verify()
             self.config.update(path=str(self.directory), dir='')
 
@@ -46,4 +50,8 @@ class DownloadWorkspace:
             self._verify()
             if self.directory.exists():
                 shutil.rmtree(self.directory)
+            try:
+                self.directory.parent.rmdir()
+            except OSError:
+                pass
 

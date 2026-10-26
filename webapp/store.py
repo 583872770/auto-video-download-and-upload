@@ -639,6 +639,9 @@ class TaskStore:
             statement = statement.where(self.released_condition())
             if self.downloads_paused(db, lock=True) or not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
+            from webapp.disk_budget import resource_blocked
+            if resource_blocked(self, db):
+                statement = statement.where(tasks.c.action != 'download')
             if self.media_clear_busy(db):
                 statement = statement.where(~tasks.c.action.in_(('download', 'index')))
             if actions:
@@ -689,7 +692,7 @@ class TaskStore:
                 statement = statement.where(tasks.c.lease_until > stamp)
             return db.execute(statement.values(lease_until=stamp + lease_seconds)).rowcount > 0
 
-    def release(self, task_id, worker_id, reason, delay=30):
+    def release(self, task_id, worker_id, reason, delay=30, *, resource=False):
         with self.connect() as db:
             row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id,
                              tasks.c.worker_id == worker_id, tasks.c.status == 'running'))).mappings().first()
@@ -701,6 +704,10 @@ class TaskStore:
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, attempts=max(0, row['attempts'] - 1),
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay, error=reason))
+                if resource:
+                    progress = json.loads(row['progress']) if row.get('progress') else {}
+                    progress.update(stage='disk_wait', speed=None, eta=None)
+                    db.execute(tasks.update().where(tasks.c.id == task_id).values(progress=json.dumps(progress)))
                 self.statistics.transition(db, row, 'paused', reason)
                 self.statistics.settle(db)
 
@@ -803,7 +810,9 @@ class TaskStore:
             return list(latest.values())
 
     def set_runtime(self, config):
+        from webapp.disk_budget import DISK_FIELDS
         keys = ('worker_count', 'yt5s_browser_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
+        keys = (*keys, *DISK_FIELDS)
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))
@@ -870,11 +879,15 @@ class TaskStore:
         path = self.log_path(task_id)
         if not path.exists():
             return {'text': '', 'offset': 0}
+        try:
+            base = int(path.with_suffix('.offset').read_text())
+        except (OSError, ValueError):
+            base = 0
         with path.open('rb') as stream:
-            stream.seek(min(max(offset, 0), path.stat().st_size))
+            stream.seek(min(max(offset - base, 0), path.stat().st_size))
             chunk = stream.read(size)
             decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
             text = decoder.decode(chunk, final=False)
             pending, _ = decoder.getstate()
-            return {'text': text, 'offset': stream.tell() - len(pending)}
+            return {'text': text, 'offset': base + stream.tell() - len(pending), 'pruned': offset < base}
 

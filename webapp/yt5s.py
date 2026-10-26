@@ -402,7 +402,8 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
 
     capacity = browser_capacity if browser_capacity is not None else config.get('yt5s_browser_count', 2)
     signature = (executable, proxy, config.get('_resolved_clash_node', ''))
-    with session(directory, worker_slot).use(directory, capacity, waiting, worker_slot, signature) as owner:
+    with session(directory, worker_slot).use(directory, capacity, waiting, worker_slot, signature,
+            **({'disk_directory': config['_disk_state'], 'disk_config': config} if config.get('_disk_state') else {})) as owner:
         args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', 'best'),
                                timeout=180, proxy=proxy, browser_executable=executable)
         report = {'responses': []}

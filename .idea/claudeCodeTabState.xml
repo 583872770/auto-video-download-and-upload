@@ -15,7 +15,20 @@
             </TabSessionState>
           </value>
         </entry>
+        <entry key="1">
+          <value>
+            <TabSessionState>
+              <option name="projectPath" value="D:\pydaima\auto-video-download-and-upload" />
+              <option name="provider" value="codex" />
+              <option name="sessionId" value="01a17826-3ca2-7612-9af5-30dc4f3ce72e" />
+              <option name="cwd" value="D:\pydaima\auto-video-download-and-upload" />
+              <option name="model" value="gpt-6.1-sol" />
+              <option name="permissionMode" value="bypassPermissions" />
+            </TabSessionState>
+          </value>
+        </entry>
       </map>
     </option>
+    <option name="tabCount" value="2" />
   </component>
 </project>

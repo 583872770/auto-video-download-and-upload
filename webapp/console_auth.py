@@ -34,7 +34,7 @@ def rpc_allowed():
         return isinstance(data, dict) and data.get('action') == 'check'
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
         return request.method in ('GET', 'HEAD')
-    return (path in ('/health', '/api/config', '/api/status', '/api/fleet/preflight', '/api/downloads/connection')
+    return (path in ('/health', '/api/config', '/api/status', '/api/fleet/preflight', '/api/downloads/connection', '/api/disk', '/api/disk/cleanup')
             or path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube')))
 
 

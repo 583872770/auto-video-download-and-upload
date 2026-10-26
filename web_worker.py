@@ -1,6 +1,7 @@
 ﻿"""Run queued work outside Flask, serializing all media and browser operations."""
 import argparse
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 
 from webapp.tasks import TaskStore
 
@@ -46,35 +48,81 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
     payload = {**payload, '_task_id': task_id}
     from Utils.download_storage import DownloadWorkspace
+    from webapp.disk_budget import DiskBudget, DISK_FIELDS
     config = dict(payload['config'])
+    runtime = store.runtime() if store else config
+    config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
     if store and not payload.get('_execution_settings'):
         runtime = store.runtime()
         if 'storage_mode' in runtime:
             config['storage_mode'] = runtime['storage_mode']
-    workspace = DownloadWorkspace(config, store.directory if store else Path(payload['base']) / '.cache', task_id)
+    state = store.directory if store else Path(payload['base']) / '.cache'
+    workspace = DownloadWorkspace(config, state, task_id, uuid.uuid4().hex)
+    budget = DiskBudget(state, config)
+    if workspace.test_mode and store and task_id:
+        recovered = budget.recover_test_result(store, task_id)
+        if recovered:
+            return recovered
+    lease = budget.lease('test' if workspace.test_mode else 'cache', task=task_id,
+                         path=workspace.directory if workspace.test_mode else None)
     last_progress = {}
 
     def report(value):
+        estimate = value.get('total_bytes') or 0
+        if workspace.test_mode:
+            lease.check(estimate * (2 if value.get('download_method') == 'yt_dlp' else 1))
+        else:
+            lease.check()
         last_progress.update(value, storage_mode='test' if workspace.test_mode else 'local')
         if report_progress:
             report_progress(dict(last_progress))
 
-    try:
+    with lease:
+        if not workspace.test_mode:
+            from Utils.config import video_directory
+            lease.media_directory = video_directory(config, payload['base'])
+            lease.media_directory.mkdir(parents=True, exist_ok=True)
+        def stop_children():
+            from webapp.control import terminate_own_descendants
+            terminate_own_descendants()
+        lease.start_monitor(stop_children)
         report({'stage': 'preparing_workspace'})
-        result = _execute(action, {**payload, 'config': workspace.prepare()}, report,
-                          rotation_completed, store, worker_slot)
-        if workspace.test_mode:
-            report({**last_progress, 'stage': 'cleaning', 'speed': None, 'eta': None})
-    finally:
-        workspace.cleanup()
+        prepared = workspace.prepare()
+        prepared['_temporary_directory'] = str(lease.path / '_aux')
+        prepared['_disk_state'] = str(state)
+        payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path), '_disk_state': str(state)}
+        try:
+            result = _execute(action, payload, report, rotation_completed, store, worker_slot)
+            lease.stop.set()
+            if lease.monitor:
+                lease.monitor.join(timeout=20)
+            if not lease.monitor or not lease.monitor.is_alive():
+                # The pipeline returned a verified final outcome. A watchdog
+                # observation during its final bookkeeping must not requeue it.
+                lease.error = None
+            if workspace.test_mode:
+                last_progress.update(stage='cleaning', speed=None, eta=None)
+                if report_progress:
+                    report_progress(dict(last_progress))
+        except BaseException:
+            receipt = lease.path / '.completed-files.json'
+            if workspace.test_mode and receipt.exists() and store:
+                try:
+                    lease.preserve = not budget.receipts_recorded(store, task_id, receipt)
+                except Exception:
+                    lease.preserve = True
+            raise
     if workspace.test_mode:
-        result.update(message='测试下载完成，本次视频、封面、字幕及元数据已删除，仅保留任务记录和日志。',
-                      test_mode=True, files_deleted=True, skipped=False)
+        deleted = not workspace.directory.exists()
+        result.update(message=('测试下载完成，临时文件已删除，仅保留任务记录和统计。' if deleted else
+                              '测试下载完成，统计已保留；临时文件清理待重试。'),
+                      test_mode=True, files_deleted=deleted, skipped=False)
         print(result['message'], flush=True)
     return result
 
 
 def _execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0):
+    from webapp.disk_budget import DiskPressure
     from Utils.runtime import configure_runtime
     configure_runtime()
     from webapp.media import VIDEO_SUFFIXES
@@ -218,6 +266,18 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 return
             size = path.stat().st_size
             output_files[str(path)] = size
+            if test_mode and payload.get('_disk_workspace'):
+                receipt = Path(payload['_disk_workspace']) / '.completed-files.json'
+                temporary = receipt.with_suffix('.tmp')
+                with temporary.open('w', encoding='utf-8') as stream:
+                    json.dump([{'path': name, 'size': amount, 'complete': True,
+                                'method': progress.state.get('download_method'),
+                                'video_id': current_video.get('id', ''),
+                                'title': current_video.get('title', progress.state.get('title', ''))}
+                               for name, amount in output_files.items()], stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.replace(receipt)
             if store and payload.get('_task_id'):
                 if store.statistics.record_file(payload['_task_id'], path,
                         current_video.get('id', ''), current_video.get('title', progress.state.get('title', '')),
@@ -356,7 +416,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     cause = error
                     while cause:
                         if isinstance(cause, (BrowserEnvironmentRequired, DownloadEnvironmentRequired,
-                                              YouTubeAuthRequired, DownloadLeaseLost)):
+                                              YouTubeAuthRequired, DownloadLeaseLost, DiskPressure)):
                             raise cause
                         if isinstance(cause, OSError) and cause.errno in (5, 13, 28, 30, 122):
                             raise error
@@ -381,6 +441,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
 
 def drain(directory, slot=0, role='all'):
+    from webapp.disk_budget import DiskPressure, is_disk_full, MIB
     from webapp.downmp3 import Downmp3Error
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
@@ -404,7 +465,7 @@ def drain(directory, slot=0, role='all'):
                 from Utils.config import video_directory
                 from Utils.download_storage import DownloadWorkspace
                 workspace = DownloadWorkspace(config, store.directory, task['id'])
-                target = video_directory(workspace.config, base)
+                target = store.directory if workspace.test_mode else video_directory(workspace.config, base)
                 target.mkdir(parents=True, exist_ok=True)
                 reserve_gb = int(runtime.get('min_free_gb', config.get('min_free_gb', 2)))
                 reserve = reserve_gb * 1024 ** 3
@@ -450,6 +511,7 @@ def drain(directory, slot=0, role='all'):
             watchdog_thread = threading.Thread(target=watchdog, daemon=True) if store.fleet else None
             if watchdog_thread:
                 watchdog_thread.start()
+            resource_wait = None
 
             def report(value):
                 if not store.update_progress(task['id'], value, store.owner):
@@ -457,9 +519,10 @@ def drain(directory, slot=0, role='all'):
             # Redirect OS handles too, so FFmpeg stderr and Python logs stay together.
             sys.stdout.flush()
             sys.stderr.flush()
-            with store.log_path(task['id']).open('ab', buffering=0) as output:
-                os.dup2(output.fileno(), sys.stdout.fileno())
-                os.dup2(output.fileno(), sys.stderr.fileno())
+            from webapp.maintenance import bounded_task_log
+            maximum = min(int(runtime.get('max_log_mb', 2)) * MIB,
+                          int(runtime.get('disk_log_budget_mb', 512)) * MIB // 32)
+            with bounded_task_log(store.log_path(task['id']), maximum):
                 try:
                     print(f'[{task["action"]}] 任务开始', flush=True)
                     result = execute(task['action'], task['payload'],
@@ -467,6 +530,12 @@ def drain(directory, slot=0, role='all'):
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
+                except DiskPressure as error:
+                    resource_wait = str(error)
+                    store.release(task['id'], store.owner, str(error), delay=60, resource=True)
+                    store.worker_status(store.owner, name, 'disk_wait', message=str(error))
+                    print(f'磁盘资源等待：{error}', flush=True)
+                    break
                 except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
                     from webapp.execution import isolate_download_failure
                     isolate_download_failure(store, error)
@@ -483,6 +552,11 @@ def drain(directory, slot=0, role='all'):
                     print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
                     break
                 except BaseException as error:
+                    if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
+                        resource_wait = '磁盘空间或配额不足，等待释放空间。'
+                        store.release(task['id'], store.owner, resource_wait, delay=60, resource=True)
+                        store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
+                        break
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = str(error) or type(error).__name__
@@ -500,9 +574,7 @@ def drain(directory, slot=0, role='all'):
                     heartbeat_thread.join(timeout=2)
                     if watchdog_thread:
                         watchdog_thread.join(timeout=2)
-                    store.worker_status(store.owner, name, 'idle')
-            from webapp.maintenance import trim_log
-            trim_log(store, task['id'], runtime.get('max_log_mb', config.get('max_log_mb', 10)))
+                    store.worker_status(store.owner, name, 'disk_wait' if resource_wait else 'idle', message=resource_wait)
 
 
 if __name__ == '__main__':

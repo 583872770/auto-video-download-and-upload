@@ -43,6 +43,7 @@ class TaskRunner:
         last_error = 0
         last_cleanup = 0
         last_beat = 0
+        last_disk = 0
         while not self.stop.is_set():
             try:
                 if time.time() - last_recovery > 15:
@@ -57,6 +58,13 @@ class TaskRunner:
                         last_beat = time.monotonic()
                     config = self.store.fleet.local_settings()['config']
                 count = max(1, min(16, int(config.get('worker_count', 1))))
+                from webapp.disk_budget import DiskBudget
+                disk = DiskBudget(self.store.directory, config)
+                if time.monotonic() - last_disk >= 30:
+                    disk.cleanup(self.store)
+                    last_disk = time.monotonic()
+                disk_state = disk.snapshot()
+                disk.publish(self.store, disk_state)
                 if time.monotonic() - last_cleanup >= 60:
                     from web_worker import worker_lock
                     from webapp.maintenance import cleanup_logs
@@ -74,6 +82,9 @@ class TaskRunner:
                     roles.discard('regular')
                 if role_counts.get('download') and (not self.store.fleet or self.store.fleet.can_download):
                     roles.add('regular')
+                if disk_state['low_space']:
+                    roles.discard('download')
+                    roles.discard('regular')
                 if roles:
                     for slot in [-1, *range(count)]:
                         role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
@@ -88,6 +99,10 @@ class TaskRunner:
                             continue
                         env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1',
                                    VIDEO_WORKER_DATABASE_URL=self.store.db.url)
+                        from webapp.disk_budget import safe_path
+                        temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{"maintenance" if slot < 0 else slot}', self.store.directory)
+                        temporary.mkdir(parents=True, exist_ok=True)
+                        env.update(TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
                         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
                         process = subprocess.Popen(
                             [sys.executable, '-u', str(ROOT / 'web_worker.py'), '--state', str(self.store.directory),

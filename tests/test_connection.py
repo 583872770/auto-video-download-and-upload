@@ -16,7 +16,7 @@ from web_worker import execute
 
 class ConnectionContract:
     def old_task(self):
-        self.client.put('/api/config', json={'download_method': 'yt5s'}, headers=self.headers)
+        self.client.put('/api/config', json={'download_method': 'yt5s', 'yt5s_quality': '360'}, headers=self.headers)
         payload = {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s',
                               'yt5s_quality': '360', 'youtube_cookie': 'Cookies/original.txt'},
                    'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']}
