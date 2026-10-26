@@ -14,10 +14,10 @@ DEFAULTS = {
     'browser_executable': '', 'download_format': '', 'js_runtimes': None,
     'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
     'log_retention_days': 0, 'max_log_mb': 10, 'shard_downloads': True, 'storage_mode': 'local',
-    'download_method': 'yt_dlp', 'yt5s_quality': '360', 'yt5s_browser_count': 2,
+    'download_method': 'yt_dlp', 'yt5s_quality': 'best', 'yt5s_browser_count': 2,
     'download_methods': None,
     'fragment_concurrency': 4,
-    'downmp3_quality': '720', 'downmp3_timeout': 300,
+    'downmp3_quality': 'best', 'downmp3_timeout': 300,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
@@ -67,10 +67,10 @@ def validate_settings(config, *, download_only=False):
     if config.get('download_method', 'yt_dlp') not in ('yt_dlp', 'yt5s', 'yt5s_fallback', 'downmp3'):
         raise ValueError('请选择有效的下载方式。')
     download_methods(config)
-    if config.get('yt5s_quality', '360') not in ('360', '720'):
-        raise ValueError('yt5s 画质请选择 360p 或 720p。')
-    if config.get('downmp3_quality', '720') not in ('360', '480', '720', '1080'):
-        raise ValueError('downmp3 画质请选择 360p、480p、720p 或 1080p。')
+    if config.get('yt5s_quality', 'best') not in ('best', '360', '720'):
+        raise ValueError('yt5s 画质请选择尽可能最高画质、360p 或 720p。')
+    if config.get('downmp3_quality', 'best') not in ('best', '360', '480', '720', '1080'):
+        raise ValueError('downmp3 画质请选择尽可能最高画质、360p、480p、720p 或 1080p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():

@@ -170,6 +170,31 @@ def site_timeout_message(stage, timeout):
     return messages.get(stage, '方式二网站操作超时，请检查当前节点及远程桌面中的网页。')
 
 
+async def select_video_link(page, quality):
+    """Choose the highest advertised video resolution with a download action."""
+    rows = page.locator('#result tr')
+    if quality != 'best':
+        link = rows.filter(has_text=re.compile(r'\b' + quality + r'p(?:\d{2,3})?(?!\d)', re.I)).first.locator(
+            'a, button').filter(has_text='Download').first
+        await link.wait_for(state='visible', timeout=15000)
+        return int(quality), link
+
+    # Adjacent table cells may concatenate as "2160pDownload" in textContent.
+    pattern = re.compile(r'\b(\d{3,4})p(\d{2,3})?(?!\d)', re.I)
+    video_rows = rows.filter(has_text=pattern)
+    await video_rows.first.wait_for(state='visible', timeout=15000)
+    choices = []
+    for index, text in enumerate(await video_rows.all_text_contents()):
+        match = pattern.search(text)
+        link = video_rows.nth(index).locator('a, button').filter(has_text='Download').first
+        if match and await link.count() and await link.is_visible() and await link.is_enabled():
+            choices.append((int(match[1]), int(match[2] or 0), index, link))
+    if not choices:
+        raise RuntimeError('yt5s 没有返回可下载的视频画质选项。')
+    height, _, _, link = max(choices, key=lambda item: item[:2])
+    return height, link
+
+
 async def probe(args, directory, report, *, download=True, on_stage=None, browser_owner=None):
     from webapp.yt5s_browser import NativeBrowser
 
@@ -266,10 +291,9 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                     duration = 0
                     for part in duration_match[1].split(':'):
                         duration = duration * 60 + int(part)
-                link = page.locator('#result tr').filter(
-                    has_text=re.compile(r'\b' + args.quality + r'p\b')).first.locator('a, button').filter(
-                        has_text='Download').first
-                await link.wait_for(state='visible', timeout=15000)
+                height, link = await select_video_link(page, args.quality)
+                report['selected_quality'] = height
+                print(f'yt5s：选择网站提供的 {height}p 视频。', flush=True)
                 href = await link.get_attribute('href')
                 if href and href.startswith(('https://', 'http://')):
                     state['download_url'] = href
@@ -283,7 +307,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                 if not download:
                     return {'id': args.video_id, 'title': title.strip() or args.video_id,
                             'url': state['download_url'], 'ext': 'mp4', 'duration': duration,
-                            'thumbnail': thumbnail, 'height': int(args.quality),
+                            'thumbnail': thumbnail, 'height': height,
                             'webpage_url': 'https://www.youtube.com/watch?v=' + args.video_id,
                             'extractor': 'youtube', 'extractor_key': 'Youtube',
                             'http_headers': {'Referer': 'https://yt5s.biz/'}}
@@ -316,7 +340,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
 def main(argv=None):
     parser = argparse.ArgumentParser(description='独立验证 yt5s 原生浏览器解析和视频下载；不连接项目数据库')
     parser.add_argument('--video-id', default=os.environ.get('YT5S_VIDEO_ID', 'npNnbj46_ik'))
-    parser.add_argument('--quality', choices=('360', '720'), default=os.environ.get('YT5S_QUALITY', '360'))
+    parser.add_argument('--quality', choices=('best', '360', '720'), default=os.environ.get('YT5S_QUALITY', 'best'))
     parser.add_argument('--timeout', type=int, default=int(os.environ.get('YT5S_TIMEOUT', '180')))
     parser.add_argument('--max-mib', type=int, default=int(os.environ.get('YT5S_MAX_MIB', '128')))
     parser.add_argument('--proxy', default=os.environ.get('YT5S_PROXY', ''))
@@ -379,7 +403,7 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     capacity = browser_capacity if browser_capacity is not None else config.get('yt5s_browser_count', 2)
     signature = (executable, proxy, config.get('_resolved_clash_node', ''))
     with session(directory, worker_slot).use(directory, capacity, waiting, worker_slot, signature) as owner:
-        args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', '360'),
+        args = SimpleNamespace(video_id=video_id, quality=config.get('yt5s_quality', 'best'),
                                timeout=180, proxy=proxy, browser_executable=executable)
         report = {'responses': []}
         try:

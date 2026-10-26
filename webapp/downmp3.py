@@ -76,7 +76,11 @@ def resolve(url, config, base, on_stage=None):
 
     validate_method_urls({**config, 'download_method': 'downmp3'}, [url])
     video_id, _ = source_identity(url)
-    quality = config.get('downmp3_quality', '720')
+    # The API accepts a numeric target, not "best"; its highest supported
+    # video target is currently 1080p. The source may have a lower resolution.
+    quality = config.get('downmp3_quality', 'best')
+    if quality == 'best':
+        quality = '1080'
     timeout = int(config.get('downmp3_timeout', 300))
     proxy = '' if config.get('proxy_mode') == 'direct' else (
         config.get('_resolved_clash_proxy', '') if config.get('proxy_mode') == 'clash' else config.get('proxy', ''))

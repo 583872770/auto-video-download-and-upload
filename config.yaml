@@ -15,11 +15,11 @@ max_log_mb: 10
 shard_downloads: true
 storage_mode: local
 download_method: downmp3
-yt5s_quality: '360'
+yt5s_quality: best
 yt5s_browser_count: 2
 download_methods:
 - downmp3
 - yt5s
 fragment_concurrency: 4
-downmp3_quality: '720'
+downmp3_quality: best
 downmp3_timeout: 300

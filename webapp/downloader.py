@@ -27,14 +27,13 @@ def build_ydl_options(config, base):
     from Utils.download_storage import storage_mode
     test_mode = storage_mode(config) == 'test'
     options = {
-        'format': config.get('download_format') or
-                             'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/'
-                             'best[ext=mp4][vcodec^=avc1]/bestvideo+bestaudio/best',
+        'format': config.get('download_format') or 'bestvideo*+bestaudio/best',
+        'format_sort': ['res', 'fps'],
         'download_archive': None if test_mode else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
         'outtmpl': str(video_directory(config, base) / '%(title).120B [%(id)s].%(ext)s'),
-        'merge_output_format': 'mp4',
+        'merge_output_format': 'mp4/mkv',
         'retries': 3,
         'extractor_retries': 2,
         'socket_timeout': 20,

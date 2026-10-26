@@ -12,6 +12,7 @@ let providerDraft = null;
 let settingsDirty = false;
 let startupPolling = false;
 state.startup = { state: 'idle' };
+const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
 const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3' };
 const selectedProviders = () => state.config?.download_methods || (state.config?.download_method === 'yt5s_fallback' ? ['yt5s', 'yt_dlp'] : [state.config?.download_method || 'yt_dlp']);
 let nodeSignature = '';
@@ -429,9 +430,9 @@ function renderDownloadMethod() {
   $('#save-download-strategy').textContent = downloadMethodBusy ? '正在保存…' : '保存下载策略';
   const tools = state.status?.tools;
   const notes = [`尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后点击“保存下载策略”生效。`];
-  if (methods.includes('downmp3')) notes.push(`downmp3 ${state.config?.downmp3_quality || '720'}p，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
-  if (methods.includes('yt5s')) notes.push(`yt5s ${state.config?.yt5s_quality || '360'}p，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
-  notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 使用其画质配置。' : '当前选择无需 YouTube Cookie。');
+  if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
+  if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
+  notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
   notes.push('此处配置新任务的默认策略；已有客户任务请进入任务设置修改。运行中的尝试保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
 }
