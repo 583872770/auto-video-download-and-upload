@@ -123,8 +123,11 @@ class StatisticsContract:
         self.store.statistics.record_file(job['id'], self.final_file(size=1000))
         route = '/api/statistics/sessions/' + identity
         response = self.client.put(route, json={'price': '15000', 'unit': 'GB', 'label': '客户 A · 清单一'}, headers=self.headers)
+        self.assertEqual(response.status_code, 400, response.json)
+        response = self.client.put(route, json={'label': '客户 A · 清单一'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(response.json['session']['amount'], '0.02')  # Round 0.015 yuan once per session.
+        self.assertIsNone(response.json['session']['amount'])
+        self.assertEqual(response.json['session']['billing_scope'], 'execution_only')
         before = self.store.statistics.session(identity)
         for values in ({'price': '-1'}, {'price': 'NaN'}, {'price': 'Infinity'}, {'price': '0.0000001'},
                        {'price': '1000001'}, {'price': '1', 'unit': 'TB'}, {'price': '1', 'label': 'x' * 201}):
@@ -179,12 +182,14 @@ class StatisticsContract:
             self.job(video)
             job = self.claim()
             self.store.statistics.record_file(job['id'], self.final_file(video + '.mp4', 1000))
-            self.store.statistics.update(job['payload']['download_session_id'], {'label': label, 'price': price, 'unit': 'GB'})
+            self.store.statistics.update(job['payload']['download_session_id'], {'label': label})
+            with self.store.connect() as db:
+                db.execute(download_sessions.update().where(download_sessions.c.id == job['payload']['download_session_id']).values(price=price))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
         filtered = self.client.get('/api/statistics', query_string={'q': '客户 A'}).json
         self.assertEqual(len(filtered['items']), 2)
         self.assertEqual((filtered['summary']['file_count'], filtered['summary']['file_bytes']), (2, 2000))
-        self.assertEqual(filtered['summary']['amount'], '0.03')  # 0.015 -> .02 and 0.005 -> .01.
+        self.assertEqual(filtered['summary']['amount'], '0.00')  # Unassigned legacy executions cannot invent a customer bill.
         summary = self.client.get('/api/statistics/export', query_string={'q': '客户 A'}).data.decode('utf-8-sig')
         self.assertEqual(len(summary.splitlines()), 3)
         self.assertNotIn('客户 B', summary)
@@ -201,7 +206,8 @@ class StatisticsContract:
         data = self.overview()
         self.assertEqual(data['summary']['file_bytes_exact'], str(size))
         self.assertEqual(data['items'][0]['file_bytes_exact'], str(size))
-        self.assertEqual(data['items'][0]['amount'], '22517998.14')
+        self.assertIsNone(data['items'][0]['amount'])
+        self.assertEqual(data['billing']['amount'], '0.00')
 
     def test_deleted_test_files_accumulate_per_session_and_never_increase_billing(self):
         for video, label, size in [('npNnbj46_ik', '客户 A 测试一', 12345), ('2Gu7q-KUXCk', '客户 B 测试', 4567),
@@ -209,7 +215,7 @@ class StatisticsContract:
             self.job(video, storage_mode='test')
             job = self.claim()
             identity = job['payload']['download_session_id']
-            self.store.statistics.update(identity, {'label': label, 'price': '999999', 'unit': 'GB'})
+            self.store.statistics.update(identity, {'label': label})
             path = self.final_file(video + '.mp4', size)
             with ThreadPoolExecutor(2) as pool:
                 results = list(pool.map(lambda _: self.store.statistics.record_file(job['id'], path, video,
@@ -228,14 +234,15 @@ class StatisticsContract:
             self.store.finish(job['id'], result={'test_mode': True}, worker_id=self.store.owner)
             row = self.store.statistics.session(identity)
             self.assertEqual((row['test_succeeded'], row['test_file_count'], row['test_file_bytes']), (1, 1, size))
-            self.assertEqual((row['file_count'], row['file_bytes'], row['amount']), (0, 0, '0.00'))
+            self.assertEqual((row['file_count'], row['file_bytes'], row['amount']), (0, 0, None))
             self.assertEqual(row['success_rate'], 100)
             detail = self.client.get('/api/statistics/sessions/' + identity + '?kind=test_files').json
             self.assertEqual((len(detail['items']), detail['items'][0]['size_exact']), (1, str(size)))
             self.assertEqual(self.client.get('/api/statistics/sessions/' + identity).json['items'], [])
             exported = self.client.get('/api/statistics/sessions/' + identity + '/export?kind=test_files').data.decode('utf-8-sig')
             rows = list(csv.DictReader(StringIO(exported)))
-            self.assertEqual((rows[0]['精确字节数'], rows[0]['单价(元/单位)']), (str(size), '0'))
+            self.assertEqual(rows[0]['精确字节数'], str(size))
+            self.assertNotIn('单价(元/单位)', rows[0])
             self.assertIn('不计费', rows[0]['保存方式'])
         filtered = self.client.get('/api/statistics', query_string={'q': '客户 A'}).json
         summary = filtered['summary']
@@ -268,7 +275,9 @@ class StatisticsContract:
         job = self.claim()
         identity = job['payload']['download_session_id']
         self.store.statistics.record_file(job['id'], self.final_file(size=1000))
-        self.store.statistics.update(identity, {'label': '历史会话', 'price': '15000', 'unit': 'GB'})
+        self.store.statistics.update(identity, {'label': '历史会话'})
+        with self.store.connect() as db:
+            db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(price='15000'))
         # Simulate the previous deployed schema, which has billing but no test tables.
         test_files.drop(self.store.db.engine)
         test_totals.drop(self.store.db.engine)
@@ -277,7 +286,8 @@ class StatisticsContract:
         self.store.db.initialize()
         self.store.db.initialize()
         current = self.store.statistics.session(identity)
-        self.assertEqual((current['file_bytes'], current['test_file_bytes'], current['amount']), (1000, 0, '0.02'))
+        self.assertEqual((current['file_bytes'], current['test_file_bytes'], current['amount']), (1000, 0, None))
+        self.assertEqual(current['price'], '15000')  # Historical columns are retained but no longer used for billing.
         size = 9007199254740993
         with self.store.connect() as db:
             db.execute(test_totals.insert().values(session_id=identity, test_file_count=1, test_file_bytes=size))
@@ -285,7 +295,7 @@ class StatisticsContract:
         self.assertEqual(data['summary']['test_file_bytes_exact'], str(size))
         self.assertEqual(data['items'][0]['test_file_bytes_exact'], str(size))
         self.assertEqual(data['summary']['downloaded_file_bytes_exact'], str(size + 1000))
-        self.assertEqual(data['summary']['amount'], '0.02')
+        self.assertEqual(data['summary']['amount'], '0.00')
         self.assertTrue(data['test_tracking_since'])
 
 

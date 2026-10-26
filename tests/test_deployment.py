@@ -71,6 +71,26 @@ class DeploymentTests(unittest.TestCase):
                 'mysql_host': 'mysql.example.test', 'mysql_port': 3306, 'mysql_database': 'video_downloads',
                 'mysql_user': 'video', 'mysql_password': 'p@ss:$ ${literal}秘密', 'web_hosts': 'localhost,127.0.0.1', **extra}
 
+    def test_new_deployments_offer_hybrid_and_require_an_instance_address(self):
+        self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
+        self.assertIn('管理与下载一体', self.client.get('/setup').text)
+        response = self.save(role='hybrid')
+        self.assertEqual(response.status_code, 400)
+        response = self.save(role='hybrid', instance_url='http://127.0.0.1:5000')
+        self.assertEqual(response.status_code, 202, response.json)
+        self.assertEqual(self.gateway.running_role, 'hybrid')
+        self.assertEqual(self.client.get('/').json['role'], 'hybrid')
+
+    def test_existing_cluster_can_switch_to_hybrid_without_standalone_conversion(self):
+        self.cluster_fixture('manager')
+        with patch('webapp.deployment.check_conversion') as conversion:
+            response = self.save(role='hybrid', instance_url='http://127.0.0.1:5000')
+        self.assertEqual(response.status_code, 202, response.json)
+        conversion.assert_not_called()
+        self.assertEqual(self.gateway.profile['instance_id'], 'original-node')
+        self.assertEqual(self.gateway.running_role, 'hybrid')
+        self.assertFalse((self.root / 'state/single-mode.json').exists())
+
     def save(self, **extra):
         with patch('webapp.deployment.test_mysql'):
             response = self.client.post('/api/deployment/save', json=self.values(**extra), headers=self.headers)

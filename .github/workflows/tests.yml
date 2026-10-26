@@ -5,6 +5,19 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test-only-password
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptest-only-password"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      VIDEO_TEST_MYSQL_URL: mysql+pymysql://root:test-only-password@127.0.0.1:3306/mysql
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -14,5 +27,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r requirements.lock.txt
       - run: python -m pip check
+      - run: python -m playwright install --with-deps chromium
       - run: python -m unittest discover -s tests -v
-      - run: python scripts/verify_pipeline.py
+      - run: python scripts/verify_jobs.py
+      - run: python scripts/verify_resume.py

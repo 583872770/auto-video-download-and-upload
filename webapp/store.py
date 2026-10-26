@@ -16,7 +16,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import OperationalError
 
 from webapp.database import (Database, archive, batches, counters, download_lists, imports, reservations,
-                             rotations, settings, snapshots, tasks, workers)
+                             rotations, settings, snapshots, tasks, workers, job_profiles, job_imports, job_removed)
 
 
 def now():
@@ -118,6 +118,8 @@ class TaskStore:
         if payload.get('config', {}).get('storage_mode') == 'test':
             source_key = 'test:' + source_key
         batch_id = payload.get('batch_id')
+        if action == 'download' and batch_id and db.execute(select(job_profiles.c.id).where(job_profiles.c.id == batch_id)).first():
+            source_key = 'job:' + batch_id + ':' + source_key
         if action == 'download':
             self.db.ensure(db, reservations, {'key': source_key, 'task_id': task_id})
             if deduplicate and db.execute(select(reservations.c.task_id).where(
@@ -153,11 +155,44 @@ class TaskStore:
             return []
         start = self.db.sequence(db, 'task', len(payloads))
         rows, reservation_rows, packed = [], [], {}
+        batch_ids = {p.get('batch_id') for p in payloads if p.get('batch_id')}
+        managed = set(db.execute(select(job_profiles.c.id).where(job_profiles.c.id.in_(batch_ids))).scalars()) if batch_ids else set()
+        restored_ids = []
+        if managed:
+            existing = {}
+            urls = [p['urls'][0] for p in payloads if p.get('batch_id') in managed]
+            for offset in range(0, len(urls), 1000):
+                video_ids = [source_identity(url)[0] for url in urls[offset:offset+1000]]
+                for old in db.execute(select(tasks).where(tasks.c.batch_id.in_(managed), tasks.c.action == 'download',
+                        or_(tasks.c.video_id.in_(video_ids),tasks.c.url.in_(urls[offset:offset+1000]))).with_for_update()).mappings():
+                    existing[(old['batch_id'], old['video_id'] or old['url'])] = old
+            accepted_payloads = []
+            for payload in payloads:
+                key = (payload.get('batch_id'), source_identity(payload['urls'][0])[0] or payload['urls'][0])
+                old = existing.get(key)
+                if old is None:
+                    accepted_payloads.append(payload)
+                    continue
+                if old['status'] == 'removed':
+                    previous = db.execute(select(job_removed.c.previous_status).where(job_removed.c.task_id == old['id'])).scalar_one()
+                    status = 'succeeded' if previous == 'succeeded' else 'queued'
+                    self._transition(db, old, status)
+                    db.execute(tasks.update().where(tasks.c.id == old['id']).values(status=status, worker_id=None,
+                        lease_until=None, attempts=0 if status == 'queued' else old['attempts'], available_at=0,
+                        finished_at=old['finished_at'] if status == 'succeeded' else None, error=None))
+                    db.execute(job_removed.delete().where(job_removed.c.task_id == old['id']))
+                    existing[key] = {**old, 'status': status}
+                    restored_ids.append(old['id'])
+            payloads = accepted_payloads
+            if not payloads:
+                return restored_ids
         for index, payload in enumerate(payloads):
             url = payload['urls'][0]
             video_id, source_key = source_identity(url)
             if payload.get('config', {}).get('storage_mode') == 'test':
                 source_key = 'test:' + source_key
+            if payload.get('batch_id') in managed:
+                source_key = 'job:' + payload['batch_id'] + ':' + source_key
             task_id = uuid.uuid4().hex
             snapshot_id, encoded = shared_snapshot or self.prepare_snapshot(payload)
             packed[snapshot_id] = encoded
@@ -172,7 +207,7 @@ class TaskStore:
         if deduplicate:
             rows = [row for row in rows if row['id'] in accepted]
         if not rows:
-            return []
+            return restored_ids
         for key, value in packed.items():
             self.db.ensure(db, snapshots, {'id': key, 'payload': value})
         batch_ids = {row['batch_id'] for row in rows if row['batch_id']}
@@ -184,7 +219,7 @@ class TaskStore:
         self._counter(db, 'action:download', 'queued', len(rows))
         for batch_id, count in Counter(row['batch_id'] for row in rows if row['batch_id']).items():
             self._counter(db, 'batch:' + batch_id, 'queued', count)
-        return [row['id'] for row in rows]
+        return restored_ids + [row['id'] for row in rows]
 
     def get(self, task_id, private=False):
         with self.connect() as db:
@@ -267,7 +302,7 @@ class TaskStore:
         statement = select(counters.c.status, func.sum(counters.c.value)).group_by(counters.c.status)
         statement = statement.where(counters.c.scope.in_(scopes)) if scopes else statement.where(counters.c.scope.like('action:%'))
         result = {row[0]: max(0, int(row[1])) for row in db.execute(statement)}
-        return {**result, 'total': sum(result.values())}
+        return {**result, 'total': sum(value for key, value in result.items() if key not in ('removed', 'cancelled'))}
 
     def counts(self, actions=None, batch_id=None):
         with self.connect() as db:
@@ -304,12 +339,13 @@ class TaskStore:
         identity = func.json_extract(tasks.c.payload, '$.import_id')
         if self.db.mysql:
             identity = func.json_unquote(identity)
-        held = select(download_lists.c.id).where(download_lists.c.id == identity, download_lists.c.released == 0).exists()
+        parent = select(job_imports.c.job_id).where(job_imports.c.id == identity).scalar_subquery()
+        held = select(download_lists.c.id).where(or_(download_lists.c.id == identity, download_lists.c.id == parent), download_lists.c.released == 0).exists()
         return db.execute(select(tasks.c.id).where(tasks.c.action == 'import',
             tasks.c.status.in_(('queued', 'running')), ~held).limit(1)).first() is not None
 
     def download_connection_busy(self):
-        if self.fleet and self.fleet.role == 'worker':
+        if self.fleet and self.fleet.can_download:
             with self.connect() as db:
                 running = db.execute(select(tasks.c.id).where(tasks.c.instance_id == self.fleet.id,
                     tasks.c.status == 'running', tasks.c.action == 'download').limit(1)).first()
@@ -360,8 +396,7 @@ class TaskStore:
                     tasks.c.status == 'queued', tasks.c.available_at <= stamp, self.released_condition()).limit(16)
                 if self.fleet:
                     statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
-                        and_(tasks.c.target_instance_id.is_(None), tasks.c.action == 'download' if self.fleet.role == 'worker'
-                             else tasks.c.action == 'import')))
+                        and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
                 count = len(db.execute(statement).all())
                 if count:
                     counts[role] = count
@@ -492,7 +527,8 @@ class TaskStore:
             with self.connect() as connection:
                 return self.effective_download_payload(task_id, payload, connection)
         if self.fleet:
-            return self.fleet.execution(payload, db)
+            from webapp.jobs import apply_policy
+            return apply_policy(self, db, task_id, self.fleet.execution(payload, db))
         current = db.execute(select(settings.c.value).where(settings.c.key == 'download_settings')).scalar_one_or_none()
         if current:
             value = json.loads(current)
@@ -500,7 +536,8 @@ class TaskStore:
             result.pop('clash', None)
             if value['config'].get('proxy_mode') == 'clash':
                 result['clash'] = {'directory': value['clash_directory']}
-            return result
+            from webapp.jobs import apply_policy
+            return apply_policy(self, db, task_id, result)
         # Compatibility for standalone stores without a Web configuration.
         saved = db.execute(select(settings.c.value).where(
             settings.c.key == 'download_connection_override')).scalar_one_or_none()
@@ -594,8 +631,7 @@ class TaskStore:
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
             if self.fleet:
                 statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
-                    and_(tasks.c.target_instance_id.is_(None), tasks.c.action == 'download' if self.fleet.role == 'worker'
-                         else tasks.c.action == 'import')))
+                    and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
                 if self.fleet.role == 'manager' or not self.fleet.admission(db):
                     statement = statement.where(tasks.c.action != 'download')
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
@@ -723,7 +759,7 @@ class TaskStore:
                     field = 'failed' if error else 'succeeded'
                     self.db.ensure(db, rotations, {'id': generation, 'succeeded': 0, 'failed': 0})
                     db.execute(rotations.update().where(rotations.c.id == generation).values({field: rotations.c[field] + 1}))
-                if row['source_key'] and (error or (result or {}).get('test_mode') or row['source_key'].startswith('test:')):
+                if row['source_key'] and not row['source_key'].startswith('job:') and (error or (result or {}).get('test_mode') or row['source_key'].startswith('test:')):
                     db.execute(reservations.delete().where(reservations.c.key == row['source_key'], reservations.c.task_id == task_id))
             return True
 
@@ -743,7 +779,7 @@ class TaskStore:
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + 2 if retry else 0, finished_at=None if retry else now(),
                     error='执行进程已退出，等待恢复。' if retry else '执行进程已退出。'))
                 self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
-                if not retry:
+                if not retry and not (row['source_key'] or '').startswith('job:'):
                     db.execute(reservations.delete().where(reservations.c.task_id == row['id']))
             self.statistics.settle(db)
             return len(rows)
@@ -759,7 +795,7 @@ class TaskStore:
         with self.connect() as db:
             latest = {}
             statement = select(workers).where(workers.c.heartbeat > time.time() - 90)
-            if self.fleet and self.fleet.role == 'worker':
+            if self.fleet and self.fleet.can_download:
                 prefix = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':'
                 statement = statement.where(workers.c.slot.startswith(prefix, autoescape=True))
             for row in db.execute(statement.order_by(workers.c.heartbeat.desc()).limit(500)).mappings():
@@ -779,11 +815,15 @@ class TaskStore:
             value = db.execute(select(settings.c.value).where(settings.c.key == 'runtime')).scalar_one_or_none()
             return json.loads(value) if value else {}
 
-    def archive_has(self, key):
+    def archive_has(self, key, job_id=None):
+        if job_id:
+            key = 'job:' + job_id + ':' + key
         with self.connect() as db:
             return db.execute(select(archive.c.key).where(archive.c.key == key)).first() is not None
 
-    def archive_add(self, key, path=None):
+    def archive_add(self, key, path=None, job_id=None):
+        if job_id:
+            key = 'job:' + job_id + ':' + key
         with self.connect() as db:
             self.db.ensure(db, archive, {'key': key, 'created_at': now(), 'path': path})
 

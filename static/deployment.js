@@ -27,10 +27,10 @@ async function run(operation) {
 }
 function renderRole() {
   const role = $('#deployment-role').value;
-  $('#instance-url-field').hidden = role !== 'worker';
-  form.elements.instance_url.required = role === 'worker';
-  if (role === 'worker' && !form.elements.instance_url.value) form.elements.instance_url.value = location.origin;
-  $('#role-description').textContent = {manager:'管理后台只做管理与导入，视频由下载实例保存。整个集群使用一个管理后台。',worker:'这台机器只执行下载。配置完成后会自动注册到共享 MySQL，管理端即可看到。',all:'适合只用一台机器，同时提供管理页面与视频下载。'}[role];
+  $('#instance-url-field').hidden = !['worker', 'hybrid'].includes(role);
+  form.elements.instance_url.required = ['worker', 'hybrid'].includes(role);
+  if (['worker', 'hybrid'].includes(role) && !form.elements.instance_url.value) form.elements.instance_url.value = location.origin;
+  $('#role-description').textContent = {hybrid:'本机提供完整管理页面并参与下载。多台机器连接同一数据库即可协作；任务、统计与计费共享，目录、Cookie 和代理按实例独立。新实例默认暂停领取，请在工作台恢复。',manager:'只做管理与导入，视频由下载实例保存。',worker:'这台机器只执行下载。配置完成后会自动注册到共享 MySQL，管理端即可看到。',all:'适合只用一台机器，同时提供管理页面与视频下载。'}[role];
   const converting = role === 'all' && Boolean(current?.cluster_state) && !current?.single_conversion;
   $('#single-transition-field').hidden = !converting;
   $('#single-transition-confirm').disabled = !converting;
@@ -53,7 +53,7 @@ async function load() {
 function renderClusterState() {
   const state = current.cluster_state;
   $('#cluster-state-note').hidden = !state;
-  if (state) $('#cluster-state-description').textContent = `这份状态目录原角色：${state.role === 'manager' ? '管理后台' : '下载实例'}；实例 ID：${state.instance_id}。可以选择单机模式并勾选转换确认，保存后重启。`;
+  if (state) $('#cluster-state-description').textContent = `这份状态目录原角色：${({manager:'管理后台',worker:'下载实例',hybrid:'管理与下载一体'})[state.role]}；实例 ID：${state.instance_id}。可改为管理与下载一体，保存后重启本机；改为单机模式需要勾选转换确认。`;
 }
 function restoreInstance() {
   if (!current.cluster_state) return;

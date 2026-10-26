@@ -1,0 +1,1 @@
+<a href="/login" class="console-identity">{% if console_user %}{{ console_user.username }} · {{ console_roles[console_user.role] }} · 管理账户{% else %}仅本机访问 · 设置管理账户{% endif %}</a>

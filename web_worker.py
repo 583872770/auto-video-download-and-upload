@@ -117,7 +117,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         if store and not test_mode:
             from webapp.store import source_identity
             video_id, _ = source_identity(urls[0])
-            if len(urls) == 1 and video_id and store.archive_has('youtube ' + video_id):
+            if len(urls) == 1 and video_id and store.archive_has('youtube ' + video_id, **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})):
                 progress.state.update(stage='skipped', title=video_id, percent=100)
                 progress.save(force=True)
                 return {'message': '已下载过，跳过重复下载。', 'skipped': True}
@@ -195,6 +195,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
         def completed_file(filename):
             nonlocal billable_bytes
+            if store and payload.get('_business_job') and not store.heartbeat(payload['_task_id'], store.owner):
+                from webapp.downloads import DownloadLeaseLost
+                raise DownloadLeaseLost('任务清单已变更，当前执行已取消。')
             from Utils.paths import io_path
             path = Path(io_path(filename)).resolve()
             if path.suffix.lower() not in VIDEO_SUFFIXES:
@@ -209,7 +212,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     if path not in existing_files and str(path) not in output_files:
                         path.unlink(missing_ok=True)
                     raise
-            if catalog:
+            if catalog and not payload.get('_business_job'):
                 catalog.index_file(path, video_directory(config, base))
             if path in existing_files or str(path) in output_files:
                 return
@@ -219,6 +222,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 if store.statistics.record_file(payload['_task_id'], path,
                         current_video.get('id', ''), current_video.get('title', progress.state.get('title', '')),
                         test_mode=test_mode):
+                    if catalog and payload.get('_business_job'):
+                        catalog.index_file(path, Path(config['_job_media_root']))
                     if not test_mode:
                         billable_bytes += size
 
@@ -251,7 +256,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             def in_download_archive(self, info_dict):
                 if test_mode:
                     return False
-                archived = store.archive_has(self._make_archive_id(info_dict)) if store else super().in_download_archive(info_dict)
+                archived = store.archive_has(self._make_archive_id(info_dict), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})) if store else super().in_download_archive(info_dict)
                 if archived:
                     self.skipped = True
                     progress.state.update(stage='skipped', title=str(info_dict.get('title') or info_dict.get('id') or ''),
@@ -265,7 +270,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 if store:
                     identity = self._make_archive_id(info_dict)
                     if identity:
-                        store.archive_add(identity, info_dict.get('filepath') or info_dict.get('_filename'))
+                        store.archive_add(identity, info_dict.get('filepath') or info_dict.get('_filename'), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {}))
                 else:
                     super().record_download_archive(info_dict)
 
@@ -463,17 +468,17 @@ def drain(directory, slot=0, role='all'):
                     print('任务执行完成。', flush=True)
                     store.finish(task['id'], result=result, worker_id=store.owner)
                 except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
-                    if store.fleet:
-                        store.fleet.control(store.fleet.id, {'action': 'drain'})
-                        store.fleet.beat(str(error))
-                    else:
-                        store.set_downloads_paused(True)
+                    from webapp.execution import isolate_download_failure
+                    isolate_download_failure(store, error)
                     store.release(task['id'], store.owner, str(error), delay=0)
-                    print(f'下载环境检查未通过，队列已停止，任务保留：{error}', flush=True)
+                    print(f'下载环境检查未通过，本机停止领取，任务运行意愿保留：{error}', flush=True)
                     break
                 except YouTubeAuthRequired as error:
                     from webapp.youtube_auth import YouTubeAuth
-                    YouTubeAuth(store).block(error.result)
+                    from webapp.execution import isolate_download_failure
+                    isolate_download_failure(store, error)
+                    if not store.fleet:
+                        YouTubeAuth(store).block(error.result)
                     store.release(task['id'], store.owner, str(error), delay=0)
                     print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
                     break

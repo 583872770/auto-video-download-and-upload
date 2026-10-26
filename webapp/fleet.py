@@ -18,6 +18,8 @@ LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', '
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
 ONLINE_SECONDS = 45
+DOWNLOAD_ROLES = ('worker', 'hybrid')
+MANAGEMENT_ROLES = ('manager', 'hybrid')
 
 
 def database_time(db, mysql):
@@ -26,8 +28,8 @@ def database_time(db, mysql):
 
 class Fleet:
     def __init__(self, store, role, *, identity=None, url='', name=None):
-        if role not in ('manager', 'worker'):
-            raise ValueError('集群角色必须是 manager 或 worker。')
+        if role not in ('manager', 'worker', 'hybrid'):
+            raise ValueError('集群角色必须是 manager、worker 或 hybrid。')
         self.store, self.role = store, role
         path = store.directory / 'instance.json'
         try:
@@ -50,6 +52,17 @@ class Fleet:
         self.local = None
         store.fleet = self
 
+    @property
+    def can_manage(self):
+        return self.role in MANAGEMENT_ROLES
+
+    @property
+    def can_download(self):
+        return self.role in DOWNLOAD_ROLES
+
+    def untargeted_actions(self):
+        return (('download',) if self.can_download else ()) + (('import',) if self.can_manage else ())
+
     def clock(self, db):
         return database_time(db, self.store.db.mysql)
 
@@ -62,7 +75,7 @@ class Fleet:
                 raise ValueError('此数据库已切为单机模式，不能再启动集群实例连接此任务队列。')
             self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             initial = {'version': 1, 'config': {k: config[k] for k in POLICY_FIELDS if k in config}}
-            if self.role == 'manager':
+            if self.can_manage:
                 self.store.db.ensure(db, settings, {'key': 'fleet_policy', 'value': json.dumps(initial)})
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
             if previous and previous['heartbeat'] > self.clock(db) - ONLINE_SECONDS:
@@ -72,8 +85,10 @@ class Fleet:
             values = {'id': self.id, 'name': self.name[:100], 'role': self.role, 'host': socket.gethostname(),
                       'pid': os.getpid(), 'boot_id': self.boot_id, 'heartbeat': self.clock(db),
                       'url': self.url, 'token': self.token, 'config': '{}', 'limits': '{}',
-                      'paused': int(self.role == 'worker'), 'stop_requested': 0, 'error': ''}
+                      'paused': int(self.can_download), 'stop_requested': 0, 'error': ''}
             updates = {key: values[key] for key in values if key not in ('id', 'limits', 'paused', 'stop_requested', 'name')}
+            if previous and previous['role'] not in DOWNLOAD_ROLES and self.can_download:
+                updates.update(paused=1, stop_requested=0)
             db.execute(self.store.db.upsert(instances, values, ['id'], updates))
         self.save_local(config, base, clash_directory)
         runtime = self.store.directory / 'fleet-runtime.json'
@@ -142,7 +157,7 @@ class Fleet:
         # One short database lock serializes slot allocation across all instances.
         row = self.row(db)
         stamp = self.clock(db)
-        if (self.role != 'worker' or row['paused'] or row['boot_id'] != self.boot_id
+        if (not self.can_download or row['paused'] or row['boot_id'] != self.boot_id
                 or row['heartbeat'] < stamp - ONLINE_SECONDS or not self.policy(active=True, db=db)):
             return False
         active = tasks.c.status == 'running'
@@ -164,6 +179,13 @@ class Fleet:
         row = self.row()
         return row['boot_id'] != self.boot_id or bool(row['stop_requested'])
 
+    def quarantine(self, identity, reason, *, boot_id=None):
+        with self.store.connect() as db:
+            statement = instances.update().where(instances.c.id == identity)
+            if boot_id:
+                statement = statement.where(instances.c.boot_id == boot_id)
+            db.execute(statement.values(paused=1, error=str(reason)[:500]))
+
     def list(self):
         with self.store.connect() as db:
             stamp = self.clock(db)
@@ -184,7 +206,7 @@ class Fleet:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **json.loads(row['limits'])}
                 progress = by_instance.get(row['id'], [])
-                result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error')} | {
+                result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
                     'online': row['heartbeat'] > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading'),
@@ -197,7 +219,7 @@ class Fleet:
     def control(self, identity, data):
         with self.store.connect() as db:
             row = db.execute(select(instances).where(instances.c.id == identity).with_for_update()).mappings().first()
-            if not row or row['role'] != 'worker':
+            if not row or row['role'] not in DOWNLOAD_ROLES:
                 raise ValueError('下载实例不存在。')
             values = {}
             if 'name' in data:
@@ -225,12 +247,12 @@ class Fleet:
     def resolve_target(self, identity):
         with self.store.connect() as db:
             if not identity:
-                rows = db.execute(select(instances.c.id).where(instances.c.role == 'worker',
+                rows = db.execute(select(instances.c.id).where(instances.c.role.in_(DOWNLOAD_ROLES),
                     instances.c.heartbeat > self.clock(db) - ONLINE_SECONDS)).scalars().all()
                 if len(rows) != 1:
                     raise ValueError('请先选择一个下载实例。')
                 identity = rows[0]
-            row = db.execute(select(instances).where(instances.c.id == identity, instances.c.role == 'worker')).mappings().first()
+            row = db.execute(select(instances).where(instances.c.id == identity, instances.c.role.in_(DOWNLOAD_ROLES))).mappings().first()
             if not row or row['heartbeat'] < self.clock(db) - ONLINE_SECONDS or not row['url']:
                 raise ValueError('实例离线或未配置管理端可访问的 VIDEO_INSTANCE_URL。')
             return dict(row)

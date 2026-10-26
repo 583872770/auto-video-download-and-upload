@@ -74,6 +74,28 @@ reservations = Table('download_reservations', metadata, Column('key', String(128
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),
                 Column('created_at', Text, nullable=False), Column('path', Text))
+job_profiles = Table('job_profiles', metadata,
+    Column('id', String(32), primary_key=True), Column('note', Text, nullable=False),
+    Column('policy', Text, nullable=False), Column('revision', Integer, nullable=False),
+    Column('archived', Integer, nullable=False), Column('deleted', Integer, nullable=False),
+    Column('price_set', Integer, nullable=False), Column('updated_at', String(40), nullable=False),
+    Column('edit_version', BigInteger, nullable=False, server_default='1'),
+    Column('policy_version', BigInteger, nullable=False, server_default='1'))
+schema_migrations = Table('schema_migrations', metadata,
+    Column('version', String(80), primary_key=True), Column('applied_at', String(40), nullable=False))
+console_users = Table('console_users', metadata,
+    Column('username', String(64), primary_key=True), Column('password_hash', String(512), nullable=False),
+    Column('role', String(16), nullable=False), Column('enabled', Integer, nullable=False, server_default='1'),
+    Column('revision', BigInteger, nullable=False, server_default='1'))
+job_imports = Table('job_imports', metadata, Column('id', String(32), primary_key=True),
+    Column('job_id', String(32), nullable=False), Column('revision', Integer, nullable=False), Column('task_id', String(32)))
+Index('ix_job_imports_job', job_imports.c.job_id)
+job_removed = Table('job_removed', metadata, Column('task_id', String(32), primary_key=True),
+    Column('previous_status', String(24), nullable=False))
+job_events = Table('job_events', metadata, Column('id', String(32), primary_key=True),
+    Column('seq', BigInteger, nullable=False, unique=True), Column('job_id', String(32), nullable=False),
+    Column('created_at', String(40), nullable=False), Column('message', Text, nullable=False))
+Index('ix_job_events_page', job_events.c.job_id, job_events.c.seq)
 workers = Table('workers', metadata, Column('id', String(128), primary_key=True), Column('slot', String(64)),
                 Column('pid', Integer), Column('heartbeat', Float), Column('task_id', String(32)),
                 Column('state', String(24)), Column('message', Text))
@@ -135,6 +157,7 @@ deliveries = Table('download_deliveries', metadata,
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
     Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
 Index('ix_deliveries_session', deliveries.c.session_id, deliveries.c.seq)
+Index('ix_deliveries_task_seq', deliveries.c.task_id, deliveries.c.seq)
 
 # Separate ledgers keep deleted test files out of delivery billing and avoid
 # altering existing task/delivery tables during upgrades with large queues.
@@ -144,6 +167,7 @@ test_files = Table('download_test_files', metadata,
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
     Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
 Index('ix_test_files_session', test_files.c.session_id, test_files.c.seq)
+Index('ix_test_files_task_seq', test_files.c.task_id, test_files.c.seq)
 test_totals = Table('download_test_totals', metadata,
     Column('session_id', String(32), primary_key=True),
     Column('test_file_count', BigInteger, nullable=False, server_default='0'),
@@ -371,6 +395,8 @@ class Database:
         schema = self.schema()
         self.startup_report('正在检查数据库表和索引；首次升级期间请等待…')
         schema.create_all(engine)
+        from webapp.migrations import upgrade
+        upgrade(engine)
         for index in schema.tables['tasks'].indexes:
             index.create(engine, checkfirst=True)
         with engine.begin() as db:

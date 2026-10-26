@@ -29,6 +29,8 @@ def run_import(store, payload, report):
     identity = payload['import_id']
     with store.connect() as db:
         job = dict(db.execute(select(imports).where(imports.c.id == identity)).mappings().one())
+    if job['finished'] < 0:
+        raise InterruptedError('本次导入已取消。')
     if job['finished']:
         return {'message': f'导入完成：新增 {job["added"]}，重复 {job["duplicates"]}，无效 {job["invalid"]}。',
                 **{key: job[key] for key in ('processed', 'added', 'duplicates', 'invalid')},
@@ -39,7 +41,7 @@ def run_import(store, payload, report):
     total = path.stat().st_size
     batch_payload = {key: value for key, value in payload.items()
                      if key not in ('import_id', 'urls', 'config', 'clash', '_execution_settings')}
-    batch_payload.update(batch_id=identity, batch_name=job['name'])
+    batch_payload.update(batch_id=payload.get('_job_id', identity), batch_name=job['name'])
     shared_snapshot = store.prepare_snapshot(batch_payload)
     column_index = job['column_index']
     samples = json.loads(job['samples'])
@@ -69,7 +71,12 @@ def run_import(store, payload, report):
             nonlocal report_started, report_offset, report_processed, last_report
             with connection.begin():
                 db = connection
+                if payload.get('_job_id'):
+                    from webapp.jobs import check_import
+                    check_import(store, db, payload['_job_id'], payload['_job_revision'])
                 current = db.execute(store._locked(select(imports).where(imports.c.id == identity))).mappings().one()
+                if current['finished'] < 0:
+                    raise InterruptedError('本次导入已取消。')
                 if current['offset'] != job['offset']:
                     raise RuntimeError('导入检查点已改变，请等待原导入任务完成。')
                 accepted = store.insert_downloads(db, chunk, deduplicate=True, shared_snapshot=shared_snapshot)
@@ -107,7 +114,11 @@ def run_import(store, payload, report):
             processed += 1
             try:
                 value = row[column_index].strip()
-                url = urls_from([value])[0]
+                if payload.get('_job_id'):
+                    from webapp.jobs import video_urls
+                    url = video_urls([value])[0]
+                else:
+                    url = urls_from([value])[0]
                 chunk.append({**batch_payload, 'urls': [url]})
             except (ValueError, IndexError):
                 invalid += 1

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>管理账户 · 帧流</title><link rel="stylesheet" href="/static/console-auth.css"><script src="/static/console-auth.js" defer></script></head>
+<body><main class="access-page"><a href="/jobs" class="access-brand">帧流 FRAMEFLOW</a>
+{% if current_user %}
+<h1>管理账户</h1><p>{{ current_user.username }} · {{ console_roles[current_user.role] }}</p>
+<div class="access-links"><a href="/jobs">返回任务中心</a><button id="logout">退出登录</button></div>
+{% if current_user.role == 'admin' %}
+<section><h2>账户与权限</h2><div id="accounts"></div></section>
+<section><h2>新增账户</h2><form id="create-account"><label>用户名<input name="username" required minlength="3" maxlength="64" autocomplete="off"></label><label>初始密码<input name="password" type="password" required minlength="10" maxlength="256" autocomplete="new-password"></label><label>角色<select name="role"><option value="viewer">只读 · 查看任务和报表</option><option value="operator">操作员 · 管理任务和下载</option><option value="admin">管理员 · 配置系统和账户</option></select></label><button type="submit">创建账户</button></form></section>
+<section><h2>调整账户</h2><p>密码与权限更新后，该账户的已有登录会话立即失效。</p><form id="update-account"><label>用户名<input name="username" required maxlength="64"></label><label>角色<select name="role"><option value="viewer">只读</option><option value="operator">操作员</option><option value="admin">管理员</option></select></label><label>状态<select name="enabled"><option value="true">启用</option><option value="false">停用</option></select></label><label>重设密码（留空则保留）<input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password"></label><button type="submit">保存账户</button></form></section>
+{% endif %}
+{% else %}
+<h1>{{ '登录管理账户' if configured else '设置管理员' }}</h1>
+<p>{{ '使用管理账户访问客户任务、交付和系统设置。' if configured else '尚未设置管理账户，当前仅允许本机直接使用。创建管理员后，所有管理页面都需要登录。' }}</p>
+<form id="login-form" data-setup="{{ 'false' if configured else 'true' }}">
+{% if not configured %}<label>初始设置码<input name="bootstrap_key" required autocomplete="off"></label><p class="muted">在运行管理端的电脑读取此文件：<code>{{ bootstrap_path }}</code></p>{% endif %}
+<label>用户名<input name="username" required minlength="3" maxlength="64" autocomplete="username"></label><label>密码<input name="password" type="password" required {{ 'minlength=10' if not configured else '' }} maxlength="256" autocomplete="{{ 'current-password' if configured else 'new-password' }}"></label><button type="submit">{{ '登录' if configured else '创建管理员并登录' }}</button>
+</form>
+{% endif %}
+<p id="access-message" role="status"></p></main></body></html>

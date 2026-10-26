@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务中心 · 视频工作台</title>
+<meta name="csrf-token" content="{{ csrf }}">
+<script src="/static/jobs.js" defer></script>
+<script src="/static/console-permissions.js" defer></script>
+<link rel="stylesheet" href="/static/jobs.css">
+</head>
+<body data-console-role="{{ console_user.role if console_user else 'admin' }}">
+<aside><div class="brand">帧流<small>FRAMEFLOW</small></div><nav><a class="nav-link" href="/#overview">全局总览</a><button data-nav="center" class="active">任务中心</button></nav><div class="side-note"><a class="nav-link" href="/#statistics">交付与执行统计</a><a class="nav-link" href="/#media">素材库</a><a class="nav-link" href="/#instances">实例与环境</a><a class="nav-link" href="/#settings">系统设置</a></div></aside>
+<main>
+{% include 'console_identity.html' %}
+<div id="system-note" class="notice" hidden></div>
+
+<section id="center-view">
+<div class="heading"><div><h1>任务中心</h1><p>每一张客户清单，拥有独立进度和账单。</p></div><button class="primary" id="new-task">＋ 新建任务 / 导入清单</button></div>
+<div id="center-cards" class="cards"></div>
+<div class="panel"><div class="heading"><h2>客户任务</h2><div class="tools"><input class="search" id="search" placeholder="搜索客户 / 清单名称" aria-label="搜索客户或清单名称"><select id="state-filter" class="unit" aria-label="任务状态"><option value="active">未归档任务</option><option value="archived">已归档</option></select></div></div><p id="page-error" class="form-error" role="alert" hidden></p><div class="table-wrap" id="task-table"></div><div class="dialog-actions"><button id="jobs-prev">上一页</button><span id="jobs-page-label"></span><button id="jobs-next">下一页</button></div></div>
+</section>
+<section id="detail-view" hidden><button class="back" id="back">← 返回任务中心</button><div id="detail-heading"></div><div class="context" id="task-context"></div><div class="tabs" role="tablist"><button role="tab" data-tab="overview">任务概览</button><button role="tab" data-tab="videos">视频清单</button><button role="tab" data-tab="billing">统计与计费</button><button role="tab" data-tab="history">执行记录</button><button role="tab" data-tab="settings">任务设置</button></div><div id="detail-content"></div></section>
+</main>
+<dialog id="editor"><form id="editor-form"><h2 id="editor-title">新建客户任务</h2><p class="muted" id="editor-caption"></p><div id="basic-fields"><div class="form-grid"><label><span>客户 *</span><input name="customer" maxlength="200" required></label><label><span>清单名称 *</span><input name="name" maxlength="200" required></label></div><div class="form-grid"><label><span>单价（元 / GB，可稍后设置）</span><input name="price" type="number" min="0" step="0.000001"></label><label><span>备注</span><input name="note" maxlength="500"></label></div></div><label><span>视频 ID / 完整链接，每行一个</span><textarea name="ids" placeholder="npNnbj46_ik&#10;2Gu7q-KUXCk"></textarea></label><label><span>或导入 TXT / CSV 文件（UTF-8，最大 1 GB）</span><input type="file" name="file" accept=".txt,.csv"></label><p class="muted subtle">任务中心新建形成独立任务；任务详情内追加只更新当前任务。</p><p id="editor-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" id="cancel-editor">取消</button><button class="primary" type="submit">保存</button></div></form></dialog>
+<dialog id="clear-dialog"><form id="clear-form"><h2>清空当前任务视频清单</h2><p class="notice">本操作暂停当前任务并取消未完成导入。历史账单和磁盘文件保留。</p><label><span>清空范围</span><select name="scope"><option value="pending">仅移除未交付条目（推荐）</option><option value="all">移除全部条目，保留历史账本</option></select></label><label><span id="confirm-label"></span><input name="confirmation" autocomplete="off" required></label><p id="clear-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" id="cancel-clear">取消</button><button type="submit" class="danger">确认清空</button></div></form></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="log-dialog"><h2>视频执行日志</h2><pre id="log-content" tabindex="0"></pre><form method="dialog"><button>关闭</button></form></dialog>
+</body>
+</html>

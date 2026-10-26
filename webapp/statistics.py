@@ -55,7 +55,9 @@ def describe(row):
     size = value['file_bytes']
     value['file_bytes_exact'] = str(size)
     value['quantity'] = format(Decimal(size) / UNITS[value['unit']], '.6f')
-    value['amount'] = format(charge(size, value['price'], value['unit']), 'f')
+    # Historical rate columns are retained for migration, not used as a bill.
+    value['amount'] = None
+    value['billing_scope'] = 'execution_only'
     value['unfinished'] = max(0, value['attempted'] - sum(value[key] for key in
         ('succeeded', 'failed', 'skipped', 'test_succeeded')))
     succeeded = value['succeeded'] + value['test_succeeded']
@@ -162,9 +164,6 @@ class DownloadStatistics:
         if not size:
             return False
         # A delivered path is registered once across retries and sessions.
-        logical = (task_id + ('\0test' if test_mode else '\0delivery')) if self.store.fleet or self.store.single else (
-            (task_id + '\0' if test_mode else '') + str(path))
-        identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
         ledger = test_files if test_mode else deliveries
         with self.store.connect() as db:
             if self.db.sqlite:
@@ -180,6 +179,10 @@ class DownloadStatistics:
             session_id = json.loads(task['payload']).get('download_session_id')
             if not session_id:
                 return False  # Jobs already executing during an upgrade have no reliable session.
+            logical = (task_id + ('\0test' if test_mode else '\0delivery')) if (
+                self.store.fleet or self.store.single or (task['source_key'] or '').startswith('job:')) else (
+                (task_id + '\0' if test_mode else '') + str(path))
+            identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
             self._active(db)
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
                 return False
@@ -221,12 +224,8 @@ class DownloadStatistics:
                 func.coalesce(func.sum(test_totals.c.test_file_bytes), 0).label('test_file_bytes'))
                 .select_from(test_totals.join(sessions, sessions.c.id == test_totals.c.session_id))
                 .where(condition)).mappings().one()
-            amount, unpriced_bytes = Decimal('0'), 0
-            for size, price, unit in db.execute(select(sessions.c.file_bytes, sessions.c.price, sessions.c.unit)
-                    .where(condition, sessions.c.file_bytes > 0)).yield_per(500):
-                amount += charge(size, price, unit)
-                if not Decimal(price):
-                    unpriced_bytes += size
+            from webapp.billing import BillingService
+            billing = BillingService(self.store).summary(db)
             active_id = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one()
             active = db.execute(session_select().where(sessions.c.id == active_id, condition)).mappings().first() if active_id else None
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
@@ -236,11 +235,12 @@ class DownloadStatistics:
             defaults = self.defaults(db)
         return {'summary': {**with_test_sizes({**{key: int(value) for key, value in totals.items()}, **test_summary}),
                             'file_bytes_exact': str(int(totals['file_bytes'])),
-                            'amount': format(amount, '.2f'), 'unpriced_bytes': unpriced_bytes},
+                            'amount': billing['amount'], 'unpriced_bytes': billing['unpriced_bytes'],
+                            'billing_scope': billing['scope']},
                 'active': describe(active) if active else None,
                 'items': [describe(row) for row in rows[:20]], 'next_cursor': str(rows[19]['seq']) if len(rows) > 20 else None,
                 'pricing': defaults, 'tracking_since': since, 'test_tracking_since': test_since,
-                'methods': methods, 'method_tracking_since': method_since}
+                'methods': methods, 'method_tracking_since': method_since, 'billing': billing}
 
     def method_summary(self, identity):
         with self.store.connect() as db:
@@ -278,12 +278,13 @@ class DownloadStatistics:
                 'next_cursor': str(rows[limit - 1]['seq']) if len(rows) > limit else None}
 
     def update(self, identity, data):
-        values = pricing(data)
+        if set(data) - {'label'}:
+            raise ValueError('会话仅记录运行情况；请在任务中心调整任务单价和计费单位。')
         label = data.get('label', '')
         if not isinstance(label, str) or len(label) > 200:
             raise ValueError('客户 / 清单备注最多 200 个字符。')
         with self.store.connect() as db:
-            db.execute(sessions.update().where(sessions.c.id == identity).values(**values, label=label.strip()))
+            db.execute(sessions.update().where(sessions.c.id == identity).values(label=label.strip()))
         return self.session(identity)
 
     def set_defaults(self, data):

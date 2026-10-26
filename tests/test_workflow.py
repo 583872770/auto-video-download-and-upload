@@ -157,7 +157,10 @@ class WorkflowTests(unittest.TestCase):
         third = self.store.claim(self.store.owner)
         self.store.finish(third['id'], error='permanent fixture', worker_id=self.store.owner)
         route = '/api/statistics/lists/' + queued['batch_id']
-        response = self.client.put(route, json={'customer': '=Client A', 'name': 'List One', 'price': '15000', 'unit': 'GB'}, headers=self.headers)
+        self.assertEqual(self.client.put(route, json={'price': '15000'}, headers=self.headers).status_code, 410)
+        job_route = '/api/jobs/' + queued['batch_id']
+        response = self.client.put(job_route, json={'customer': '=Client A', 'name': 'List One', 'price': '15000',
+            'unit': 'GB', 'edit_version': self.client.get(job_route).json['edit_version']}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         row = self.client.get('/api/statistics/lists?q=Client').json['items'][0]
         self.assertEqual((row['file_count'], row['file_bytes'], row['test_file_bytes'], row['amount']), (1, 1000, 2000, '0.02'))
@@ -168,7 +171,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('2000', testing)
         self.assertIn('否（测试文件已删除）', testing)
         self.assertNotIn('test.mp4', self.client.get(route + '/files/export').text)
-        self.assertEqual(self.client.put(route, json={'price': '-1'}, headers=self.headers).status_code, 400)
+        self.assertEqual(self.client.put(job_route, json={'price': '-1',
+            'edit_version': self.client.get(job_route).json['edit_version']}, headers=self.headers).status_code, 400)
 
     def test_list_pagination_exact_bytes_and_legacy_disclaimer(self):
         identity = self.enqueue()['batch_id']

@@ -18,7 +18,7 @@
     <section id="deployment-error" class="panel" hidden><h2 id="deployment-error-title"></h2><p id="deployment-error-remedy"></p><details><summary>查看技术详情</summary><pre id="deployment-error-details"></pre></details></section>
     <section class="panel"><span class="step">01 / ROLE</span><h2>这台机器做什么</h2>
       <div id="cluster-state-note" class="notice" hidden><p id="cluster-state-description"></p><button id="restore-instance" class="secondary" type="button">恢复原实例配置</button></div>
-      <label>服务角色<select name="role" id="deployment-role"><option value="manager">管理后台 · 导入清单、管理实例、查看统计</option><option value="worker">下载实例 · 从共享队列领取并下载视频</option><option value="all">单机模式 · 本机管理和下载</option></select></label>
+      <label>服务角色<select name="role" id="deployment-role"><option value="hybrid">管理与下载一体（推荐）· 本机管理并参与集群下载</option><option value="manager">纯管理端 · 导入清单、管理实例、查看统计</option><option value="worker">纯下载实例 · 从共享队列领取并下载视频</option><option value="all">单机模式 · 本机管理和下载</option></select></label>
       <p class="muted" id="role-description"></p>
       <label id="single-transition-field" class="notice" hidden><span><input id="single-transition-confirm" type="checkbox"> 将这份集群任务队列切回本机管理和下载</span><small>请先暂停下载、完成导入，并停止其他实例。保存后重启生效，保留任务、素材索引和计费统计；转换后需手动开始下载。</small></label>
       <div class="fields"><label>显示名称<input name="instance_name" maxlength="100" placeholder="例如：下载服务器 A"></label><label>实例 ID（可选）<input name="instance_id" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="留空自动生成，重启保持不变"></label></div>

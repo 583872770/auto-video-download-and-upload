@@ -1,4 +1,4 @@
-"""Read-only ledger exports and editable session billing labels/rates."""
+"""Customer bill exports and operational session records (without session bills)."""
 import csv
 from io import StringIO
 from decimal import Decimal
@@ -60,13 +60,17 @@ def register_statistics(app, store):
             while True:
                 page = store.lists.page(cursor, query, limit=1000)
                 for row in page['items']:
+                    if not row['price_set']:
+                        row = {**row, 'price': ''}
                     if not row['tracked']:
                         row = {**row, **dict.fromkeys(('file_count', 'file_bytes_exact', 'test_file_count',
                             'test_file_bytes_exact', 'price', 'unit', 'amount'), '')}
                     yield line([row[key] for key in ('id', 'customer', 'name', 'created_at', 'total', 'queued', 'running',
                         'succeeded', 'failed', 'test_succeeded', 'skipped', 'file_count', 'file_bytes_exact',
                         'test_file_count', 'test_file_bytes_exact', 'price', 'unit', 'amount')] + [
-                            '自创建累计；与会话费用不可叠加' if row['tracked'] else '历史清单无完整独立账本，未补算'])
+                            '任务交付累计；单价待定' if row['tracked'] and not row['price_set'] else
+                            '任务交付累计；免费' if row['tracked'] and row['price'] == '0' else
+                            '任务交付累计' if row['tracked'] else '历史清单无完整独立账本，未补算'])
                 if not page['next_cursor']:
                     break
                 cursor = page['next_cursor']
@@ -127,7 +131,7 @@ def register_statistics(app, store):
                 return buffer.getvalue()
 
             yield line(['会话编号', '客户/清单备注', '开始时间', '结束时间', '状态', '参与任务', '成功任务', '失败任务',
-                        '跳过任务', '测试成功', '未完成', '交付视频数', '精确字节数', '计费大小', '计费单位', '单价(元/单位)', '预计费用(元)',
+                        '跳过任务', '测试成功', '未完成', '交付视频数', '精确字节数',
                         '测试视频数', '测试精确字节数(不计费)', '全部完成视频数', '全部完成精确字节数'])
             cursor = None
             while True:
@@ -137,7 +141,7 @@ def register_statistics(app, store):
                     item = describe(row)
                     yield line([item[key] if item[key] is not None else '' for key in ('id', 'label', 'started_at', 'ended_at',
                         'status', 'attempted', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'unfinished',
-                        'file_count', 'file_bytes', 'quantity', 'unit', 'price', 'amount',
+                        'file_count', 'file_bytes',
                         'test_file_count', 'test_file_bytes', 'downloaded_file_count', 'downloaded_file_bytes')])
                 if len(rows) < 1000:
                     break
@@ -148,7 +152,7 @@ def register_statistics(app, store):
 
     @app.put('/api/statistics/pricing', endpoint='statistics_pricing')
     def defaults():
-        return jsonify(pricing=statistics.set_defaults(body()), message='默认单价已保存，对新清单和下一次下载会话生效。')
+        return jsonify(pricing=statistics.set_defaults(body()), message='默认单价已保存，仅影响以后使用默认单价创建的任务。')
 
     @app.get('/api/statistics/sessions/<identity>', endpoint='statistics_details')
     def details(identity):
@@ -177,7 +181,7 @@ def register_statistics(app, store):
     @app.put('/api/statistics/sessions/<identity>', endpoint='statistics_update')
     def update(identity):
         session(identity)
-        return jsonify(session=statistics.update(identity, body()), message='客户备注和本次计费设置已保存。')
+        return jsonify(session=statistics.update(identity, body()), message='执行会话备注已保存；费用请到任务中心查看。')
 
     @app.get('/api/statistics/sessions/<identity>/export', endpoint='statistics_export')
     def export(identity):
@@ -204,7 +208,7 @@ def register_statistics(app, store):
 
             if kind in ('files', 'test_files'):
                 yield line(['会话编号', '客户/清单备注', '开始时间', '结束时间', '视频ID', '视频标题', '文件路径',
-                            '精确字节数', '大小(GB)', '大小(GiB)', '计费单位', '单价(元/单位)', '登记时间', '保存方式'])
+                            '精确字节数', '大小(GB)', '大小(GiB)', '登记时间', '保存方式'])
             else:
                 yield line(['会话编号', '客户/清单备注', '视频ID', '任务ID', '导入批次ID', '结果', '开始时间', '结束时间', '失败原因'])
             page = first
@@ -214,8 +218,7 @@ def register_statistics(app, store):
                         yield line([identity, current['label'], current['started_at'], current['ended_at'], item['video_id'],
                             item['title'], item['path'], str(item['size']),
                             format(Decimal(item['size']) / UNITS['GB'], '.9f'),
-                            format(Decimal(item['size']) / UNITS['GiB'], '.9f'), current['unit'],
-                            '0' if kind == 'test_files' else current['price'], item['created_at'],
+                            format(Decimal(item['size']) / UNITS['GiB'], '.9f'), item['created_at'],
                             '测试模式（文件已自动删除，不计费）' if kind == 'test_files' else '指定目录保存'])
                     else:
                         yield line([identity, current['label'], item['video_id'], item['task_id'], item['batch_id'],

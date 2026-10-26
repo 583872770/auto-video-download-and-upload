@@ -173,7 +173,10 @@ def main():
                     page.locator('[name=mysql_host]').fill('fixture.example.test')
                     page.locator('[name=mysql_user]').fill('video')
                     page.locator('[name=mysql_password]').fill('fixture-private-password')
-                    page.locator('[name=instance_name]').fill('管理服务器')
+                    expect(page.locator('#deployment-role')).to_have_value('hybrid')
+                    expect(page.locator('#instance-url-field')).to_be_visible()
+                    expect(page.locator('[name=instance_url]')).to_have_value(address)
+                    page.locator('[name=instance_name]').fill('管理与下载一体实例')
                     page.locator('#test-database').click()
                     expect(page.locator('#setup-feedback')).to_have_text('MySQL 连接成功。')
                     page.screenshot(path=str(output / 'setup-desktop.png'), full_page=True)
@@ -188,6 +191,7 @@ def main():
                     assert len(apps) == 1
                     page.set_viewport_size({'width': 1440, 'height': 1080})
                     page.locator('#enter-workbench').click()
+                    expect(page.locator('#fleet-selection')).to_have_value(gateway.profile['instance_id'])
                     expect(page.locator('.nav-item[href="/setup"]')).to_be_visible()
                     page.locator('.nav-item[href="/setup"]').click()
                     expect(page.locator('#deployment-form')).to_be_visible()
@@ -198,7 +202,7 @@ def main():
                     page.locator('#save-deployment').click()
                     expect(page.locator('#success-message')).to_have_text('配置已保存，重启本机服务后生效。')
                     expect(page.locator('#back-link')).to_be_visible()
-                    assert gateway.running_role == 'manager'
+                    assert gateway.running_role == 'hybrid'
                     assert len(apps) == 1
                     page.screenshot(path=str(output / 'setup-restart.png'), full_page=True)
                     page.locator('#deployment-role').select_option('all')
@@ -209,7 +213,7 @@ def main():
                     expect(page.locator('#success-message')).to_contain_text('单机转换配置已保存')
                     expect(page.locator('#deployment-role')).to_have_value('all')
                     expect(page.locator('#single-transition-field')).to_be_hidden()
-                    assert gateway.running_role == 'manager'
+                    assert gateway.running_role == 'hybrid'
                     page.screenshot(path=str(output / 'setup-single-pending.png'), full_page=True)
                     restarted = DeploymentGateway(config, root / 'state', load_environment=False, app_factory=factory)
                     restarted.start()

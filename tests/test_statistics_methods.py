@@ -138,7 +138,7 @@ class MethodStatisticsContract:
             self.job(f'{index:011d}', download_method=method)
             job = self.claim()
             identity = job['payload']['download_session_id']
-            self.store.statistics.update(identity, {'label': label, 'price': '2.5', 'unit': 'GB'})
+            self.store.statistics.update(identity, {'label': label})
             self.store.statistics.record_file(job['id'], self.final_file(f'{index}.mp4', index + 100))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
         rows = self.methods(query='客户 A')

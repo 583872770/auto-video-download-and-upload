@@ -1,7 +1,8 @@
 """Customer list billing survives pauses; totals are updated with file ledgers."""
 from sqlalchemy import select
+from werkzeug.exceptions import Gone
 
-from webapp.database import batches, counters, download_lists, imports, tasks, deliveries, test_files
+from webapp.database import batches, counters, download_lists, imports, tasks, deliveries, test_files, job_profiles
 from webapp.statistics import charge, pricing, stamp
 
 
@@ -20,7 +21,8 @@ class DownloadLists:
             released=0, tracking_since=stamp(), **pricing({**defaults, **{key: data[key] for key in ('price', 'unit') if key in data}})))
 
     def release(self, db):
-        db.execute(download_lists.update().where(download_lists.c.released == 0).values(released=1))
+        db.execute(download_lists.update().where(download_lists.c.released == 0,
+            ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id).exists()).values(released=1))
 
     def record_file(self, db, task, size, test):
         if not task.get('batch_id'):
@@ -37,9 +39,11 @@ class DownloadLists:
     def page(self, cursor=None, query='', limit=20):
         statement = select(batches, *[column for column in download_lists.c if column.name not in ('id', 'name')],
             download_lists.c.name.label('list_name'), imports.c.processed, imports.c.added,
-            imports.c.duplicates, imports.c.invalid, imports.c.finished.label('import_finished')).select_from(
+            imports.c.duplicates, imports.c.invalid, imports.c.finished.label('import_finished'),
+            job_profiles.c.price_set, job_profiles.c.archived, job_profiles.c.deleted).select_from(
                 batches.outerjoin(download_lists, batches.c.id == download_lists.c.id)
-                       .outerjoin(imports, batches.c.id == imports.c.id)).order_by(batches.c.seq.desc()).limit(limit + 1)
+                       .outerjoin(imports, batches.c.id == imports.c.id)
+                       .outerjoin(job_profiles, batches.c.id == job_profiles.c.id)).order_by(batches.c.seq.desc()).limit(limit + 1)
         if cursor:
             statement = statement.where(batches.c.seq < self.store.statistics.cursor(cursor))
         if query:
@@ -62,23 +66,18 @@ class DownloadLists:
                 value[key] = int(row[key] or 0)
             state = counts.get(row['id'], {})
             value.update(queued=state.get('queued', 0), running=state.get('running', 0),
-                failed=state.get('failed', 0) + state.get('interrupted', 0), total=sum(state.values()))
+                failed=state.get('failed', 0) + state.get('interrupted', 0),
+                total=sum(state.get(key, 0) for key in ('queued', 'running', 'succeeded', 'failed', 'interrupted')))
             value['succeeded'] = max(0, state.get('succeeded', 0) - value['test_succeeded'] - value['skipped'])
             value['name'] = row['list_name'] or row['name'] or '未命名清单'
             value['file_bytes_exact'], value['test_file_bytes_exact'] = str(value['file_bytes']), str(value['test_file_bytes'])
-            value['amount'] = str(charge(value['file_bytes'], row['price'] or '0', row['unit'] or 'GB'))
+            value['price_set'] = row['price_set'] != 0
+            value['amount'] = str(charge(value['file_bytes'], row['price'] or '0', row['unit'] or 'GB')) if value['price_set'] else None
             items.append(value)
         return dict(items=items, next_cursor=str(rows[limit - 1]['seq']) if len(rows) > limit else None)
 
     def update(self, identity, data):
-        customer, name = data.get('customer', ''), data.get('name', '')
-        if any(not isinstance(value, str) or len(value) > 200 for value in (customer, name)):
-            raise ValueError('客户和清单名称最多 200 个字符。')
-        with self.store.connect() as db:
-            if not db.execute(select(download_lists.c.id).where(download_lists.c.id == identity)).first():
-                raise ValueError('历史清单尚无独立账本，无法修改其计费设置。')
-            db.execute(download_lists.update().where(download_lists.c.id == identity).values(
-                customer=customer.strip(), name=name.strip(), **pricing(data)))
+        raise Gone('此编辑入口已停用，请在任务中心修改客户、任务信息和单价。')
 
     def files(self, identity, test=False, cursor=None, limit=1000):
         ledger = test_files if test else deliveries

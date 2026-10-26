@@ -8,7 +8,7 @@
   const integer = value => BigInt(String(value || 0)).toLocaleString('zh-CN');
   const successes = value => BigInt(String(value.succeeded || 0)) + BigInt(String(value.test_succeeded || 0));
   const gb = bytes => `${(Number(bytes || 0) / 1e9).toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 6 })} GB`;
-  const money = session => Number(session.price) > 0 ? `¥ ${session.amount}` : '未设置单价';
+  const money = () => '按客户任务计费';
   const card = (label, value, note = '') => `<div class="accounting-card"><span>${label}</span><strong>${escapeHTML(value)}</strong><small>${escapeHTML(note)}</small></div>`;
   const duration = session => {
     const seconds = Math.max(0, Math.floor((Date.parse(session.ended_at || new Date().toISOString()) - Date.parse(session.started_at)) / 1000));
@@ -27,21 +27,21 @@
     $('#statistics-totals').innerHTML = card('累计计费视频大小', gb(total.file_bytes), `${integer(total.file_bytes_exact)} 字节 · 精确大小累计`)
       + card('累计交付视频', integer(total.file_count), `跳过 ${integer(total.skipped)} · 测试成功 ${integer(total.test_succeeded)}（不计费）`)
       + card('成功任务 / 失败任务', `${integer(successes(total))} / ${integer(total.failed)}`, `含测试成功 ${integer(total.test_succeeded)} · 重试未耗尽时不计失败`)
-      + card('累计预计费用', `¥ ${total.amount}`, total.unpriced_bytes ? `${gb(total.unpriced_bytes)} 尚未设置单价` : '按各会话单价计算后汇总')
+      + card('全部任务预计费用', `¥ ${data.billing.amount}`, `不受会话筛选影响 · 待定单价 ${data.billing.unset} 单`)
       + card('累计测试下载大小', gb(total.test_file_bytes), `${integer(total.test_file_count)} 个视频 · ${integer(total.test_file_bytes_exact)} 字节 · 已删除，不计费`)
       + card('累计完成视频大小', gb(total.downloaded_file_bytes), `交付 + 测试，共 ${integer(total.downloaded_file_count)} 个视频 · ${integer(total.downloaded_file_bytes_exact)} 字节`);
     $('#statistics-summary-export').href = `/api/statistics/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     $('#statistics-methods-export').href = `/api/statistics/methods/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     renderMethods('#statistics-methods', data.methods);
     $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。按 yt5s、yt-dlp、downmp3 分别统计；按配置顺序切换时，前一下载器计失败，下一下载器单独计尝试；同一会话中每个视频对同一下载器只计一次。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
-    $('#statistics-since').textContent = `计费大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。历史任务未补算大小；金额按精确字节计算，按会话四舍五入到分。`;
+    $('#statistics-since').textContent = `执行大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。执行记录可按备注筛选；商业金额统一按客户任务汇总，每个任务四舍五入到分。未归属客户任务的历史执行不补造费用。`;
     if (!stats.pricingDirty) fill($('#statistics-pricing-form'), data.pricing);
     const active = data.active;
     $('#statistics-active').hidden = !active;
     if (active) $('#statistics-active').innerHTML = `<span class="online-dot"></span><div><strong>${active.status === 'stopping' ? '正在结束本次会话' : '本次下载会话进行中'}</strong><span>已交付 ${integer(active.file_count)} 个视频 · ${gb(active.file_bytes)}；测试 ${integer(active.test_file_count)} 个视频 · ${gb(active.test_file_bytes)} · ${integer(active.running)} 个正在执行</span></div><button type="button" class="text-button" data-statistics-session="${active.id}">查看本次明细 ↗</button>`;
-    $('#statistics-sessions').innerHTML = data.items.map(item => `<tr class="${item.id === stats.selected ? 'accounting-selected' : ''}"><td><button type="button" class="accounting-session-link" data-statistics-session="${item.id}"><strong>${escapeHTML(item.label || `下载会话 #${item.seq}`)}</strong><span>${escapeHTML(formatDate(item.started_at, true))}</span><span>至 ${escapeHTML(item.ended_at ? formatDate(item.ended_at, true) : '当前')}</span></button></td><td><span class="accounting-status ${item.status === 'active' ? 'is-active' : ''}">${sessionStatus[item.status] || item.status}</span><small>${duration(item)}</small></td><td><b>${integer(item.file_count)}</b><small>成功任务 ${integer(item.succeeded)} · 跳过 ${integer(item.skipped)}</small></td><td><b class="${item.failed ? 'accounting-failed' : ''}">${integer(item.failed)}</b><small>测试成功 ${integer(item.test_succeeded)}</small></td><td title="${integer(item.file_bytes_exact)} 字节"><b>${gb(item.file_bytes)}</b><small>${integer(item.file_bytes_exact)} 字节</small></td><td><b>${gb(item.test_file_bytes)}</b><small>测试 ${integer(item.test_file_count)} 个视频 · ${integer(item.test_file_bytes_exact)} 字节 · 不计费</small></td><td><b>${money(item)}</b><small>${escapeHTML(item.price)} 元 / ${item.unit}</small></td></tr>`).join('');
+    $('#statistics-sessions').innerHTML = data.items.map(item => `<tr class="${item.id === stats.selected ? 'accounting-selected' : ''}"><td><button type="button" class="accounting-session-link" data-statistics-session="${item.id}"><strong>${escapeHTML(item.label || `下载会话 #${item.seq}`)}</strong><span>${escapeHTML(formatDate(item.started_at, true))}</span><span>至 ${escapeHTML(item.ended_at ? formatDate(item.ended_at, true) : '当前')}</span></button></td><td><span class="accounting-status ${item.status === 'active' ? 'is-active' : ''}">${sessionStatus[item.status] || item.status}</span><small>${duration(item)}</small></td><td><b>${integer(item.file_count)}</b><small>成功任务 ${integer(item.succeeded)} · 跳过 ${integer(item.skipped)}</small></td><td><b class="${item.failed ? 'accounting-failed' : ''}">${integer(item.failed)}</b><small>测试成功 ${integer(item.test_succeeded)}</small></td><td title="${integer(item.file_bytes_exact)} 字节"><b>${gb(item.file_bytes)}</b><small>${integer(item.file_bytes_exact)} 字节</small></td><td><b>${gb(item.test_file_bytes)}</b><small>测试 ${integer(item.test_file_count)} 个视频 · ${integer(item.test_file_bytes_exact)} 字节 · 不计费</small></td><td><b>${money(item)}</b><small>在任务中心查看账单</small></td></tr>`).join('');
     $('#statistics-empty').hidden = !!data.items.length;
-    if (!data.items.length) $('#statistics-empty').innerHTML = emptyState('还没有下载会话', '开始下载后自动记录；先设置单价，完成后即可查看本次交付大小和费用。');
+    if (!data.items.length) $('#statistics-empty').innerHTML = emptyState('还没有下载会话', '任务开始执行后自动记录运行情况；费用在客户任务中汇总。');
     stats.next = data.next_cursor;
     $('#statistics-prev').disabled = !stats.history.length;
     $('#statistics-next').disabled = !stats.next;
@@ -56,11 +56,11 @@
     $('#statistics-detail-period').textContent = `${formatDate(item.started_at, true)} 至 ${item.ended_at ? formatDate(item.ended_at, true) : '当前'} · ${sessionStatus[item.status]} · ${duration(item)}`;
     $('#statistics-detail-totals').innerHTML = card('参与任务', integer(item.attempted), `进行中 ${item.running} · 未完成 ${item.unfinished}`)
       + card('成功保存的视频', integer(item.file_count), `成功任务 ${item.succeeded} · 失败任务 ${item.failed}`)
-      + card('本次计费大小', `${item.quantity} ${item.unit}`, `${integer(item.file_bytes_exact)} 字节`)
-      + card('本次预计费用', money(item), `${item.price} 元 / ${item.unit}`)
+      + card('本次交付大小', gb(item.file_bytes), `${integer(item.file_bytes_exact)} 字节`)
+      + card('计费依据', money(item), '执行会话不单独计算费用')
       + card('本次测试下载大小', gb(item.test_file_bytes), `${integer(item.test_file_count)} 个视频 · ${integer(item.test_file_bytes_exact)} 字节 · 已删除，不计费`)
       + card('本次完成视频大小', gb(item.downloaded_file_bytes), `交付 + 测试，共 ${integer(item.downloaded_file_count)} 个视频 · ${integer(item.downloaded_file_bytes_exact)} 字节`);
-    $('#statistics-exact-bytes').textContent = `计费公式：${integer(item.file_bytes_exact)} ÷ ${item.unit === 'GB' ? '1,000,000,000' : '1,073,741,824'} × ${item.price} = ${item.amount} 元。成功视频按成品文件计数，播放列表中的已完成文件也会保留登记。`;
+    $('#statistics-exact-bytes').textContent = '本页按执行会话展示交付文件和运行结果。任务单价、预计费用与账单请在任务中心查看。';
     renderMethods('#statistics-detail-methods', data.methods);
     $('#statistics-detail-methods-export').href = `/api/statistics/sessions/${item.id}/export?kind=methods`;
     if (!stats.dirty) fill($('#statistics-session-form'), item);

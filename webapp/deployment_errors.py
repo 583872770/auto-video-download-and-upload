@@ -11,7 +11,7 @@ from webapp.modes import ModeTransitionError
 class ClusterRoleConflict(ValueError):
     def __init__(self, role, identity):
         self.role, self.identity = role, identity
-        label = {'manager': '管理后台', 'worker': '下载实例'}[role]
+        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[role]
         super().__init__(f'此状态目录已属于集群实例，原角色为“{label}”，实例 ID 为 {identity}。'
                          '请在部署设置中确认单机转换，或恢复原实例配置后保存。')
 
@@ -24,11 +24,11 @@ def explain_startup_error(error, stage, profile):
     remedy = '展开下方技术详情查看失败阶段和代码位置，将详情提供给维护人员；无需反复修改数据库密码或实例 ID。'
     detail = ''
     if isinstance(error, ClusterRoleConflict):
-        label = {'manager': '管理后台', 'worker': '下载实例'}[error.role]
+        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[error.role]
         summary = '当前状态目录属于集群实例，不能直接改为单机模式。'
         remedy = (f'可点击“恢复原实例配置”恢复“{label}”和实例 ID {error.identity}；'
                   '需要单机时，选择单机模式、勾选转换确认，再保存并重启。')
-        if error.role == 'worker':
+        if error.role in ('worker', 'hybrid'):
             remedy += '下载实例还需填写管理端可访问的实例地址。'
     elif isinstance(error, ModeTransitionError):
         summary = str(error)

@@ -1,5 +1,6 @@
 """Isolated manager/worker browser checks; never connect to the configured MySQL."""
 from pathlib import Path
+import argparse
 import sys
 import tempfile
 import threading
@@ -18,8 +19,8 @@ from webapp.browser import browser_options
 from webapp.database import instances
 
 
-def main():
-    output = ROOT / '.cache/validation' / ('fleet-' + uuid.uuid4().hex[:10])
+def main(hybrid=False):
+    output = ROOT / '.cache/validation' / (('hybrid-' if hybrid else 'fleet-') + uuid.uuid4().hex[:10])
     output.mkdir(parents=True)
     servers = []
     errors = []
@@ -28,7 +29,8 @@ def main():
         url = 'sqlite:///' + (root / 'shared.sqlite3').as_posix()
         apps = {}
         try:
-            for identity, role in [('manager', 'manager'), ('alpha', 'worker'), ('beta', 'worker')]:
+            download_role = 'hybrid' if hybrid else 'worker'
+            for identity, role in [('manager', 'manager'), ('alpha', download_role), ('beta', download_role)]:
                 base = root / identity
                 base.mkdir()
                 config = base / 'config.yaml'
@@ -55,7 +57,7 @@ def main():
             apps['manager'].extensions['task_store'].set_downloads_paused(True)
             store = apps['manager'].extensions['task_store']
             with store.connect() as db:
-                db.execute(update(instances).where(instances.c.role == 'worker').values(role='pending'))
+                db.execute(update(instances).where(instances.c.role == download_role).values(role='pending'))
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True, **browser_options(pw.chromium))
                 try:
@@ -65,7 +67,7 @@ def main():
                     expect(page.locator('#fleet-nav')).to_be_visible()
                     expect(page.locator('[data-instance-form]')).to_have_count(0)
                     with store.connect() as db:
-                        db.execute(update(instances).where(instances.c.role == 'pending').values(role='worker'))
+                        db.execute(update(instances).where(instances.c.role == 'pending').values(role=download_role))
                     expect(page.locator('#settings-form [name=path]')).to_have_value('videos-alpha', timeout=10000)
                     expect(page.locator('[data-instance-form]')).to_have_count(2)
                     expect(page.locator('[data-instance-form="alpha"]')).to_contain_text('累计成功')
@@ -100,6 +102,28 @@ def main():
                     expect(page.locator('#fleet-selection')).to_be_visible()
                     assert page.evaluate('() => document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'
                     page.screenshot(path=str(output / 'instances-mobile.png'), full_page=True)
+                    if hybrid:
+                        for identity in ('alpha', 'beta'):
+                            with store.connect() as db:
+                                address = db.execute(instances.select().where(instances.c.id == identity)).mappings().one()['url']
+                            page.set_viewport_size({'width': 1440, 'height': 1080})
+                            page.goto(address + '/#instances', wait_until='networkidle')
+                            expect(page.locator('#fleet-selection')).to_have_value(identity)
+                            expect(page.locator('[data-instance-form]')).to_have_count(2)
+                            expect(page.locator(f'[data-instance-form="{identity}"] h2')).to_contain_text('本机')
+                            page.locator('.nav-item[data-view=settings]').click()
+                            expect(page.locator('#settings-form [name=path]')).to_have_value('videos-' + identity)
+                            other = 'beta' if identity == 'alpha' else 'alpha'
+                            page.locator('#fleet-selection').select_option(other)
+                            expect(page.locator('#settings-form [name=path]')).to_have_value('videos-' + other)
+                            page.locator('#fleet-selection').select_option(identity)
+                            page.locator('.nav-item[data-view=instances]').click()
+                            page.screenshot(path=str(output / (identity + '-desktop.png')), full_page=True)
+                            page.set_viewport_size({'width': 390, 'height': 844})
+                            assert page.evaluate('() => document.documentElement.scrollWidth <= window.innerWidth'), 'hybrid mobile overflow'
+                            page.screenshot(path=str(output / (identity + '-mobile.png')), full_page=True)
+                            page.goto(address + '/jobs', wait_until='networkidle')
+                            expect(page.locator('body')).to_contain_text('任务中心')
                     assert not errors, errors
                 finally:
                     browser.close()
@@ -112,4 +136,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--hybrid', action='store_true')
+    main(parser.parse_args().hybrid)

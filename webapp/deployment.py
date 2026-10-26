@@ -22,7 +22,7 @@ from Utils.runtime import ROOT
 from webapp.deployment_errors import ClusterRoleConflict, explain_startup_error
 from webapp.modes import check_conversion, single_state
 
-ROLES = {'manager', 'worker', 'all'}
+ROLES = {'hybrid', 'manager', 'worker', 'all'}
 
 
 def mysql_url(profile):
@@ -47,7 +47,7 @@ def validate_profile(data, previous):
     if not data.get('mysql_password'):
         value['mysql_password'] = previous.get('mysql_password', '')
     if value.get('role') not in ROLES:
-        raise ValueError('请选择管理端、下载实例或单机模式。')
+        raise ValueError('请选择管理与下载一体、纯管理端、纯下载实例或单机模式。')
     port = value.get('mysql_port', 3306)
     if isinstance(port, str) and port.isascii() and port.isdigit():
         port = int(port)
@@ -73,8 +73,8 @@ def validate_profile(data, previous):
             valid = False
         if not valid:
             raise ValueError('实例地址请填写完整 HTTP(S) 地址，例如 http://10.0.0.12:5000。')
-    if value['role'] == 'worker' and not address:
-        raise ValueError('请填写管理端能够访问的下载实例地址。')
+    if value['role'] in ('worker', 'hybrid') and not address:
+        raise ValueError('请填写各管理页面能够访问的本机实例地址。')
     value['instance_url'] = address
     if not value.get('web_hosts'):
         raise ValueError('请填写页面访问域名或 IP，多个用逗号分隔。')
@@ -239,7 +239,7 @@ class DeploymentGateway:
 
     @staticmethod
     def environment_profile():
-        value = {'role': os.environ.get('VIDEO_SERVICE_ROLE') or 'manager',
+        value = {'role': os.environ.get('VIDEO_SERVICE_ROLE') or 'hybrid',
                  'instance_id': os.environ.get('VIDEO_INSTANCE_ID', ''),
                  'instance_name': os.environ.get('VIDEO_INSTANCE_NAME') or socket.gethostname(),
                  'instance_url': os.environ.get('VIDEO_INSTANCE_URL', ''),
@@ -265,7 +265,7 @@ class DeploymentGateway:
             return None
         except (ValueError, UnicodeError):
             raise ValueError('本机集群身份记录无效，请保留状态目录并检查 fleet-runtime.json。') from None
-        if (not isinstance(saved, dict) or saved.get('role') not in ('manager', 'worker')
+        if (not isinstance(saved, dict) or saved.get('role') not in ('manager', 'worker', 'hybrid')
                 or not isinstance(saved.get('id'), str)
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', saved['id'])):
             raise ValueError('本机集群身份记录无效，请保留状态目录并检查 fleet-runtime.json。')
@@ -303,7 +303,7 @@ class DeploymentGateway:
         write_profile(self.path, candidate)
         self.profile = candidate
         self.startup_error = ''
-        label = {'manager': '管理后台', 'worker': '下载实例'}[state['role']]
+        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[state['role']]
         self.report_startup(f'已自动恢复原集群配置：{label}，实例 ID {state["instance_id"]}，正在继续启动…')
 
     def activate(self, profile):

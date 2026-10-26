@@ -2,16 +2,18 @@
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from flask import Response, jsonify, request, stream_with_context
+from flask import Response, current_app, g, jsonify, request, stream_with_context
 import requests
 
 from webapp.database import settings
-from webapp.fleet import LOCAL_FIELDS, POLICY_FIELDS
+from webapp.fleet import DOWNLOAD_ROLES, LOCAL_FIELDS, POLICY_FIELDS
 from webapp.settings import DEFAULTS, validate_settings, download_methods
 
 
 def selected_id():
-    return request.headers.get('X-Instance-ID') or request.args.get('instance_id')
+    fleet = current_app.extensions['fleet']
+    return (request.headers.get('X-Instance-ID') or request.args.get('instance_id')
+            or (fleet.id if fleet.role == 'hybrid' else None))
 
 
 class UploadBody:
@@ -29,6 +31,11 @@ class UploadBody:
 
 def rpc(fleet, target, path, *, method='GET', data=None, timeout=45):
     row = fleet.resolve_target(target)
+    if row['id'] == fleet.id and path == '/api/fleet/preflight':
+        value, status = fleet.check_local(data or {})
+        if status >= 400:
+            raise ValueError(value['error'])
+        return value
     session = requests.Session()
     session.trust_env = False
     try:
@@ -48,7 +55,7 @@ def rpc(fleet, target, path, *, method='GET', data=None, timeout=45):
 
 
 def selected_configuration(fleet, config):
-    if not selected_id():
+    if not selected_id() or selected_id() == fleet.id:
         return config
     local = rpc(fleet, selected_id(), '/api/config')['config']
     return {**config, **{k: local[k] for k in LOCAL_FIELDS if k in local}}
@@ -70,26 +77,40 @@ def update_configuration(fleet, data, current):
 
 
 def preflight_instances(fleet, stage, cancelled):
-    nodes = [node for node in fleet.list()['items'] if node['role'] == 'worker' and node['online'] and not node['paused']]
+    nodes = [node for node in fleet.list()['items'] if node['role'] in DOWNLOAD_ROLES and node['online'] and not node['paused']]
     if not nodes:
         raise ValueError('没有在线且启用的下载实例，请先启动或恢复一个实例。')
     policy = fleet.policy()
     def check(node):
-        return node, rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data=policy)
+        try:
+            rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data=policy)
+            return node, None
+        except ValueError as error:
+            return node, str(error)
+    ready = 0
     with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as pool:
-        for node, result in pool.map(check, nodes):
+        for node, error in pool.map(check, nodes):
             if cancelled.is_set():
                 raise InterruptedError('启动已取消。')
-            stage('instance_ready:' + node['name'])
+            if error:
+                fleet.quarantine(node['id'], error, boot_id=node['boot_id'])
+                stage('instance_unavailable:' + node['name'])
+            else:
+                ready += 1
+                stage('instance_ready:' + node['name'])
+    if not ready:
+        raise ValueError('没有通过检查的下载实例，请在实例与环境中修复并恢复。')
     if fleet.policy()['version'] != policy['version']:
         raise ValueError('检查期间下载策略发生变化，请重新开始。')
     return policy['version']
 
 
 def register_fleet(app, fleet):
+    fleet.check_local = lambda policy: check_instance(app, fleet, policy)
+
     @app.before_request
     def route_resources():
-        if fleet.role != 'manager':
+        if not fleet.can_manage or g.fleet_rpc:
             return None
         path = request.path
         resource = (path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube'))
@@ -105,6 +126,8 @@ def register_fleet(app, fleet):
         if not resource:
             return None
         row = fleet.resolve_target(target)
+        if row['id'] == fleet.id:
+            return None  # Local resources use this request's CSRF-protected session.
         headers = {key: value for key, value in request.headers if key.lower() in
                    ('content-type', 'content-length', 'range', 'if-range', 'if-none-match', 'if-modified-since')}
         headers['Authorization'] = 'Bearer ' + row['token']
@@ -139,13 +162,13 @@ def register_fleet(app, fleet):
 
     @app.get('/api/instances')
     def list_instances():
-        if fleet.role != 'manager':
+        if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         return jsonify(fleet.list())
 
     @app.put('/api/instances/<identity>')
     def update_instance(identity):
-        if fleet.role != 'manager':
+        if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         data = request.get_json() or {}
         if data.get('action') == 'resume':
@@ -156,7 +179,7 @@ def register_fleet(app, fleet):
 
     @app.put('/api/instances/limits')
     def update_global_limit():
-        if fleet.role != 'manager':
+        if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         value = (request.get_json() or {}).get('global_limit')
         if type(value) is not int or not 1 <= value <= 10000:
@@ -167,39 +190,45 @@ def register_fleet(app, fleet):
 
     @app.post('/api/fleet/preflight')
     def preflight():
-        if fleet.role != 'worker':
+        if not fleet.can_download:
             return jsonify(error='此接口仅供下载实例使用。'), 403
-        from webapp.environment import require_downmp3_environment, require_native_environment, require_fallback_environment
-        from webapp.yt5s import require_browser_environment
-        from webapp.youtube_auth import YouTubeAuth
-        from Utils.config import video_directory
-        from Utils.download_storage import DownloadWorkspace
-        local = fleet.local_settings()
-        config = {**local['config'], **(request.get_json() or {}).get('config', {})}
-        validate_settings(config)
-        base = local['base']
-        methods = download_methods(config)
-        if 'downmp3' in methods:
-            require_downmp3_environment()
-        if 'yt5s' in methods:
-            (require_fallback_environment if 'yt_dlp' in methods else require_browser_environment)(config, base)
-        elif 'yt_dlp' in methods:
-            require_native_environment(config)
-        snapshot = app.extensions['clash'].snapshot() if config.get('proxy_mode') == 'clash' else None
-        if 'yt_dlp' in methods:
-            auth = YouTubeAuth(fleet.store)
-            result = auth.check(config, base, force=True, **({'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
-            if result['state'] != 'valid':
-                return jsonify(error=result['message']), 409
-            auth.clear_block()
-        import shutil
-        from pathlib import Path
-        workspace = DownloadWorkspace(config, fleet.store.directory)
-        root = video_directory(workspace.config, Path(base))
-        # Check the parent of a temporary workspace without leaving a test directory.
-        if workspace.test_mode:
-            root = fleet.store.directory
-        root.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(root).free < int(config.get('min_free_gb', 2)) * 1024 ** 3:
-            raise ValueError('实例磁盘空间不足。')
-        return jsonify(ready=True, instance_id=fleet.id)
+        value, status = check_instance(app, fleet, request.get_json() or {})
+        return jsonify(value), status
+
+
+def check_instance(app, fleet, policy):
+    """Check this node directly so its management requests never wait on its own HTTP pool."""
+    from webapp.environment import require_downmp3_environment, require_native_environment, require_fallback_environment
+    from webapp.yt5s import require_browser_environment
+    from webapp.youtube_auth import YouTubeAuth
+    from Utils.config import video_directory
+    from Utils.download_storage import DownloadWorkspace
+    local = fleet.local_settings()
+    config = {**local['config'], **policy.get('config', {})}
+    validate_settings(config)
+    base = local['base']
+    methods = download_methods(config)
+    if 'downmp3' in methods:
+        require_downmp3_environment()
+    if 'yt5s' in methods:
+        (require_fallback_environment if 'yt_dlp' in methods else require_browser_environment)(config, base)
+    elif 'yt_dlp' in methods:
+        require_native_environment(config)
+    snapshot = app.extensions['clash'].snapshot() if config.get('proxy_mode') == 'clash' else None
+    if 'yt_dlp' in methods:
+        auth = YouTubeAuth(fleet.store)
+        result = auth.check(config, base, force=True, **({'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
+        if result['state'] != 'valid':
+            return {'error': result['message']}, 409
+        auth.clear_block()
+    import shutil
+    from pathlib import Path
+    workspace = DownloadWorkspace(config, fleet.store.directory)
+    root = video_directory(workspace.config, Path(base))
+    # Check the parent of a temporary workspace without leaving a test directory.
+    if workspace.test_mode:
+        root = fleet.store.directory
+    root.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(root).free < int(config.get('min_free_gb', 2)) * 1024 ** 3:
+        raise ValueError('实例磁盘空间不足。')
+    return {'ready': True, 'instance_id': fleet.id}, 200

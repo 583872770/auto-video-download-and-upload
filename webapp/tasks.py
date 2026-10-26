@@ -72,7 +72,7 @@ class TaskRunner:
                 if self.store.fleet and self.store.fleet.role == 'manager':
                     roles.discard('download')
                     roles.discard('regular')
-                if role_counts.get('download') and (not self.store.fleet or self.store.fleet.role == 'worker'):
+                if role_counts.get('download') and (not self.store.fleet or self.store.fleet.can_download):
                     roles.add('regular')
                 if roles:
                     for slot in [-1, *range(count)]:
