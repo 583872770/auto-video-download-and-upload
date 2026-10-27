@@ -14,11 +14,11 @@ log_retention_days: 0
 max_log_mb: 10
 shard_downloads: true
 storage_mode: local
-download_method: yt_dlp
+download_method: yt5s
 yt5s_quality: best
 yt5s_browser_count: 2
 download_methods:
-- yt_dlp
+- yt5s
 fragment_concurrency: 3
 downmp3_quality: best
 downmp3_timeout: 300
