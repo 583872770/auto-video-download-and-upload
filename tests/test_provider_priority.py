@@ -56,6 +56,8 @@ class ProviderPriorityTests(unittest.TestCase):
             stack.enter_context(patch('webapp.youtube_auth.YouTubeAuth.require'))
             stack.enter_context(patch('webapp.downmp3.resolve', side_effect=resolver('downmp3')))
             stack.enter_context(patch('webapp.yt5s.resolve', side_effect=resolver('yt5s')))
+            stack.enter_context(patch('webapp.yt1d.resolve', side_effect=resolver('yt1d')))
+            stack.enter_context(patch('webapp.yt1d.require_environment'))
             stack.enter_context(patch.object(yt_dlp.YoutubeDL, 'download', native))
             stack.enter_context(patch.object(yt_dlp.YoutubeDL, 'process_ie_result'))
             if winner:
@@ -103,8 +105,22 @@ class ProviderPriorityTests(unittest.TestCase):
     def test_all_failed_counts_each_provider_and_one_failed_video(self):
         events, _ = self.run_chain(['yt_dlp', 'downmp3', 'yt5s'])
         self.assertEqual(events, ['yt_dlp', 'downmp3', 'yt5s'])
-        self.assertTrue(all((row['attempted'], row['failed'], row['running']) == (1, 1, 0) for row in self.rows().values()))
+        rows = self.rows()
+        self.assertTrue(all((rows[provider]['attempted'], rows[provider]['failed'], rows[provider]['running']) == (1, 1, 0)
+                            for provider in ('yt_dlp', 'downmp3', 'yt5s')))
+        self.assertEqual(rows['yt1d']['attempted'], 0)
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 1)
+
+    def test_four_providers_and_yt1d_fallback_keep_independent_statistics(self):
+        methods = ['downmp3', 'yt1d', 'yt5s', 'yt_dlp']
+        events, _ = self.run_chain(methods, winner='yt5s')
+        self.assertEqual(events, methods[:3])
+        rows = self.rows()
+        self.assertEqual((rows['yt1d']['attempted'], rows['yt1d']['failed']), (1, 1))
+        events, _ = self.run_chain(['yt5s', 'yt1d', 'downmp3'], winner='yt1d')
+        self.assertEqual(events, ['yt5s', 'yt1d'])
+        self.assertEqual(self.rows()['yt1d']['succeeded'], 1)
+        self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
 
     def test_validation_is_atomic_and_legacy_configuration_loads(self):
         self.save(['downmp3', 'yt5s'])

@@ -13,7 +13,7 @@ let settingsDirty = false;
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
-const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3' };
+const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d' };
 const selectedProviders = () => state.config?.download_methods || (state.config?.download_method === 'yt5s_fallback' ? ['yt5s', 'yt_dlp'] : [state.config?.download_method || 'yt_dlp']);
 let nodeSignature = '';
 let rotationDraft = null;
@@ -145,6 +145,8 @@ function progressLabel(task) {
   if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
   if (stage === 'waiting_api_conversion') return 'downmp3 · 远端转换中（尚未下载）';
   if (stage === 'switching_provider') return `正在切换到 ${providerNames[task.progress?.download_method] || '下一个下载器'}`;
+  const browserStages = { waiting_browser: '等待浏览器名额', starting_browser: '启动浏览器', connecting_browser: '连接浏览器', opening_site: '打开网页', waiting_site_form: '等待网页输入框', submitting_site: '提交视频链接', waiting_verification: '等待网站验证', converting: '网站正在转换' };
+  if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
   return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
@@ -157,7 +159,7 @@ function downloadProgress(task) {
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待远端转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
   const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—';
-  const provider = { yt5s: 'yt5s', yt_dlp: 'yt-dlp', downmp3: 'downmp3' }[data.download_method] || '';
+  const provider = providerNames[data.download_method] || '';
   const stageSeconds = active && data.stage_started_at ? Math.max(0, Date.now() / 1000 - data.stage_started_at) : null;
   const slowest = Object.entries(data.stage_seconds || {}).filter(([stage]) => !active || stage !== data.stage).sort((a, b) => b[1] - a[1])[0];
   const stageName = stage => progressLabel({ action: 'download', status: 'running', progress: { stage } });
@@ -231,17 +233,18 @@ function renderStatus() {
   const { tools } = state.status;
   const methods = selectedProviders();
   const methodFour = methods.length === 1 && methods[0] === 'downmp3';
-  const browserReady = !methods.includes('yt5s') || (tools.yt5s_browser && tools.yt5s_display && tools.playwright);
+  const browserReady = !methods.some(method => ['yt5s', 'yt1d'].includes(method)) || (tools.yt5s_browser && tools.yt5s_display && tools.playwright);
   const nativeReady = !methods.includes('yt_dlp') || (tools.ffmpeg && tools.ffprobe && (tools.node || tools.deno));
-  const ready = browserReady && nativeReady && (!methods.includes('downmp3') || tools.ffprobe);
+  const needsProbe = methods.some(method => ['downmp3', 'yt1d'].includes(method));
+  const ready = browserReady && nativeReady && (!needsProbe || tools.ffprobe);
   $('.environment-card').classList.toggle('warning', !ready);
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
-  $('#environment-note').textContent = !browserReady ? '缺少 yt5s 浏览器或显示环境' : !nativeReady ? '缺少 yt-dlp 所需 FFmpeg 或 JS 运行时' : methods.includes('downmp3') && !tools.ffprobe ? '缺少 ffprobe' : methodFour ? 'API 下载 · 无需浏览器和 JS 运行时' : `Python ${state.status.python}`;
+  $('#environment-note').textContent = !browserReady ? '缺少 yt5s / yt1d 浏览器或显示环境' : !nativeReady ? '缺少 yt-dlp 所需 FFmpeg 或 JS 运行时' : needsProbe && !tools.ffprobe ? '缺少 ffprobe' : methodFour ? 'API 下载 · 无需浏览器和 JS 运行时' : `Python ${state.status.python}`;
   renderYouTubeLogin();
   const noCookie = !methods.includes('yt_dlp');
   $$('[data-cookie-actions]').forEach(element => { element.hidden = noCookie; });
   $$('[data-open="youtube-login-dialog"], [data-open="youtube-cookie-dialog"]').forEach(element => { element.hidden = noCookie; });
-  $$('[data-provider-setting]').forEach(element => { element.hidden = !methods.includes(element.dataset.providerSetting); });
+  $$('[data-provider-setting]').forEach(element => { element.hidden = !element.dataset.providerSetting.split(' ').some(method => methods.includes(method)); });
   $('#source-capability').textContent = '单视频 ID / 链接清单';
   $('#subtitle-capability').textContent = noCookie ? '当前下载器不提供字幕' : '仅 yt-dlp 支持，取决于视频源';
   $('#video-capability').textContent = `已保存顺序：${methods.map(method => providerNames[method]).join(' → ')}，各自使用画质配置`;
@@ -255,7 +258,7 @@ function renderStatus() {
     element.textContent = noCookie ? `${externalLabel}不使用 YouTube Cookie` : auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
   const auth = state.status.youtube?.auth;
-  $('#youtube-auth-status').textContent = noCookie ? '当前下载器无需 YouTube Cookie；yt5s 需要浏览器，downmp3 使用转换接口。' : auth?.message || '已启用 yt-dlp，下载前将自动检测 YouTube 登录状态。';
+  $('#youtube-auth-status').textContent = noCookie ? '当前下载器无需 YouTube Cookie；yt5s、yt1d 使用浏览器，downmp3 使用转换接口。' : auth?.message || '已启用 yt-dlp，下载前将自动检测 YouTube 登录状态。';
   $('#youtube-auth-status').classList.toggle('error', !noCookie && !!auth && !['valid', 'unchecked'].includes(auth.state));
   $('#youtube-auth-check').disabled = noCookie || authChecking || !!state.status.youtube?.login?.active;
   $('#youtube-auth-check').textContent = noCookie ? `${externalLabel}无需登录检测` : authChecking ? '正在检测…' : '检测登录';
@@ -433,6 +436,7 @@ function renderDownloadMethod() {
   const notes = [`尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后点击“保存下载策略”生效。`];
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
+  if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
   notes.push('保存后无需暂停或重启，历史清单后续领取的视频立即使用新策略；新建客户任务复制此策略。已有客户任务在任务设置独立修改，后续领取时生效。正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');

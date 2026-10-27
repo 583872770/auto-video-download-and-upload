@@ -118,7 +118,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from Utils.config import video_directory
         return MediaCatalog(store).reindex(video_directory(config, base), report_progress)
     if action == 'check':
-        if check_download_environment(config):
+        if check_download_environment(config, base):
             raise RuntimeError('环境检查未通过，请根据日志补齐依赖。')
         return {'message': '环境检查通过'}
     if action == 'download':
@@ -141,6 +141,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
               policy_version=payload.get('policy_version'), download_methods=methods,
               yt5s_quality=config.get('yt5s_quality', 'best'),
               downmp3_quality=config.get('downmp3_quality', 'best'),
+              yt1d_quality=config.get('yt1d_quality', 'best'),
+              yt1d_timeout=config.get('yt1d_timeout', 180),
               storage_mode=config.get('storage_mode', 'local'),
               fragment_concurrency=config.get('fragment_concurrency', 4),
               download_format=config.get('download_format') or 'bestvideo*+bestaudio/best',
@@ -207,6 +209,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         youtube = is_youtube(urls)
         progress.state.update(stage='checking_environment')
         progress.save(force=True)
+        if 'yt1d' in methods:
+            from webapp.yt1d import require_environment
+            require_environment(config, base)
         if 'yt5s' in methods and 'yt_dlp' in methods:
             progress.state.update(stage='checking_environment')
             progress.save(force=True)
@@ -244,13 +249,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             path = Path(io_path(filename)).resolve()
             if path.suffix.lower() not in VIDEO_SUFFIXES:
                 return
-            if progress.state.get('download_method') == 'downmp3':
+            if progress.state.get('download_method') in ('downmp3', 'yt1d'):
                 from webapp.yt5s import verify_media
                 try:
                     verified = verify_media(path)
                     streams = verified.get('streams', [])
                     video = next((stream for stream in streams if stream.get('codec_type') == 'video'), {})
-                    event('media_verified', provider='downmp3', video_id=current_video.get('id', ''),
+                    event('media_verified', provider=progress.state.get('download_method'), video_id=current_video.get('id', ''),
                           width=video.get('width'), height=video.get('height'),
                           frame_rate=video.get('avg_frame_rate'),
                           video_codec=video.get('codec_name'),
@@ -373,8 +378,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 info = resolve(url, provider_config, base, api_stage)
                                 downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
-                        elif provider == 'yt5s':
-                            from webapp.yt5s import resolve
+                        elif provider in ('yt5s', 'yt1d'):
+                            if provider == 'yt1d':
+                                from webapp.yt1d import resolve
+                            else:
+                                from webapp.yt5s import resolve
 
                             def stage(value):
                                 progress.state.update(stage=value, speed=None, eta=None)

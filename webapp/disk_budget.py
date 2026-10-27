@@ -337,7 +337,7 @@ class DiskBudget:
             temporary.replace(target)
     def _version(self):
         policy_fields = ('download_methods', 'download_method', 'download_format', 'yt5s_quality',
-                         'downmp3_quality', 'storage_mode')
+                         'downmp3_quality', 'yt1d_quality', 'storage_mode')
         return json.dumps({'disk': {k: self.config[k] for k in sorted(DISK_FIELDS)},
                            'policy': {k: self.config.get(k) for k in policy_fields}}, sort_keys=True)
 

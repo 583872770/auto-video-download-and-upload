@@ -32,25 +32,41 @@ class WebsiteTimeoutError(RuntimeError):
 
 class WebsiteHTTPError(RuntimeError):
     """Keep the website status separate from translated user-facing messages."""
-    def __init__(self, step, status):
+    def __init__(self, step, status, provider='yt5s'):
         self.status = status
         self.retryable = status in (408, 429, 500, 502, 503, 504)
         label = '解析' if step == 'analyze' else '转换'
-        super().__init__(f'yt5s {label}接口返回 HTTP {status}，可能是网站上游故障或当前出口受限。')
+        super().__init__(f'{provider} {label}接口返回 HTTP {status}，可能是网站上游故障或当前出口受限。')
 
 
-def response_error(step, http_status, data):
+class WebsiteConversionError(WebsiteHTTPError):
+    """A business error inside an HTTP 200 response, with queue retry policy."""
+    def __init__(self, provider):
+        self.status = 200
+        self.retryable = True
+        RuntimeError.__init__(self, f'{provider} 转换服务繁忙或暂时无响应，请稍后重试。')
+
+
+def response_error(step, http_status, data, provider='yt5s'):
     label = '解析' if step == 'analyze' else '转换'
     if isinstance(data, dict) and 'verification failed' in str(data.get('result', '')).lower():
-        return RuntimeError('yt5s 网站验证未通过，请在远程桌面查看提示或更换节点。')
+        return RuntimeError(f'{provider} 网站验证未通过，请在远程桌面查看提示或更换节点。')
     if http_status >= 400:
-        return WebsiteHTTPError(step, http_status)
+        return WebsiteHTTPError(step, http_status, provider)
     if not isinstance(data, dict):
-        return RuntimeError(f'yt5s {label}接口未返回有效数据（HTTP {http_status}）；请查看远程桌面或检查节点。')
+        return RuntimeError(f'{provider} {label}接口未返回有效数据（HTTP {http_status}）；请查看远程桌面或检查节点。')
     # Some upstream failures are JSON business statuses inside an HTTP 200.
     status = str(data.get('status', ''))
     if status.isascii() and status.isdigit() and 400 <= int(status) <= 599:
-        return WebsiteHTTPError(step, int(status))
+        return WebsiteHTTPError(step, int(status), provider)
+    if provider == 'yt1d' and step == 'convert' and str(data.get('status', '')) not in (
+            'success', 'processing', 'convert_ready'):
+        status = str(data.get('status', ''))
+        return WebsiteConversionError(provider) if status in (
+            'busy', 'timed_out_error', 'not_response') else RuntimeError(
+                'yt1d 网站转换失败，视频可能不可用或当前出口受限。')
+    if provider == 'yt1d' and step == 'convert' and data.get('status') == 'success' and not data.get('downloadUrlX'):
+        return RuntimeError('yt1d 网站转换已结束，但没有返回视频下载地址。')
     return None
 
 
@@ -171,7 +187,7 @@ def site_timeout_message(stage, timeout):
     return messages.get(stage, '方式二网站操作超时，请检查当前节点及远程桌面中的网页。')
 
 
-async def select_video_link(page, quality):
+async def select_video_link(page, quality, provider='yt5s'):
     """Choose the highest advertised video resolution with a download action."""
     rows = page.locator('#result tr')
     if quality != 'best':
@@ -191,7 +207,7 @@ async def select_video_link(page, quality):
         if match and await link.count() and await link.is_visible() and await link.is_enabled():
             choices.append((int(match[1]), int(match[2] or 0), index, link))
     if not choices:
-        raise RuntimeError('yt5s 没有返回可下载的视频画质选项。')
+        raise RuntimeError(f'{provider} 没有返回可下载的视频画质选项。')
     height, _, _, link = max(choices, key=lambda item: item[:2])
     return height, link
 
@@ -199,6 +215,8 @@ async def select_video_link(page, quality):
 async def probe(args, directory, report, *, download=True, on_stage=None, browser_owner=None):
     from webapp.yt5s_browser import NativeBrowser
 
+    provider = getattr(args, 'provider', 'yt5s')
+    site_url = getattr(args, 'site_url', 'https://yt5s.biz/enwr200/')
     started = changed = time.monotonic()
 
     def stage(value):
@@ -213,7 +231,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
             on_stage(value)
 
     stage('starting_browser')
-    print('方式二浏览器连接：' + ('HTTP(S) 代理。' if args.proxy else '直连；如需代理，请确认任务创建时已启用。'), flush=True)
+    print(f'{provider} 浏览器连接：' + ('HTTP(S) 代理。' if args.proxy else '直连；如需代理，请确认任务创建时已启用。'), flush=True)
     pending = set()
     resolved = asyncio.Event()
     converted = asyncio.Event()
@@ -241,7 +259,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                         data = await asyncio.wait_for(response.json(), timeout=15)
                     except Exception:
                         entry['json_response'] = False
-                    error = response_error(step, response.status, data)
+                    error = response_error(step, response.status, data, provider)
                     if error:
                         state[step + '_error'] = error
                     if isinstance(data, dict):
@@ -269,20 +287,28 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
 
                 page.on('response', received)
                 stage('opening_site')
-                print('正在打开 yt5s 网页，最多等待 45 秒。', flush=True)
-                response = await page.goto('https://yt5s.biz/enwr200/', wait_until='domcontentloaded', timeout=45000)
-                print(f'yt5s 网页已响应，HTTP {response.status if response else "未知"}。', flush=True)
+                print(f'正在打开 {provider} 网页，最多等待 45 秒。', flush=True)
+                response = await page.goto(site_url, wait_until='domcontentloaded', timeout=45000)
+                print(f'{provider} 网页已响应，HTTP {response.status if response else "未知"}。', flush=True)
+                if response and response.status >= 400:
+                    raise WebsiteHTTPError('analyze', response.status, provider)
                 stage('waiting_site_form')
                 await page.locator('#txt-url').fill('https://www.youtube.com/watch?v=' + args.video_id, timeout=30000)
                 stage('submitting_site')
-                await page.locator('#btn-submit').click(timeout=30000)
+                if provider == 'yt1d':
+                    # yt1d's submit anchor contains only a webfont icon and can
+                    # have no click target when that asset is slow to load.
+                    # Enter uses the same website submission handler.
+                    await page.locator('#txt-url').press('Enter', timeout=30000)
+                else:
+                    await page.locator('#btn-submit').click(timeout=30000)
                 stage('waiting_verification')
                 print(f'等待网站验证与解析，最多 {args.timeout} 秒；需要时可在远程桌面中操作。', flush=True)
                 await wait_for_site(resolved, args.timeout, '网站验证与解析')
                 if state.get('analyze_error'):
                     raise state['analyze_error']
                 if state.get('analyze_status') != 'success':
-                    raise RuntimeError('网站解析失败，本次验证未得到下载选项。')
+                    raise RuntimeError(f'{provider} 网站解析失败，本次验证未得到下载选项。')
                 report['analysis_succeeded'] = True
                 stage('extracting')
                 title = await page.locator('#video_title').inner_text()
@@ -294,9 +320,9 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                     duration = 0
                     for part in duration_match[1].split(':'):
                         duration = duration * 60 + int(part)
-                height, link = await select_video_link(page, args.quality)
+                height, link = await select_video_link(page, args.quality, provider)
                 report['selected_quality'] = height
-                print(f'yt5s：选择网站提供的 {height}p 视频。', flush=True)
+                print(f'{provider}：选择网站提供的 {height}p 视频。', flush=True)
                 href = await link.get_attribute('href')
                 if href and href.startswith(('https://', 'http://')):
                     state['download_url'] = href
@@ -308,12 +334,15 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                         raise state['convert_error']
                 # No YouTube credentials or challenge tokens are exported.
                 if not download:
+                    if provider == 'yt1d':
+                        from webapp.yt1d import media_url
+                        state['download_url'] = media_url(state.get('download_url'))
                     return {'id': args.video_id, 'title': title.strip() or args.video_id,
                             'url': state['download_url'], 'ext': 'mp4', 'duration': duration,
                             'thumbnail': thumbnail, 'height': height,
                             'webpage_url': 'https://www.youtube.com/watch?v=' + args.video_id,
                             'extractor': 'youtube', 'extractor_key': 'Youtube',
-                            'http_headers': {'Referer': 'https://yt5s.biz/'}}
+                            'http_headers': {'Referer': site_url if provider == 'yt1d' else 'https://yt5s.biz/'}}
                 report['download'] = await asyncio.to_thread(transfer, state['download_url'], directory, args)
                 report['success'] = True
             finally:
@@ -332,7 +361,10 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                 except Exception:
                     await asyncio.to_thread(owner.close)
     except (TimeoutError, BrowserTimeoutError):
-        raise WebsiteTimeoutError(site_timeout_message(report.get('stage'), args.timeout)) from None
+        message = site_timeout_message(report.get('stage'), args.timeout)
+        if provider != 'yt5s':
+            message = message.replace('方式二', provider).replace('yt5s.biz', 'yt1d.lol').replace('yt5s', provider)
+        raise WebsiteTimeoutError(message) from None
     finally:
         report.setdefault('stage_seconds', {})[report.get('stage', 'unknown')] = round(time.monotonic() - changed, 3)
         report['elapsed_seconds'] = round(time.monotonic() - started, 3)

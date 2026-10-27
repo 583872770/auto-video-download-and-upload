@@ -40,10 +40,26 @@ def require_native_environment(config):
                                           + '。请安装依赖或重新构建 Docker 镜像后继续下载。')
 
 
-def check_download_environment(config=None):
+def check_download_environment(config=None, base=None):
     missing = []
     from webapp.settings import download_methods
-    api_only = download_methods(config or {}) == ['downmp3']
+    methods = download_methods(config or {})
+    if 'yt1d' in methods and 'yt_dlp' not in methods:
+        for module in ('yaml', 'PIL', 'yt_dlp', 'playwright'):
+            found = importlib.util.find_spec(module) is not None
+            print(f'{module}: {"OK" if found else "缺失"}', flush=True)
+            if not found:
+                missing.append(module)
+        from pathlib import Path
+        from webapp.yt1d import require_environment
+        try:
+            require_environment(config, Path(base or '.'))
+        except (RuntimeError, OSError) as error:
+            print(str(error), flush=True)
+            missing.append('yt1d browser / ffprobe')
+        print('yt1d: 使用浏览器网页验证与转换；无需 YouTube Cookie 或独立 JavaScript 运行时。', flush=True)
+        return int(bool(missing))
+    api_only = methods == ['downmp3']
     modules = ('yaml', 'PIL', 'yt_dlp') if api_only else ('yaml', 'PIL', 'yt_dlp', 'yt_dlp_ejs')
     for module in modules:
         found = importlib.util.find_spec(module) is not None

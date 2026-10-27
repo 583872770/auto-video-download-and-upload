@@ -33,6 +33,7 @@ from webapp.clash_routes import register_clash
 from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment, require_downmp3_environment
+from webapp.yt1d import require_environment as require_yt1d_environment
 
 ACTIONS = ('download', 'check')
 
@@ -331,6 +332,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     def verify_youtube(config, base, urls, snapshot=None, *, force=False):
         methods = download_methods(config)
+        if 'yt1d' in methods:
+            require_yt1d_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods and 'yt_dlp' in methods:
@@ -660,6 +663,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         snapshot = clash.snapshot() if config.get('proxy_mode') == 'clash' else None
         stage('checking_environment')
         methods = download_methods(config)
+        if 'yt1d' in methods:
+            require_yt1d_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods:
@@ -802,6 +807,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             return warnings
         require_login_idle()
         methods = download_methods(config)
+        if 'yt1d' in methods:
+            require_yt1d_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods:

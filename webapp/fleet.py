@@ -14,7 +14,8 @@ from webapp.database import instances, settings, tasks, counters
 from webapp.disk_budget import DISK_FIELDS
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
-                 'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'fragment_concurrency', 'storage_mode'}
+                 'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
+                 'fragment_concurrency', 'storage_mode'}
 # Storage mode changes delivery/accounting semantics and remains tied to the
 # explicit activation. Transfer policy can change between claimed videos.
 HOT_POLICY_FIELDS = POLICY_FIELDS - {'storage_mode'}

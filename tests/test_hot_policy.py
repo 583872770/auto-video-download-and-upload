@@ -50,6 +50,21 @@ class FleetHotPolicyTests(unittest.TestCase):
         self.assertTrue(retried['payload']['_restart_transfer'])
         self.assertFalse(self.manager.downloads_paused())
 
+    def test_yt1d_policy_reaches_other_workers_and_keeps_in_flight_snapshot(self):
+        self.queue(3)
+        self.activate()
+        first = self.a.claim(self.a.owner)
+        self.save(download_methods=['yt1d', 'downmp3'], yt1d_quality='2160', yt1d_timeout=120)
+        second = self.b.claim(self.b.owner)
+        self.assertEqual(second['payload']['config']['download_methods'], ['yt1d', 'downmp3'])
+        self.assertEqual((second['payload']['config']['yt1d_quality'], second['payload']['config']['yt1d_timeout']),
+                         ('2160', 120))
+        self.save(yt1d_quality='720', yt1d_timeout=60)
+        third = self.a.claim(self.a.owner)
+        self.assertEqual(third['payload']['config']['yt1d_quality'], '720')
+        self.assertEqual(self.b.get(second['id'], private=True)['payload']['config']['yt1d_quality'], '2160')
+        self.assertNotEqual(first['payload']['config']['download_method'], 'yt1d')
+
     def test_save_never_activates_or_unpauses_work(self):
         self.queue(2)
         self.manager.set_downloads_paused(True)
