@@ -68,20 +68,23 @@ class ApiQualityTests(unittest.TestCase):
 class QualityPolicyTests(unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
-    def test_defaults_and_best_settings_roundtrip_and_existing_job_stays_independent(self):
+    def test_instance_quality_roundtrip_and_job_has_no_strategy(self):
         config = self.client.get('/api/config').json['config']
-        self.assertEqual((config['yt5s_quality'], config['downmp3_quality']), ('best', 'best'))
-        response = self.client.post('/api/jobs', json={'customer': 'Client', 'name': 'Fixed quality',
-            'policy': {'yt5s_quality': '360', 'downmp3_quality': '480'}}, headers=self.headers)
+        self.assertEqual((config['yt5s_quality'], config['downmp3_quality']), ('best','best'))
+        response = self.client.post('/api/jobs', json={'customer':'Client','name':'Videos',
+            'urls':'npNnbj46_ik\n2Gu7q-KUXCk'}, headers=self.headers)
         self.assertEqual(response.status_code, 201, response.json)
         identity = response.json['id']
-        response = self.client.put('/api/config', json={
-            'yt5s_quality': 'best', 'downmp3_quality': 'best'}, headers=self.headers)
+        response = self.client.put('/api/config', json={'download_methods':['downmp3'],
+            'yt5s_quality':'360','downmp3_quality':'480'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        job = self.client.get('/api/jobs/' + identity).json
-        self.assertEqual((job['policy']['yt5s_quality'], job['policy']['downmp3_quality']), ('360', '480'))
-        response = self.client.put('/api/jobs/' + identity, json={'edit_version': job['edit_version'],
-            'policy': {'yt5s_quality': 'best', 'downmp3_quality': 'best'}}, headers=self.headers)
+        with patch('app.require_downmp3_environment'):
+            self.client.post(f'/api/jobs/{identity}/control',json={'action':'start'},headers=self.headers)
+        first = self.store.claim(self.store.owner)
+        self.assertEqual(first['payload']['config']['downmp3_quality'], '480')
+        response = self.client.put('/api/config', json={'yt5s_quality':'best','downmp3_quality':'best'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        job = self.client.get('/api/jobs/' + identity).json
-        self.assertEqual((job['policy']['yt5s_quality'], job['policy']['downmp3_quality']), ('best', 'best'))
+        second = self.store.claim('second-worker')
+        self.assertEqual(second['payload']['config']['downmp3_quality'], 'best')
+        self.assertEqual(self.store.get(first['id'],private=True)['payload']['config']['downmp3_quality'], '480')
+        self.assertIsNone(self.client.get('/api/jobs/'+identity).json['policy'])

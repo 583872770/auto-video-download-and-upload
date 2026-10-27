@@ -151,6 +151,8 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual(claimed['id'], task['id'])
         self.assertFalse(self.store.finish(task['id'], result={'message': 'stale'}, worker_id='old-owner'))
         self.assertFalse(self.store.update_progress(task['id'], {}, 'old-owner'))
+        self.assertIsNone(claimed['progress'].get('rotation_id'))
+        self.assertTrue(self.store.update_progress(task['id'], {'rotation_id': 'generation'}, 'new-owner'))
         self.assertTrue(self.store.finish(task['id'], result={'message': 'done'}, worker_id='new-owner'))
         self.assertFalse(self.store.finish(task['id'], result={}, worker_id='new-owner'))
         self.assertEqual(self.store.rotation_completed('generation'), 1)

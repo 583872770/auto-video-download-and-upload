@@ -34,15 +34,22 @@ class ExecutionControlService:
             elif resource_blocked(self.store, db):
                 blockers.append(dict(code='disk_wait', message='本机正在等待磁盘空间恢复。', href='/#settings', label='查看磁盘管理'))
         if queue['queued'] and not released:
-            blockers.append(dict(code='jobs_not_started', message='待处理视频所属任务尚未开始或已暂停，请在任务中心点击“开始 / 继续”。',
-                href='/jobs', label='前往任务中心'))
+            blockers.append(dict(code='jobs_not_started', message='待处理视频所属任务尚未开始或已暂停，请先选择任务并开始下载。',
+                href='/#overview', label='选择下载任务'))
         elif not queue['queued'] and not queue['running'] and not queue['importing']:
             blockers.append(dict(code='no_pending_videos', message='当前没有待处理视频。',
-                href='/jobs', label='前往任务中心'))
+                href='/#overview', label='选择下载任务'))
         message = ('系统已暂停领取。' if queue['paused'] else '系统已恢复领取。')
         remaining = [item['message'] for item in blockers if item['code'] != 'system_paused']
-        message += ''.join(remaining) if remaining else '仅执行已开始的任务，已暂停的实例需单独恢复。'
-        return dict(paused=queue['paused'], released_queued=released, blockers=blockers, message=message)
+        message += ''.join(remaining) if remaining else '仅执行当前开始的任务，已暂停的实例需单独恢复。'
+        return dict(paused=queue['paused'], released_queued=released, blockers=blockers, message=message,
+                    selected_job=self.selected_job())
+
+    def selected_job(self):
+        from webapp.jobs import Jobs
+        identity = self.store.selected_download_job()
+        job = Jobs(self.store).detail(identity) if identity else None
+        return job if job and not job['deleted'] else None
 
     def resume_system(self):
         queue = self.store.download_queue()

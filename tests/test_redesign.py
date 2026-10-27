@@ -164,11 +164,14 @@ class RedesignContract:
 
 
 class SQLiteRedesignTests(RedesignContract, unittest.TestCase):
-    setUp = test_scale.ScaleTests.setUp
+    setUp = test_jobs.JobTests.setUp
 
 
 class MySQLRedesignTests(MySQLFixture, RedesignContract, unittest.TestCase):
-    pass
+    def setUp(self):
+        MySQLFixture.setUp(self)
+        response = self.client.put('/api/config',json={'download_methods':['downmp3']},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.json)
 
 
 class NodeIsolationTests(unittest.TestCase):

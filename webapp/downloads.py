@@ -9,6 +9,17 @@ class DownloadLeaseLost(RuntimeError):
     """Do not start another provider after ownership of a task was lost."""
 
 
+def initial_progress(config, policy_version=None):
+    """Publish this attempt's selected providers as part of the claim itself."""
+    from webapp.settings import download_methods
+    methods = download_methods(config)
+    return dict(stage='preparing_workspace', percent=0, downloaded_bytes=0,
+                total_bytes=None, speed=None, eta=None, title='', format='',
+                download_method=methods[0], selected_download_methods=methods,
+                policy_version=policy_version, storage_mode=config.get('storage_mode', 'local'),
+                stage_started_at=time.time(), elapsed=0, stage_seconds={})
+
+
 def clean_download_error(message):
     """Keep the extractor reason, excluding terminal escapes and signed URL data."""
     message = re.sub(r'\x1b\[[0-9;]*m', '', str(message))

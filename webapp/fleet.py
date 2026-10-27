@@ -10,15 +10,12 @@ import uuid
 
 from sqlalchemy import func, select, text
 
-from webapp.database import instances, settings, tasks, counters
+from webapp.database import instances, settings, tasks, counters, download_lists
 from webapp.disk_budget import DISK_FIELDS
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
                  'fragment_concurrency', 'storage_mode'}
-# Storage mode changes delivery/accounting semantics and remains tied to the
-# explicit activation. Transfer policy can change between claimed videos.
-HOT_POLICY_FIELDS = POLICY_FIELDS - {'storage_mode'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
@@ -88,9 +85,6 @@ class Fleet:
             if mode and mode.startswith('standalone:'):
                 raise ValueError('此数据库已切为单机模式，不能再启动集群实例连接此任务队列。')
             self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
-            initial = {'version': 1, 'config': {k: config[k] for k in POLICY_FIELDS if k in config}}
-            if self.can_manage:
-                self.store.db.ensure(db, settings, {'key': 'fleet_policy', 'value': json.dumps(initial)})
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
             stamp = self.clock(db)
             if previous and previous['heartbeat'] > stamp - ONLINE_SECONDS:
@@ -99,7 +93,7 @@ class Fleet:
                     raise InstanceIdentityConflict(self.id, previous['host'], previous['heartbeat'] + ONLINE_SECONDS - stamp)
             values = {'id': self.id, 'name': self.name[:100], 'role': self.role, 'host': socket.gethostname(),
                       'pid': os.getpid(), 'boot_id': self.boot_id, 'heartbeat': self.clock(db),
-                      'url': self.url, 'token': self.token, 'config': '{}', 'limits': '{}',
+                      'url': self.url, 'token': self.token, 'config': previous['config'] if previous else '{}', 'limits': '{}',
                       'paused': int(self.can_download), 'stop_requested': 0, 'error': ''}
             updates = {key: values[key] for key in values if key not in ('id', 'limits', 'paused', 'stop_requested', 'name')}
             if previous and previous['role'] not in DOWNLOAD_ROLES and self.can_download:
@@ -122,6 +116,9 @@ class Fleet:
         self.local = {'config': dict(config), 'base': str(base), 'clash_directory': str(clash_directory),
                       'directory': str(video_directory(config, Path(base)).resolve())}
         with self.store.connect() as db:
+            previous = json.loads(self.row(db)['config'])
+            changed = any(previous.get('config', {}).get(k) != config.get(k) for k in POLICY_FIELDS)
+            self.local['policy_version'] = max(1, previous.get('policy_version', 0) + int(changed))
             db.execute(instances.update().where(instances.c.id == self.id, instances.c.boot_id == self.boot_id)
                        .values(config=json.dumps(self.local, ensure_ascii=False)))
 
@@ -135,49 +132,28 @@ class Fleet:
         if db is None:
             with self.store.connect() as connection:
                 return self.policy(active=active, db=connection)
-        value = db.execute(select(settings.c.value).where(settings.c.key == ('fleet_active_policy' if active else 'fleet_policy'))).scalar_one_or_none()
-        return json.loads(value) if value else None
+        if active:
+            value = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_active_policy')).scalar_one_or_none()
+            return json.loads(value) if value else None
+        local = self.local_settings(db)
+        return {'version': local.get('policy_version', 1),
+                'config': {k: local['config'][k] for k in POLICY_FIELDS if k in local['config']}}
 
     def save_policy(self, config):
-        with self.store.connect() as db:
-            old = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_policy').with_for_update()).scalar_one()
-            previous = json.loads(old)
-            value = {'version': previous['version'] + 1,
-                     'config': {key: config[key] for key in POLICY_FIELDS if key in config}}
-            db.execute(settings.update().where(settings.c.key == 'fleet_policy').values(value=json.dumps(value)))
-            active = self.policy(active=True, db=db)
-            if active:
-                published = self.merge_execution_policy(value, active)
-                db.execute(settings.update().where(settings.c.key == 'fleet_active_policy')
-                           .values(value=json.dumps(published)))
-        return value
-
-    @staticmethod
-    def merge_execution_policy(saved, active):
-        from webapp.settings import DEFAULTS
-        return {**saved, 'config': {**active['config'], **{
-            key: saved['config'].get(key, DEFAULTS[key]) for key in HOT_POLICY_FIELDS},
-            'storage_mode': active['config'].get('storage_mode', DEFAULTS['storage_mode'])}}
+        """Compatibility API: update this instance only; HTTP saves also persist YAML."""
+        local = self.local_settings()
+        self.save_local({**local['config'], **config}, local['base'], local['clash_directory'])
+        return self.policy()
 
     def execution_policy(self, db=None):
-        """Use the latest transfer policy, including pre-upgrade saved changes.
-
-        An active record is still required: saving must never start a queue.
-        A claim stores its own snapshot, so in-flight videos keep their policy.
-        """
         if db is None:
             with self.store.connect() as connection:
                 return self.execution_policy(connection)
-        active = self.policy(active=True, db=db)
-        if not active:
-            return None
-        return self.merge_execution_policy(self.policy(db=db) or active, active)
+        return self.policy(db=db) if self.store.workbench_job(db) or self.policy(active=True, db=db) else None
 
     def activate(self, db, expected_version=None):
-        raw = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_policy').with_for_update()).scalar_one()
-        value = json.loads(raw)
-        if expected_version is not None and value['version'] != expected_version:
-            raise ValueError('检查期间下载策略发生变化，请重新开始。')
+        # This shared record grants execution permission, never supplies strategy.
+        value = {'version': 1, 'config': {}}
         db.execute(self.store.db.upsert(settings, {'key': 'fleet_active_policy', 'value': json.dumps(value)}, ['key']))
 
     def execution(self, payload, db):
@@ -185,7 +161,7 @@ class Fleet:
         policy = self.execution_policy(db)
         if not policy:
             raise ValueError('尚未从管理后台开始下载。')
-        result = {**payload, 'base': local['base'], 'config': {**local['config'], **policy['config']},
+        result = {**payload, 'base': local['base'], 'config': dict(local['config']),
                   'policy_version': policy['version']}
         result.pop('clash', None)
         if result['config'].get('proxy_mode') == 'clash':
@@ -202,7 +178,8 @@ class Fleet:
         row = self.row(db)
         stamp = self.clock(db)
         if (not self.can_download or row['paused'] or row['boot_id'] != self.boot_id
-                or row['heartbeat'] < stamp - ONLINE_SECONDS or not self.policy(active=True, db=db)):
+                or row['heartbeat'] < stamp - ONLINE_SECONDS
+                or not (self.store.workbench_job(db) or self.policy(active=True, db=db))):
             return False
         active = tasks.c.status == 'running'
         valid = tasks.c.lease_until > stamp
@@ -238,14 +215,23 @@ class Fleet:
                 tasks.c.action == 'download').group_by(tasks.c.instance_id)).all()
             counts = dict(running)
             by_instance = {}
-            for identity, value in db.execute(select(tasks.c.instance_id, tasks.c.progress).where(
-                    tasks.c.action == 'download', tasks.c.status == 'running')):
-                if value:
-                    by_instance.setdefault(identity, []).append(json.loads(value))
+            current_tasks = {}
+            for task in db.execute(select(tasks.c.id, tasks.c.instance_id, tasks.c.batch_id,
+                    tasks.c.video_id, tasks.c.title, tasks.c.progress).where(
+                    tasks.c.action == 'download', tasks.c.status == 'running').order_by(tasks.c.seq)).mappings():
+                progress = json.loads(task['progress']) if task['progress'] else {}
+                by_instance.setdefault(task['instance_id'], []).append(progress)
+                current_tasks.setdefault(task['instance_id'], []).append({
+                    key: task[key] for key in ('id', 'batch_id', 'video_id', 'title')} | {'progress': progress})
             totals = {}
             for scope, status, value in db.execute(select(counters).where(counters.c.scope.startswith('instance:'))):
                 totals.setdefault(scope.removeprefix('instance:'), {})[status] = int(value)
             result = []
+            selections = dict(db.execute(select(settings.c.key, settings.c.value).where(
+                settings.c.key.startswith('workbench_job:'))).all())
+            jobs = {job['id']: dict(job) for job in db.execute(select(
+                download_lists.c.id, download_lists.c.name, download_lists.c.customer).where(
+                    download_lists.c.id.in_(list(selections.values())))).mappings()}
             for row in rows:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **json.loads(row['limits'])}
@@ -256,12 +242,17 @@ class Fleet:
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading'),
                     'worker_count': config.get('worker_count', 1), 'yt5s_browser_count': config.get('yt5s_browser_count', 2),
                     'directory': local.get('directory', ''),
+                    'policy': {k: config[k] for k in POLICY_FIELDS if k in config},
+                    'policy_version': local.get('policy_version', 1),
                     'min_free_gb': config.get('min_free_gb', 2), 'statistics': totals.get(row['id'], {})})
+                result[-1]['current_tasks'] = current_tasks.get(row['id'], [])
+                result[-1]['selected_job'] = jobs.get(selections.get('workbench_job:' + row['id']))
             budget = int(db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget')).scalar_one())
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
     def control(self, identity, data):
         with self.store.connect() as db:
+            db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             row = db.execute(select(instances).where(instances.c.id == identity).with_for_update()).mappings().first()
             if not row or row['role'] not in DOWNLOAD_ROLES:
                 raise ValueError('下载实例不存在。')

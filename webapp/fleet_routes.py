@@ -65,35 +65,24 @@ def selected_configuration(fleet, config):
     if not selected_id() or selected_id() == fleet.id:
         return config
     local = rpc(fleet, selected_id(), '/api/config')['config']
-    return {**config, **{k: local[k] for k in LOCAL_FIELDS if k in local}}
+    return {**config, **{k: local[k] for k in LOCAL_FIELDS | POLICY_FIELDS if k in local}}
 
 
-def update_configuration(fleet, data, current):
+def update_configuration(fleet, data):
     if set(data) - set(DEFAULTS):
         raise ValueError('包含不支持在页面修改的配置项。')
-    config = {**DEFAULTS, **current, **data}
-    if 'download_methods' in data:
-        config['download_method'] = download_methods(config)[0]
-    elif 'download_method' in data:
-        config['download_methods'] = None
-    validate_settings(config)
-    local = {k: data[k] for k in LOCAL_FIELDS if k in data}
-    if local:
-        rpc(fleet, selected_id(), '/api/config', method='PUT', data=local)
-    if POLICY_FIELDS.intersection(data):
-        fleet.save_policy(config)
-    return jsonify(message='配置已保存；下载器、画质等策略从后续领取的视频生效，无需暂停或重启。'
-                   '已有客户任务使用各自策略；实例设置只作用于所选实例，正在执行的视频保持本次配置。')
+    # Validation and persistence belong to the selected node, using its own config.
+    rpc(fleet, selected_id(), '/api/config', method='PUT', data=data)
+    return jsonify(message='所选实例配置已保存；后续领取的视频使用新策略，正在执行的视频保持本次配置。')
 
 
 def preflight_instances(fleet, stage, cancelled):
     nodes = [node for node in fleet.list()['items'] if node['role'] in DOWNLOAD_ROLES and node['online'] and not node['paused']]
     if not nodes:
         raise ValueError('没有在线且启用的下载实例，请先启动或恢复一个实例。')
-    policy = fleet.policy()
     def check(node):
         try:
-            rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data=policy)
+            rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data={})
             return node, None
         except ValueError as error:
             return node, str(error)
@@ -110,9 +99,7 @@ def preflight_instances(fleet, stage, cancelled):
                 stage('instance_ready:' + node['name'])
     if not ready:
         raise ValueError('没有通过检查的下载实例，请在实例与环境中修复并恢复。')
-    if fleet.policy()['version'] != policy['version']:
-        raise ValueError('检查期间下载策略发生变化，请重新开始。')
-    return policy['version']
+    return None
 
 
 def register_fleet(app, fleet):
@@ -178,7 +165,7 @@ def register_fleet(app, fleet):
     def list_instances():
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
-        return jsonify(fleet.list())
+        return jsonify(**fleet.list(), execution=app.extensions['execution_control'].status())
 
     @app.put('/api/instances/<identity>')
     def update_instance(identity):
@@ -186,8 +173,7 @@ def register_fleet(app, fleet):
             return jsonify(error='此接口仅供管理端使用。'), 403
         data = request.get_json() or {}
         if data.get('action') == 'resume':
-            policy = (fleet.execution_policy() if not fleet.store.downloads_paused() else None) or fleet.policy()
-            rpc(fleet, identity, '/api/fleet/preflight', method='POST', data=policy)
+            rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
         fleet.control(identity, data)
         return jsonify(message='实例配置已保存，停止指令由对应实例执行。')
 
@@ -218,7 +204,7 @@ def check_instance(app, fleet, policy):
     from Utils.config import video_directory
     from Utils.download_storage import DownloadWorkspace
     local = fleet.local_settings()
-    config = {**local['config'], **policy.get('config', {})}
+    config = dict(local['config'])
     validate_settings(config)
     base = local['base']
     methods = download_methods(config)
@@ -248,4 +234,7 @@ def check_instance(app, fleet, policy):
     root.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(root).free < int(config.get('min_free_gb', 2)) * 1024 ** 3:
         raise ValueError('实例磁盘空间不足。')
+    latest = fleet.local_settings()['config']
+    if any(config.get(k) != latest.get(k) for k in POLICY_FIELDS):
+        raise ValueError('检查期间实例下载策略发生变化，请重新开始。')
     return {'ready': True, 'instance_id': fleet.id}, 200

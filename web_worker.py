@@ -47,7 +47,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             return recovered
     lease = budget.lease('test' if workspace.test_mode else 'cache', task=task_id,
                          path=workspace.directory if workspace.test_mode else None)
-    last_progress = {}
+    from webapp.downloads import initial_progress
+    last_progress = initial_progress(config, payload.get('policy_version'))
 
     def report(value):
         estimate = value.get('total_bytes') or 0

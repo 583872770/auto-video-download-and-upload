@@ -12,11 +12,14 @@ from webapp.database import deliveries
 
 
 class JobTests(unittest.TestCase):
-    setUp = test_scale.ScaleTests.setUp
+    def setUp(self):
+        test_scale.ScaleTests.setUp(self)
+        response = self.client.put('/api/config', json={'download_methods':['downmp3']}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
     def create(self, name='List A', urls='npNnbj46_ik', **extra):
         response = self.client.post('/api/jobs', json={
             'customer': 'Client A', 'name': name, 'urls': urls,
-            'policy': {'download_methods': ['downmp3']}, **extra}, headers=self.headers)
+            **extra}, headers=self.headers)
         self.assertEqual(response.status_code, 201, response.json)
         return response.json['id']
 
@@ -171,7 +174,7 @@ class JobTests(unittest.TestCase):
         config,base=load_config(self.config)
         with ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(lambda _:Jobs(self.store).create({'customer':'Client A','name':'List A',
-                'request_id':request_id,'urls':'npNnbj46_ik','policy':{'download_methods':['downmp3']}},config,base),range(2)))
+                'request_id':request_id,'urls':'npNnbj46_ik'},config,base),range(2)))
         self.assertEqual(results[0]['id'],results[1]['id'])
         a=results[0]['id']
         repeated=self.create(request_id=request_id)
@@ -234,10 +237,10 @@ class JobFleetTests(unittest.TestCase):
     setup_fleet = test_fleet.FleetTests.setup_fleet
 
     def test_jobs_keep_worker_paths_and_isolate_remote_cancellation(self):
+        self.b.fleet.save_policy({'downmp3_quality':'1080'})
         ids=[]
         for name,quality in [('A','720'),('B','1080')]:
-            response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik',
-                'policy':{'download_methods':['downmp3'],'downmp3_quality':quality}},headers=self.headers)
+            response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik'},headers=self.headers)
             self.assertEqual(response.status_code,201,response.json)
             ids.append(response.json['id'])
         with patch('webapp.fleet_routes.rpc',return_value={'ready':True}):

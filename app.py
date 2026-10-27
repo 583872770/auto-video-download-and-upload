@@ -112,9 +112,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         with settings_lock:
             config, base = load_config(config_path)
             if fleet:
-                policy = fleet.policy()
-                if policy:
-                    config.update(policy['config'])
                 if fleet.can_download:
                     config.update(json.loads(fleet.row()['limits']))
             return config, base
@@ -144,8 +141,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def sync_runtime(config, base):
         if fleet:
             fleet.save_local({**DEFAULTS, **config}, base, clash.directory)
-            if fleet.role == 'manager':
-                fleet.save_policy({**DEFAULTS, **config})
             return
         cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
         store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
@@ -203,6 +198,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         )
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
+            if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and 200 <= response.status_code < 300:
+                runner = app.extensions.get('task_runner')
+                if runner:
+                    runner.wake()
         elif request.path.startswith('/static/'):
             response.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return response
@@ -250,17 +249,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         if fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.fleet_routes import selected_id, update_configuration
             if selected_id() != fleet.id:
-                return update_configuration(fleet, data, settings()[0])
+                return update_configuration(fleet, data)
         if any(key not in DEFAULTS for key in data):
             raise ValueError('包含不支持在页面修改的配置项。')
         with media_lock, settings_lock:
             config, _ = settings()
-            if any(key in data for key in ('path', 'dir', 'storage_mode')) and store.media_clear_busy():
+            if any(key in data and data[key] != config.get(key, DEFAULTS[key])
+                   for key in ('path', 'dir', 'storage_mode')) and store.media_clear_busy():
                 return jsonify(error='素材库正在清空，完成后再修改保存目录或保存方式。'), 409
-            if 'storage_mode' in data and data['storage_mode'] != config.get('storage_mode', 'local'):
-                queue = store.download_queue()
-                if queue['running'] or (queue['queued'] and not queue['paused']):
-                    return jsonify(error='请先停止全部下载并等待当前任务结束，再切换保存方式。'), 409
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 require_login_idle()
             if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode')):
@@ -278,14 +274,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     fleet.control(fleet.id, limits)
             save_settings(config_path, config)
             sync_runtime(config, config_path.parent)
-            if fleet and fleet.role == 'hybrid' and not g.fleet_rpc:
-                from webapp.fleet import POLICY_FIELDS
-                if POLICY_FIELDS.intersection(data):
-                    fleet.save_policy(config)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 youtube_auth.invalidate()
         return jsonify(message='配置已保存；下载器、画质等策略从后续领取的视频生效，无需暂停或重启。'
-                       '已有客户任务使用各自策略，正在执行的视频保持本次配置。')
+                       '配置仅作用于当前实例，正在执行的视频保持本次配置。')
 
     @app.get('/api/status')
     def status():
@@ -792,15 +784,13 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def job_preflight(config, base):
         if fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.fleet_routes import rpc
-            from webapp.fleet import POLICY_FIELDS
             nodes = [node for node in fleet.list()['items'] if node['role'] in ('worker', 'hybrid') and node['online'] and not node['paused']]
             warnings = []
             if not nodes:
                 return ['任务已开始，等待在线且启用的下载实例。']
             for node in nodes:
                 try:
-                    rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data={
-                        'version': fleet.policy()['version'], 'config': {key: config[key] for key in POLICY_FIELDS if key in config}})
+                    rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data={})
                 except (ValueError, YouTubeAuthRequired, BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
                     fleet.quarantine(node['id'], str(error), boot_id=node['boot_id'])
                     warnings.append(f'{node["name"]} 已暂停领取：{error}')
@@ -821,20 +811,21 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     from webapp.jobs import register_jobs
     register_jobs(app, store, settings, job_preflight)
+    from webapp.workbench import register_workbench
+    register_workbench(app, store, settings, job_preflight)
 
     def prepare_system_resume():
         if fleet:
             return  # Nodes are checked on enable/start and isolate their own failures.
         require_login_idle()
         from sqlalchemy import select
-        from webapp.database import tasks as task_table, job_profiles
+        from webapp.database import tasks as task_table
         with store.connect() as db:
             upcoming = db.execute(select(task_table.c.batch_id, task_table.c.url).where(task_table.c.action == 'download',
                 task_table.c.status == 'queued', store.released_condition()).order_by(task_table.c.seq).limit(1)).first()
-            policy = db.execute(select(job_profiles.c.policy).where(job_profiles.c.id == upcoming.batch_id)).scalar_one_or_none() if upcoming else None
         if upcoming:
             config, base = settings()
-            verify_youtube({**config, **(json.loads(policy) if policy else {})}, base,
+            verify_youtube(config, base,
                 [upcoming.url] if upcoming.url else ['https://www.youtube.com/'], force=True)
         youtube_auth.clear_block()
 

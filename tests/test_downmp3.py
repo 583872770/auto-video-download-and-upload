@@ -113,7 +113,8 @@ class Downmp3WebTests(unittest.TestCase):
         page = self.client.get('/').text
         self.assertIn('id="download-method" class="provider-choices"', page)
         self.assertNotIn('id="settings-download-method"', page)
-        self.assertIn('id="save-download-strategy"', page)
+        self.assertIn('id="settings-form"', page)
+        self.assertNotIn('id="save-download-strategy"', page)
         self.assertIn('name="downmp3_quality"', page)
         self.select(downmp3_quality='480', downmp3_timeout='180')
         before = self.config.read_bytes()

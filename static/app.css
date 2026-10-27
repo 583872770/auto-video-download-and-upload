@@ -106,3 +106,34 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 @media(max-width:650px){.dashboard-size{font-size:24px}.service-strip{padding:12px;font-size:10px;gap:8px}.strategy-save .button{width:100%}.list-inputs{grid-template-columns:1fr}.startup-panel{margin:0 17px 18px}.startup-panel ol{grid-template-columns:1fr}.customer-list{padding:18px 17px}.customer-lists .catalog-toolbar{padding:0 17px 17px}.list-totals{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.list-totals strong{font-size:17px}.customer-list-heading h3{font-size:14px}.download-queue-controls{padding:0 17px 16px;gap:10px}.download-queue-controls .button{flex:1;white-space:nowrap}.download-queue-controls .micro-copy{flex-basis:100%}}
 
 .console-identity{display:block;text-align:right;margin:0 0 12px;color:#667164;font-size:12px;text-decoration:none}.console-identity:hover{color:#476d48}
+/* Choose a business task before adding videos or starting downloads. */
+.download-job-picker{display:grid;gap:10px;margin-bottom:22px;padding:16px;background:var(--bg);border:1px solid var(--line);border-radius:12px;min-width:0}
+.job-picker-heading,.job-picker-row{display:flex;align-items:center;gap:12px;justify-content:space-between;min-width:0}
+.job-picker-heading .field-label{margin:0}
+.download-job-picker input,.download-job-picker select{width:100%;min-width:0;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:white;font:inherit;color:inherit}
+.job-picker-row select{flex:1}
+.job-picker-row button{flex-shrink:0}
+.download-job-picker .micro-copy{margin:0;overflow-wrap:anywhere}
+.default-strategy{margin:12px 23px 18px;padding:14px 0;border-top:1px solid var(--line)}
+.default-strategy summary{cursor:pointer;color:var(--muted);font-size:13px}
+.default-strategy .download-method-row{margin-top:16px}
+@media(max-width:600px){.job-picker-heading,.job-picker-row{align-items:stretch;flex-direction:column}.job-picker-heading a{align-self:flex-start}.download-job-picker{padding:12px}.job-picker-row button{width:100%}.default-strategy{margin-left:17px;margin-right:17px}}
+.nav-item.active:not(:disabled):hover{background:var(--amber)}
+.fleet-current-tasks{padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.fleet-current-tasks h3{font-size:13px}
+.fleet-current-tasks .micro-copy{font-size:11px}
+.download-dashboard{grid-template-columns:repeat(3,minmax(0,1fr))}
+.download-console{margin-top:20px;padding-bottom:6px}
+.download-console .download-job-picker{margin:0 23px 18px}
+.selected-job-summary{margin:0 23px;padding:16px 0;border-top:1px solid var(--line)}
+.selected-job-counts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;margin-bottom:14px}
+.selected-job-counts span{display:block;color:var(--muted);font-size:12px}
+.selected-job-counts strong{display:block;margin-top:5px;font-size:25px;font-weight:600}
+.system-download-control{padding:18px 23px;margin-top:20px}
+.system-download-control summary{cursor:pointer;color:var(--muted);font-size:12px}
+.system-download-control p{margin:14px 0}
+.settings-section-note{margin:0 23px 16px;color:var(--muted);font-size:12px}
+.task-defaults-panel{margin-bottom:22px}
+.task-defaults-panel>.download-method-row{margin:0 23px 20px}
+.task-defaults-panel .scale-fields label{margin-top:0}
+@media(max-width:650px){.download-console .download-job-picker,.selected-job-summary{margin-left:17px;margin-right:17px}.selected-job-counts{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.download-dashboard .stat-foot{font-size:9px}.download-dashboard .stat-number{font-size:25px}.system-download-control{padding:17px}.download-queue-controls>.button{width:100%}}

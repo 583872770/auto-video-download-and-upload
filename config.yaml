@@ -3,7 +3,7 @@ dir: ''
 url: ''
 proxy: ''
 proxy_mode: direct
-youtube_cookie: ''
+youtube_cookie: Cookies/youtube.txt
 browser_executable: ''
 download_format: ''
 js_runtimes: null
@@ -14,12 +14,24 @@ log_retention_days: 0
 max_log_mb: 10
 shard_downloads: true
 storage_mode: local
-download_method: downmp3
+download_method: yt_dlp
 yt5s_quality: best
 yt5s_browser_count: 2
 download_methods:
-- downmp3
-- yt5s
-fragment_concurrency: 4
+- yt_dlp
+fragment_concurrency: 3
 downmp3_quality: best
 downmp3_timeout: 300
+yt1d_quality: best
+yt1d_timeout: 180
+disk_budget_gb: 20
+disk_test_budget_gb: 16
+disk_browser_budget_mb: 1024
+disk_log_budget_mb: 64
+disk_import_budget_mb: 1024
+disk_cache_budget_mb: 256
+disk_min_free_gb: 10
+disk_resume_free_gb: 15
+disk_upload_limit_mb: 256
+disk_success_log_hours: 24
+disk_failure_log_days: 7

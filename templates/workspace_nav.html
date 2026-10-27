@@ -1,0 +1,11 @@
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="/" aria-label="帧流首页"><span class="brand-mark"><span></span><span></span><span></span></span><span>帧流<span class="brand-en">FRAMEFLOW</span></span></a>
+  <div class="workspace-label">视频下载管理 <span>FRAMEFLOW</span></div>
+  <nav aria-label="主导航">
+    {% for key, label, symbol in [('overview','下载工作台','download'),('jobs','任务中心','list'),('media','素材库','film'),('statistics','交付与账单','list'),('tasks','执行日志','terminal'),('instances','下载实例','server'),('clash','网络与代理','link'),('settings','系统设置','settings')] %}
+    <a class="nav-item{% if workspace_page == key or workspace_page == 'index' and key == 'overview' %} active{% endif %}" aria-label="{{ label }}" href="{{ '/jobs' if key == 'jobs' else '/#' ~ key }}"{% if workspace_page == 'index' and key != 'jobs' %} data-view="{{ key }}"{% endif %}{% if key == 'jobs' and workspace_page == 'jobs' %} data-nav="center"{% endif %}{% if key == 'instances' %} id="fleet-nav"{% if service_role not in ('manager','hybrid') %} hidden{% endif %}{% endif %}><svg><use href="#i-{{ symbol }}"/></svg>{{ label }}{% if workspace_page == 'index' and key == 'media' %}<span class="nav-count" id="nav-media-count">0</span>{% endif %}{% if workspace_page == 'index' and key == 'tasks' %}<span class="nav-count" id="nav-task-count">0</span>{% endif %}</a>
+    {% endfor %}
+    {% if config.DEPLOYMENT_SETUP_AVAILABLE %}<a class="nav-item" href="/setup"><svg><use href="#i-server"/></svg>部署设置</a>{% endif %}
+  </nav>
+  <div class="sidebar-bottom"><div class="local-avatar"><svg><use href="#i-server"/></svg></div><div>帧流 Frameflow<small>任务 · 下载 · 交付</small></div></div>
+</aside>

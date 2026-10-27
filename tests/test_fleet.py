@@ -99,7 +99,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(first['payload']['base'], str(self.root / 'alpha'))
         self.assertEqual(first['payload']['config']['path'], 'videos-alpha')
         self.assertEqual(first['policy_version'], version)
-        self.manager.fleet.save_policy({'download_method': 'downmp3', 'downmp3_quality': '1080'})
+        self.b.fleet.save_policy({'download_method': 'downmp3', 'downmp3_quality': '1080'})
         second = self.b.claim(self.b.owner)
         self.assertEqual(second['payload']['config']['path'], 'videos-beta')
         self.assertEqual(second['payload']['config']['downmp3_quality'], '1080')
@@ -412,8 +412,8 @@ class FleetTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
         self.addCleanup(close_server)
-        self.manager.fleet.save_policy({'download_methods': ['yt_dlp'], 'download_method': 'yt_dlp', 'download_format': 'best'})
         for store in (self.a, self.b):
+            store.fleet.save_policy({'download_methods': ['yt_dlp'], 'download_method': 'yt_dlp', 'download_format': 'best'})
             store.fleet.control(store.fleet.id, {'worker_count': 1})
         self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/0.mp4']})
         self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/1.mp4']})

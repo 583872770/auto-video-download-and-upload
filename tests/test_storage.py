@@ -29,17 +29,20 @@ class StorageContract:
             self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(self.set_mode('local').status_code, 200)
 
-    def test_storage_switch_waits_for_stop_and_preserves_queued_tasks(self):
+    def test_storage_switch_preserves_in_flight_snapshot_and_queued_tasks(self):
         task = self.store.create('download', {'config': {}, 'base': str(self.root),
                                              'urls': ['https://example.test/fixture.mp4']})
-        self.assertEqual(self.set_mode('test').status_code, 409)
-        self.store.claim('simulated-owner')
-        self.store.set_downloads_paused(True)
-        self.assertEqual(self.set_mode('test').status_code, 409)
-        self.store.stop_running_downloads(lambda owner: True)
+        claimed = self.store.claim('simulated-owner')
+        self.assertEqual(claimed['payload']['config']['storage_mode'], 'local')
         self.assertEqual(self.set_mode('test').status_code, 200)
-        self.assertEqual(self.store.get(task['id'])['attempts'], 0)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
+        self.assertEqual(self.store.get(task['id'], private=True)['payload']['config']['storage_mode'], 'local')
+        self.assertTrue(self.store.heartbeat(task['id'], 'simulated-owner'))
+        self.store.set_downloads_paused(True)
+        self.store.stop_running_downloads(lambda owner: True)
+        self.store.set_downloads_paused(False)
+        retried = self.store.claim('next-owner')
+        self.assertEqual(retried['id'], task['id'])
+        self.assertEqual(retried['payload']['config']['storage_mode'], 'test')
 
     def test_old_task_runs_in_test_mode_without_touching_existing_video_or_archive(self):
         import yt_dlp

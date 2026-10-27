@@ -315,13 +315,23 @@ class TaskStore:
             return bool(values.get('queued', 0) + values.get('running', 0))
         with self.connect() as db:
             statement = select(tasks.c.id).where(tasks.c.status.in_(('queued', 'running')), self.released_condition())
-            if self.downloads_paused(db):
+            if self.claims_paused(db):
                 statement = statement.where(tasks.c.action != 'download')
             elif not self._released_queued_count(db):
                 statement = statement.where(or_(tasks.c.action != 'download', tasks.c.status == 'running'))
             return db.execute(statement.limit(1)).first() is not None
 
     def _released_queued_count(self, db):
+        if self.fleet and self.workbench_job(db):
+            return int(db.execute(select(counters.c.value).where(
+                counters.c.scope == 'batch:' + self.workbench_job(db),
+                counters.c.status == 'queued')).scalar_one_or_none() or 0)
+        selected = self.selected_download_job(db)
+        if selected:
+            return int(db.execute(select(func.coalesce(counters.c.value, 0)).select_from(
+                download_lists.join(counters, counters.c.scope == 'batch:' + download_lists.c.id)).where(
+                    download_lists.c.id == selected, download_lists.c.released == 1,
+                    counters.c.status == 'queued')).scalar_one_or_none() or 0)
         queued = self._counts(db, ['action:download']).get('queued', 0)
         if not queued:
             return 0
@@ -349,7 +359,7 @@ class TaskStore:
             with self.connect() as db:
                 running = db.execute(select(tasks.c.id).where(tasks.c.instance_id == self.fleet.id,
                     tasks.c.status == 'running', tasks.c.action == 'download').limit(1)).first()
-                return bool(running or (not self.fleet.row(db)['paused'] and not self.downloads_paused(db)
+                return bool(running or (not self.fleet.row(db)['paused'] and not self.claims_paused(db)
                                         and self._released_queued_count(db)))
         with self.connect() as db:
             downloads, checks = self._counts(db, ['action:download']), self._counts(db, ['action:check'])
@@ -359,7 +369,7 @@ class TaskStore:
     def runnable_roles(self):
         """Dispatch only queues with a due task, including after retry backoff."""
         with self.connect() as db:
-            paused = self.downloads_paused(db)
+            paused = self.claims_paused(db)
             queued = db.execute(select(counters.c.scope).where(
                 counters.c.status == 'queued', counters.c.value > 0,
                 counters.c.scope.like('action:%'))).scalars().all()
@@ -379,7 +389,7 @@ class TaskStore:
     def runnable_counts(self):
         """Small due-count snapshot used to avoid launching idle worker slots."""
         with self.connect() as db:
-            paused = self.downloads_paused(db)
+            paused = self.claims_paused(db)
             counts = {}
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
@@ -411,15 +421,65 @@ class TaskStore:
             statement = statement.with_for_update(read=True)
         return db.execute(statement).scalar_one() == 'true'
 
-    @staticmethod
-    def released_condition():
-        return or_(tasks.c.action != 'download', ~select(download_lists.c.id).where(
-            download_lists.c.id == tasks.c.batch_id, download_lists.c.released == 0).exists())
+    def workbench_job(self, db):
+        if not self.fleet:
+            return None
+        return db.execute(select(settings.c.value).where(
+            settings.c.key == 'workbench_job:' + self.fleet.id)).scalar_one_or_none()
+
+    def downloads_stopped(self, db=None, *, lock=False):
+        """A scoped instance drains on pause and terminates only on stop."""
+        if db is None:
+            with self.connect() as connection:
+                return self.downloads_stopped(connection, lock=lock)
+        if self.fleet and self.workbench_job(db):
+            return bool(self.fleet.row(db)['stop_requested'])
+        return self.downloads_paused(db, lock=lock)
+
+    def claims_paused(self, db=None, *, lock=False):
+        if db is None:
+            with self.connect() as connection:
+                return self.claims_paused(connection, lock=lock)
+        if self.fleet and self.workbench_job(db):
+            row = self.fleet.row(db)
+            return bool(row['paused'] or row['stop_requested'])
+        return self.downloads_paused(db, lock=lock)
+
+    def released_condition(self):
+        selected = select(settings.c.value).where(settings.c.key == 'selected_download_job').scalar_subquery()
+        if self.fleet:
+            own = select(settings.c.value).where(settings.c.key == 'workbench_job:' + self.fleet.id).scalar_subquery()
+            valid = select(job_profiles.c.id).where(job_profiles.c.id == tasks.c.batch_id,
+                job_profiles.c.archived == 0, job_profiles.c.deleted == 0).exists()
+            legacy = and_(or_(selected.is_(None), selected == '', tasks.c.batch_id == selected),
+                ~select(download_lists.c.id).where(download_lists.c.id == tasks.c.batch_id,
+                    download_lists.c.released == 0).exists())
+            return or_(tasks.c.action != 'download',
+                and_(own.is_not(None), tasks.c.batch_id == own, valid), and_(own.is_(None), legacy))
+        return or_(tasks.c.action != 'download', and_(
+            or_(selected.is_(None), selected == '', tasks.c.batch_id == selected),
+            ~select(download_lists.c.id).where(
+                download_lists.c.id == tasks.c.batch_id, download_lists.c.released == 0).exists()))
+
+    def selected_download_job(self, db=None):
+        if db is None:
+            with self.connect() as connection:
+                return self.selected_download_job(connection)
+        return db.execute(select(settings.c.value).where(
+            settings.c.key == 'selected_download_job')).scalar_one_or_none() or None
 
     def set_downloads_paused(self, paused):
         with self.connect() as db:
+            if self.fleet:
+                if self.db.sqlite:
+                    db.exec_driver_sql('BEGIN IMMEDIATE')
+                db.execute(select(settings.c.key).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true' if paused else 'false'))
             if paused:
+                if self.fleet:
+                    from webapp.database import instances
+                    db.execute(instances.update().where(instances.c.role.in_(('worker', 'hybrid')))
+                               .values(paused=1, stop_requested=1))
                 self.statistics.settle(db, stop=True)
 
     def activate_download_lists(self, expected_policy_version=None):
@@ -447,7 +507,12 @@ class TaskStore:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             db.execute(select(settings.c.key).where(settings.c.key == 'downloads_paused').with_for_update())
-            if not self.downloads_paused(db) or self._counts(db, ['action:download']).get('running', 0):
+            if self.fleet:
+                from webapp.database import instances
+                if db.execute(select(instances.c.id).where(instances.c.paused == 0,
+                        instances.c.role.in_(('worker', 'hybrid'))).limit(1)).first():
+                    raise ValueError('请先暂停全部下载实例，再清空素材库。')
+            if (not self.fleet and not self.downloads_paused(db)) or self._counts(db, ['action:download']).get('running', 0):
                 raise ValueError('请先暂停全部下载，并等待所有实例的下载任务停止后再清空素材库。')
             if self.media_clear_busy(db):
                 raise ValueError('素材库正在清空，请勿重复提交。')
@@ -527,8 +592,8 @@ class TaskStore:
             with self.connect() as connection:
                 return self.effective_download_payload(task_id, payload, connection)
         if self.fleet:
-            from webapp.jobs import apply_policy
-            return apply_policy(self, db, task_id, self.fleet.execution(payload, db))
+            from webapp.jobs import apply_job_scope
+            return apply_job_scope(self, db, task_id, self.fleet.execution(payload, db))
         current = db.execute(select(settings.c.value).where(settings.c.key == 'download_settings')).scalar_one_or_none()
         if current:
             value = json.loads(current)
@@ -536,8 +601,8 @@ class TaskStore:
             result.pop('clash', None)
             if value['config'].get('proxy_mode') == 'clash':
                 result['clash'] = {'directory': value['clash_directory']}
-            from webapp.jobs import apply_policy
-            return apply_policy(self, db, task_id, result)
+            from webapp.jobs import apply_job_scope
+            return apply_job_scope(self, db, task_id, result)
         # Compatibility for standalone stores without a Web configuration.
         saved = db.execute(select(settings.c.value).where(
             settings.c.key == 'download_connection_override')).scalar_one_or_none()
@@ -567,7 +632,7 @@ class TaskStore:
                 if self.db.sqlite:
                     db.exec_driver_sql('BEGIN IMMEDIATE')
                 # Resume and new claims cannot pass until the old executor is gone.
-                if not self.downloads_paused(db, lock=True) and not (self.fleet and self.fleet.row(db)['stop_requested']):
+                if not self.downloads_stopped(db, lock=True) and not (self.fleet and self.fleet.row(db)['stop_requested']):
                     break
                 row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id))).mappings().first()
                 if not row or row['status'] != 'running' or row['worker_id'] != owner or not terminate(owner):
@@ -637,7 +702,7 @@ class TaskStore:
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
-            if self.downloads_paused(db, lock=True) or not self._released_queued_count(db):
+            if self.claims_paused(db, lock=True) or not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
             from webapp.disk_budget import resource_blocked
             if resource_blocked(self, db):
@@ -674,6 +739,9 @@ class TaskStore:
                     payload['_restart_transfer'] = True
                 values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
                 values['policy_version'] = payload.get('policy_version')
+                from webapp.downloads import initial_progress
+                values['progress'] = json.dumps(initial_progress(payload.get('config', {}),
+                    payload.get('policy_version')), ensure_ascii=False)
                 row = {**row, 'payload': self._pack(db, payload), '_previous_download_method': previous_method}
                 identity = self.statistics.begin(db, row)
                 values['payload'] = json.dumps({**json.loads(row['payload']), 'download_session_id': identity}, ensure_ascii=False)

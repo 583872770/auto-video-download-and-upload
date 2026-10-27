@@ -3,12 +3,33 @@ import argparse
 from contextlib import contextmanager
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 from urllib.parse import urlsplit
 import yt_dlp
 
 from Utils.config import DEFAULT_CONFIG, load_config, resolve_path, video_directory
 from Utils.runtime import configure_runtime
+
+
+def output_template(config, base):
+    directory = video_directory(config, base)
+    shard = config.get('shard_downloads')
+    title_bytes = 120
+    if sys.platform == 'win32':
+        # Metadata is written via <name>.info.json.<random>.tmp. Format tracks,
+        # subtitles and fragment downloads add suffixes too. Budget the entire
+        # path, including job/attempt directories, before truncating the title.
+        directory_length = len(str(directory).encode('utf-16-le')) // 2
+        if shard:
+            directory_length += 15  # /<two characters>/<11-character YouTube ID>
+        title_bytes = min(title_bytes, 240 - directory_length - 1 - 48)
+        if title_bytes < 1:
+            raise ValueError('下载目录过长，无法为视频和元数据临时文件预留空间。'
+                             '请在当前实例的系统设置中缩短素材目录或子目录。')
+    if shard:
+        directory = directory / '%(id).2s' / '%(id)s'
+    return str(directory / f'%(title).{title_bytes}B [%(id)s].%(ext)s')
 
 
 @contextmanager
@@ -35,7 +56,7 @@ def build_ydl_options(config, base):
         'download_archive': None if test_mode else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
-        'outtmpl': str(video_directory(config, base) / '%(title).120B [%(id)s].%(ext)s'),
+        'outtmpl': output_template(config, base),
         'merge_output_format': 'mp4/mkv',
         'retries': 3,
         'extractor_retries': 2,
@@ -50,8 +71,6 @@ def build_ydl_options(config, base):
         'cachedir': False,
         '_temporary_directory': config.get('_temporary_directory'),
     }
-    if config.get('shard_downloads'):
-        options['outtmpl'] = str(video_directory(config, base) / '%(id).2s' / '%(id)s' / '%(title).120B [%(id)s].%(ext)s')
     if config.get('js_runtimes') is not None:
         if not isinstance(config['js_runtimes'], dict):
             raise ValueError('js_runtimes 必须是运行时配置表')

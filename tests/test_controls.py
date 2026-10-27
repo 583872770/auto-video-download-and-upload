@@ -121,7 +121,11 @@ class ControlContract:
         self.assertEqual(self.store.rotation_completed('generation'), 0)
         self.assertEqual(self.store.counts(), {'queued': 1, 'running': 0, 'total': 1})
         self.client.post('/api/downloads/resume', headers=self.headers)
-        self.store.claim('new-owner')
+        claimed = self.store.claim('new-owner')
+        self.assertIsNone(claimed['progress'].get('rotation_id'))
+        # The resumed attempt reports its own node generation; a stopped
+        # attempt's progress must never supply it for the next execution.
+        self.store.update_progress(task['id'], {'rotation_id': 'generation'}, 'new-owner')
         self.store.finish(task['id'], result={'message': 'done'}, worker_id='new-owner')
         self.assertEqual(self.store.rotation_completed('generation'), 1)
 

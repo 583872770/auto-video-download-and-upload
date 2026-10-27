@@ -74,9 +74,7 @@ def prepare_single(store, config_path):
                 raise ModeTransitionError('数据库中的原实例身份不匹配，请确认使用原来的数据库和状态目录。')
             config, _ = load_config(config_path)
             local_config = json.loads(original['config']).get('config', {})
-            policy = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_policy')).scalar_one_or_none()
             config.update(local_config)
-            config.update(json.loads(policy)['config'] if policy else {})
             config.update(json.loads(original['limits']))
             # Write local settings before committing the database mode. Retrying
             # after a crash must not replace subsequent single-mode edits.

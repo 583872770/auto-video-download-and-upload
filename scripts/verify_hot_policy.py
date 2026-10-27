@@ -55,7 +55,7 @@ def main(hybrid=False):
                 try:
                     page = browser.new_page(viewport={'width': 1440, 'height': 1050})
                     page.on('pageerror', lambda error: errors.append(str(error)))
-                    page.goto(addresses['manager'] + '/#settings')
+                    page.goto(addresses['manager'] + '/?instance_id=worker#settings')
                     form = page.locator('#settings-form')
                     expect(form.locator('[name=yt5s_quality]')).to_have_value('360')
                     form.locator('[name=yt5s_quality]').select_option('best')
@@ -69,18 +69,24 @@ def main(hybrid=False):
                     assert new['payload']['config']['downmp3_quality'] == 'best'
                     assert new['payload']['config']['downmp3_timeout'] == 180
                     assert worker.get(old['id'], private=True)['payload']['config']['yt5s_quality'] == '360'
+                    assert store.fleet.policy()['config']['yt5s_quality'] == '360'
                     assert not store.downloads_paused()
                     page.screenshot(path=str(output / 'quality-hot-save.png'), full_page=True)
-                    page.locator('.nav-item[data-view=overview]').click()
                     page.locator('[data-provider=downmp3] [data-method-move="-1"]').click()
-                    page.locator('#save-download-strategy').click()
-                    expect(page.locator('#strategy-save-state')).to_contain_text('历史清单后续领取')
-                    expect(page.locator('#toasts')).to_contain_text('历史清单后续领取')
+                    form.locator('button[type=submit]').click()
+                    expect(page.locator('#strategy-save-state')).to_contain_text('后续领取')
+                    expect(page.locator('#toasts')).to_contain_text('设置已保存')
                     final = worker.claim(worker.owner)
                     assert final['payload']['config']['download_methods'] == ['downmp3', 'yt5s']
-                    assert final['policy_version'] == store.fleet.policy()['version']
+                    assert final['policy_version'] == worker.fleet.policy()['version']
                     assert worker.get(new['id'], private=True)['payload']['config']['download_methods'] == ['yt5s', 'downmp3']
                     page.screenshot(path=str(output / 'order-hot-save.png'), full_page=True)
+                    page.goto(addresses['manager'] + '/#instances')
+                    card = page.locator('[data-instance-form=worker]')
+                    expect(card).to_contain_text('下载顺序：downmp3 → yt5s')
+                    card.get_by_role('link', name='配置此实例下载策略').click()
+                    expect(page.locator('#fleet-selection')).to_have_value('worker')
+                    expect(page.locator('[data-provider=downmp3]')).to_contain_text('优先使用')
                     page.set_viewport_size({'width': 390, 'height': 844})
                     assert page.evaluate('() => document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'
                     page.screenshot(path=str(output / 'order-mobile.png'), full_page=True)

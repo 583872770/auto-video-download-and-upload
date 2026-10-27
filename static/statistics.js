@@ -1,7 +1,7 @@
 /* Session accounting stays separate from the live download dashboard. */
 (() => {
   const stats = { cursor: null, history: [], next: null, selected: null, kind: 'files', detailCursor: null,
-    detailHistory: [], detailNext: null, busy: false, pending: false, dirty: false, pricingDirty: false, detail: null };
+    detailHistory: [], detailNext: null, busy: false, pending: false, dirty: false, detail: null };
   const sessionStatus = { active: '进行中', stopping: '正在暂停', paused: '已暂停', completed: '已结束' };
   const outcome = { running: '下载中', retrying: '等待重试', paused: '暂停 / 待续传', succeeded: '成功', failed: '失败', skipped: '已跳过', test_succeeded: '测试成功（不计费）' };
   const visible = () => !$('#statistics-view').hidden;
@@ -24,6 +24,7 @@
 
   function renderOverview(data) {
     const total = data.summary;
+    $('#billing-overview').innerHTML = card('累计交付大小', gb(data.billing.file_bytes_exact), '全部客户任务，包含归档和删除任务的历史交付') + card('预计费用合计', `¥ ${data.billing.amount}`, '按每个任务的单价计算，属于预计金额') + card('单价待设置', data.billing.unset, '进入相应任务设置单价');
     $('#statistics-totals').innerHTML = card('累计计费视频大小', gb(total.file_bytes), `${integer(total.file_bytes_exact)} 字节 · 精确大小累计`)
       + card('累计交付视频', integer(total.file_count), `跳过 ${integer(total.skipped)} · 测试成功 ${integer(total.test_succeeded)}（不计费）`)
       + card('成功任务 / 失败任务', `${integer(successes(total))} / ${integer(total.failed)}`, `含测试成功 ${integer(total.test_succeeded)} · 重试未耗尽时不计失败`)
@@ -35,7 +36,6 @@
     renderMethods('#statistics-methods', data.methods);
     $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。按 yt5s、yt-dlp、downmp3、yt1d 分别统计；按配置顺序切换时，前一下载器计失败，下一下载器单独计尝试；同一会话中每个视频对同一下载器只计一次。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
     $('#statistics-since').textContent = `执行大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。执行记录可按备注筛选；商业金额统一按客户任务汇总，每个任务四舍五入到分。未归属客户任务的历史执行不补造费用。`;
-    if (!stats.pricingDirty) fill($('#statistics-pricing-form'), data.pricing);
     const active = data.active;
     $('#statistics-active').hidden = !active;
     if (active) $('#statistics-active').innerHTML = `<span class="online-dot"></span><div><strong>${active.status === 'stopping' ? '正在结束本次会话' : '本次下载会话进行中'}</strong><span>已交付 ${integer(active.file_count)} 个视频 · ${gb(active.file_bytes)}；测试 ${integer(active.test_file_count)} 个视频 · ${gb(active.test_file_bytes)} · ${integer(active.running)} 个正在执行</span></div><button type="button" class="text-button" data-statistics-session="${active.id}">查看本次明细 ↗</button>`;
@@ -114,14 +114,6 @@
       stats.cursor = null; stats.history = []; stats.selected = null; stats.dirty = false;
       $('#statistics-detail').hidden = true; refreshStatistics();
     }, 300);
-  });
-  $('#statistics-pricing-form').addEventListener('input', () => { stats.pricingDirty = true; });
-  $('#statistics-pricing-form').addEventListener('submit', event => {
-    event.preventDefault();
-    runButton($('button[type="submit"]', event.target), async () => {
-      const result = await api('/api/statistics/pricing', { method: 'PUT', body: Object.fromEntries(new FormData(event.target)) });
-      stats.pricingDirty = false; toast(result.message); await refreshStatistics();
-    });
   });
   $('#statistics-session-form').addEventListener('input', () => { stats.dirty = true; });
   $('#statistics-session-form').addEventListener('submit', event => {

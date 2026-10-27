@@ -39,11 +39,11 @@ def profile(store, db, identity, *, lock=False):
     return db.execute(query.with_for_update() if lock else query).mappings().first()
 
 
-def apply_policy(store, db, task_id, payload):
+def apply_job_scope(store, db, task_id, payload):
     value = profile(store, db, payload.get('batch_id')) if payload.get('batch_id') else None
     if not value:
         return payload
-    config = {**payload['config'], **json.loads(value['policy'])}
+    config = dict(payload['config'])
     from Utils.config import video_directory
     config['_job_media_root'] = str(video_directory(config, payload['base']))
     # A fresh attempt directory prevents a cancelled, remote executor from
@@ -69,7 +69,7 @@ class Jobs:
         if not db.execute(select(download_lists.c.id).where(download_lists.c.id == identity)).first():
             raise ValueError('历史批次没有独立账本，请新建任务。')
         values = dict(id=identity, note=(data or {}).get('note', ''),
-            policy=json.dumps({key: config[key] for key in POLICY_FIELDS if key in config}, ensure_ascii=False),
+            policy='{}',
             revision=1, edit_version=1, policy_version=1, archived=0, deleted=0,
             price_set=int(data is None or data.get('price') not in ('', None)), updated_at=stamp())
         db.execute(job_profiles.insert().values(**values))
@@ -101,10 +101,9 @@ class Jobs:
             raise ValueError('请填写客户和清单名称。')
         if not isinstance(data.get('note', ''), str) or len(data.get('note', '')) > 2000:
             raise ValueError('备注最多 2000 个字符。')
-        selected = data.get('policy', {})
-        if not isinstance(selected, dict) or set(selected) - POLICY_FIELDS:
-            raise ValueError('包含不支持的任务下载策略。')
-        config = {**DEFAULTS, **config, **selected}
+        if data.get('policy'):
+            raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
+        config = {**DEFAULTS, **config}
         if data.get('request_id'):
             try:
                 request_id = uuid.UUID(str(data['request_id'])).hex
@@ -254,7 +253,7 @@ class Jobs:
             importing = db.execute(select(func.count()).select_from(imports).where(
                 or_(imports.c.id.in_(import_ids),imports.c.id==identity), imports.c.finished == 0)).scalar_one()
             result = self.describe(row, value, counts, paused, available, importing)
-            result.update(policy=json.loads(value['policy']) if value else None,
+            result.update(policy=None, policy_scope='instance',
                 imports=[dict(record) for record in records], running_videos=running_videos,
                 transfer_speed=sum(float((item.get('progress') or {}).get('speed') or 0)
                     for item in running_videos if (item.get('progress') or {}).get('stage') == 'downloading'))
@@ -282,30 +281,32 @@ class Jobs:
             values = dict(note=note, updated_at=stamp(), edit_version=value['edit_version'] + 1)
             if 'price' in data:
                 values['price_set'] = int(price not in ('', None))
-            policy = data.get('policy')
-            if policy is not None:
-                if not isinstance(policy, dict) or set(policy) - POLICY_FIELDS:
-                    raise ValueError('不支持的任务策略。')
-                previous = json.loads(value['policy'])
-                merged = {**DEFAULTS, **config, **previous, **policy}
-                validate_settings(merged, download_only=True)
-                if merged.get('storage_mode', 'local') != previous.get('storage_mode', 'local') and db.execute(
-                        select(tasks.c.id).where(tasks.c.batch_id == identity, tasks.c.started_at.is_not(None)).limit(1)).first():
-                    raise ValueError('任务已经开始执行，请新建任务切换正式/测试模式。')
-                values.update(policy=json.dumps({k: merged[k] for k in POLICY_FIELDS if k in merged}, ensure_ascii=False),
-                    policy_version=value['policy_version'] + 1)
+            if 'policy' in data:
+                raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
             db.execute(download_lists.update().where(download_lists.c.id == identity).values(customer=customer.strip(), name=name.strip(), **bill))
             db.execute(batches.update().where(batches.c.id == identity).values(name=name.strip()))
             db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(**values))
-            event(self.store, db, identity, '更新任务信息 / 策略；预计费用按整单单价重算。')
+            event(self.store, db, identity, '更新任务信息；预计费用按整单单价重算。')
 
     def control(self, identity, action, config, data):
         with self.store.connect() as db:
+            if self.store.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
+            if self.store.fleet:
+                db.execute(select(schema_settings.c.key).where(schema_settings.c.key == 'fleet_budget').with_for_update()).first()
+            # Claims lock system permission before the job; starts use that order too.
+            if action == 'start':
+                db.execute(select(schema_settings.c.key).where(
+                    schema_settings.c.key == 'downloads_paused').with_for_update()).first()
             row, old = self.require(db, identity, editable=action not in ('delete', 'unarchive'))
             value = old or self.ensure(db, identity, config)
             if action == 'start':
+                resume = data.get('resume_system', False)
+                paused = self.store.downloads_paused(db)
+                if resume and paused and self.store._counts(db, ['action:download']).get('running', 0):
+                    raise Conflict('当前下载进程尚未停止，请稍后开始下载。')
                 if not db.execute(select(tasks.c.id).where(tasks.c.batch_id == identity,
-                        tasks.c.action == 'download', tasks.c.status == 'queued').limit(1)).first() and not db.execute(
+                        tasks.c.action == 'download', tasks.c.status.in_(('queued', 'running'))).limit(1)).first() and not db.execute(
                         select(imports.c.id).join(job_imports, imports.c.id == job_imports.c.id).where(
                         job_imports.c.job_id == identity, imports.c.finished == 0).limit(1)).first():
                     raise ValueError('任务没有待处理视频，请先追加视频或重试失败条目。')
@@ -313,8 +314,23 @@ class Jobs:
                     raise ValueError('素材库正在清空，请完成后再开始。')
                 if self.store.fleet:
                     self.store.fleet.activate(db)
+                if resume:
+                    # Compatibility for explicit legacy system-wide commands.
+                    others = db.execute(select(download_lists.c.id).where(
+                        download_lists.c.id != identity, download_lists.c.released == 1)
+                        .order_by(download_lists.c.id).with_for_update()).scalars().all()
+                    for other in others:
+                        db.execute(download_lists.update().where(download_lists.c.id == other).values(released=0))
+                        event(self.store, db, other, '已停止：下载工作台选择了其他任务开始。')
+                    self.stop_running(db, or_(tasks.c.batch_id != identity, tasks.c.batch_id.is_(None)))
+                    db.execute(self.store.db.upsert(schema_settings,
+                        {'key': 'selected_download_job', 'value': identity}, ['key']))
                 db.execute(download_lists.update().where(download_lists.c.id == identity).values(released=1))
+                if resume:
+                    db.execute(schema_settings.update().where(
+                        schema_settings.c.key == 'downloads_paused').values(value='false'))
             elif action in ('pause', 'stop', 'archive', 'delete'):
+                self.pause_instances(db, identity, stop=action != 'pause')
                 if action == 'delete' and data.get('confirmation') != row['name']:
                     raise ValueError('请输入完整任务名称确认删除。')
                 db.execute(download_lists.update().where(download_lists.c.id == identity).values(released=0))
@@ -323,13 +339,7 @@ class Jobs:
                         archived=int(action=='archive'), deleted=int(action=='delete'), revision=value['revision']+1))
                     self.cancel_imports(db, identity)
                 if action != 'pause':
-                    rows = db.execute(select(tasks).where(tasks.c.batch_id == identity, tasks.c.action == 'download',
-                        tasks.c.status == 'running').with_for_update()).mappings().all()
-                    for task in rows:
-                        self.store._transition(db, task, 'queued')
-                        db.execute(tasks.update().where(tasks.c.id == task['id']).values(status='queued', worker_id=None,
-                            lease_until=None, available_at=0, progress=None, attempts=max(0,task['attempts']-1)))
-                        self.store.statistics.transition(db, task, 'paused')
+                    self.stop_running(db, tasks.c.batch_id == identity)
             elif action == 'unarchive':
                 db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(archived=0))
             elif action == 'retry':
@@ -348,6 +358,22 @@ class Jobs:
                 'archive':'归档任务','delete':'删除任务（保留账本与文件）','unarchive':'恢复归档任务','retry':'重新入队失败视频'}[action])
             self.store.statistics.settle(db)
 
+    def stop_running(self, db, condition):
+        rows = db.execute(select(tasks).where(condition, tasks.c.action == 'download',
+            tasks.c.status == 'running').order_by(tasks.c.id).with_for_update()).mappings().all()
+        for task in rows:
+            self.store._transition(db, task, 'queued')
+            db.execute(tasks.update().where(tasks.c.id == task['id']).values(status='queued', worker_id=None,
+                lease_until=None, available_at=0, progress=None, attempts=max(0, task['attempts']-1)))
+            self.store.statistics.transition(db, task, 'paused')
+
+    def pause_instances(self, db, identity, *, stop=False):
+        if self.store.fleet:
+            from webapp.database import instances
+            selected = select(schema_settings.c.key).where(schema_settings.c.value == identity,
+                schema_settings.c.key == 'workbench_job:' + instances.c.id).exists()
+            db.execute(instances.update().where(selected).values(paused=1, stop_requested=int(stop)))
+
     def cancel_imports(self, db, identity):
         ids = select(job_imports.c.id).where(job_imports.c.job_id == identity)
         db.execute(imports.update().where(or_(imports.c.id.in_(ids),imports.c.id==identity), imports.c.finished == 0).values(finished=-1))
@@ -362,6 +388,8 @@ class Jobs:
 
     def remove(self, identity, data):
         with self.store.connect() as db:
+            if self.store.fleet:
+                db.execute(select(schema_settings.c.key).where(schema_settings.c.key == 'fleet_budget').with_for_update()).first()
             row, value = self.require(db, identity)
             clear = data.get('clear', False)
             if type(clear) is not bool:
@@ -371,6 +399,7 @@ class Jobs:
             if data.get('scope', 'pending') not in ('pending', 'all'):
                 raise ValueError('请选择有效清空范围。')
             if clear:
+                self.pause_instances(db, identity, stop=True)
                 db.execute(download_lists.update().where(download_lists.c.id == identity).values(released=0))
                 db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(revision=value['revision']+1))
                 self.cancel_imports(db, identity)
@@ -509,15 +538,31 @@ def register_jobs(app, store, settings, preflight):
         current=get(identity)
         data=body()
         config,base=settings()
-        jobs.control(identity, data.get('action'), config, data)
+        resume = data.get('resume_system', False)
+        if type(resume) is not bool or (resume and data.get('action') != 'start'):
+            raise ValueError('随任务启动系统的标记必须为布尔值，且仅用于开始下载。')
         warnings = []
-        if data.get('action') == 'start':
+        if resume:
+            if current['archived'] or not (current['queued'] or current['running'] or current['importing']):
+                raise ValueError('请选择未归档且有待处理视频的任务。')
+            queue = store.download_queue()
+            if queue['paused'] and queue['running']:
+                raise Conflict('当前下载进程尚未停止，请稍后开始下载。')
+            if store.media_clear_busy():
+                raise Conflict('素材库正在清空，请完成后再开始。')
+            # Each execution node checks its own strategy before new claims.
+            warnings = preflight(config, base) or []
+            latest, _ = settings()
+            if any(config.get(k) != latest.get(k) for k in POLICY_FIELDS):
+                raise Conflict('检查期间实例下载策略发生变化，请重新开始。')
+        jobs.control(identity, data.get('action'), config, data)
+        if data.get('action') == 'start' and not resume:
             from webapp.execution import isolate_download_failure
             from webapp.environment import DownloadEnvironmentRequired
             from webapp.yt5s import BrowserEnvironmentRequired
             from webapp.youtube_auth import YouTubeAuthRequired
             try:
-                warnings = preflight({**config, **(current['policy'] or {})}, base) or []
+                warnings = preflight(config, base) or []
             except (ValueError, DownloadEnvironmentRequired, BrowserEnvironmentRequired, YouTubeAuthRequired) as error:
                 isolate_download_failure(store, error)
                 warnings = [f'本机已暂停领取，任务运行意愿保留：{error}']

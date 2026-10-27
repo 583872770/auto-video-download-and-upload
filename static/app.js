@@ -5,11 +5,19 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
 const serviceRole = $('meta[name="service-role"]')?.content || 'all';
 const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
+const initialJobId = new URLSearchParams(location.search).get('job');
+let selectedJob = null;
+let selectedJobId = '';
+let lastStartedJobId = null;
+let jobOptions = [];
+let jobsCursor = null;
+let jobsSearchEpoch = 0;
+let jobsSearchTimer;
 let clashBusy = false;
-let downloadSubmitting = false;
 let downloadMethodBusy = false;
 let providerDraft = null;
 let settingsDirty = false;
+let settingsBaseline = {};
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
@@ -29,12 +37,12 @@ const actionIcons = { download: 'download', check: 'server', import: 'upload', i
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
   instances: ['下载实例', '多台机器，一个下载队列', '统一管理实例并发、运行状态和暂停指令。'],
-  overview: ['全局总览', 'YouTube 视频，一处管理', '每次导入形成独立任务；在任务中心管理视频、下载进度和账单。'],
+  overview: ['下载工作台', '下载工作台', '选择已有任务，开始下载并查看运行状态。'],
   media: ['素材库', '下载的视频，都在这里', '查看本机保存的视频原片、封面和文件大小。'],
-  tasks: ['任务记录', '每一次下载，都有记录', '查看已结束的下载与环境检查记录，以及执行结果和日志。'],
-  statistics: ['下载统计与计费', '每一份交付，都有明细', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
-  settings: ['下载设置', '按你的习惯，保存视频', '配置视频保存位置、下载代理和 YouTube Cookie。'],
-  clash: ['代理与节点', '选一个节点，连接 YouTube', '管理 Clash 订阅、选择下载节点，并测试延迟与连通性。'],
+  tasks: ['执行日志', '执行日志', '排查单个视频或后台操作的执行结果；客户任务在任务中心管理。'],
+  statistics: ['交付与账单', '交付与账单', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
+  settings: ['系统设置', '系统设置', '维护当前下载实例的下载策略、目录、登录和资源配置。'],
+  clash: ['网络与代理', '网络与代理', '管理 Clash 订阅、选择下载节点，并测试延迟与连通性。'],
 };
 
 function escapeHTML(value) {
@@ -86,7 +94,8 @@ function setView(name) {
   $('#page-title').append(dot);
   $('#page-description').textContent = description;
   $('#sidebar').classList.remove('mobile-open');
-  history.replaceState(null, '', `#${name}`);
+  history.replaceState(null, '', `${location.search}#${name}`);
+  if (typeof renderInstanceScope === 'function') renderInstanceScope();
   document.dispatchEvent(new CustomEvent('viewchange', { detail: name }));
 }
 function emptyState(title, description, button = false) {
@@ -94,10 +103,9 @@ function emptyState(title, description, button = false) {
 }
 function renderMedia() {
   const count = state.overview.media.count || 0;
-  ['stat-media', 'nav-media-count', 'recent-media-count'].forEach(id => { $(`#${id}`).textContent = count; });
+  $('#nav-media-count').textContent = count;
   $('#all-media-count').textContent = state.mediaTotal ?? count;
   const cards = items => `<div class="media-grid">${items.map(item => `<button type="button" class="media-card" data-media="${escapeHTML(item.name)}" data-media-instance="${escapeHTML(item.instance_id || '')}" aria-label="${item.playable ? '播放' : '查看'}：${escapeHTML(item.title || item.name)}"><span class="media-image">${item.cover ? `<img src="${mediaAddress('covers', item.cover, item.instance_id)}" alt="${escapeHTML(item.title || item.name)}的封面" loading="lazy">` : icon('film')}${item.playable ? `<span class="media-play">${icon('play')}</span>` : ''}<span class="media-type">${item.playable ? escapeHTML(item.name.split('.').pop().toUpperCase()) : '待合并'}</span></span><span class="media-info"><span class="media-name" title="${escapeHTML(item.name)}">${escapeHTML(item.title || item.name)}</span><span class="media-meta"><span>${bytes(item.size)}</span><span>${item.playable ? '点击播放' : '音视频尚未合并'}</span></span></span></button>`).join('')}</div>`;
-  $('#recent-media').innerHTML = state.overview.recent_media.length ? cards(state.overview.recent_media) : emptyState('还没有下载的视频', '在上方粘贴 YouTube 链接，开始第一次下载。');
   $('#all-media').innerHTML = state.media.length ? cards(state.media) : emptyState('素材库还是空的', '下载完成后，视频与封面会出现在这里。', true);
 }
 function openMedia(name, instanceId) {
@@ -122,8 +130,13 @@ function openMedia(name, instanceId) {
 function taskRows(tasks) {
   return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
 }
+function taskPaused(task) {
+  if (task.action !== 'download' || task.status !== 'queued') return false;
+  const item = state.fleet?.items.find(item => item.id === task.instance_id);
+  return task.instance_id && task.instance_id !== state.instanceId ? !!item?.paused : !!state.workbench?.paused;
+}
 function taskStatus(task) {
-  return task.action === 'download' && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status) ? (task.status === 'running' ? '正在暂停' : '已暂停') : statusNames[task.status] || task.status;
+  return taskPaused(task) ? '已暂停' : statusNames[task.status] || task.status;
 }
 function etaText(seconds) {
   if (!Number.isFinite(seconds)) return '—';
@@ -131,7 +144,7 @@ function etaText(seconds) {
   return value >= 3600 ? `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分` : value >= 60 ? `${Math.floor(value / 60)}分${value % 60}秒` : `${value}秒`;
 }
 function progressLabel(task) {
-  if (task.action === 'download' && state.status?.download_queue?.paused && ['queued', 'running'].includes(task.status)) return task.status === 'running' ? '正在暂停' : '已暂停 · 等待继续';
+  if (taskPaused(task)) return '已暂停 · 等待继续';
   if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待继续下载';
   if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '等待退避重试' : '排队中';
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
@@ -152,6 +165,7 @@ function progressLabel(task) {
 function downloadProgress(task) {
   const data = task.progress || {};
   const active = task.status === 'running';
+  const queued = task.status === 'queued';
   const stopped = task.status === 'queued' && data.stage === 'paused';
   const converting = active && data.stage === 'waiting_api_conversion';
   const measured = converting ? data.provider_percent : data.percent;
@@ -163,15 +177,23 @@ function downloadProgress(task) {
   const stageSeconds = active && data.stage_started_at ? Math.max(0, Date.now() / 1000 - data.stage_started_at) : null;
   const slowest = Object.entries(data.stage_seconds || {}).filter(([stage]) => !active || stage !== data.stage).sort((a, b) => b[1] - a[1])[0];
   const stageName = stage => progressLabel({ action: 'download', status: 'running', progress: { stage } });
-  const timing = stageSeconds !== null || slowest ? `<p class="micro-copy stage-timing">${stageSeconds !== null ? `本阶段已用 ${etaText(stageSeconds)}` : `本次执行已记录用时 ${etaText(data.elapsed || 0)}`}${slowest ? ` · ${active ? '已结束阶段中最久' : '耗时最长阶段'}：${escapeHTML(stageName(slowest[0]))} ${etaText(slowest[1])}` : ''}</p>` : '';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>下载器 <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>节点 <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
+  const timing = stageSeconds !== null || slowest ? `<p class="micro-copy stage-timing">${stageSeconds !== null ? `本阶段已用 ${etaText(stageSeconds)}` : `${queued ? '上次' : '本次'}执行已记录用时 ${etaText(data.elapsed || 0)}`}${slowest ? ` · ${active ? '已结束阶段中最久' : '耗时最长阶段'}：${escapeHTML(stageName(slowest[0]))} ${etaText(slowest[1])}` : ''}</p>` : '';
+  const methods = data.selected_download_methods;
+  const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}执行顺序：${escapeHTML(methods.map(method => providerNames[method] || method).join(' → '))}${queued ? '；重新领取时读取执行实例的最新设置。' : ''}${task.instance_id && ['manager','hybrid'].includes(serviceRole) ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">配置执行实例：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
-  const tasks = state.batchTasks;
-  const queue = state.status?.download_queue || {};
+  const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
+  if (!selectedJobId) {
+    $('#batch-count').textContent = '0';
+    $('#batch-summary').textContent = '此处显示所选任务的实时执行情况。';
+    $('#batch-progress').innerHTML = emptyState('请选择下载任务', '任务视频在任务中心准备；选择任务后可以开始下载。');
+    return;
+  }
+  const queue = state.workbench || {};
   $('#batch-count').textContent = tasks.length;
-  $('#batch-summary').textContent = `${queue.paused ? '下载已停止' : '正在下载 ' + tasks.length + ' 个'} · 排队 ${queue.queued || 0} 个 · 仅显示当前正在下载的视频，完成后可在任务记录中查看`;
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.status?.download_queue?.paused ? '下载已停止，点击继续下载后显示实时进度。' : '排队任务开始下载后会显示在这里，已结束的任务请到任务记录查看。');
+  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 正在下载 ${tasks.length} 个 · 待下载 ${selectedJob?.queued || 0} 个`;
+  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.workbench?.paused ? '选择任务并开始后，这里会显示实时进度。' : '此任务执行时在这里显示进度；视频结果在任务详情查看。');
   renderPagination();
 }
 function renderPagination() {
@@ -191,22 +213,6 @@ function listQuery(name, params = {}) {
   return values.toString();
 }
 
-function inputAsIds(value) {
-  const lines = Array.isArray(value) ? value : String(value || '').split(/\r?\n/);
-  return lines.map(line => {
-    const item = line.trim();
-    try {
-      const url = new URL(item);
-      if (['www.youtube.com', 'youtube.com', 'm.youtube.com'].includes(url.hostname) && url.searchParams.get('v')) return url.searchParams.get('v');
-      if (url.hostname === 'youtu.be') return url.pathname.slice(1);
-    } catch {}
-    return item;
-  }).join('\n');
-}
-function updateInputCount() {
-  const lines = [...new Set($('#download-urls').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean))];
-  $('#download-input-count').textContent = lines.length ? `共 ${lines.length} 个输入 · 自动补全链接并去重` : '输入视频 ID，自动补全链接；也支持完整链接';
-}
 function decimalGB(value) {
   const amount = Number(value || 0);
   return amount > 0 && amount < 1000 ? '< 0.000001 GB' : `${(amount / 1e9).toLocaleString('zh-CN', { maximumFractionDigits: 6 })} GB`;
@@ -214,17 +220,11 @@ function decimalGB(value) {
 function renderTasks() {
   const counts = state.overview.download_counts || {};
   const sizes = state.overview.accounting || {};
-  $('#stat-active').textContent = counts.queued || 0;
-  $('#stat-running').textContent = counts.running || 0;
+  $('#stat-active').textContent = selectedJob?.queued || 0;
+  $('#stat-running').textContent = state.workbench?.running || 0;
   $('#stat-complete').textContent = sizes.file_count || 0;
-  $('#stat-failed').textContent = (counts.failed || 0) + (counts.interrupted || 0);
-  $('#stat-billable').textContent = decimalGB(sizes.file_bytes);
-  $('#stat-testing').textContent = decimalGB(sizes.test_file_bytes);
-  $('#stat-billable').title = `${sizes.file_bytes_exact || 0} 字节`;
-  $('#stat-testing').title = `${sizes.test_file_bytes_exact || 0} 字节 · 不计费`;
   $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
-  $('#active-caption').textContent = state.status?.download_queue?.paused ? '系统已停止领取；各任务状态保留' : '各客户任务在任务中心独立开始';
-  $('#recent-tasks').innerHTML = state.overview.recent_tasks.length ? taskRows(state.overview.recent_tasks.slice(0, 3)) : emptyState('还没有任务记录', '任务结束后，执行结果会在这里出现。');
+  $('#active-caption').textContent = state.workbench?.paused ? '当前实例已停止领取' : '选择任务后开始下载';
   $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
   renderBatches();
 }
@@ -241,27 +241,18 @@ function renderStatus() {
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
   $('#environment-note').textContent = !browserReady ? '缺少 yt5s / yt1d 浏览器或显示环境' : !nativeReady ? '缺少 yt-dlp 所需 FFmpeg 或 JS 运行时' : needsProbe && !tools.ffprobe ? '缺少 ffprobe' : methodFour ? 'API 下载 · 无需浏览器和 JS 运行时' : `Python ${state.status.python}`;
   renderYouTubeLogin();
-  const noCookie = !methods.includes('yt_dlp');
-  $$('[data-cookie-actions]').forEach(element => { element.hidden = noCookie; });
-  $$('[data-open="youtube-login-dialog"], [data-open="youtube-cookie-dialog"]').forEach(element => { element.hidden = noCookie; });
-  $$('[data-provider-setting]').forEach(element => { element.hidden = !element.dataset.providerSetting.split(' ').some(method => methods.includes(method)); });
-  $('#source-capability').textContent = '单视频 ID / 链接清单';
-  $('#subtitle-capability').textContent = noCookie ? '当前下载器不提供字幕' : '仅 yt-dlp 支持，取决于视频源';
-  $('#video-capability').textContent = `已保存顺序：${methods.map(method => providerNames[method]).join(' → ')}，各自使用画质配置`;
-  if (!location.hash || location.hash === '#overview') $('#page-description').textContent = '添加客户清单 → 保存下载策略 → 开始下载 → 按成品大小结算。';
   $('#database-health').textContent = `数据库：${state.status.database === 'mysql' ? 'MySQL' : 'SQLite 测试模式'} · 最近请求成功`;
   $('#proxy-health').textContent = state.config?.proxy_mode === 'clash' ? `代理：Mihomo · ${state.clash?.running ? '控制接口可用' : '尚未确认内核状态'}（不代表下载链路已验证）` : state.config?.proxy_mode === 'manual' && state.config?.proxy ? '代理：手动代理（未探测连通性）' : '连接：直连（未探测外网连通性）';
-  const externalLabel = methods.map(method => providerNames[method]).join(' / ');
   renderDownloadMethod();
   $$('[data-youtube-status]').forEach(element => {
     const auth = state.status.youtube?.auth;
-    element.textContent = noCookie ? `${externalLabel}不使用 YouTube Cookie` : auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
+    element.textContent = auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
   const auth = state.status.youtube?.auth;
-  $('#youtube-auth-status').textContent = noCookie ? '当前下载器无需 YouTube Cookie；yt5s、yt1d 使用浏览器，downmp3 使用转换接口。' : auth?.message || '已启用 yt-dlp，下载前将自动检测 YouTube 登录状态。';
-  $('#youtube-auth-status').classList.toggle('error', !noCookie && !!auth && !['valid', 'unchecked'].includes(auth.state));
-  $('#youtube-auth-check').disabled = noCookie || authChecking || !!state.status.youtube?.login?.active;
-  $('#youtube-auth-check').textContent = noCookie ? `${externalLabel}无需登录检测` : authChecking ? '正在检测…' : '检测登录';
+  $('#youtube-auth-status').textContent = auth?.message || '供 yt-dlp 任务使用；其他下载器不需要此 Cookie。';
+  $('#youtube-auth-status').classList.toggle('error', !!auth && !['valid', 'unchecked'].includes(auth.state));
+  $('#youtube-auth-check').disabled = authChecking || !!state.status.youtube?.login?.active;
+  $('#youtube-auth-check').textContent = authChecking ? '正在检测…' : '检测登录';
 }
 let authChecking = false;
 $('#youtube-auth-check').addEventListener('click', async () => {
@@ -280,7 +271,6 @@ function renderYouTubeLogin() {
   const login = state.status?.youtube?.login;
   const busy = youtubeLoginBusy || !!login?.active;
   const needsStop = !!state.status?.connection_busy;
-  $('#download-form button[type=submit]').disabled = downloadSubmitting || downloadMethodBusy || !!login?.active;
   $('#youtube-login-start').disabled = !login || busy || needsStop;
   $('#youtube-login-start').textContent = login?.active ? '登录进行中…' : login?.state === 'idle' ? '打开登录窗口' : '重新打开登录窗口';
   $('#youtube-login-cancel').hidden = !login?.active;
@@ -331,7 +321,6 @@ function renderClash() {
   $('#clash-apply-note').textContent = clashBusy ? '正在处理代理操作，请稍候…'
     : (applied ? `上次检查：${formatDate(applied.updated_at, true)} · ${appliedMode}。` : '')
       + (data.connection_apply_reason || '待处理任务自动使用当前连接；检查不会启动下载。');
-  $('#download-proxy-note').textContent = data.mode === 'clash' ? `Clash · ${data.selected || '尚未配置'}${data.rotation?.enabled ? ` · 每 ${data.rotation.every} 个视频轮换` : ''}` : data.mode === 'direct' ? '下载连接：直连' : `下载连接：${state.config?.proxy ? '手动代理' : '直连'}`;
   $('#clash-lock-note').hidden = !data.locked;
   $('#clash-error').hidden = !data.error;
   $('#clash-error').textContent = data.error || '';
@@ -405,9 +394,11 @@ function fillConfig(config) {
   state.config = config;
   const form = $('#settings-form');
   if (settingsDirty) { renderDownloadMethod(); return; }
+  settingsBaseline = {};
   for (const element of $$('input[name], select[name], textarea[name]', form)) {
     const value = config[element.name];
     element.value = Array.isArray(value) ? value.join('\n') : value ?? '';
+    settingsBaseline[element.name] = element.value;
   }
   renderStorageSettings();
   renderDownloadMethod();
@@ -428,32 +419,17 @@ function readProviderChoices(container) {
 }
 function renderDownloadMethod() {
   const methods = selectedProviders();
+  const target = state.instanceId ? `实例 ${instanceName(state.instanceId)}` : '本机';
   renderProviderChoices($('#download-method'), providerDraft || methods, downloadMethodBusy || !state.config);
-  $('#strategy-save-state').textContent = providerDraft ? '有未保存修改，请保存下载策略' : '已保存 · 历史清单后续领取的视频立即生效，新建客户任务复制此策略';
-  $('#save-download-strategy').disabled = !providerDraft || downloadMethodBusy;
-  $('#save-download-strategy').textContent = downloadMethodBusy ? '正在保存…' : '保存下载策略';
+  $('#strategy-save-state').textContent = providerDraft ? `${target}有未保存修改，请点击下方“保存设置”` : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
   const tools = state.status?.tools;
-  const notes = [`尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后点击“保存下载策略”生效。`];
+  const notes = [`尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
-  notes.push('保存后无需暂停或重启，历史清单后续领取的视频立即使用新策略；新建客户任务复制此策略。已有客户任务在任务设置独立修改，后续领取时生效。正在执行的视频保持本次配置。');
+  notes.push('保存后仅影响当前实例后续领取的视频，无需暂停或重启；其他实例使用各自策略，正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
-}
-async function saveProviderChoices(methods) {
-  downloadMethodBusy = true;
-  renderYouTubeLogin();
-  renderDownloadMethod();
-  try {
-    await api('/api/config', { method: 'PUT', body: { download_methods: methods } });
-    state.config.download_methods = methods;
-    state.config.download_method = methods[0];
-    providerDraft = null;
-    toast(`已保存下载顺序：${methods.map(method => providerNames[method]).join(' → ')}，历史清单后续领取的视频立即生效。`);
-    await refresh();
-  } catch (error) { toast(error.message, true); }
-  finally { downloadMethodBusy = false; renderDownloadMethod(); renderStatus(); renderDownloadControl(); }
 }
 for (const id of ['download-method']) {
   const container = $(`#${id}`);
@@ -484,23 +460,24 @@ for (const id of ['download-method']) {
     if (button) update(event, button);
   });
 }
-$('#save-download-strategy').addEventListener('click', () => { if (providerDraft) saveProviderChoices([...providerDraft]); });
 function renderStorageSettings() {
   const test = $('#storage-mode').value === 'test';
   $$('[data-local-storage]').forEach(label => {
     label.hidden = test;
     $('input', label).disabled = test;
   });
-  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。切换前请先停止全部下载；保存后对尚未开始的任务生效。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。网盘保存待开发。';
+  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。此模式只作用于当前实例后续领取的视频。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。此模式只作用于当前实例后续领取的视频。';
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
 const refreshedAt = {};
 async function refresh({ poll = false, viewChanged = false } = {}) {
+  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
   if (state.polling) {
     if (!poll || viewChanged) state.refreshQueued = true;
     return;
   }
   state.polling = true;
+  const instance = state.instanceId;
   try {
     const view = location.hash.slice(1) || 'overview';
     const stamp = Date.now();
@@ -511,10 +488,10 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
       status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
       clash: (!['manager', 'hybrid'].includes(serviceRole) || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
       overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
-      active: due('active', view === 'overview', 2000) ? '/api/tasks?view=active&limit=100&order=asc' : null,
     };
     const pendingRequests = Object.entries(requests).filter(([, path]) => path);
     const results = await Promise.allSettled(pendingRequests.map(async ([name, path]) => [name, await api(path)]));
+    if (instance !== state.instanceId) { state.refreshQueued = true; return; }
     const entries = results.filter(result => result.status === 'fulfilled').map(result => result.value);
     const failed = results.filter(result => result.status === 'rejected');
     const warning = $('#connection-warning');
@@ -525,16 +502,15 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     }
     const data = Object.fromEntries(entries);
     for (const [name] of entries) refreshedAt[name] = stamp;
-    const { media, tasks, clash, overview, active } = data;
+    const { media, tasks, clash, overview } = data;
     const mediaBefore = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]);
     if (overview) { state.overview = overview; state.counts = overview.counts; }
     if (media) { state.media = media.items; state.mediaTotal = media.total; pages.media.next = media.next_cursor; }
     if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
     if (data.status) state.status = data.status;
     if (clash) state.clash = clash;
-    if (active) state.batchTasks = active.items;
     if ((media || overview) && mediaBefore !== JSON.stringify([state.media, state.overview.media, state.overview.recent_media])) renderMedia();
-    if (tasks || overview || active || data.status) renderTasks();
+    if (tasks || overview || data.status) renderTasks();
     if (clash) renderClash();
     if (data.status) { renderDownloadControl(); renderStatus(); }
     if (failed.length) $('#database-health').textContent = failed.some(result => result.reason.status === 503) ? '数据库：连接异常' : '部分状态暂未更新，请查看上方提示';
@@ -545,10 +521,6 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     }
     const status = state.status;
     if (!status) return;
-    const testStorage = status.storage_mode === 'test';
-    $('#download-storage-label').textContent = testStorage ? '保存位置 · 测试模式' : '保存位置 · 指定目录';
-    $('#download-directory').textContent = testStorage ? '下载完成后自动删除本次文件，仅保留任务记录和日志。' : state.mediaDirectory || '';
-    $('#download-final-step').textContent = testStorage ? '完成后删除' : '保存到素材库';
     $('#database-backend').textContent = `${failed.length ? '部分状态暂未更新' : status.database === 'mysql' ? 'MySQL 最近请求成功' : 'SQLite 测试模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
@@ -584,28 +556,151 @@ function renderStartup() {
   $('#startup-message').textContent = (value.message || '检查通过后自动执行；可点击暂停取消启动。') + (value.slowest ? ` 当前耗时最长：${startupNames[value.slowest] || value.slowest}。` : '');
   $('#download-startup').classList.toggle('startup-failed', value.state === 'failed');
 }
-function renderDownloadControl() {
-  const queue = state.status?.download_queue;
-  const starting = state.startup?.state === 'running';
-  const unsaved = !!providerDraft || settingsDirty;
-  $('#download-queue-start').textContent = queueResuming ? '正在恢复…' : '恢复系统领取';
-  $('#download-queue-start').setAttribute('aria-busy', String(queueResuming));
-  $('#download-queue-start').disabled = queueControlBusy || starting || !queue || !queue.paused || !!queue.running;
-  $('#download-queue-toggle').textContent = starting ? '取消旧版启动' : queue?.paused && queue.running ? '正在停止…' : '立即停止全部下载';
-  $('#download-queue-toggle').disabled = queueControlBusy || (!starting && (!queue || (queue.paused && !queue.running) || (!queue.running && !queue.queued)));
-  const note = $('#download-queue-status');
-  note.textContent = queue ? `待处理 ${queue.queued} 个视频 · 正在执行 ${queue.running} 个 · 待开始任务 ${queue.waiting_lists || 0} 份${queue.importing ? ` · 导入中 ${queue.importing} 份` : ''}。此处只控制系统领取；新任务请在任务中心开始，实例需单独启用。` : '正在读取队列状态…';
-  note.classList.toggle('queue-stopped', !!queue?.paused);
-  const execution = $('#download-execution-status');
-  execution.replaceChildren();
-  execution.append(document.createTextNode(queueResuming ? '正在恢复系统领取，请稍候；单机模式会检查下载环境与 YouTube Cookie。' : state.status?.execution?.message || ''));
-  if (queueResumeError) execution.append(document.createTextNode(' ' + queueResumeError));
-  if (!queueResuming) for (const blocker of state.status?.execution?.blockers || []) {
-    if (!blocker.href) continue;
-    const link = document.createElement('a'); link.href = blocker.href; link.textContent = blocker.label;
-    execution.append(document.createTextNode(' '), link);
+function renderJobOptions() {
+  const options = jobOptions.map(job => job.id === selectedJob?.id ? selectedJob : job);
+  if (selectedJob && !options.some(job => job.id === selectedJob.id)) options.unshift(selectedJob);
+  $('#download-job').replaceChildren(new Option('请选择一个任务', ''), ...options.map(job =>
+    new Option(`${job.customer} / ${job.name} · 待下载 ${job.queued}`, job.id)));
+  $('#download-job').value = selectedJobId;
+  $('#download-jobs-more').hidden = !jobsCursor;
+}
+async function loadDownloadJobs(more = false) {
+  const ticket = ++jobsSearchEpoch;
+  const params = new URLSearchParams({ q: $('#download-job-search').value.trim() });
+  if (more && jobsCursor) params.set('cursor', jobsCursor);
+  $('#download-jobs-more').disabled = true;
+  try {
+    const result = await api('/api/jobs?' + params);
+    if (ticket !== jobsSearchEpoch) return;
+    jobOptions = more ? [...jobOptions, ...result.items] : result.items;
+    jobsCursor = result.next_cursor;
+    renderJobOptions();
+    if (!jobOptions.length && !selectedJob) $('#download-job-note').textContent = '没有匹配的任务。请修改搜索条件，或前往任务中心新建任务。';
+  } finally { if (ticket === jobsSearchEpoch) $('#download-jobs-more').disabled = false; }
+}
+let executionPolling = false;
+let workbenchEpoch = 0;
+async function refreshExecution() {
+  if (executionPolling || document.hidden) return;
+  executionPolling = true;
+  try {
+    await refreshSelectedJob();
+  } finally { executionPolling = false; }
+}
+setInterval(() => {
+  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
+}, 1000);
+async function refreshSelectedJob() {
+  if (queueControlBusy || (['manager','hybrid'].includes(serviceRole) && !state.instanceId)) return;
+  const id = selectedJobId;
+  const instance = state.instanceId;
+  const epoch = ++workbenchEpoch;
+  try {
+    const workbench = await api(`/api/jobs/workbench${id ? '?job_id='+encodeURIComponent(id) : ''}`);
+    if (epoch !== workbenchEpoch || state.instanceId !== instance || selectedJobId !== id) return;
+    applyWorkbench(workbench);
+    renderJobOptions();
+    renderDownloadControl();
+  } catch (error) {
+    if (epoch !== workbenchEpoch || state.instanceId !== instance || selectedJobId !== id) return;
+    // Retain the selection but prevent a start using stale task information.
+    selectedJob = null;
+    renderDownloadControl();
+    $('#download-job-note').textContent = error.message;
+    throw error;
   }
+}
+function applyWorkbench(workbench) {
+  const id = workbench.selected_job_id || '';
+  if (lastStartedJobId !== id && !queueControlBusy && (lastStartedJobId !== null || !selectedJobId)) {
+    selectedJobId = id; queueResumeError = '';
+    clearJobLink(); renderJobOptions(); renderBatches();
+    if (workbench.job?.id !== id) {
+      selectedJob = null;
+      // The selected job changed in another tab; fetch its details next.
+      refreshSelectedJob().catch(() => {});
+    }
+  }
+  lastStartedJobId = id;
+  state.workbench = workbench;
+  selectedJob = workbench.job?.id === selectedJobId ? workbench.job : null;
+  state.batchTasks = workbench.active_tasks || [];
+  renderTasks();
+  if (typeof renderFleetJob === 'function') renderFleetJob();
+}
+async function resetWorkbench() {
+  ++workbenchEpoch;
+  state.workbench = null; state.config = null; selectedJobId = ''; selectedJob = null; lastStartedJobId = null;
+  state.batchTasks = []; queueResumeError = '';
+  clearJobLink(); renderJobOptions(); renderTasks(); renderDownloadControl();
+  await refreshSelectedJob();
+}
+function clearJobLink() {
+  const url = new URL(location.href);
+  url.searchParams.delete('job');
+  history.replaceState(null, '', url.pathname + url.search + (url.hash || '#overview'));
+}
+function requireDownloadJob() {
+  if (!selectedJobId || selectedJob?.id !== selectedJobId) {
+    $('#download-job').focus();
+    throw new Error('请先选择一个有效的下载任务。');
+  }
+  return selectedJobId;
+}
+$('#download-job-search').addEventListener('input', () => {
+  clearTimeout(jobsSearchTimer);
+  ++jobsSearchEpoch;
+  jobsCursor = null;
+  $('#download-jobs-more').hidden = true;
+  jobsSearchTimer = setTimeout(() => loadDownloadJobs().catch(error => toast(error.message, true)), 300);
+});
+$('#download-jobs-more').addEventListener('click', () => loadDownloadJobs(true).catch(error => toast(error.message, true)));
+$('#download-job').addEventListener('change', async event => {
+  selectedJobId = event.target.value; selectedJob = null; queueResumeError = '';
+  clearJobLink();
+  state.batchTasks = []; renderBatches(); renderDownloadControl();
+  refresh().catch(error => toast(error.message, true));
+  try { await refreshSelectedJob(); } catch (error) { toast(error.message, true); }
+});
+function renderDownloadControl() {
+  const queue = state.workbench;
+  const starting = false;
+  const viewer = document.body.dataset.consoleRole === 'viewer';
+  const job = selectedJob;
+  $('#download-job').disabled = queueControlBusy;
+  $('#download-job-search').disabled = queueControlBusy;
+  $('#download-job-note').textContent = job ? `${job.customer} / ${job.name}` : selectedJobId ? '正在读取所选任务…' : '请选择任务，查看待下载的视频和当前状态。';
+  $('#download-job-detail').href = job ? `/jobs#${job.id}` : '/jobs';
+  const summary = $('#download-job-summary'); summary.hidden = !job;
+  if (job) {
+    summary.innerHTML = `<div class="selected-job-counts">${[['待下载',job.queued],['当前实例下载中',job.running],['任务处理成功',job.succeeded],['任务失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
+  }
+  const alreadyStarted = !!job?.released && !queue?.paused && queue?.selected_job_id===job.id;
+  $('#download-queue-start').textContent = queueResuming ? '正在启动…' : alreadyStarted ? '任务已开始' : '开始下载';
+  $('#download-queue-start').setAttribute('aria-busy', String(queueResuming));
+  $('#download-queue-start').disabled = viewer || queueControlBusy || starting || !state.config || !queue || !queue.online || !job || job.archived || (!job.queued && !job.running && !job.importing) || alreadyStarted || (queue.stop_requested && !!queue.running);
+  $('#download-job-pause').disabled = viewer || queueControlBusy || !queue || queue.paused;
+  $('#download-job-stop').disabled = viewer || queueControlBusy || !queue || (queue.paused && !queue.running);
+  $('#download-queue-toggle').textContent = '停止当前实例';
+  $('#download-queue-toggle').disabled = viewer || queueControlBusy || (!starting && (!queue || (queue.paused && !queue.running) || (!queue.running && !queue.queued)));
+  const differentJob = queue?.selected_job_id && queue.selected_job_id !== selectedJobId;
+  $('#download-selection-status').textContent = differentJob ? '点击开始后，当前实例切换到所选任务。' : !job ? '' : job.waiting_reason || (job.running ? (queue?.paused ? '当前实例将在当前视频完成后暂停。' : '此任务正在下载。') : job.released && job.importing ? '等待文件导入，随后自动下载。' : !job.queued && !job.importing ? '没有待下载视频。请到该任务中添加视频或重试失败条目。' : job.released ? '此任务正在排队。' : '此任务已准备好，可以开始下载。');
+  $('#download-queue-status').textContent = queue ? `当前实例：执行中 ${queue.running}。${queue.paused ? queue.running ? '完成当前视频后暂停。' : '已停止领取。' : '正在领取所选任务的视频。'}` : '正在读取当前实例状态…';
+  const execution = $('#download-execution-status'); execution.replaceChildren();
+  if (queueResuming) execution.append(document.createTextNode('正在检查当前实例的下载环境，请稍候。'));
+  if (queueResumeError) execution.append(document.createTextNode(queueResumeError));
+  if (!queueResuming && queue?.error) execution.append(document.createTextNode(queue.error));
   renderStartup();
+}
+function instancePolicyText(policy) {
+  const methods = (policy.download_methods || (policy.download_method==='yt5s_fallback'?['yt5s','yt_dlp']:[policy.download_method || 'yt_dlp'])).map(method => providerNames[method] || method).join(' → ');
+  const qualities = {yt5s:policy.yt5s_quality, downmp3:policy.downmp3_quality, yt1d:policy.yt1d_quality};
+  const quality = Object.entries(qualities).filter(([method]) => (policy.download_methods || [policy.download_method]).includes(method)).map(([method,value]) => `${method} ${!value || value==='best'?'最高画质':value+'p'}`).join(' / ');
+  return `下载顺序：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':'保存成品'}`;
+}
+function downloadPolicyText() {
+  if (!state.config) return '正在读取当前实例策略…';
+  return `当前实例 · ${instancePolicyText(state.config || {})}`;
 }
 let queueControlBusy = false;
 let queueResuming = false;
@@ -623,28 +718,52 @@ async function pollStartup() {
 }
 setInterval(() => { if (state.startup?.state === 'running' || location.hash === '#overview') pollStartup(); }, 1000);
 $('#download-queue-start').addEventListener('click', async () => {
-  if (queueControlBusy) return;
+  if (queueControlBusy || document.body.dataset.consoleRole === 'viewer') return;
+  if (providerDraft || downloadMethodBusy) {
+    toast('下载方式尚未保存完成，请先在系统设置点击“保存设置”，再开始下载。', true);
+    setView('settings');
+    return;
+  }
+  let id;
+  try { id = requireDownloadJob(); } catch (error) { toast(error.message, true); return; }
   queueControlBusy = true; queueResuming = true; queueResumeError = '';
+  ++workbenchEpoch;
   renderDownloadControl();
   try {
-    const result = await api('/api/jobs/system/resume', { method: 'POST', signal: AbortSignal.timeout(90000) });
-    if (state.status) { state.status.download_queue = result.download_queue; state.status.execution = result.execution; }
-    toast(result.message);
+    const result = await api('/api/jobs/workbench', { method: 'POST', body: { action: 'start', job_id: id }, signal: AbortSignal.timeout(90000) });
+    ++workbenchEpoch; applyWorkbench(result);
+    lastStartedJobId = result.job.id; clearJobLink();
+    toast(result.warnings?.length ? result.warnings.join('；') : `已开始下载：${result.job.customer} / ${result.job.name}`);
   } catch (error) {
-    queueResumeError = error.name === 'TimeoutError' ? '恢复请求等待超过 90 秒，结果尚未确认，请刷新查看最新状态。' : error.message;
+    queueResumeError = error.name === 'TimeoutError' ? '启动请求等待超过 90 秒，结果尚未确认，请刷新查看最新状态。' : error.message;
     toast(queueResumeError, true);
   }
   finally { queueControlBusy = false; queueResuming = false; renderDownloadControl(); }
   refresh().catch(error => toast(error.message, true));
 });
+for (const [selector, action] of [['#download-job-pause','pause'],['#download-job-stop','stop']]) {
+  $(selector).addEventListener('click', async () => {
+    if (queueControlBusy || document.body.dataset.consoleRole === 'viewer') return;
+    queueControlBusy = true; queueResumeError = ''; renderDownloadControl();
+    ++workbenchEpoch;
+    try {
+      const result = await api('/api/jobs/workbench',{method:'POST',body:{action}});
+      ++workbenchEpoch; applyWorkbench(result);
+      toast(action==='pause'?'当前实例将在当前视频完成后暂停。':'已停止当前实例，执行进程将在下次心跳退出。');
+      await refresh();
+    } catch (error) { queueResumeError = error.message; toast(error.message,true); }
+    finally { queueControlBusy = false; renderDownloadControl(); }
+  });
+}
 $('#download-queue-toggle').addEventListener('click', async () => {
   if (queueControlBusy) return;
   queueControlBusy = true;
+  ++workbenchEpoch;
   renderDownloadControl();
   try {
-    const result = await api('/api/downloads/stop', { method: 'POST' });
-    if (state.status) state.status.download_queue = result.download_queue;
-    toast(result.message);
+    const result = await api('/api/jobs/workbench', { method: 'POST', body: {action:'stop'} });
+    ++workbenchEpoch; applyWorkbench(result);
+    toast('已停止当前实例。');
     await pollStartup();
     await refresh();
   } catch (error) { toast(error.message, true); }
@@ -708,7 +827,7 @@ $('.task-technical').addEventListener('toggle', () => { if ($('.task-technical')
 
 document.addEventListener('click', event => {
   const nav = event.target.closest('[data-view]');
-  if (nav) setView(nav.dataset.view);
+  if (nav) { event.preventDefault(); setView(nav.dataset.view); }
   const open = event.target.closest('[data-open]');
   if (open) $(`#${open.dataset.open}`).showModal();
   if (event.target.closest('[data-close]')) event.target.closest('dialog').close();
@@ -731,22 +850,6 @@ async function runButton(button, operation) {
   try { await operation(); } catch (error) { toast(error.message || '请求失败，请稍后重试。', true); }
   finally { button.disabled = false; }
 }
-$('#download-form').addEventListener('submit', event => {
-  event.preventDefault();
-  runButton($('button[type="submit"]', event.target), async () => {
-    const button = $('button[type="submit"]', event.target);
-    const label = button.innerHTML;
-    if (downloadMethodBusy) throw new Error('下载顺序正在保存，请稍后开始。');
-    downloadSubmitting = true;
-    button.textContent = '正在添加清单…';
-    event.target.dataset.requestId ||= Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
-    let batch;
-    try { batch = await api('/api/jobs', { method: 'POST', body: { request_id: event.target.dataset.requestId, urls: $('#download-urls').value, customer: $('#queue-customer').value, name: $('#queue-list-name').value } }); }
-    finally { downloadSubmitting = false; button.innerHTML = label; }
-    location.href = `/jobs#${batch.id}`;
-  });
-});
-$('#download-urls').addEventListener('input', updateInputCount);
 $('#youtube-cookie-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
@@ -813,20 +916,6 @@ for (const name of ['media', 'tasks']) {
     clearTimeout(timeout); timeout = setTimeout(() => { resetPage(name); refresh(); }, 300);
   });
 }
-$('#bulk-import-form').addEventListener('submit', event => {
-  event.preventDefault();
-  runButton($('button[type="submit"]', event.target), async () => {
-    const file = $('input[name="file"]', event.target).files[0];
-    if (!file || !file.size || file.size > 1024 ** 3) throw new Error('请选择非空的 TXT / CSV 文件，最大 1 GB。');
-    const form = new FormData(event.target);
-    event.target.dataset.requestId ||= Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
-    const task = event.target.dataset.jobId ? { id: event.target.dataset.jobId } : await api('/api/jobs', { method: 'POST', body: {
-      request_id: event.target.dataset.requestId, customer: form.get('customer'), name: form.get('list_name') || file.name } });
-    event.target.dataset.jobId = task.id;
-    await api(`/api/jobs/${task.id}/imports`, { method: 'POST', body: form });
-    location.href = `/jobs#${task.id}`;
-  });
-});
 $('#clash-node-search').addEventListener('input', renderClash);
 $('#clash-node-sort').addEventListener('change', renderClash);
 $('#clash-rotation-form').addEventListener('change', event => {
@@ -908,15 +997,18 @@ $('#settings-form').addEventListener('change', () => { settingsDirty = true; $('
 $('#settings-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
-    const data = Object.fromEntries(new FormData(event.target));
-    const result = await api('/api/config', { method: 'PUT', body: data });
-    settingsDirty = false;
-    $('#settings-save-state').textContent = '设置已保存 · 下载策略从后续领取的视频生效，无需暂停或重启；已有客户任务使用独立策略';
-    fillConfig((await api('/api/config')).config);
-    $('#download-urls').value = inputAsIds(state.config.url);
-    updateInputCount();
-    await refresh();
-    toast(result.message);
+    if (downloadMethodBusy) return;
+    downloadMethodBusy = true; renderDownloadMethod();
+    const data = Object.fromEntries([...new FormData(event.target)].filter(([key,value]) => value !== settingsBaseline[key]));
+    if (providerDraft) data.download_methods = [...providerDraft];
+    try {
+      await api('/api/config', { method:'PUT', body:data });
+      settingsDirty = false; providerDraft = null;
+      fillConfig((await api('/api/config')).config);
+      $('#settings-save-state').textContent = '当前实例设置已保存，后续领取的视频使用新策略；正在执行的视频保持本次配置。';
+      toast('设置已保存。');
+      await refresh();
+    } finally { downloadMethodBusy = false; renderDownloadMethod(); }
   });
 });
 
@@ -928,11 +1020,14 @@ async function init() {
     await initializeFleet();
     const config = await api('/api/config');
     fillConfig(config.config);
-    const url = config.config.url;
-    $('#download-urls').value = inputAsIds(url);
-    updateInputCount();
   } catch (error) { toast(`读取实例配置失败：${error.message}`, true); }
-  try { await pollStartup(); await refresh(); }
+  try {
+    selectedJobId = /^[a-f0-9]{32}$/.test(initialJobId || '') ? initialJobId : '';
+    clearJobLink();
+    await refreshSelectedJob().catch(error => toast(error.message, true));
+    await loadDownloadJobs();
+    await pollStartup(); await refresh();
+  }
   catch (error) { toast(`读取工作台失败：${error.message}`, true); }
   let failures = 0;
   setInterval(async () => {

@@ -181,11 +181,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.json)
         first = self.store.claim(self.store.owner, actions=('download',))
         self.assertEqual(first['payload']['config']['yt1d_quality'], '1080')
-        detail = self.client.get('/api/jobs/' + identity).json
-        response = self.client.put('/api/jobs/' + identity, json={'edit_version': detail['edit_version'],
-            'policy': {'yt1d_quality': '2160', 'yt1d_timeout': 120}}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        self.save(yt1d_quality='360')
+        self.save(yt1d_quality='2160', yt1d_timeout=120)
         second = self.store.claim(self.store.owner, actions=('download',))
         self.assertEqual(second['payload']['config']['yt1d_quality'], '2160')
         self.assertEqual(second['payload']['config']['yt1d_timeout'], 120)

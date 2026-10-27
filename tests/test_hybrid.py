@@ -71,7 +71,7 @@ class HybridTests(unittest.TestCase):
         response = self.clients['beta'].put('/api/config', json={'downmp3_quality': '1080'},
                                            headers=self.headers['beta'])
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '1080')
+        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], 'best')
         self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], '1080')
 
     def test_cookie_and_media_can_be_accessed_from_either_management_page(self):
@@ -140,7 +140,7 @@ class HybridTests(unittest.TestCase):
         for store in (self.a, self.b):
             store.fleet.control(store.fleet.id, {'action': 'resume'})
         response = self.clients['alpha'].post('/api/jobs', json={'customer': 'Client', 'name': 'Shared job',
-            'urls': 'npNnbj46_ik\n2Gu7q-KUXCk', 'price': '10', 'policy': {'download_methods': ['downmp3']}},
+            'urls': 'npNnbj46_ik\n2Gu7q-KUXCk', 'price': '10'},
             headers=self.headers['alpha'])
         self.assertEqual(response.status_code, 201, response.json)
         identity = response.json['id']
@@ -176,13 +176,13 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(child.fleet.id, 'alpha')
         child.db.engine.dispose()
 
-    def test_joining_or_restarting_does_not_override_shared_policy(self):
+    def test_joining_or_restarting_does_not_copy_peer_policy(self):
         self.a.fleet.save_policy({'download_methods': ['downmp3'], 'downmp3_quality': '1080'})
         with self.a.connect() as db:
             db.execute(instances.update().where(instances.c.id == 'beta').values(heartbeat=0))
         restarted = create_app(self.root / 'beta/config.yaml', self.b.directory, start_worker=False,
             role='hybrid', instance_id='beta', database_url=self.url)
-        self.assertEqual(restarted.extensions['fleet'].policy()['config']['downmp3_quality'], '1080')
+        self.assertEqual(restarted.extensions['fleet'].policy()['config']['downmp3_quality'], 'best')
         self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '1080')
 
     def test_pure_manager_becomes_a_paused_download_node(self):
