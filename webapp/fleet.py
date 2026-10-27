@@ -15,6 +15,9 @@ from webapp.disk_budget import DISK_FIELDS
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'fragment_concurrency', 'storage_mode'}
+# Storage mode changes delivery/accounting semantics and remains tied to the
+# explicit activation. Transfer policy can change between claimed videos.
+HOT_POLICY_FIELDS = POLICY_FIELDS - {'storage_mode'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
@@ -141,7 +144,33 @@ class Fleet:
             value = {'version': previous['version'] + 1,
                      'config': {key: config[key] for key in POLICY_FIELDS if key in config}}
             db.execute(settings.update().where(settings.c.key == 'fleet_policy').values(value=json.dumps(value)))
+            active = self.policy(active=True, db=db)
+            if active:
+                published = self.merge_execution_policy(value, active)
+                db.execute(settings.update().where(settings.c.key == 'fleet_active_policy')
+                           .values(value=json.dumps(published)))
         return value
+
+    @staticmethod
+    def merge_execution_policy(saved, active):
+        from webapp.settings import DEFAULTS
+        return {**saved, 'config': {**active['config'], **{
+            key: saved['config'].get(key, DEFAULTS[key]) for key in HOT_POLICY_FIELDS},
+            'storage_mode': active['config'].get('storage_mode', DEFAULTS['storage_mode'])}}
+
+    def execution_policy(self, db=None):
+        """Use the latest transfer policy, including pre-upgrade saved changes.
+
+        An active record is still required: saving must never start a queue.
+        A claim stores its own snapshot, so in-flight videos keep their policy.
+        """
+        if db is None:
+            with self.store.connect() as connection:
+                return self.execution_policy(connection)
+        active = self.policy(active=True, db=db)
+        if not active:
+            return None
+        return self.merge_execution_policy(self.policy(db=db) or active, active)
 
     def activate(self, db, expected_version=None):
         raw = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_policy').with_for_update()).scalar_one()
@@ -152,7 +181,7 @@ class Fleet:
 
     def execution(self, payload, db):
         local = self.local_settings(db)
-        policy = self.policy(active=True, db=db)
+        policy = self.execution_policy(db)
         if not policy:
             raise ValueError('尚未从管理后台开始下载。')
         result = {**payload, 'base': local['base'], 'config': {**local['config'], **policy['config']},

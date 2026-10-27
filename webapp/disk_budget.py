@@ -22,7 +22,7 @@ COORDINATION_TIMEOUT = 5
 USAGE_INTERVAL = 5
 DISK_DEFAULTS = {
     'disk_budget_gb': 20, 'disk_test_budget_gb': 16,
-    'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 512,
+    'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 64,
     'disk_import_budget_mb': 1024, 'disk_cache_budget_mb': 256,
     'disk_min_free_gb': 10, 'disk_resume_free_gb': 15,
     'disk_upload_limit_mb': 256, 'disk_success_log_hours': 24,
@@ -313,6 +313,12 @@ class DiskBudget:
         if watermark_changed:
             with self.connect() as db:
                 self._watermark(db)
+        try:
+            warning = json.loads((self.directory / 'log-write-warning.json').read_text(encoding='utf-8'))
+            if time.time() - warning['time'] < 300:
+                result['log_warning'] = warning['message']
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         return result
 
     def publish(self, store, snapshot):
@@ -468,7 +474,7 @@ class DiskBudget:
                 self._clean_imports(store)
                 self._clean_legacy_tests(store, grace)
                 from webapp.maintenance import prune_disk_logs
-                prune_disk_logs(store, self.config)
+                prune_disk_logs(store, self.config, low_space=self._free() < int(self.config['disk_min_free_gb']) * GIB)
                 from sqlalchemy import select
                 from webapp.database import tasks
                 with self.connect(write=False) as db:

@@ -102,12 +102,11 @@ class FleetTests(unittest.TestCase):
         self.manager.fleet.save_policy({'download_method': 'downmp3', 'downmp3_quality': '1080'})
         second = self.b.claim(self.b.owner)
         self.assertEqual(second['payload']['config']['path'], 'videos-beta')
-        self.assertEqual(second['payload']['config']['downmp3_quality'], '720')
-        self.manager.set_downloads_paused(True)
-        self.manager.activate_download_lists()
+        self.assertEqual(second['payload']['config']['downmp3_quality'], '1080')
+        self.assertEqual(second['policy_version'], version + 1)
         third = self.b.claim(self.b.owner)
         self.assertEqual(third['payload']['config']['downmp3_quality'], '1080')
-        self.assertEqual(first['payload']['config']['downmp3_quality'], '720')
+        self.assertEqual(self.a.get(first['id'], private=True)['payload']['config']['downmp3_quality'], '720')
 
     def test_worker_registration_does_not_overwrite_policy_or_other_limits(self):
         self.a.fleet.control('alpha', {'worker_count': 1})

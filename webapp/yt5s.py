@@ -19,6 +19,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
 from playwright.async_api import TimeoutError as BrowserTimeoutError, async_playwright
+from webapp.diagnostics import safe_text
 
 
 class BrowserEnvironmentRequired(RuntimeError):
@@ -94,7 +95,7 @@ def verify_media(path):
     if not executable:
         raise RuntimeError('需要 ffprobe 验证下载文件，请安装 FFmpeg。')
     checked = subprocess.run([executable, '-v', 'error', '-show_entries',
-                              'format=duration:stream=codec_type,codec_name', '-of', 'json', str(path)],
+                              'format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate', '-of', 'json', str(path)],
                              capture_output=True, text=True, timeout=30)
     if checked.returncode:
         raise RuntimeError('下载结果未通过 FFprobe 校验。')
@@ -244,7 +245,8 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                     if error:
                         state[step + '_error'] = error
                     if isinstance(data, dict):
-                        entry.update(status=data.get('status'),
+                        status = data.get('status')
+                        entry.update(status=status if type(status) in (int, bool, type(None)) else safe_text(status)[:80],
                                      verification_failed='verification failed' in str(data.get('result', '')).lower())
                         if step == 'analyze':
                             state['analyze_status'] = data.get('status')
@@ -254,6 +256,7 @@ async def probe(args, directory, report, *, download=True, on_stage=None, browse
                     if step == 'convert' and error:
                         converted.set()
                     report['responses'].append(entry)
+                    report['responses'] = report['responses'][-12:]
                     print(json.dumps(entry, ensure_ascii=False), flush=True)
                     if step == 'analyze':
                         resolved.set()
@@ -412,13 +415,19 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
                 try:
                     return asyncio.run(probe(args, Path(temporary), report,
                                              download=False, on_stage=on_stage, browser_owner=owner))
-                except Exception:
+                except Exception as error:
+                    from webapp.diagnostics import error_details, event
+                    details = error_details(error)
+                    event('browser_resolve_failed', video_id=video_id, worker_slot=worker_slot,
+                          stage=report.get('stage'), stage_seconds=report.get('stage_seconds', {}),
+                          elapsed_seconds=report.get('elapsed_seconds'), **details)
                     try:
                         (diagnostics / 'last-failure.json').write_text(json.dumps({
                             'video_id': video_id, 'stage': report.get('stage'), 'worker_slot': worker_slot,
                             'responses': report.get('responses', []),
                             'stage_seconds': report.get('stage_seconds', {}),
                             'elapsed_seconds': report.get('elapsed_seconds'),
+                            **details,
                             'time': time.strftime('%Y-%m-%d %H:%M:%S'),
                         }, ensure_ascii=False), encoding='utf-8')
                     except OSError:
@@ -427,6 +436,8 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
         except RuntimeError:
             raise
         except Exception as error:
+            from webapp.diagnostics import safe_text
             raise RuntimeError('方式二未能完成网站验证或解析（' + type(error).__name__
-                               + '）。请检查浏览器、Linux 显示环境及当前节点；可通过远程桌面完成验证。') from None
+                               + '）。请检查浏览器、Linux 显示环境及当前节点；可通过远程桌面完成验证。'
+                               + ' 原因：' + safe_text(error)[:1000]) from None
 

@@ -865,29 +865,33 @@ class TaskStore:
                     db.execute(self.db.ignore(archive, lines))
                     db.execute(self.db.upsert(settings, dict(key=key, value=str(stream.tell())), ['key']))
 
-    def log_path(self, task_id):
+    def log_path(self, task_id, *, create=True):
         if len(task_id) != 32 or any(c not in '0123456789abcdef' for c in task_id):
             raise ValueError('无效的任务 ID')
         legacy = self.directory / f'{task_id}.log'
         if legacy.is_file():
             return legacy
         path = self.directory / 'logs' / task_id[:2] / task_id[2:4] / f'{task_id}.log'
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def logs(self, task_id, offset=0, size=65536):
-        path = self.log_path(task_id)
+        path = self.log_path(task_id, create=False)
         if not path.exists():
-            return {'text': '', 'offset': 0}
+            return {'text': '', 'offset': 0, 'state': 'missing'}
         try:
             base = int(path.with_suffix('.offset').read_text())
         except (OSError, ValueError):
             base = 0
-        with path.open('rb') as stream:
-            stream.seek(min(max(offset - base, 0), path.stat().st_size))
-            chunk = stream.read(size)
-            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
-            text = decoder.decode(chunk, final=False)
-            pending, _ = decoder.getstate()
-            return {'text': text, 'offset': base + stream.tell() - len(pending), 'pruned': offset < base}
+        try:
+            with path.open('rb') as stream:
+                stream.seek(min(max(offset - base, 0), os.fstat(stream.fileno()).st_size))
+                chunk = stream.read(min(65536, max(0, size)))
+                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                text = decoder.decode(chunk, final=False)
+                pending, _ = decoder.getstate()
+                return {'text': text, 'offset': base + stream.tell() - len(pending), 'pruned': offset < base, 'state': 'available'}
+        except FileNotFoundError:
+            return {'text': '', 'offset': 0, 'state': 'missing'}
 

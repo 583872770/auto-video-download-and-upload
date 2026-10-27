@@ -130,6 +130,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def disk_status():
         return jsonify(DiskBudget(store.directory, settings()[0]).snapshot())
 
+    @app.get('/api/disk/logs')
+    def instance_logs():
+        from webapp.diagnostics import read_runtime_logs
+        return jsonify(text=read_runtime_logs(store.directory))
+
     @app.post('/api/disk/cleanup')
     def disk_cleanup():
         result = DiskBudget(store.directory, settings()[0]).cleanup(store)
@@ -278,7 +283,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     fleet.save_policy(config)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
                 youtube_auth.invalidate()
-        return jsonify(message='配置已保存，待处理任务开始执行时使用当前配置；运行中的任务保持本次启动配置。')
+        return jsonify(message='配置已保存；下载器、画质等策略从后续领取的视频生效，无需暂停或重启。'
+                       '已有客户任务使用各自策略，正在执行的视频保持本次配置。')
 
     @app.get('/api/status')
     def status():
@@ -709,13 +715,21 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/api/tasks/<task_id>/logs')
     def task_logs(task_id):
-        if not store.get(task_id):
+        task = store.get(task_id)
+        if not task:
             return jsonify(error='任务不存在'), 404
         try:
             offset = int(request.args.get('offset', 0))
         except ValueError:
             raise ValueError('日志偏移量必须为整数。')
-        return jsonify(store.logs(task_id, offset))
+        result = store.logs(task_id, offset)
+        if result.get('state') == 'missing':
+            result['state'] = ('pruned' if task.get('logs_pruned') else
+                               'pending' if task['status'] in ('queued', 'running') else 'missing')
+            result['message'] = {'pruned': '日志已按容量或保留期限自动清理，任务结果和统计仍可查看。',
+                                 'pending': '尚未产生日志，请等待任务开始执行。',
+                                 'missing': '本实例未找到任务日志，请查看实例运行日志及磁盘写入告警。'}[result['state']]
+        return jsonify(result)
 
     @app.post('/api/tasks')
     @app.post('/api/downloads')

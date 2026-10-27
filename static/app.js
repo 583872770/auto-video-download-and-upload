@@ -426,7 +426,7 @@ function readProviderChoices(container) {
 function renderDownloadMethod() {
   const methods = selectedProviders();
   renderProviderChoices($('#download-method'), providerDraft || methods, downloadMethodBusy || !state.config);
-  $('#strategy-save-state').textContent = providerDraft ? '有未保存修改，请保存新任务的默认下载策略' : '已保存 · 仅复制到以后新建的客户任务';
+  $('#strategy-save-state').textContent = providerDraft ? '有未保存修改，请保存下载策略' : '已保存 · 历史清单后续领取的视频立即生效，新建客户任务复制此策略';
   $('#save-download-strategy').disabled = !providerDraft || downloadMethodBusy;
   $('#save-download-strategy').textContent = downloadMethodBusy ? '正在保存…' : '保存下载策略';
   const tools = state.status?.tools;
@@ -434,7 +434,7 @@ function renderDownloadMethod() {
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
-  notes.push('此处配置新任务的默认策略；已有客户任务请进入任务设置修改。运行中的尝试保持本次配置。');
+  notes.push('保存后无需暂停或重启，历史清单后续领取的视频立即使用新策略；新建客户任务复制此策略。已有客户任务在任务设置独立修改，后续领取时生效。正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
 }
 async function saveProviderChoices(methods) {
@@ -446,7 +446,7 @@ async function saveProviderChoices(methods) {
     state.config.download_methods = methods;
     state.config.download_method = methods[0];
     providerDraft = null;
-    toast(`已保存下载顺序：${methods.map(method => providerNames[method]).join(' → ')}。`);
+    toast(`已保存下载顺序：${methods.map(method => providerNames[method]).join(' → ')}，历史清单后续领取的视频立即生效。`);
     await refresh();
   } catch (error) { toast(error.message, true); }
   finally { downloadMethodBusy = false; renderDownloadMethod(); renderStatus(); renderDownloadControl(); }
@@ -682,9 +682,12 @@ async function updateTaskDetail() {
   if (logs.text) {
     const log = $('#task-log');
     const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 45;
-    state.logs = (state.logs + logs.text).slice(-200000);
+    state.logs = ((logs.pruned ? '[早期日志已自动清理]\n' : state.logs) + logs.text).slice(-200000);
     log.textContent = state.logs;
     if (atBottom) log.scrollTop = log.scrollHeight;
+  } else if (logs.message) {
+    state.logs = '';
+    $('#task-log').textContent = logs.message;
   }
   state.logOffset = logs.offset;
   } finally { state.detailBusy = false; }
@@ -904,7 +907,7 @@ $('#settings-form').addEventListener('submit', event => {
     const data = Object.fromEntries(new FormData(event.target));
     const result = await api('/api/config', { method: 'PUT', body: data });
     settingsDirty = false;
-    $('#settings-save-state').textContent = '设置已保存 · 实例配置供后续执行读取，默认策略只影响新任务';
+    $('#settings-save-state').textContent = '设置已保存 · 下载策略从后续领取的视频生效，无需暂停或重启；已有客户任务使用独立策略';
     fillConfig((await api('/api/config')).config);
     $('#download-urls').value = inputAsIds(state.config.url);
     updateInputCount();

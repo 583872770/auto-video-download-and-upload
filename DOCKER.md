@@ -1,9 +1,18 @@
 # Docker Compose 部署
 
 需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
-支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用阿里云镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取。Mihomo 固定版本的 GitHub 发布包优先通过 `ghfast.top`、`gh-proxy.com` 下载，失败后尝试 GitHub 原站，最多两轮，每个请求超时 30 秒；每次都验证项目固定的 SHA256，通过后才安装。
+支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用清华大学 Debian 镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取。Mihomo 固定版本的 GitHub 发布包优先通过 `ghfast.top`、`gh-proxy.com` 下载，失败后尝试 GitHub 原站，最多两轮，每个请求超时 30 秒；每次都验证项目固定的 SHA256，通过后才安装。
 
-主应用支持构建参数 `DEBIAN_MIRROR`（如 `https://mirrors.aliyun.com`，不带 `/debian`）和 `PIP_INDEX_URL`（完整的 `/simple` 地址）。如需切换源，可在 Compose 构建命令中传入 `--build-arg DEBIAN_MIRROR=... --build-arg PIP_INDEX_URL=...`。
+主应用支持构建参数 `DEBIAN_MIRROR`（如 `https://mirrors.tuna.tsinghua.edu.cn`，不带 `/debian`）和 `PIP_INDEX_URL`（完整的 `/simple` 地址）。Compose 会把这两个参数从 `.env` 传入；如需临时切换源，也可在构建命令中传入 `--build-arg DEBIAN_MIRROR=... --build-arg PIP_INDEX_URL=...`。
+
+国内服务器建议先使用默认清华源。如果服务器到清华源较慢，可在 `.env` 中改为腾讯云或阿里云：
+
+```dotenv
+DEBIAN_MIRROR=https://mirrors.cloud.tencent.com
+PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+```
+
+镜像地址不要追加 `/debian`；Dockerfile 会根据 Debian 的 sources 文件自动拼接 Debian 和 security 路径。更换后重新执行 `up -d --build app`，不需要删除数据卷，也不要使用 `--no-cache`。
 
 若 Mihomo 下载仍出现 `RemoteDisconnected` 或超时，可在 `.env` 添加 `MIHOMO_DOWNLOAD_BASE_URL=https://你的下载站/MetaCubeX/mihomo/releases/download`，作为优先来源。脚本会追加 `/v1.19.33/mihomo-linux-<架构>-v1.19.33.gz`；自定义来源也必须提供与固定校验值一致的官方压缩包。修改后重新执行远程 MySQL Compose 的 `up -d --build`，无需删除卷或使用 `--no-cache`。
 

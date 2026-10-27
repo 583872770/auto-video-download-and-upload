@@ -22,6 +22,8 @@ class NativeBrowser:
         self.uses = 0
         self.directory, self.config = directory, config
         self.disk_lease = None
+        self.stderr_tail = b''
+        self.output_thread = None
 
     async def start(self, args):
         from webapp import yt5s
@@ -53,7 +55,21 @@ class NativeBrowser:
         if args.proxy:
             command.append('--proxy-server=' + args.proxy)
         command.append('about:blank')
-        self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.stderr_tail = b''
+        self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # Keep only an 8 KiB tail in memory. No browser output files, page dumps,
+        # request headers or screenshots accumulate on disk.
+        def collect(stream):
+            try:
+                with stream:
+                    while data := stream.read1(4096):
+                        if not isinstance(data, bytes):
+                            return
+                        self.stderr_tail = (self.stderr_tail + data)[-8192:]
+            except OSError:
+                pass
+        self.output_thread = threading.Thread(target=collect, args=(self.process.stdout,), daemon=True)
+        self.output_thread.start()
         if self.disk_lease:
             self.disk_lease.child_root_pid = self.process.pid
             self.disk_lease.start_monitor(lambda: self.process.kill() if self.process and self.process.poll() is None else None)
@@ -70,7 +86,12 @@ class NativeBrowser:
                 return self.address
             except OSError:
                 if self.process.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError('原生浏览器启动失败，请检查显示环境和浏览器安装。')
+                    from webapp.diagnostics import safe_text
+                    if self.process.poll() is not None and self.output_thread:
+                        self.output_thread.join(timeout=0.2)
+                    detail = safe_text(self.stderr_tail.decode('utf-8', errors='replace'))[-3000:]
+                    raise RuntimeError('原生浏览器启动失败，请检查显示环境和浏览器安装。'
+                                       f' 退出码：{self.process.poll()}；诊断：{detail or "未返回错误输出"}')
                 await asyncio.sleep(0.2)
 
     def close(self):
@@ -99,6 +120,9 @@ class NativeBrowser:
                     process.kill()
                     process.wait(timeout=5)
         finally:
+            if self.output_thread:
+                self.output_thread.join(timeout=0.2)
+                self.output_thread = None
             if self.profile is not None:
                 self.profile.cleanup()
                 self.profile = None

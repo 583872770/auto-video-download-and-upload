@@ -20,6 +20,7 @@ async function refreshDisk() {
       return `${name}：${diskBytes(value.used_bytes)} / ${diskBytes(value.budget_bytes)}`;
     });
     if (disk.message) rows.push(disk.message);
+    if (disk.log_warning) rows.push(disk.log_warning);
     rows.push(`当前下载执行 ${Number(disk.active.test || 0) + Number(disk.active.cache || 0)} 个 · ${disk.waiting_tasks || 0} 个视频有磁盘等待记录`);
     if (disk.last_cleanup?.pending_results) rows.push(`${disk.last_cleanup.pending_results} 个执行结果待核对，已保留文件`);
     if (disk.last_cleanup?.failed) rows.push(`${disk.last_cleanup.failed} 项清理失败，稍后自动重试`);
@@ -47,6 +48,23 @@ document.getElementById('disk-cleanup')?.addEventListener('click', async event =
   } finally {
     button.disabled = false;
   }
+});
+document.getElementById('instance-logs-open')?.addEventListener('click', async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  const content = document.getElementById('instance-logs-content');
+  try {
+    const result = await api('/api/disk/logs');
+    content.textContent = result.text || '暂无实例日志。';
+  } catch (error) {
+    content.textContent = `读取实例日志失败：${error.message}`;
+  } finally {
+    document.getElementById('instance-logs-dialog').showModal();
+    button.disabled = false;
+  }
+});
+document.getElementById('instance-logs-close')?.addEventListener('click', () => {
+  document.getElementById('instance-logs-dialog').close();
 });
 window.addEventListener('hashchange', () => { if (location.hash === '#settings') refreshDisk(); });
 setInterval(() => { if (location.hash === '#settings') refreshDisk(); }, 10000);

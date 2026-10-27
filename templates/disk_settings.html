@@ -7,7 +7,7 @@
     <label>临时文件总预算（GiB）<input name="disk_budget_gb" type="number" min="1" max="100000" required></label>
     <label>测试下载预算（GiB）<input name="disk_test_budget_gb" type="number" min="1" max="100000" required><small>包含音视频分片和合并文件；并发数是上限，预算不足时会等待。</small></label>
     <label>浏览器缓存预算（MiB）<input name="disk_browser_budget_mb" type="number" min="1" max="100000" required></label>
-    <label>全部日志预算（MiB）<input name="disk_log_budget_mb" type="number" min="1" max="100000" required></label>
+    <label>全部日志预算（MiB）<input name="disk_log_budget_mb" type="number" min="1" max="100000" required><small>包含任务与实例日志；新配置默认 64 MiB，空间有限可设为 16～64。每 30 秒检查，容量优先于保留时间。</small></label>
     <label>导入及上传临时文件预算（MiB）<input name="disk_import_budget_mb" type="number" min="1" max="100000" required></label>
     <label>诊断及其他缓存预算（MiB）<input name="disk_cache_budget_mb" type="number" min="1" max="100000" required></label>
     <label>磁盘暂停水位（GiB）<input name="disk_min_free_gb" type="number" min="0" max="100000" required><small>低于此剩余空间时停止本机新增下载，并清理可丢弃文件。</small></label>
@@ -18,6 +18,9 @@
   </div>
   <p class="micro-copy">当前为软件容量控制，突发写入可能短暂超额。严格上限需由宿主机配置文件系统配额。正式素材、数据库和 Docker 镜像单独规划容量。</p>
   <p class="micro-copy">清单导入完成后自动删除原 TXT/CSV；视频 ID 和导入结果保留，CSV 中未入库的额外列请自行备份。</p>
+  <p class="micro-copy">最多保留 1024 份任务日志；实例日志使用固定文件并轮转。成功日志默认 24 小时、失败日志默认 7 天，空间不足会提前淘汰已结束任务日志。日志不会永久累积，任务统计与账本保留。</p>
   <button type="button" class="button button-white" id="disk-cleanup">清理可丢弃文件</button>
+  <button type="button" class="button button-white" id="instance-logs-open">查看实例运行日志</button>
   <p id="disk-cleanup-result" class="micro-copy" role="status"></p>
+  <dialog id="instance-logs-dialog"><h2>实例运行日志</h2><p class="micro-copy">显示近期运行记录；日志按容量和时间自动清理，详细下载记录请在视频任务中查看。</p><pre id="instance-logs-content" tabindex="0"></pre><button type="button" id="instance-logs-close">关闭</button></dialog>
 </div>

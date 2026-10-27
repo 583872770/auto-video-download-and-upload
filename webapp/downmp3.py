@@ -57,8 +57,12 @@ def request_json(opener, url, timeout):
         hint = '；当前出口可能需要网站验证，请更换节点或使用其他下载方式' if status == 403 else ''
         raise Downmp3Error(f'downmp3 接口返回 HTTP {status}{hint}。',
                            retryable=status in (408, 429, 500, 502, 503, 504)) from None
-    except (URLError, TimeoutError, socket.timeout, OSError):
-        raise Downmp3Error('downmp3 接口连接失败或超时，请检查当前连接和节点。', retryable=True) from None
+    except (URLError, TimeoutError, socket.timeout, OSError) as error:
+        from webapp.diagnostics import safe_text
+        # Preserve the DNS/connect/TLS reason, but never the signed request URL.
+        reason = getattr(error, 'reason', error)
+        raise Downmp3Error('downmp3 接口连接失败或超时，请检查当前连接和节点。'
+                           f'（{type(reason).__name__}: {safe_text(reason)[:800]}）', retryable=True) from None
     if len(raw) > MAX_RESPONSE:
         raise Downmp3Error('downmp3 接口响应过大，未获取有效解析结果。')
     try:

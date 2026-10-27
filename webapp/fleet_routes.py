@@ -74,13 +74,16 @@ def update_configuration(fleet, data, current):
     config = {**DEFAULTS, **current, **data}
     if 'download_methods' in data:
         config['download_method'] = download_methods(config)[0]
+    elif 'download_method' in data:
+        config['download_methods'] = None
     validate_settings(config)
     local = {k: data[k] for k in LOCAL_FIELDS if k in data}
     if local:
         rpc(fleet, selected_id(), '/api/config', method='PUT', data=local)
     if POLICY_FIELDS.intersection(data):
         fleet.save_policy(config)
-    return jsonify(message='配置已保存；下载策略在下次开始时生效，实例设置只作用于所选实例。')
+    return jsonify(message='配置已保存；下载器、画质等策略从后续领取的视频生效，无需暂停或重启。'
+                   '已有客户任务使用各自策略；实例设置只作用于所选实例，正在执行的视频保持本次配置。')
 
 
 def preflight_instances(fleet, stage, cancelled):
@@ -183,7 +186,7 @@ def register_fleet(app, fleet):
             return jsonify(error='此接口仅供管理端使用。'), 403
         data = request.get_json() or {}
         if data.get('action') == 'resume':
-            policy = fleet.policy(active=not fleet.store.downloads_paused()) or fleet.policy()
+            policy = (fleet.execution_policy() if not fleet.store.downloads_paused() else None) or fleet.policy()
             rpc(fleet, identity, '/api/fleet/preflight', method='POST', data=policy)
         fleet.control(identity, data)
         return jsonify(message='实例配置已保存，停止指令由对应实例执行。')

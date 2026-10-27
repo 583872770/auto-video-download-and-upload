@@ -1,6 +1,6 @@
 ﻿"""Run queued work outside Flask, serializing all media and browser operations."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -10,6 +10,8 @@ import threading
 import time
 import traceback
 import uuid
+from webapp.diagnostics import (event, error_details, safe_text, diagnostic_context,
+                                configure_diagnostics, process_diagnostics, active_task_log)
 
 from webapp.tasks import TaskStore
 
@@ -135,6 +137,16 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         progress.save(force=True)
         method_label = ' → '.join(PROVIDERS[method] for method in methods)
         print(f'本任务下载方式：{method_label}（开始执行时读取页面配置）。', flush=True)
+        event('execution_policy', business_job=payload.get('_business_job'),
+              policy_version=payload.get('policy_version'), download_methods=methods,
+              yt5s_quality=config.get('yt5s_quality', 'best'),
+              downmp3_quality=config.get('downmp3_quality', 'best'),
+              storage_mode=config.get('storage_mode', 'local'),
+              fragment_concurrency=config.get('fragment_concurrency', 4),
+              download_format=config.get('download_format') or 'bestvideo*+bestaudio/best',
+              downmp3_timeout=config.get('downmp3_timeout', 300),
+              download_attempts=config.get('download_attempts', 3),
+              proxy_mode=config.get('proxy_mode', 'manual'))
         failure = DownloadFailure()
         test_mode = config.get('storage_mode') == 'test'
         if store and not payload.get('_execution_settings'):
@@ -189,6 +201,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             config = {**config, '_resolved_clash_proxy': snapshot['proxy'],
                       '_resolved_clash_node': snapshot.get('node', '')}
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
+        event('connection_selected', proxy_mode=config.get('proxy_mode', 'manual'),
+              proxy_node=config.get('_resolved_clash_node', ''))
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
         youtube = is_youtube(urls)
         progress.state.update(stage='checking_environment')
@@ -233,7 +247,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if progress.state.get('download_method') == 'downmp3':
                 from webapp.yt5s import verify_media
                 try:
-                    verify_media(path)
+                    verified = verify_media(path)
+                    streams = verified.get('streams', [])
+                    video = next((stream for stream in streams if stream.get('codec_type') == 'video'), {})
+                    event('media_verified', provider='downmp3', video_id=current_video.get('id', ''),
+                          width=video.get('width'), height=video.get('height'),
+                          frame_rate=video.get('avg_frame_rate'),
+                          video_codec=video.get('codec_name'),
+                          duration_seconds=verified.get('format', {}).get('duration'))
                 except RuntimeError:
                     # A rejected HTTP error page may already have its final MP4
                     # name. Do not let another provider mistake it for a video.
@@ -285,6 +306,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 # yt-dlp removes requested_formats before individual stream hooks.
                 from Utils.paths import io_path
                 current_video.update(id=info_dict.get('id', ''), title=info_dict.get('title', ''))
+                event('format_selected', provider=progress.state.get('download_method'),
+                      video_id=info_dict.get('id'), format_id=info_dict.get('format_id'),
+                      width=info_dict.get('width'), height=info_dict.get('height'), fps=info_dict.get('fps'),
+                      video_codec=info_dict.get('vcodec'), audio_codec=info_dict.get('acodec'),
+                      quality_source='requested' if progress.state.get('download_method') == 'downmp3' else 'provider_reported')
                 for filename in (self.prepare_filename(info_dict), info_dict.get('filepath')):
                     if filename:
                         path = Path(io_path(filename)).resolve()
@@ -380,6 +406,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         for addresses in ([url] for url in urls) if automatic else [urls]:
             progress.state.update(fallback_used=False, fallback_reason='', fallback_from='')
             for index, provider in enumerate(methods):
+                provider_started = time.monotonic()
+                event('provider_start', provider=provider, provider_attempt=index + 1,
+                      proxy_node=config.get('_resolved_clash_node', ''))
                 try:
                     if index and provider == 'yt_dlp' and store and youtube:
                         # Website conversion may have taken several minutes.
@@ -387,8 +416,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                             {'proxy': snapshot['proxy'], 'node': snapshot['node']}
                             if config.get('proxy_mode') == 'clash' else {}))
                     skipped_any |= attempt(provider, addresses)
+                    event('provider_end', provider=provider, outcome='completed',
+                          elapsed_seconds=round(time.monotonic() - provider_started, 3))
                     break
                 except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                    event('provider_end', provider=provider, outcome='failed',
+                          stage=progress.state.get('stage'),
+                          elapsed_seconds=round(time.monotonic() - provider_started, 3),
+                          proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
                     if index == len(methods) - 1:
                         raise
                     # Local storage errors, missing dependencies and loss of
@@ -412,6 +447,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                           fallback_reason=reason, fallback_from=PROVIDERS[provider], speed=None, eta=None)
                     progress.save(force=True)
                     print(f'{PROVIDERS[provider]} 失败（{reason}）；切换到 {PROVIDERS[next_provider]}，沿用当前代理节点。', flush=True)
+                    event('provider_fallback', source=provider, target=next_provider,
+                          reason=reason, node_changed=False)
         skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
         return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
@@ -438,6 +475,12 @@ def drain(directory, slot=0, role='all'):
         while task := store.claim(store.owner, actions=actions, exclude=exclude):
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
+            configure_diagnostics(runtime)
+            task_context = dict(task_id=task['id'], video_id=task.get('video_id'),
+                batch_id=task.get('batch_id'), business_job=task['payload'].get('_business_job'),
+                instance_id=task.get('instance_id') or 'local', worker_id=store.owner, worker_slot=slot,
+                attempt=task.get('attempts'), max_attempts=task.get('max_attempts'),
+                execution_id=uuid.uuid4().hex)
             if slot > 0 and slot >= int(runtime.get('worker_count', 1)):
                 store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
                 break
@@ -460,14 +503,16 @@ def drain(directory, slot=0, role='all'):
             heartbeat_stop = threading.Event()
             lease_deadline = [time.monotonic() + 45]
 
-            def abandon():
+            def abandon(reason):
                 from webapp.control import terminate_own_descendants
                 try:
+                    event('lease_abandoned', context=task_context, reason=reason, console=False)
                     terminate_own_descendants()
                 finally:
                     os._exit(2)
 
             def heartbeat(task_id=task['id'], stop=heartbeat_stop, deadline=lease_deadline):
+                last_error = 0
                 while not stop.wait(10):
                     try:
                         renewal_started = time.monotonic()
@@ -475,16 +520,18 @@ def drain(directory, slot=0, role='all'):
                         if stop.is_set():
                             return
                         if not owned:
-                            abandon()
+                            abandon('heartbeat_ownership_lost')
                         deadline[0] = renewal_started + 45
                         store.worker_status(store.owner, name, 'running', task_id)
-                    except Exception:
-                        pass  # The independent watchdog also covers blocked SQL calls.
+                    except Exception as error:
+                        if time.monotonic() - last_error >= 30:
+                            last_error = time.monotonic()
+                            event('heartbeat_error', context=task_context, console=False, **error_details(error))
 
             def watchdog(stop=heartbeat_stop, deadline=lease_deadline):
                 while not stop.wait(1):
                     if time.monotonic() >= deadline[0]:
-                        abandon()  # Stop before the 60-second lease can be reassigned.
+                        abandon('heartbeat_deadline_exceeded')  # Stop before the lease can be reassigned.
 
             heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
             heartbeat_thread.start()
@@ -492,8 +539,11 @@ def drain(directory, slot=0, role='all'):
             if watchdog_thread:
                 watchdog_thread.start()
             resource_wait = None
+            last_progress = {}
+            started = time.monotonic()
 
             def report(value):
+                last_progress.update(value)
                 if not store.update_progress(task['id'], value, store.owner):
                     raise DownloadLeaseLost('任务租约已失效，当前执行已停止。')
             # Redirect OS handles too, so FFmpeg stderr and Python logs stay together.
@@ -501,26 +551,39 @@ def drain(directory, slot=0, role='all'):
             sys.stderr.flush()
             from webapp.maintenance import bounded_task_log
             maximum = min(int(runtime.get('max_log_mb', 2)) * MIB,
-                          int(runtime.get('disk_log_budget_mb', 512)) * MIB // 32)
-            with bounded_task_log(store.log_path(task['id']), maximum):
+                          int(runtime.get('disk_log_budget_mb', 64)) * MIB // 64)
+            with (diagnostic_context(**task_context),
+                  active_task_log(store.directory, slot, task['id']) as log_admitted,
+                  bounded_task_log(store.log_path(task['id']), maximum,
+                      warning_path=store.directory / 'log-write-warning.json') if log_admitted else nullcontext()):
                 try:
                     print(f'[{task["action"]}] 任务开始', flush=True)
+                    if not log_admitted:
+                        event('task_log_unavailable', fallback='supervisor_log', reason='maintenance_busy_or_write_failed')
+                    event('attempt_start', action=task['action'], policy_version=task.get('policy_version'))
                     result = execute(task['action'], task['payload'],
                                      report,
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
                     print('任务执行完成。', flush=True)
-                    store.finish(task['id'], result=result, worker_id=store.owner)
+                    committed = store.finish(task['id'], result=result, worker_id=store.owner)
+                    event('attempt_end', outcome='succeeded' if committed else 'lease_lost',
+                          elapsed_seconds=round(time.monotonic() - started, 3),
+                          test_mode=bool(result.get('test_mode')), skipped=bool(result.get('skipped')),
+                          file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
+                          stage_seconds=last_progress.get('stage_seconds', {}))
                 except DiskPressure as error:
                     resource_wait = str(error)
                     store.release(task['id'], store.owner, str(error), delay=60, resource=True)
                     store.worker_status(store.owner, name, 'disk_wait', message=str(error))
                     print(f'磁盘资源等待：{error}', flush=True)
+                    event('attempt_released', reason='disk_pressure', message=str(error), **error_details(error))
                     break
                 except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
                     from webapp.execution import isolate_download_failure
                     isolate_download_failure(store, error)
                     store.release(task['id'], store.owner, str(error), delay=0)
                     print(f'下载环境检查未通过，本机停止领取，任务运行意愿保留：{error}', flush=True)
+                    event('attempt_released', reason='environment_required', **error_details(error))
                     break
                 except YouTubeAuthRequired as error:
                     from webapp.youtube_auth import YouTubeAuth
@@ -530,21 +593,31 @@ def drain(directory, slot=0, role='all'):
                         YouTubeAuth(store).block(error.result)
                     store.release(task['id'], store.owner, str(error), delay=0)
                     print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
+                    event('attempt_released', reason='authentication_required', **error_details(error))
                     break
                 except BaseException as error:
                     if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
                         resource_wait = '磁盘空间或配额不足，等待释放空间。'
                         store.release(task['id'], store.owner, resource_wait, delay=60, resource=True)
                         store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
+                        event('attempt_released', reason='disk_full', **error_details(error))
                         break
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
-                    message = str(error) or type(error).__name__
+                    message = safe_text(str(error) or type(error).__name__)[:2000]
                     transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error)) else
                                  isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)
                     current = store.get(task['id'])
+                    event('attempt_end', outcome=current['status'] if current else 'unknown',
+                          failed_stage=last_progress.get('stage'),
+                          elapsed_seconds=round(time.monotonic() - started, 3),
+                          stage_seconds=last_progress.get('stage_seconds', {}),
+                          retryable=transient, retry_scheduled=bool(current and current['status'] == 'queued'),
+                          retry_reason=('transient_error' if transient else 'not_classified_as_transient'),
+                          retry_delay_seconds=max(0, round(current.get('available_at', 0) - time.time())) if current and current['status'] == 'queued' else None,
+                          **error_details(error))
                     if current and current['status'] == 'queued':
                         print(f'临时错误，已安排自动重试；本次为第 {current["attempts"]}/{current["max_attempts"]} 次尝试。', flush=True)
                     if not isinstance(error, Exception):
@@ -563,5 +636,13 @@ if __name__ == '__main__':
     parser.add_argument('--slot', type=int, default=0)
     parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance'), default='all')
     args = parser.parse_args()
-    drain(args.state, args.slot, args.role)
+    with process_diagnostics(args.state, args.slot):
+        event('worker_boot', worker_slot=args.slot, role=args.role, pid=os.getpid())
+        try:
+            drain(args.state, args.slot, args.role)
+        except BaseException as error:
+            event('worker_crash', worker_slot=args.slot, **error_details(error))
+            raise
+        else:
+            event('worker_stopped', worker_slot=args.slot)
 

@@ -7,6 +7,8 @@ services:
       context: .
       args:
         MIHOMO_DOWNLOAD_BASE_URL: ${MIHOMO_DOWNLOAD_BASE_URL:-}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
         WITH_YT5S_BROWSER: "1"
     init: true
     shm_size: 512m

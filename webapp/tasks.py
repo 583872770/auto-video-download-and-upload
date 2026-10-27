@@ -33,6 +33,7 @@ class TaskRunner:
         self.process = None
         self.processes = {}
         self.last_started = {}
+        self.output_threads = {}
         self.stop = threading.Event()
 
     def start(self):
@@ -44,7 +45,30 @@ class TaskRunner:
         last_cleanup = 0
         last_beat = 0
         last_disk = 0
+        last_log_cleanup = 0
+        config = {}
+        try:
+            with (self.store.directory / 'disk-budget-config.json').open('rb') as stream:
+                config = json.loads(stream.read(16384))
+        except (OSError, ValueError):
+            pass
+        if not isinstance(config, dict):
+            config = {}
+        from webapp.diagnostics import runtime_log, capture_output, safe_text, error_details
+        diagnostic_log = runtime_log(self.store.directory, config=config)
         while not self.stop.is_set():
+            # Run before database/heartbeat work: a SQL outage must not turn off
+            # retention of local process/task logs.
+            if time.monotonic() - last_log_cleanup >= 30:
+                last_log_cleanup = time.monotonic()
+                try:
+                    from webapp.maintenance import prune_disk_logs
+                    from webapp.disk_budget import GIB
+                    import shutil
+                    prune_disk_logs(self.store, config, low_space=shutil.disk_usage(self.store.directory).free <
+                                    int(config.get('disk_min_free_gb', 10)) * GIB)
+                except Exception as error:
+                    diagnostic_log.write((safe_text('日志清理检查失败：' + str(error))[:2000] + '\n').encode('utf-8'))
             try:
                 if time.time() - last_recovery > 15:
                     self.store.recover(expired_only=True)
@@ -58,6 +82,16 @@ class TaskRunner:
                         last_beat = time.monotonic()
                     config = self.store.fleet.local_settings()['config']
                 count = max(1, min(16, int(config.get('worker_count', 1))))
+                diagnostic_log.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 64)) * 1024 ** 2 // 128))
+                for old_slot, previous in list(self.processes.items()):
+                    code = previous.poll()
+                    if code is not None:
+                        diagnostic_log.write((json.dumps({'time': now(), 'event': 'worker_exit',
+                            'slot': old_slot, 'pid': previous.pid, 'exit_code': code}, ensure_ascii=False) + '\n').encode('utf-8'))
+                        self.processes.pop(old_slot, None)
+                        old_thread = self.output_threads.pop(old_slot, None)
+                        if old_thread:
+                            old_thread.join(timeout=0.1)
                 from webapp.disk_budget import DiskBudget
                 disk = DiskBudget(self.store.directory, config)
                 if time.monotonic() - last_disk >= 30:
@@ -107,14 +141,19 @@ class TaskRunner:
                         process = subprocess.Popen(
                             [sys.executable, '-u', str(ROOT / 'web_worker.py'), '--state', str(self.store.directory),
                              '--slot', str(slot), '--role', role], cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **options)
+                        self.output_threads[slot] = capture_output(process.stdout, diagnostic_log)
+                        diagnostic_log.write((json.dumps({'time': now(), 'event': 'worker_start',
+                            'slot': slot, 'pid': process.pid, 'role': role}) + '\n').encode('utf-8'))
                         self.processes[slot] = process
                         self.last_started[slot] = time.monotonic()
                         if slot == 0:
                             self.process = process
-            except Exception:
+            except Exception as error:
                 if time.monotonic() - last_error > 30:
                     # Avoid logging connection strings or database parameters.
-                    logging.getLogger(__name__).error('下载调度器暂时不可用，30 秒内不重复记录；请检查数据库和进程状态。')
+                    details = error_details(error)
+                    diagnostic_log.write((json.dumps({'time': now(), 'event': 'scheduler_error', **details}, ensure_ascii=False) + '\n').encode('utf-8'))
+                    logging.getLogger(__name__).error('下载调度器暂时不可用（%s），详情见实例日志；30 秒内不重复记录。', details['error_type'])
                     last_error = time.monotonic()
             self.stop.wait(1)

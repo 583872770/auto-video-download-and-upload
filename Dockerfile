@@ -3,7 +3,7 @@ FROM node:22-bookworm-slim AS javascript
 
 FROM python:3.13-slim-bookworm
 ARG WITH_YT5S_BROWSER=0
-ARG DEBIAN_MIRROR=https://mirrors.aliyun.com
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
