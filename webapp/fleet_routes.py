@@ -13,7 +13,7 @@ from webapp.settings import DEFAULTS, validate_settings, download_methods
 def selected_id():
     fleet = current_app.extensions['fleet']
     return (request.headers.get('X-Instance-ID') or request.args.get('instance_id')
-            or (fleet.id if fleet.role == 'hybrid' else None))
+            or fleet.id)
 
 
 class UploadBody:

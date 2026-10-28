@@ -12,6 +12,7 @@ from sqlalchemy import func, select, text
 
 from webapp.database import instances, settings, tasks, counters, download_lists
 from webapp.disk_budget import DISK_FIELDS
+from webapp.service_role import normalize_role
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
@@ -21,8 +22,8 @@ LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', '
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
 LOCAL_FIELDS |= DISK_FIELDS
 ONLINE_SECONDS = 45
+# Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')
-MANAGEMENT_ROLES = ('manager', 'hybrid')
 
 
 class InstanceIdentityConflict(ValueError):
@@ -39,9 +40,7 @@ def database_time(db, mysql):
 
 class Fleet:
     def __init__(self, store, role, *, identity=None, url='', name=None):
-        if role not in ('manager', 'worker', 'hybrid'):
-            raise ValueError('集群角色必须是 manager、worker 或 hybrid。')
-        self.store, self.role = store, role
+        self.store, self.role = store, normalize_role(role)
         path = store.directory / 'instance.json'
         try:
             with path.open('x', encoding='utf-8') as output:
@@ -49,7 +48,9 @@ class Fleet:
         except FileExistsError:
             pass
         saved = json.loads(path.read_text(encoding='utf-8'))
-        self.id = identity or os.environ.get('VIDEO_INSTANCE_ID') or saved['id']
+        self.id = (identity or os.environ.get('VIDEO_INSTANCE_ID')
+                   or (store.single or {}).get('instance_id')
+                   or (store.fleet.id if store.fleet else None) or saved['id'])
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', self.id):
             raise ValueError('VIDEO_INSTANCE_ID 只能包含 1 到 64 位字母、数字、下划线或短横线。')
         self.token, self.boot_id = saved['token'], uuid.uuid4().hex
@@ -65,32 +66,34 @@ class Fleet:
 
     @property
     def can_manage(self):
-        return self.role in MANAGEMENT_ROLES
+        return True
 
     @property
     def can_download(self):
-        return self.role in DOWNLOAD_ROLES
+        return True
 
     def untargeted_actions(self):
-        return (('download',) if self.can_download else ()) + (('import',) if self.can_manage else ())
+        return ('download', 'import')
 
     def clock(self, db):
         return database_time(db, self.store.db.mysql)
 
     def initialize(self, config, base, clash_directory):
         with self.store.connect() as db:
+            if self.store.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
             self.store.db.ensure(db, settings, {'key': 'fleet_budget', 'value': '32'})
             db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).scalar_one()
             mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
-            if mode and mode.startswith('standalone:'):
-                raise ValueError('此数据库已切为单机模式，不能再启动集群实例连接此任务队列。')
-            self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
             stamp = self.clock(db)
             if previous and previous['heartbeat'] > stamp - ONLINE_SECONDS:
                 import psutil
                 if previous['host'] != socket.gethostname() or psutil.pid_exists(previous['pid']):
                     raise InstanceIdentityConflict(self.id, previous['host'], previous['heartbeat'] + ONLINE_SECONDS - stamp)
+            from webapp.modes import upgrade_unified
+            upgraded = upgrade_unified(self, db, mode, previous)
+            self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             values = {'id': self.id, 'name': self.name[:100], 'role': self.role, 'host': socket.gethostname(),
                       'pid': os.getpid(), 'boot_id': self.boot_id, 'heartbeat': self.clock(db),
                       'url': self.url, 'token': self.token, 'config': previous['config'] if previous else '{}', 'limits': '{}',
@@ -98,12 +101,19 @@ class Fleet:
             updates = {key: values[key] for key in values if key not in ('id', 'limits', 'paused', 'stop_requested', 'name')}
             if previous and previous['role'] not in DOWNLOAD_ROLES and self.can_download:
                 updates.update(paused=1, stop_requested=0)
+            if upgraded:
+                updates.update(limits='{}', paused=1, stop_requested=0)
             db.execute(self.store.db.upsert(instances, values, ['id'], updates))
         self.save_local(config, base, clash_directory)
         runtime = self.store.directory / 'fleet-runtime.json'
         temporary = runtime.with_suffix('.tmp')
         temporary.write_text(json.dumps({'role': self.role, 'id': self.id, 'boot_id': self.boot_id}), encoding='utf-8')
         temporary.replace(runtime)
+        if self.store.single:
+            # Archive only after the new registry/runtime are durable. A failed
+            # filesystem write can safely retry the same ownership migration.
+            (self.store.directory / 'single-mode.json').replace(self.store.directory / 'single-mode.legacy.json')
+            self.store.single = None
 
     def row(self, db=None):
         if db is None:
@@ -288,7 +298,7 @@ class Fleet:
                     raise ValueError('请先选择一个下载实例。')
                 identity = rows[0]
             row = db.execute(select(instances).where(instances.c.id == identity, instances.c.role.in_(DOWNLOAD_ROLES))).mappings().first()
-            if not row or row['heartbeat'] < self.clock(db) - ONLINE_SECONDS or not row['url']:
+            if not row or row['heartbeat'] < self.clock(db) - ONLINE_SECONDS or (row['id'] != self.id and not row['url']):
                 raise ValueError('实例离线或未配置管理端可访问的 VIDEO_INSTANCE_URL。')
             if row['id'] != self.id and row['host'] != socket.gethostname():
                 import ipaddress

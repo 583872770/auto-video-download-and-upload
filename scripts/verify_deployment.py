@@ -104,15 +104,13 @@ def verify_role_recovery(page, root, config, output):
         page.goto(f'http://127.0.0.1:{server.server_port}/setup', wait_until='networkidle')
         page.locator('#access-code').fill(gateway.access_code)
         page.locator('#unlock-form button').click()
-        expect(page.locator('#cluster-state-note')).to_contain_text('下载实例')
+        expect(page.locator('#cluster-state-note')).to_contain_text('管理与下载')
         expect(page.locator('#cluster-state-note')).to_contain_text('original-download-node')
-        expect(page.locator('#deployment-role')).to_have_value('worker')
-        expect(page.locator('#deployment-role option[value="all"]')).not_to_have_attribute('disabled', '')
+        expect(page.locator('select[name=role]')).to_have_count(0)
         expect(page.locator('[name=instance_id]')).to_have_value('original-download-node')
-        page.locator('#deployment-role').select_option('manager')
         page.locator('[name=instance_id]').fill('edited-node')
         page.locator('#restore-instance').click()
-        expect(page.locator('#deployment-role')).to_have_value('worker')
+        expect(page.locator('select[name=role]')).to_have_count(0)
         expect(page.locator('[name=instance_id]')).to_have_value('original-download-node')
         expect(page.locator('#instance-url-field')).to_be_visible()
         assert not calls
@@ -123,7 +121,7 @@ def verify_role_recovery(page, root, config, output):
         page.locator('#save-deployment').click()
         expect(page.locator('#setup-success')).to_be_visible(timeout=10000)
         expect(page.locator('#deployment-error')).to_be_hidden()
-        assert calls[0]['role'] == 'worker'
+        assert calls[0]['role'] == 'hybrid'
         assert calls[0]['instance_id'] == 'original-download-node'
         page.set_viewport_size({'width': 1440, 'height': 1080})
     finally:
@@ -173,9 +171,9 @@ def main():
                     page.locator('[name=mysql_host]').fill('fixture.example.test')
                     page.locator('[name=mysql_user]').fill('video')
                     page.locator('[name=mysql_password]').fill('fixture-private-password')
-                    expect(page.locator('#deployment-role')).to_have_value('hybrid')
+                    expect(page.locator('select[name=role]')).to_have_count(0)
                     expect(page.locator('#instance-url-field')).to_be_visible()
-                    expect(page.locator('[name=instance_url]')).to_have_value(address)
+                    expect(page.locator('[name=instance_url]')).to_have_value('')
                     page.locator('[name=instance_name]').fill('管理与下载一体实例')
                     page.locator('#test-database').click()
                     expect(page.locator('#setup-feedback')).to_have_text('MySQL 连接成功。')
@@ -196,7 +194,6 @@ def main():
                     page.locator('.nav-item[href="/setup"]').click()
                     expect(page.locator('#deployment-form')).to_be_visible()
                     expect(page.locator('#mysql-password')).to_have_value('')
-                    page.locator('#deployment-role').select_option('worker')
                     expect(page.locator('#instance-url-field')).to_be_visible()
                     page.locator('[name=instance_url]').fill('http://10.0.0.12:5000')
                     page.locator('#save-deployment').click()
@@ -205,22 +202,9 @@ def main():
                     assert gateway.running_role == 'hybrid'
                     assert len(apps) == 1
                     page.screenshot(path=str(output / 'setup-restart.png'), full_page=True)
-                    page.locator('#deployment-role').select_option('all')
-                    expect(page.locator('#single-transition-field')).to_be_visible()
-                    expect(page.locator('#single-transition-confirm')).not_to_be_checked()
-                    page.locator('#single-transition-confirm').check()
-                    page.locator('#save-deployment').click()
-                    expect(page.locator('#success-message')).to_contain_text('单机转换配置已保存')
-                    expect(page.locator('#deployment-role')).to_have_value('all')
-                    expect(page.locator('#single-transition-field')).to_be_hidden()
-                    assert gateway.running_role == 'hybrid'
-                    page.screenshot(path=str(output / 'setup-single-pending.png'), full_page=True)
-                    restarted = DeploymentGateway(config, root / 'state', load_environment=False, app_factory=factory)
-                    restarted.start()
-                    restarted.initialization.join(timeout=10)
-                    assert restarted.running_role == 'all', restarted.startup_error
-                    assert restarted.active.extensions['task_store'].fleet is None
-                    assert restarted.active.extensions['task_store'].downloads_paused()
+                    expect(page.locator('#single-transition-field')).to_have_count(0)
+                    assert gateway.profile['role'] == 'hybrid'
+                    assert not (gateway.directory / 'single-mode.json').exists()
                     verify_slow_start(page, root, config, output)
                     verify_slow_start(page, root, config, output, failure=True)
                     verify_role_recovery(page, root, config, output)

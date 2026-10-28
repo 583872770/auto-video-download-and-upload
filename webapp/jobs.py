@@ -451,7 +451,7 @@ def register_jobs(app, store, settings, preflight):
 
     @app.get('/jobs')
     def jobs_page():
-        return render_template('jobs.html', csrf=session.get('csrf',''), service_role=app.extensions['fleet'].role if app.extensions.get('fleet') else 'all')
+        return render_template('jobs.html', csrf=session.get('csrf',''), service_role=app.extensions['fleet'].role if app.extensions.get('fleet') else 'hybrid')
 
     @app.get('/api/jobs')
     def job_page():

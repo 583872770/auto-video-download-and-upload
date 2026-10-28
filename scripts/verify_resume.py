@@ -129,7 +129,7 @@ def main():
                     expect(resume).to_have_text('正在检查并恢复…')
                     expect(resume).to_be_disabled()
                     release.set()
-                    expect(page.locator('#fleet-instances .count-pill')).to_have_text('在线')
+                    expect(page.locator('#fleet-instances .count-pill')).to_contain_text('在线 ·')
                     assert not store.fleet.row()['paused']
                     page.locator('[data-view="overview"]').first.click()
                     expect(page.locator('#download-execution-status')).not_to_contain_text('在线下载实例均已暂停')
@@ -159,7 +159,7 @@ def main():
                 expect(page.locator('#detail-heading h1')).to_have_text('Order B')
                 store.set_downloads_paused(True)
                 page.reload()
-                page.locator('#system-note a').first.click()
+                page.locator('#detail-heading a.primary').click()
                 expect(page.locator('#download-job')).to_have_value(b)
                 page.set_viewport_size({'width':390,'height':844})
                 expect(page.locator('#download-queue-start')).to_be_visible()

@@ -34,6 +34,7 @@ from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment, require_downmp3_environment
 from webapp.yt1d import require_environment as require_yt1d_environment
+from webapp.service_role import normalize_role
 
 ACTIONS = ('download', 'check')
 
@@ -42,9 +43,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                role=None, instance_id=None, instance_url='', instance_name=None, database_url=None,
                startup_report=None):
     configure_runtime()
-    if not database_url and (state_dir is None or env_file is not None or role in ('manager', 'worker', 'hybrid')):
+    if not database_url and (state_dir is None or env_file is not None):
         from webapp.bootstrap import configure_database_environment
         configure_database_environment(env_file)
+    service_role = normalize_role(role or os.environ.get('VIDEO_SERVICE_ROLE'))
     app = Flask(__name__)
     from webapp.disk_uploads import BudgetRequest
     app.request_class = BudgetRequest
@@ -53,16 +55,16 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     # static JavaScript/CSS immediately after restarting the service.
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
     config_path = Path(config_path or DEFAULT_CONFIG).resolve()
-    cluster = (role or os.environ.get('VIDEO_SERVICE_ROLE')) in ('manager', 'worker', 'hybrid')
-    store = TaskStore(state_dir or ROOT / '.cache' / 'web', database_url or (
-        os.environ.get('VIDEO_DATABASE_URL') if cluster else None), startup_report=startup_report)
+    store = TaskStore(state_dir or ROOT / '.cache' / 'web', database_url or
+                      os.environ.get('VIDEO_DATABASE_URL'), startup_report=startup_report)
+    # Production (gateway, MySQL, explicit instance configuration) always uses
+    # the unified registry. Preserve the embedded SQLite application used by
+    # local tools without inventing a second public service role.
+    registered = bool(role or os.environ.get('VIDEO_SERVICE_ROLE') or database_url
+                      or os.environ.get('VIDEO_DATABASE_URL') or store.fleet or store.single
+                      or store.db.mysql or state_dir is None)
     if startup_report:
         startup_report('数据库已就绪，正在初始化素材库与实例配置…')
-    if (role or os.environ.get('VIDEO_SERVICE_ROLE', 'all')) == 'all' and store.single:
-        if startup_report:
-            startup_report('正在检查单机转换条件并恢复本机配置…')
-        from webapp.modes import prepare_single
-        prepare_single(store, config_path)
     secret_file = store.directory / 'session.key'
     try:
         with secret_file.open('xb') as output:
@@ -81,20 +83,17 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     media_lock = threading.RLock()
     clash = ClashManager(store.directory / 'clash')
     app.extensions['clash'] = clash
-    service_role = role or os.environ.get('VIDEO_SERVICE_ROLE', 'all')
-    if service_role not in ('all', 'manager', 'worker', 'hybrid'):
-        raise ValueError('服务角色必须是 all、manager、worker 或 hybrid。')
     fleet = None
-    if service_role != 'all':
+    if registered:
         from webapp.fleet import Fleet
         fleet = Fleet(store, service_role, identity=instance_id, url=instance_url, name=instance_name)
         initial, initial_base = load_config(config_path)
         fleet.initialize({**DEFAULTS, **initial}, initial_base, clash.directory)
-        if service_role == 'worker':
-            app.config['TRUSTED_HOSTS'] = None  # Agent calls use instance addresses and bearer authentication.
-    elif store.fleet:
-        raise ValueError('此状态目录已属于集群实例，请明确使用 --role manager、--role worker 或 --role hybrid。')
     app.extensions['fleet'] = fleet
+
+    @app.context_processor
+    def instance_context():
+        return {'fleet_enabled': fleet is not None}
     if startup_report:
         startup_report('实例配置已就绪，正在加载接口与任务调度…')
     youtube_auth = YouTubeAuth(store)
@@ -167,8 +166,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     return jsonify(error='节点凭据不能用于管理客户任务、账单或账户。'), 403
                 g.fleet_rpc = True
                 return None
-            if service_role == 'worker' or request.headers.get('Authorization'):
-                return jsonify(error='下载实例只接受管理端认证请求。'), 403
+            if request.headers.get('Authorization'):
+                return jsonify(error='实例认证凭据无效。'), 403
         if 'csrf' not in session:
             session['csrf'] = secrets.token_urlsafe(32)
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -839,8 +838,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     clash.start()
                 except ClashError as error:
                     clash.last_error = str(error)
-        if service_role != 'manager':
-            threading.Thread(target=restore_clash, name='restore-clash', daemon=True).start()
+        threading.Thread(target=restore_clash, name='restore-clash', daemon=True).start()
         runner = TaskRunner(store, lambda: settings()[0])
         runner.start()
         app.extensions['task_runner'] = runner
@@ -853,7 +851,7 @@ if __name__ == '__main__':
     parser.add_argument('--port', default=5000, type=int)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--env-file', type=Path, help='数据库环境文件，默认读取项目目录中的 .env')
-    parser.add_argument('--role', choices=('all', 'manager', 'worker', 'hybrid'), help='hybrid 管理与下载一体；manager 纯管理端；worker 纯下载实例；all 单机模式')
+    parser.add_argument('--role', type=normalize_role, metavar='hybrid', help='固定为管理与下载一体；兼容读取旧角色名称')
     parser.add_argument('--state', type=Path, help='实例独立状态目录')
     parser.add_argument('--instance-id', help='固定实例 ID，不同实例必须不同')
     parser.add_argument('--instance-url', default='', help='管理端能访问的下载实例地址')

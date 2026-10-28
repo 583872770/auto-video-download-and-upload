@@ -1,4 +1,4 @@
-"""Isolated manager/worker browser checks; never connect to the configured MySQL."""
+"""Isolated unified-instance browser checks, including legacy role aliases."""
 from pathlib import Path
 import argparse
 import sys
@@ -57,7 +57,7 @@ def main(hybrid=False):
             apps['manager'].extensions['task_store'].set_downloads_paused(True)
             store = apps['manager'].extensions['task_store']
             with store.connect() as db:
-                db.execute(update(instances).where(instances.c.role == download_role).values(role='pending'))
+                db.execute(update(instances).values(role='pending'))
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True, **browser_options(pw.chromium))
                 try:
@@ -67,16 +67,20 @@ def main(hybrid=False):
                     expect(page.locator('#fleet-nav')).to_be_visible()
                     expect(page.locator('[data-instance-form]')).to_have_count(0)
                     with store.connect() as db:
-                        db.execute(update(instances).where(instances.c.role == 'pending').values(role=download_role))
+                        db.execute(update(instances).where(instances.c.role == 'pending').values(role='hybrid'))
+                    expect(page.locator('#fleet-selection')).to_have_value('manager', timeout=10000)
+                    page.locator('#fleet-selection').select_option('alpha')
                     expect(page.locator('#settings-form [name=path]')).to_have_value('videos-alpha', timeout=10000)
-                    expect(page.locator('[data-instance-form]')).to_have_count(2)
+                    expect(page.locator('[data-instance-form]')).to_have_count(3)
                     expect(page.locator('[data-instance-form="alpha"]')).to_contain_text('累计成功')
                     expect(page.locator('#fleet-selection')).to_have_value('alpha')
                     alpha = page.locator('[data-instance-form="alpha"]')
+                    alpha.locator('.instance-options summary').click()
                     alpha.locator('[name=worker_count]').fill('2')
                     alpha.locator('button[type=submit]').click()
                     expect(page.locator('#toasts')).to_contain_text('实例配置已保存')
                     assert apps['alpha'].extensions['task_store'].runtime()['worker_count'] == 2
+                    page.locator('.fleet-monitor-options>summary').click()
                     page.locator('#fleet-global-limit').fill('4')
                     page.locator('#fleet-global-form button').click()
                     expect(page.locator('#toasts')).to_contain_text('全局并发上限已保存')
@@ -109,7 +113,7 @@ def main(hybrid=False):
                             page.set_viewport_size({'width': 1440, 'height': 1080})
                             page.goto(address + '/#instances', wait_until='networkidle')
                             expect(page.locator('#fleet-selection')).to_have_value(identity)
-                            expect(page.locator('[data-instance-form]')).to_have_count(2)
+                            expect(page.locator('[data-instance-form]')).to_have_count(3)
                             expect(page.locator(f'[data-instance-form="{identity}"] h2')).to_contain_text('本机')
                             page.locator('.nav-item[data-view=settings]').click()
                             expect(page.locator('#settings-form [name=path]')).to_have_value('videos-' + identity)

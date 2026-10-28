@@ -150,9 +150,6 @@ class TaskRunner:
                     stop_downloads(self.store)
                 role_counts = self.store.runnable_counts()
                 roles = set(role_counts)
-                if self.store.fleet and self.store.fleet.role == 'manager':
-                    roles.discard('download')
-                    roles.discard('regular')
                 if role_counts.get('download') and (not self.store.fleet or self.store.fleet.can_download):
                     roles.add('regular')
                 # Reading free space and the last published budget is cheap.

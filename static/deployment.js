@@ -25,17 +25,6 @@ async function run(operation) {
   try { await operation(); } catch (error) { feedback(error.diagnostic ? '初始化未完成，请查看上方原因和处理建议。' : error.message, true); if (error.diagnostic) renderDiagnostic(error.diagnostic); }
   finally { busy = false; updateButtons(); }
 }
-function renderRole() {
-  const role = $('#deployment-role').value;
-  $('#instance-url-field').hidden = !['worker', 'hybrid'].includes(role);
-  form.elements.instance_url.required = ['worker', 'hybrid'].includes(role);
-  if (['worker', 'hybrid'].includes(role) && !form.elements.instance_url.value) form.elements.instance_url.value = location.origin;
-  $('#role-description').textContent = {hybrid:'本机提供完整管理页面并参与下载。多台机器连接同一数据库即可协作；任务、统计与计费共享，目录、Cookie 和代理按实例独立。新实例默认暂停领取，请在工作台恢复。',manager:'只做管理与导入，视频由下载实例保存。',worker:'这台机器只执行下载。配置完成后会自动注册到共享 MySQL，管理端即可看到。',all:'适合只用一台机器，同时提供管理页面与视频下载。'}[role];
-  const converting = role === 'all' && Boolean(current?.cluster_state) && !current?.single_conversion;
-  $('#single-transition-field').hidden = !converting;
-  $('#single-transition-confirm').disabled = !converting;
-  $('#single-transition-confirm').required = converting;
-}
 async function load() {
   current = await api('/api/deployment');
   for (const [key, value] of Object.entries(current.config)) if (form.elements[key]) form.elements[key].value = value;
@@ -45,29 +34,25 @@ async function load() {
   $('#mysql-password').required = !current.password_saved;
   if (current.password_saved) { $('#mysql-password').placeholder = '已保存，留空保持原密码'; $('#password-note').textContent = '已保存密码不会回显。留空保持原密码，填写新密码则替换。'; }
   renderClusterState();
-  if (current.cluster_state && form.elements.role.value === 'all' && !current.single_conversion) restoreInstance();
   renderStatus();
   $('#unlock-panel').hidden = true; form.hidden = false;
-  renderRole();
 }
 function renderClusterState() {
   const state = current.cluster_state;
   $('#cluster-state-note').hidden = !state;
-  if (state) $('#cluster-state-description').textContent = `这份状态目录原角色：${({manager:'管理后台',worker:'下载实例',hybrid:'管理与下载一体'})[state.role]}；实例 ID：${state.instance_id}。可改为管理与下载一体，保存后重启本机；改为单机模式需要勾选转换确认。`;
+  if (state) $('#cluster-state-description').textContent = `已识别原实例 ID：${state.instance_id}。升级后统一提供管理与下载，原任务、统计与计费保留。`;
 }
 function restoreInstance() {
   if (!current.cluster_state) return;
-  form.elements.role.value = current.cluster_state.role;
   form.elements.instance_id.value = current.cluster_state.instance_id;
-  renderRole();
-  feedback('已恢复原角色和实例 ID，请检查配置后点击保存启动。');
+  feedback('已恢复原实例 ID，请检查配置后点击保存启动。');
 }
 function renderStatus() {
   renderDiagnostic(current.diagnostic);
   const statusMessage = current.starting ? `${current.stage || '正在初始化服务…'}（当前阶段 ${Math.floor(current.stage_elapsed)} 秒）` : current.pending_restart ? '已有新配置等待生效，请重启本机服务。' : current.diagnostic ? '' : current.error;
   $('#deployment-state').hidden = !statusMessage;
   $('#deployment-state').textContent = statusMessage || '';
-  $('#back-link').hidden = !current.running || current.running_role === 'worker';
+  $('#back-link').hidden = !current.running;
   $('#save-deployment').textContent = current.starting ? '服务正在初始化…' : current.running ? '保存配置（重启后生效）' : '保存并启动服务';
   $('#save-description').textContent = current.starting ? '设置页可以使用，初始化完成后即可进入工作台。' : current.running ? '保存后不会中断当前任务。' : '先测试连接，再保存部署配置。';
   updateButtons();
@@ -92,8 +77,7 @@ async function pollStartup() {
     if (!current.starting && current.running) {
       $('#setup-success').hidden = false;
       $('#success-message').textContent = '服务初始化完成。';
-      $('#enter-workbench').hidden = current.running_role === 'worker';
-      $('#worker-next').hidden = current.running_role !== 'worker';
+      $('#enter-workbench').hidden = false;
       feedback('服务已就绪。');
     } else if (!current.starting && current.error) {
       feedback('初始化未完成，请查看上方原因和处理建议。', true);
@@ -106,11 +90,10 @@ async function pollStartup() {
 function values() {
   const data = Object.fromEntries(new FormData(form));
   data.mysql_port = Number(data.mysql_port);
-  data.single_transition = !$('#single-transition-confirm').disabled && $('#single-transition-confirm').checked;
+  data.role = 'hybrid';
   return data;
 }
 $('#unlock-form').addEventListener('submit', event => { event.preventDefault(); run(async () => { await api('/api/deployment/unlock', {code:$('#access-code').value.trim()}); $('#access-code').value = ''; await load(); feedback('已打开部署设置。'); }); });
-$('#deployment-role').addEventListener('change', renderRole);
 $('#restore-instance').addEventListener('click', restoreInstance);
 $('#test-database').addEventListener('click', () => { if (form.reportValidity()) run(async () => { feedback('正在测试 MySQL 连接…'); feedback((await api('/api/deployment/test', values())).message); }); });
 form.addEventListener('submit', event => { event.preventDefault(); run(async () => {
@@ -121,8 +104,7 @@ form.addEventListener('submit', event => { event.preventDefault(); run(async () 
   const message = value.pending_restart ? value.message : current.running ? '配置已保存，服务已启动。' : current.error || value.message;
   $('#setup-success').hidden = Boolean(current.starting || current.error);
   $('#success-message').textContent = message;
-  $('#enter-workbench').hidden = current.starting || value.pending_restart || value.role === 'worker';
-  $('#worker-next').hidden = current.starting || value.pending_restart || value.role !== 'worker';
+  $('#enter-workbench').hidden = current.starting || value.pending_restart;
   feedback(current.error ? '初始化未完成，请查看上方原因和处理建议。' : message, Boolean(current.error));
 }); });
 if ($('meta[name="deployment-unlocked"]').content === 'true') run(load);

@@ -24,7 +24,7 @@ class ExecutionControlService:
                     instances.c.role.in_(DOWNLOAD_ROLES),
                     instances.c.heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS)).all()
                 if not rows:
-                    blockers.append(dict(code='no_online_instances', message='没有在线的下载实例；仅有管理端在线无法执行下载。',
+                    blockers.append(dict(code='no_online_instances', message='没有在线实例，请检查服务与数据库连接。',
                         href='/#instances', label='查看实例与环境'))
                 elif all(row.paused for row in rows):
                     blockers.append(dict(code='instances_paused', message=f'{len(rows)} 个在线下载实例均已暂停，请单独恢复至少一个实例。',

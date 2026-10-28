@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <meta name="service-role" content="{{ service_role }}">
+  <meta name="fleet-enabled" content="{{ 'true' if fleet_enabled else 'false' }}">
   <meta name="theme-color" content="#202520">
   <title>帧流 Frameflow · YouTube 下载工作台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23202520'/%3E%3Cpath d='M12 10h17v5H17v5h10v5H17v7h-5z' fill='%23edc56a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='disk.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
   <script src="{{ url_for('static', filename='fleet.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='disk.js') }}" defer></script>
@@ -41,16 +43,16 @@
   {% set workspace_page = 'index' %}{% include 'workspace_nav.html' %}
 
   <div class="workspace">
-    <header class="topbar"><div class="breadcrumb"><button id="mobile-menu" class="icon-button" aria-label="展开导航"><svg><use href="#i-list"/></svg></button><span>YouTube 下载</span><span class="slash">/</span><strong id="breadcrumb-current">下载概览</strong></div><div class="topbar-right"><span class="server-label"><span class="online-dot"></span>本地服务</span><span class="topbar-date" id="today"></span><span class="avatar">我</span></div></header>
-    <main>{% include 'console_identity.html' %}<p id="connection-warning" class="clash-notice" hidden role="alert"></p>
-      <div class="page-heading"><div><p class="eyebrow">YOUR YOUTUBE DOWNLOAD SPACE</p><h1 id="page-title">YouTube 视频，一处下载<span class="heading-dot">.</span></h1><p id="page-description">选择已有任务，开始下载并查看运行状态。</p></div><a class="button button-white" href="/jobs">管理任务 ↗</a></div>
+    <header class="topbar"><div class="breadcrumb"><button id="mobile-menu" class="icon-button" aria-label="展开导航"><svg><use href="#i-list"/></svg></button><span>工作区</span><span class="slash">/</span><strong id="breadcrumb-current">下载工作台</strong></div><div class="topbar-right"><a id="workspace-disk-status" class="resource-chip" href="/#settings" data-view="settings" aria-label="查看当前实例磁盘管理">磁盘状态读取中</a><span class="topbar-date" id="today"></span>{% include 'console_identity.html' %}</div></header>
+    <main><p id="connection-warning" class="clash-notice" hidden role="alert"></p>
+      <div class="page-heading"><div><h1 id="page-title">下载工作台</h1><p id="page-description">选择实例与任务，集中查看运行进度。</p></div><a class="button button-white" href="/jobs">任务中心 ↗</a></div>
 
-      <div id="fleet-selection-bar" class="panel fleet-selection" hidden><label>当前下载实例 <select id="fleet-selection" aria-label="当前下载实例"></select></label><p id="fleet-selection-note" class="micro-copy"></p></div>
+      <div id="fleet-selection-bar" class="panel fleet-selection" hidden><label><span class="scope-badge">当前实例</span><select id="fleet-selection" aria-label="当前下载实例"></select></label><p id="fleet-selection-note" class="micro-copy"></p></div>
       <section id="overview-view" class="view">
         <div class="stats-grid download-dashboard">
           <article class="stat-card"><div class="stat-label">所选任务 · 待下载</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">选择任务后开始下载</div></article>
           <article class="stat-card"><div class="stat-label">当前实例 · 下载中</div><div class="stat-number"><span id="stat-running">0</span><small>个</small></div><div class="stat-foot">包含解析、转换与传输阶段</div></article>
-          <article class="stat-card"><div class="stat-label">全部任务 · 已交付</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">已登记的计费成品文件</div></article>
+          <article class="stat-card"><div class="stat-label">所选任务 · 已交付</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">当前任务的计费成品文件</div></article>
 
 
 
@@ -58,8 +60,8 @@
 
 
         <p id="worker-status" class="clash-notice" hidden></p>
-        <section class="panel download-console" aria-labelledby="download-console-title">
-          <div class="panel-heading"><div><h2 id="download-console-title">下载任务</h2><p class="panel-subtitle">视频在任务中心维护；当前实例使用自己的策略处理所选任务的视频；开关只控制当前实例。</p></div></div>
+        <div class="workbench-grid"><section class="panel download-console" aria-labelledby="download-console-title">
+          <div class="panel-heading"><div><h2 id="download-console-title">任务与下载控制</h2><p class="panel-subtitle">使用当前实例策略，操作仅影响当前实例。</p></div><span class="scope-badge">当前实例</span></div>
           <div class="download-job-picker">
             <label class="field-label" for="download-job">选择任务（必选）</label>
             <input id="download-job-search" type="search" placeholder="搜索客户、任务名称或编号" aria-label="搜索下载任务" maxlength="200">
@@ -77,11 +79,11 @@
           </div>
           <div id="download-startup" class="startup-panel" hidden role="status"><strong id="startup-title"></strong><ol id="startup-steps"></ol><p id="startup-message" class="micro-copy"></p></div>
         </section>
-        <section class="panel library-panel" id="batch-progress-panel"><div class="panel-heading"><div><h2>实时下载 <span class="count-pill" id="batch-count">0</span></h2><p class="panel-subtitle" id="batch-summary">选择任务后查看实时进度。</p></div></div><div id="batch-progress"></div></section>
+        <section class="panel library-panel" id="batch-progress-panel"><div class="panel-heading"><div><h2>实时下载 <span class="count-pill" id="batch-count">0</span></h2><p class="panel-subtitle" id="batch-summary">选择任务后查看实时进度。</p></div><span class="live-label"><span class="online-dot"></span>实时更新</span></div><div id="batch-progress"></div></section></div>
         <details class="panel system-download-control"><summary>当前实例运行情况与停止操作</summary><p id="download-queue-status" class="micro-copy" role="status"></p><button id="download-queue-toggle" type="button" class="button button-danger" disabled>停止当前实例</button><p class="micro-copy">只控制当前实例。停止后再次开始，仅领取该实例所选任务的视频。</p></details>
       </section>
 
-      <section id="instances-view" class="view" hidden><div id="fleet-job-context" class="panel fleet-budget" role="status"></div><div class="panel fleet-budget"><h2>集群并发上限</h2><form id="fleet-global-form" class="media-library-actions"><label>全局最多执行任务数 <input id="fleet-global-limit" type="number" min="1" max="10000" value="32" required></label><button type="submit" class="button button-dark">保存全局上限</button></form><p class="micro-copy">每个实例同时受全局上限和自身并发上限约束。解析、转换和传输都占用任务名额。</p></div><div id="fleet-instances"></div></section>
+      <section id="instances-view" class="view" hidden><div id="fleet-monitor-summary" class="fleet-monitor-summary" aria-label="全部下载实例运行汇总"></div><details class="fleet-monitor-options"><summary>全局运行设置<span>并发上限 · 当前所选实例</span></summary><div class="fleet-control-strip"><div id="fleet-job-context" class="panel fleet-budget" role="status"></div><div class="panel fleet-budget"><h2>集群并发上限</h2><form id="fleet-global-form" class="media-library-actions"><label>全局最多执行任务数 <input id="fleet-global-limit" type="number" min="1" max="10000" value="32" required></label><button type="submit" class="button button-dark">保存全局上限</button></form><p class="micro-copy">每个实例同时受全局上限和自身并发上限约束。解析、转换和传输都占用任务名额。</p></div></div></details><div id="fleet-instances"></div></section>
       <section id="media-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>全部素材 <span class="count-pill" id="all-media-count">0</span></h2><p class="panel-subtitle" id="media-directory"></p></div><div class="media-library-actions"><button class="button button-white" id="refresh-media"><svg><use href="#i-refresh"/></svg>同步本地文件</button><button type="button" class="button button-danger" id="clear-media">清空素材库</button></div></div><div class="catalog-toolbar"><input id="media-search" type="search" placeholder="按标题前缀或完整视频 ID 搜索" aria-label="搜索素材"><span>每页 24 条 · 按下载时间排列</span></div><div id="all-media"></div><div class="pagination"><button type="button" class="button button-white" data-page="media" data-direction="prev">上一页</button><span id="media-page-label"></span><button type="button" class="button button-white" data-page="media" data-direction="next">下一页</button></div></div></section>
 
       <section id="tasks-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>视频与后台操作日志</h2><p class="panel-subtitle">按结束时间倒序展示已结束的任务，支持分页、结果筛选与搜索。</p></div><select id="task-filter" aria-label="筛选任务"><option value="all">全部结果</option><option value="succeeded">已完成</option><option value="failed">失败 / 中断</option></select></div><div class="catalog-toolbar"><input id="task-search" type="search" placeholder="视频 ID、任务 ID 或标题前缀" aria-label="搜索任务"><span>每页 50 条</span></div><div id="all-tasks"></div><div class="pagination"><button type="button" class="button button-white" data-page="tasks" data-direction="prev">上一页</button><span id="tasks-page-label"></span><button type="button" class="button button-white" data-page="tasks" data-direction="next">下一页</button></div></div></section>
@@ -141,7 +143,7 @@
         <section class="panel"><div class="panel-heading"><div><h2>订阅节点 <span class="count-pill" id="clash-node-count">0</span></h2><p class="panel-subtitle" id="clash-test-progress">延迟测试不会切换当前节点；测试结果不代表实际下载速度。</p></div><button class="button button-white" id="clash-test-all" type="button"><svg><use href="#i-clock"/></svg>全部测速</button></div><div class="clash-toolbar"><input id="clash-node-search" type="search" placeholder="搜索节点名称或协议" aria-label="搜索节点"><select id="clash-node-sort" aria-label="节点排序"><option value="original">订阅顺序</option><option value="delay">延迟从低到高</option><option value="name">按名称排序</option></select></div><div id="clash-nodes"></div></section>
       </section>
 
-      <footer class="page-footer"><span>FRAMEFLOW <span class="footer-divider">/</span> 为每一帧，找到下一站。</span><span>Flask · {{ '集群管理' if service_role in ('manager', 'hybrid') else '本地运行' }}</span></footer>
+      <footer class="page-footer"><span>FRAMEFLOW <span class="footer-divider">/</span> 为每一帧，找到下一站。</span><span>Flask · 管理与下载</span></footer>
     </main>
   </div>
 

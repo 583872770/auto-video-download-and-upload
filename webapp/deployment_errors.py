@@ -9,14 +9,6 @@ from webapp.fleet import InstanceIdentityConflict
 from webapp.modes import ModeTransitionError
 
 
-class ClusterRoleConflict(ValueError):
-    def __init__(self, role, identity):
-        self.role, self.identity = role, identity
-        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[role]
-        super().__init__(f'此状态目录已属于集群实例，原角色为“{label}”，实例 ID 为 {identity}。'
-                         '请在部署设置中确认单机转换，或恢复原实例配置后保存。')
-
-
 def explain_startup_error(error, stage, profile):
     original = getattr(error, 'orig', None) or error
     code = original.args[0] if original.args and type(original.args[0]) is int else None
@@ -29,16 +21,9 @@ def explain_startup_error(error, stage, profile):
         remedy = ('若为原容器重启，确认旧服务已停止后，等待 45 秒，再在部署页点击“保存并启动服务”。'
                   '若为新增实例，请同时使用独立实例 ID 和独立状态卷，并检查已保存的部署配置。不要删除原状态卷。')
         detail = message
-    elif isinstance(error, ClusterRoleConflict):
-        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[error.role]
-        summary = '当前状态目录属于集群实例，不能直接改为单机模式。'
-        remedy = (f'可点击“恢复原实例配置”恢复“{label}”和实例 ID {error.identity}；'
-                  '需要单机时，选择单机模式、勾选转换确认，再保存并重启。')
-        if error.role in ('worker', 'hybrid'):
-            remedy += '下载实例还需填写管理端可访问的实例地址。'
     elif isinstance(error, ModeTransitionError):
         summary = str(error)
-        remedy = '处理上述原因后，在部署设置中保存单机配置重试；已保存的转换请求会在下次重启时继续执行。'
+        remedy = '使用原数据库和原状态目录，停止旧服务并等待其进程及租约退出后，在部署设置中保存并启动；服务将继续升级为管理与下载一体。'
     elif isinstance(error, SchemaUpgradeInProgress):
         summary = '数据库仍在升级或等待表结构锁。'
         remedy = '先等待现有数据库升级完成，再点“保存并启动服务”；不要反复提交或同时启动多个实例，不需要修改实例 ID 和密码。'
@@ -61,9 +46,6 @@ def explain_startup_error(error, stage, profile):
         summary = '这个实例 ID 已被运行中的服务使用。'
         remedy = '关闭使用相同状态目录的旧服务后重试；不同下载实例请使用独立状态目录和不同实例 ID，不要删除原状态目录。'
         detail = message
-    elif '此状态目录已属于集群实例' in message:
-        summary = '当前状态目录属于集群实例，不能直接改为单机模式。'
-        remedy = '在页面选择原来的管理后台或下载实例角色，再保存启动；新建单机服务应使用独立状态目录。'
     elif 'YAML 配置格式错误' in message or message == '配置文件必须是 YAML 键值表':
         summary = '本机 config.yaml 格式不正确。'
         remedy = '检查配置文件的缩进、冒号和引号；修正 YAML 格式后重新保存启动。'

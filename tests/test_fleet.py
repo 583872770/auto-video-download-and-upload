@@ -199,7 +199,7 @@ class FleetTests(unittest.TestCase):
 
     def test_agent_authentication_and_private_fields(self):
         app = self.apps['alpha']
-        self.assertEqual(app.test_client().get('/api/config').status_code, 403)
+        self.assertEqual(app.test_client().get('/api/config').status_code, 200)  # Former workers also have a local console.
         self.assertEqual(app.test_client().get('/health').status_code, 200)
         self.assertEqual(app.test_client().get('/api/config', headers={'Authorization': 'Bearer wrong'}).status_code, 403)
         response = self.client.get('/api/instances')
@@ -327,7 +327,7 @@ class FleetTests(unittest.TestCase):
         first, second = self.a.claim(self.a.owner), self.b.claim(self.b.owner)
         self.a.worker_status(self.a.owner, '0', 'paused', first['id'], 'alpha disk')
         self.b.worker_status(self.b.owner, '0', 'running', second['id'])
-        self.assertEqual(len(self.manager.workers()), 2)
+        self.assertEqual(len(self.manager.workers()), 0)  # Worker status is local to each unified instance.
         self.assertEqual(len(self.a.workers()), 1)
         self.manager.fleet.control('alpha', {'action': 'stop'})
         killed = []

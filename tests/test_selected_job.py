@@ -220,7 +220,8 @@ class SelectedJobFleetTests(unittest.TestCase):
         self.assertEqual(payload['execution']['selected_job']['id'], current['id'])
         self.assertEqual(current['id'], b)
         self.assertEqual(current['running'], 2)
-        workers = [item for item in payload['items'] if item['role']=='worker']
+        workers = [item for item in payload['items'] if item['id'] in ('alpha', 'beta')]
+        self.assertTrue(all(item['role'] == 'hybrid' for item in payload['items']))
         self.assertEqual(sum(item['running'] for item in workers), current['running'])
         for item in workers:
             self.assertEqual(item['current_tasks'][0]['batch_id'], b)

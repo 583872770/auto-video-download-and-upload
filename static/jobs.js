@@ -4,20 +4,34 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const labels = { empty:'空任务', paused:'待开始 / 已暂停', waiting:'等待执行条件', queued:'排队中', running:'执行中', draining:'暂停中', importing:'导入中', completed:'已完成', partial:'完成但有失败', archived:'已归档', deleted:'已删除' };
   const videoLabels = { queued:'待处理', running:'执行中', succeeded:'处理成功', failed:'失败', interrupted:'已中断', removed:'已移除' };
-  const state = { id:null, job:null, tab:'overview', rows:[], cursor:null, history:[], next:null, videoCursor:null, videoHistory:[], videoNext:null, videoStatus:'', videoQuery:'', selected:new Set(), mode:'new', editorJob:null, page:1, epoch:0, busy:false };
+  const state = { id:null, job:null, tab:'overview', jobs:[], rows:[], cursor:null, history:[], next:null, videoCursor:null, videoHistory:[], videoNext:null, videoStatus:'', videoQuery:'', selected:new Set(), mode:'new', editorJob:null, page:1, epoch:0, busy:false };
   const size = value => `${(Number(value || 0) / 1e9).toLocaleString('zh-CN',{minimumFractionDigits:3,maximumFractionDigits:6})} GB`;
   const money = j => j.amount === null ? '待设置单价' : `¥ ${j.amount}`;
   const metric = (label, value, note='') => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;
+  const badge = j => `<span class="badge status-${esc(j.state)}">${esc(labels[j.state] || j.state)}</span>`;
+  function taskRows(items) {
+    return items.map(j => `<tr>
+      <td><button class="open-task" data-open="${j.id}">${esc(j.name || '未命名任务')}</button><small>${esc(j.customer)} · ${j.id.slice(0,8)}</small></td>
+      <td>${badge(j)}</td>
+      <td><div class="table-progress"><progress max="100" value="${Number(j.progress_percent)||0}" aria-label="${esc(j.name)}处理完成率"></progress><span>${j.progress_percent===null?'—':esc(j.progress_percent)+'%'}</span></div><small>${j.completed} / ${j.total} 已处理</small></td>
+      <td><span class="result-success">${j.succeeded} 成功</span><span class="result-divider">/</span><button class="failure-link" data-open="${j.id}" data-failed="true" ${j.failed?'':'disabled'}>${j.failed} 失败</button></td>
+      <td>${size(j.file_bytes_exact)}<small>${j.file_count} 个成品</small></td>
+      <td class="amount-cell">${money(j)}<small>${j.price_set?esc(j.price)+' 元 / '+esc(j.unit):'请设置任务单价'}</small></td>
+      <td><div class="row-actions"><button data-open="${j.id}">查看任务</button><a href="/?job=${j.id}#overview" class="secondary-link">前往下载 ↗</a><button class="danger" data-action="delete" data-job-id="${j.id}" aria-label="删除任务：${esc(j.name)}">删除</button></div></td>
+    </tr>`).join('');
+  }
   let toastTimer, searchTimer, refreshAbort;
   function toast(text) { $('toast').textContent=text; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,5000); }
   function error(id, text) { $(id).textContent=text || ''; $(id).hidden=!text; }
   function renderSystemNote() {
     const system=state.system, note=$('system-note');
-    note.hidden=!system||(!system.paused&&!system.blockers.length);
+    const blockers=(system?.blockers||[]).filter(item=>!['system_paused','jobs_not_started','no_pending_videos'].includes(item.code));
+    note.hidden=!blockers.length;
     note.replaceChildren();
-    note.append(document.createTextNode(system?.paused?'全部下载已停止。请在下载工作台选择任务后开始下载。':system?.message||''));
+    if (!blockers.length) return;
+    note.append(document.createTextNode(blockers.map(item=>item.message).join(' ')));
     const link=document.createElement('a');link.href=state.id?`/?job=${state.id}#overview`:'/#overview';link.textContent='选择任务并开始下载 ↗';note.append(document.createTextNode(' '),link);
-    for(const blocker of system?.blockers||[]){if(!blocker.href||blocker.code==='jobs_not_started')continue;const link=document.createElement('a');link.href=blocker.href;link.textContent=blocker.label;note.append(document.createTextNode(' '),link);}
+    for(const blocker of blockers){if(!blocker.href)continue;const link=document.createElement('a');link.href=blocker.href;link.textContent=blocker.label;note.append(document.createTextNode(' '),link);}
   }
   async function api(path, options={}) {
     const headers = { 'X-CSRF-Token':document.querySelector('meta[name="csrf-token"]').content };
@@ -42,8 +56,8 @@
     } catch(error) { toast(error.message); }
   }
   function context(j) {
-    $('detail-heading').innerHTML=`<div class="heading"><div><h1>${esc(j.name || '未命名任务')}</h1><p>${esc(j.customer)} · <span class="badge">${labels[j.state]}</span></p></div><div class="task-actions"><button class="primary" data-action="append" ${j.archived?'disabled':''}>＋ 添加视频</button><a class="primary" href="/?job=${j.id}#overview">前往下载 ↗</a></div></div>`;
-    $('task-context').textContent=`${j.waiting_reason || '视频和账单属于当前任务，下载策略由执行实例决定。'} · 任务编号 ${j.id}`;
+    $('detail-heading').innerHTML=`<div class="heading detail-title"><div><div class="detail-customer">${esc(j.customer)} ${badge(j)}</div><h1>${esc(j.name || '未命名任务')}</h1></div><div class="task-actions"><button class="primary" data-action="append" ${j.archived?'disabled':''}>＋ 添加视频</button><a class="primary" href="/?job=${j.id}#overview">前往下载 ↗</a></div></div>`;
+    $('task-context').textContent=`任务编号 ${j.id}${j.note?' · '+j.note:''}`;
     document.querySelectorAll('[data-tab]').forEach(b=>{ b.classList.toggle('active',b.dataset.tab===state.tab); b.setAttribute('aria-selected',String(b.dataset.tab===state.tab)); });
   }
   function totals(j) {
@@ -51,7 +65,22 @@
   }
   function overview(j) {
     const pct=j.progress_percent || 0;
-    $('detail-content').innerHTML=`<div class="cards">${totals(j)}</div><div class="split"><div class="panel"><h2>视频处理进度</h2><progress max="100" value="${pct}" aria-label="处理完成率">${pct}%</progress><div class="statelist"><span>待处理<strong>${j.queued}</strong></span><span>执行中<strong>${j.running}</strong></span><span>处理成功<strong>${j.succeeded}</strong></span><span>失败<strong>${j.failed}</strong></span></div><p class="muted small-gap">${j.total?'处理完成率包含最终失败。正式交付、测试与跳过请以账本明细为准。':'当前清单为空；历史交付与费用仍保留。'}</p><button class="small-gap" data-switch="videos">管理本任务视频 →</button></div><div class="panel"><h2>交付与计费</h2><div class="details-line"><span>交付成品</span><span>${j.file_count} 个 · ${size(j.file_bytes_exact)}</span></div><div class="details-line"><span>测试成功</span><span>${j.test_succeeded} 个视频 · ${size(j.test_file_bytes_exact)}（不计费）</span></div><div class="details-line"><span>历史跳过</span><span>${j.skipped} 个视频</span></div><div class="details-line"><span>预计费用</span><strong>${money(j)}</strong></div></div></div><div class="panel"><h2>当前执行 · ${(j.transfer_speed/1e6).toFixed(2)} MB/s</h2>${j.running_videos.length?j.running_videos.map(v=>`<div class="details-line"><span>${esc(v.video_id)} · ${esc(v.progress?.stage || '准备中')}</span><span>${v.progress?.percent===null||v.progress?.percent===undefined?'—':esc(v.progress.percent)+'%'} · ${esc(v.instance_id || '本机')}</span></div>`).join(''):'<p class="muted">当前没有正在执行的视频。</p>'}</div><div class="panel"><h2>导入记录</h2>${importRows(j)}</div>`;
+    const processed=j.succeeded+j.failed;
+    const rate=processed?`${(100*j.succeeded/processed).toFixed(1)}%`:'—';
+    $('detail-content').innerHTML=`<div class="cards">${totals(j)}</div>
+      <div class="split job-overview-grid"><div class="panel"><div class="section-title"><h2>视频处理进度</h2><button class="secondary-link" data-switch="videos">管理视频 →</button></div>
+        <progress max="100" value="${pct}" aria-label="处理完成率">${pct}%</progress>
+        <div class="statelist"><span>待处理<strong>${j.queued}</strong></span><span>执行中<strong>${j.running}</strong></span><span>处理成功<strong class="result-success">${j.succeeded}</strong></span><span>最终失败<strong class="result-failed">${j.failed}</strong></span></div>
+        <div class="success-line"><span>已处理视频成功率 <strong>${rate}</strong></span><small>完成率包含最终失败</small></div>
+        ${j.waiting_reason?`<p class="notice">${esc(j.waiting_reason)}</p>`:''}
+        <p class="muted subtle">${j.total?'正式交付、测试与跳过，以账本明细为准。':'当前清单为空；历史交付与费用保留。'}</p>
+      </div><div class="panel"><div class="section-title"><h2>当前执行</h2><span class="speed-label">${(j.transfer_speed/1e6).toFixed(2)} MB/s</span></div>
+        <div class="running-video-list">${j.running_videos.length?j.running_videos.map(v=>`<div class="details-line"><span><strong>${esc(v.video_id)}</strong><small>${esc(v.progress?.stage || '准备中')} · ${esc(v.instance_id || '本机')}</small></span><span>${v.progress?.percent==null?'—':esc(v.progress.percent)+'%'}</span></div>`).join(''):'<div class="compact-empty">当前没有正在执行的视频<span>在下载工作台选择此任务后开始。</span></div>'}</div>
+      </div><div class="panel"><div class="section-title"><h2>交付与计费</h2><button class="secondary-link" data-switch="billing">查看账单 →</button></div>
+        <div class="details-line"><span>交付成品</span><span>${j.file_count} 个 · ${size(j.file_bytes_exact)}</span></div>
+        <div class="details-line"><span>测试成功 · 不计费</span><span>${j.test_succeeded} 个 · ${size(j.test_file_bytes_exact)}</span></div>
+        <div class="details-line"><span>历史跳过</span><span>${j.skipped} 个视频</span></div>
+      </div><div class="panel"><div class="section-title"><h2>导入记录</h2><span class="muted subtle">${j.imports.length} 份文件</span></div><div class="import-records">${importRows(j)}</div></div></div>`;
   }
   function importRows(j) {
     return j.imports.length?j.imports.map(r=>`<div class="details-line"><span>${esc(r.name)} · ${r.finished<0?'已取消':r.finished?'已完成':'导入中'}</span><span>新增 ${r.added} · 重复 ${r.duplicates} · 无效 ${r.invalid}</span></div>${r.invalid?`<p class="muted">${esc(JSON.parse(r.samples || '[]').join('；'))}</p>`:''}`).join(''):'<p class="muted">尚无文件导入记录，可在视频清单中追加 TXT / CSV。</p>';
@@ -77,10 +106,12 @@
         const params=new URLSearchParams({q:$('search').value.trim(),lifecycle:$('state-filter').value,...(state.cursor?{cursor:state.cursor}:{})});
         const [data,summary,system]=await Promise.all([api('/api/jobs?'+params,opt),api('/api/jobs/summary',opt),api('/api/jobs/system/status',opt)]);
         if (ticket!==state.epoch) return;
-        state.next=data.next_cursor;
-        $('center-cards').innerHTML=metric('有效任务',summary.total,'不含归档 / 删除')+metric('执行中任务',summary.running,'各任务独立控制')+metric('历史交付',size(summary.file_bytes_exact),'包含归档 / 删除任务的历史交付')+metric('整单预计费用合计',`¥ ${summary.amount}`,`单价待设置 ${summary.unset} 单`);
+        state.next=data.next_cursor;state.jobs=data.items;
+        $('center-cards').innerHTML=metric('有效任务',summary.total,'未归档的客户任务')+metric('执行中任务',summary.running,'按下载实例独立执行')+metric('累计交付',size(summary.file_bytes_exact),'含归档与删除任务的历史交付')+metric('预计费用合计',`¥ ${summary.amount}`,`单价待设置 ${summary.unset} 单`);
         state.system=system;renderSystemNote();
-        $('task-table').innerHTML=data.items.length?`<table><thead><tr><th>任务 / 客户</th><th>状态</th><th>有效 / 成功 / 失败</th><th>处理进度</th><th>交付大小</th><th>预计费用</th><th>操作</th></tr></thead><tbody>${data.items.map(j=>`<tr><td><button class="open-task" data-open="${j.id}">${esc(j.name || '未命名任务')}</button><small>${esc(j.customer)} · ${j.id.slice(0,12)}</small></td><td><span class="badge">${labels[j.state]}</span></td><td>${j.total} / ${j.succeeded} / ${j.failed}</td><td>${j.progress_percent===null?'—':j.progress_percent+'%'}</td><td>${size(j.file_bytes_exact)}</td><td>${money(j)}</td><td><button data-open="${j.id}">进入任务</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty">还没有任务，点击右上角新建任务，再进入任务添加视频。</div>';
+        $('task-list-count').textContent=`本页 ${data.items.length} 项 · 自动更新`;
+        $('task-table').innerHTML=data.items.length?`<table class="jobs-table"><thead><tr><th>任务 / 客户</th><th>状态</th><th>处理完成率</th><th>处理结果</th><th>实际交付</th><th>预计费用</th><th>操作</th></tr></thead><tbody>${taskRows(data.items)}</tbody></table>`:'<div class="empty"><strong>从第一个客户任务开始</strong><p>新建任务 → 添加视频清单 → 前往下载 → 核对交付与费用</p><button class="primary" data-action="new">＋ 新建任务</button></div>';
+        if (!data.items.length && ($('search').value.trim() || $('state-filter').value==='archived')) $('task-table').innerHTML='<div class="empty"><strong>没有匹配的任务</strong><p>试试其他客户、任务名称或归档状态。</p></div>';
         $('jobs-prev').disabled=!state.history.length; $('jobs-next').disabled=!state.next;
         $('jobs-page-label').textContent=`第 ${state.history.length+1} 页 · 每页 20 条`;
         error('page-error','');
@@ -111,19 +142,31 @@
     try { await action();state.selected.clear();await refresh(); }
     catch(e){toast(e.name==='TimeoutError'?'操作请求等待超过 90 秒，结果尚未确认，请刷新查看最新状态。':e.message)} finally{state.busy=false;if(button.isConnected)button.disabled=false;if(state.job&&state.id)context(state.job);}
   }
+  function confirmTaskAction(action, job) {
+    if(!job){toast('任务信息已更新，请刷新后重试。');return}
+    const form=$('clear-form'), dialog=$('clear-dialog'), deleting=action==='delete';
+    form.reset();form.dataset.action=action;form.dataset.jobId=job.id;form.dataset.jobName=job.name;
+    dialog.querySelector('h2').textContent=deleting?'删除任务':'清空当前任务视频清单';
+    form.querySelector('select').closest('label').hidden=deleting;
+    form.querySelector('[type=submit]').textContent=deleting?'确认删除任务':'确认清空视频';
+    dialog.querySelector('.notice').textContent=deleting?'删除会停止此任务并取消未完成导入，历史账单和已下载文件保留。删除后无法在任务中心恢复。':'清空会暂停此任务并取消未完成导入，历史账单和磁盘文件保留。';
+    $('confirm-label').textContent=`输入任务名称确认：${job.name}（客户：${job.customer}）`;
+    error('clear-error','');dialog.showModal();
+  }
   document.addEventListener('click',event=>{
-    const center=event.target.closest('[data-nav="center"]');if(center){event.preventDefault();location.hash='';return}
+    const center=event.target.closest('[data-nav="center"]');if(center){event.preventDefault();$('sidebar').classList.remove('mobile-open');location.hash='';return}
     const b=event.target.closest('button');if(!b||b.disabled)return;
     if(b.dataset.nav==='center'){location.hash='';return}
-    if(b.dataset.open){location.hash=b.dataset.open;return}
+    if(b.dataset.open){if(b.dataset.failed){state.openTab='videos';state.videoStatus='failed';state.videoQuery=''}else{state.videoStatus='';state.videoQuery=''}location.hash=b.dataset.open;return}
     if(b.dataset.tab||b.dataset.switch){const next=b.dataset.tab||b.dataset.switch;if(next!==state.tab){state.tab=next;refresh()}return}
     if(b.dataset.videoPage){if(b.dataset.videoPage==='next'){state.videoHistory.push(state.videoCursor);state.videoCursor=state.videoNext}else state.videoCursor=state.videoHistory.pop()||null;state.selected.clear();refresh();return}
     if(b.dataset.log){mutate(b,async()=>{const result=await api(`/api/tasks/${b.dataset.log}/logs?offset=0`);$('log-content').textContent=result.text||result.message||'暂无日志。';$('log-dialog').showModal()});return}
     if(b.dataset.remove){mutate(b,()=>api(endpoint(state.id)+'/videos/remove',{method:'POST',body:{ids:[b.dataset.remove]}}));return}
     const a=b.dataset.action;if(!a)return;
+    if(a==='new'){editor('new');return}
     if(a==='append'){editor('append');return}
     if(a==='filter-videos'){state.videoQuery=$('video-query').value.trim();state.videoStatus=$('video-filter').value;state.videoCursor=null;state.videoHistory=[];state.selected.clear();refresh();return}
-    if(a==='clear'||a==='delete'){$('clear-form').reset();$('clear-form').dataset.action=a;$('clear-form').dataset.jobId=state.job.id;$('clear-form').dataset.jobName=state.job.name;$('clear-dialog').querySelector('h2').textContent=a==='delete'?'删除当前任务':'清空当前任务视频清单';$('clear-form').querySelector('select').closest('label').hidden=a==='delete';$('clear-form').querySelector('[type=submit]').textContent=a==='delete'?'确认删除任务':'确认清空视频';$('clear-dialog').querySelector('.notice').textContent=a==='delete'?'删除会停止此任务并取消未完成导入，历史账单和已下载文件保留。':'清空会暂停此任务并取消未完成导入，历史账单和磁盘文件保留。';$('confirm-label').textContent='输入任务名称确认：'+state.job.name;error('clear-error','');$('clear-dialog').showModal();return}
+    if(a==='clear'||a==='delete'){confirmTaskAction(a,b.dataset.jobId?state.jobs?.find(j=>j.id===b.dataset.jobId):state.job);return}
     if(a==='remove-selected'){if(!state.selected.size){toast('请先勾选视频条目');return}mutate(b,()=>api(endpoint(state.id)+'/videos/remove',{method:'POST',body:{ids:[...state.selected]}}));return}
     mutate(b,async()=>{const result=await api(endpoint(state.id)+'/control',{method:'POST',body:{action:a},signal:AbortSignal.timeout(90000)});toast(result.warnings?.length?result.warnings.join('；'):a==='stop'?'停止指令已生效，执行进程将在下次心跳退出；其他任务继续。':({archive:'任务已归档；账单和已下载文件保留。',unarchive:'任务已恢复，请前往下载工作台选择后开始。',retry:'失败视频已重新排队；暂停中的任务需前往工作台开始。'}[a]||'任务操作已保存。'))});
   });
@@ -147,7 +190,7 @@
       $('editor').close();toast(summary || (state.mode==='new'?'任务已创建，请添加视频。':'已提交到当前任务。'));if(location.hash==='#'+id){state.tab='videos';refresh()}else {state.openTab='videos';location.hash=id;}
     }catch(e){error('editor-error',e.message)}finally{button.disabled=false}
   };
-  $('clear-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('[type=submit]');if(b.disabled)return;b.disabled=true;const f=new FormData(e.target),clearId=e.target.dataset.jobId;try{if(f.get('confirmation')!==e.target.dataset.jobName)throw new Error('请输入完整任务名称确认。');if(e.target.dataset.action==='delete'){await api(endpoint(clearId)+'/control',{method:'POST',body:{action:'delete',confirmation:f.get('confirmation')}});$('clear-dialog').close();location.hash='';toast('任务已删除；历史交付与磁盘文件保留。')}else{const result=await api(endpoint(clearId)+'/videos/remove',{method:'POST',body:{clear:true,scope:f.get('scope'),confirmation:f.get('confirmation')}});$('clear-dialog').close();state.videoCursor=null;state.videoHistory=[];state.selected.clear();await refresh();toast(`已移除 ${result.removed} 个视频；历史账本保留。`)}}catch(e){error('clear-error',e.message)}finally{b.disabled=false}};
+  $('clear-form').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('[type=submit]');if(b.disabled)return;b.disabled=true;const f=new FormData(e.target),clearId=e.target.dataset.jobId;try{if(f.get('confirmation')!==e.target.dataset.jobName)throw new Error('请输入完整任务名称确认。');if(e.target.dataset.action==='delete'){await api(endpoint(clearId)+'/control',{method:'POST',body:{action:'delete',confirmation:f.get('confirmation')}});$('clear-dialog').close();state.cursor=null;state.history=[];state.selected.clear();state.job=null;if(location.hash)location.hash='';else await refresh();toast('任务已删除；历史账单和已下载文件保留。')}else{const result=await api(endpoint(clearId)+'/videos/remove',{method:'POST',body:{clear:true,scope:f.get('scope'),confirmation:f.get('confirmation')}});$('clear-dialog').close();state.videoCursor=null;state.videoHistory=[];state.selected.clear();await refresh();toast(`已移除 ${result.removed} 个视频；历史账本保留。`)}}catch(e){error('clear-error',e.message)}finally{b.disabled=false}};
   $('detail-content').addEventListener('submit',async e=>{if(e.target.id!=='settings-form')return;e.preventDefault();const b=e.target.querySelector('[type=submit]'),f=new FormData(e.target);b.disabled=true;error('settings-error','');try{await api(endpoint(state.id),{method:'PUT',body:{edit_version:Number(e.target.dataset.version),customer:f.get('customer'),name:f.get('name'),note:f.get('note'),price:f.get('price'),unit:f.get('unit')}});toast('任务信息和整单预计费用已更新。');await refresh()}catch(e){error('settings-error',e.message);if(e.status===409)await showConflict(b.form)}finally{if(b.isConnected)b.disabled=false}});
   window.addEventListener('hashchange',route);
   setInterval(()=>{if(!document.hidden&&!state.busy&&!$('editor').open&&!$('clear-dialog').open&&(!state.id||['overview','history','billing'].includes(state.tab)))refresh()},5000);

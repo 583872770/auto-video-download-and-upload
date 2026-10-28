@@ -394,7 +394,7 @@ class TaskStore:
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
                                   ('regular', ('check',))):
-                if self.fleet and role == 'download' and (self.fleet.role == 'manager' or not self.fleet.admission(db, lock=False)):
+                if self.fleet and role == 'download' and not self.fleet.admission(db, lock=False):
                     continue
                 if not self._counts(db, ['action:' + action for action in actions]).get('queued', 0):
                     continue
@@ -697,7 +697,7 @@ class TaskStore:
             if self.fleet:
                 statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
                     and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
-                if self.fleet.role == 'manager' or not self.fleet.admission(db):
+                if not self.fleet.admission(db):
                     statement = statement.where(tasks.c.action != 'download')
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')

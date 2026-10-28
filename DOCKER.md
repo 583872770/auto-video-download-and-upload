@@ -28,7 +28,7 @@ PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 cp .env.remote-mysql.example .env
 ```
 
-推荐在启动后的 `/setup` 页面填写远程 MySQL、服务角色和实例地址，数据库环境变量可以留空。
+推荐在启动后的 `/setup` 页面填写远程 MySQL 和实例地址，数据库环境变量可以留空。
 已有 `.env` 的数据库设置仍兼容；页面保存后优先使用页面配置。若使用环境变量填密码，保留两侧单引号，避免 `$`、`#` 被 Compose 解释。
 `VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
 含空格的目录用引号包围。默认保存到 Docker 引擎所在 Linux 服务器的 `/srv/youtube-videos`。
@@ -44,12 +44,10 @@ docker compose -f compose.remote-mysql.yaml ps
 docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
 ```
 
-访问 <http://127.0.0.1:5000/setup>，输入日志中的“部署设置访问码”，测试 MySQL 连接并保存。可选择管理后台、下载实例或单机模式，集群步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
+访问 <http://127.0.0.1:5000/setup>，输入日志中的“部署设置访问码”，测试 MySQL 连接并保存。服务统一提供管理与下载，单台与多台共用同一套部署流程，协作步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
 首次构建会安装依赖。未配置时容器正常提供设置页，健康检查也会通过；首次保存时才连接远程数据库创建表并启动业务服务。配置保存到持久化状态卷的 `deployment.json`；以后启动自动读取。运行中修改部署配置，保存后需执行 `docker compose -f compose.remote-mysql.yaml restart app` 生效。
 
-旧配置误存为单机模式、但没有明确的转换请求时，启动仍会恢复原集群角色。需要切回单机时，在 `/setup` 选择“单机模式”，勾选转换确认并保存，然后重启本机服务。保存后本机停止领取新任务，转换在重启时执行。
-
-切换前先暂停下载，等待下载、导入和索引任务结束，停止其他管理端和下载实例并等待 45 秒。转换会再次检查这些条件；条件不满足时显示具体原因，保留转换请求供重试。请使用原来的 MySQL 和状态卷。转换保留任务、统计账单、去重记录和本机素材索引，将队列设为暂停；进入单机工作台后手动开始下载。其他机器上的视频仍保留在原机器，转换不会搬迁远端视频。旧集群身份文件会备份，已转换队列会阻止集群实例重新加入；本功能只提供集群转单机，未提供反向转换。
+旧 `manager`、`worker`、`all` 角色配置会自动按管理与下载一体启动，保留原实例 ID、任务和账单。原管理端升级后暂停领取，原下载实例保留暂停状态。已完成旧单机转换的实例须使用原状态卷和数据库升级；通过身份与旧进程检查后恢复统一调度，下载保持暂停，原转换记录归档。无需再选择角色或执行单机转换。仅用于管理的机器保持暂停领取即可。
 
 浏览器桌面启动失败时，技术详情会提示查看容器内 `/tmp/xvfb.log`、`/tmp/x11vnc.log`、`/tmp/novnc.log`。
 
@@ -140,4 +138,4 @@ docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web ./backup/stat
 构建上下文排除了本机配置、`.cache`、`.tools`、Cookie、视频和 `.env`。
 同一主机、相同路径下迁移旧 SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
 旧数据库文件不会自动转换或删除；确认迁移和备份前请保留原数据。
-此编排每台机器启动一个服务，可在页面配置为管理端或下载实例，共享 MySQL。能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。
+此编排每台机器启动一个服务，每台均提供管理页面并可下载，共享 MySQL。能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。

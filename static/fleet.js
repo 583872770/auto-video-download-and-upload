@@ -2,7 +2,7 @@
 
 function renderInstanceScope() {
   const local = ['overview','media','settings','clash','instances',''].includes(location.hash.slice(1));
-  $('#fleet-selection-bar').hidden = !['manager','hybrid'].includes(serviceRole) || !local;
+  $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
 }
 
 function instanceName(identity) {
@@ -30,10 +30,24 @@ function instanceCurrentTasks(item) {
 }
 function instanceLive(item) {
   const job = item.selected_job;
-  return `<p class="micro-copy">下载任务：${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择'}</p><a class="text-button" href="/?instance_id=${encodeURIComponent(item.id)}#overview">打开此实例的下载工作台 ↗</a><p class="micro-copy">${escapeHTML(instancePolicyText(item.policy || {}))}</p><a class="text-button" href="/?instance_id=${encodeURIComponent(item.id)}#settings">配置此实例下载策略 ↗</a><div class="fleet-metrics"><span>执行中 <b>${item.running}</b></span><span>传输中 <b>${item.transferring}</b></span><span>总速度 <b>${bytes(item.speed)}/s</b></span></div>${instanceCurrentTasks(item)}${instanceStatistics(item)}`;
+  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>执行中 <b>${item.running}</b></span><span>传输中 <b>${item.transferring}</b></span><span>总速度 <b>${bytes(item.speed)}/s</b></span></div>${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
+}
+function instanceState(item) {
+  return !item.online ? '离线' : item.paused ? item.running ? '完成当前后暂停' : '已暂停领取' : item.running ? '在线 · 下载中' : '在线 · 等待任务';
+}
+function instanceCard(item, expanded) {
+  const id=escapeHTML(item.id), address=encodeURIComponent(item.id);
+  return `<article class="fleet-instance panel"><form data-instance-form="${id}">
+    <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机）':''}</h2><p class="micro-copy">${id} · ${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
+    <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
+    <div data-instance-live="${id}">${instanceLive(item)}</div>
+    <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">打开下载工作台 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">下载策略与磁盘 ↗</a></div>
+    <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}">恢复领取</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}">完成当前后暂停</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}">立即停止</button></div>
+    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>下载并发<input name="worker_count" type="number" min="1" max="16" value="${item.worker_count}" required></label><label>浏览器并发<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>磁盘预留 GB<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">降低并发时让当前视频先完成；离线实例的停止指令在恢复连接后处理。</p></details>
+  </form></article>`;
 }
 async function loadFleet() {
-  if (!['manager', 'hybrid'].includes(serviceRole)) return;
+  if (!fleetEnabled) return;
   const data = await api('/api/instances');
   state.fleet = data;
   const workers = data.items.filter(item => ['worker', 'hybrid'].includes(item.role));
@@ -43,6 +57,7 @@ async function loadFleet() {
     state.instanceId = workers.find(item => item.id === data.instance_id)?.id || workers.find(item => item.online)?.id || workers[0]?.id || '';
   }
   if (state.instanceId !== previous && lastStartedJobId !== null) await resetWorkbench();
+  if (state.instanceId !== previous && typeof refreshDisk==='function') refreshDisk();
   renderFleetJob();
   renderDownloadControl();
   if (state.instanceId && state.instanceId !== previous && hadConfig && !settingsDirty) {
@@ -56,23 +71,26 @@ async function loadFleet() {
   const options = workers.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}${item.id === data.instance_id ? '（本机）' : ''} · ${item.online ? item.paused ? '已暂停领取' : '在线' : '离线'}</option>`).join('');
   if (selector.innerHTML !== options) selector.innerHTML = options;
   selector.value = state.instanceId || '';
-  $('#fleet-selection-note').textContent = workers.length ? '工作台的开始、暂停、停止和任务选择只作用于当前实例；下载策略、目录、Cookie、代理和素材库也按实例独立。' : '还没有下载实例，请部署管理与下载一体或纯下载实例。';
+  $('#fleet-selection-note').textContent = workers.length ? '任务选择、下载控制、策略与素材均按实例独立。' : '还没有下载实例，请启动服务并检查数据库连接。';
+  const monitor=[['在线实例',`${workers.filter(item=>item.online).length} / ${workers.length}`],['执行中视频',workers.reduce((sum,item)=>sum+Number(item.running||0),0)],['总传输速度',bytes(workers.reduce((sum,item)=>sum+Number(item.online?item.speed||0:0),0))+'/s'],['异常实例',workers.filter(item=>!item.online||item.error).length]];
+  $('#fleet-monitor-summary').innerHTML=monitor.map(([label,value])=>`<div class="monitor-metric"><span>${label}</span><strong>${escapeHTML(value)}</strong></div>`).join('');
   if (!state.fleetControlBusy && !state.fleetFormDirty && !document.activeElement?.matches('#instances-view input')) {
     $('#fleet-global-limit').value = data.global_limit;
-    $('#fleet-instances').innerHTML = workers.length ? workers.map(item => `<article class="fleet-instance panel"><form data-instance-form="${escapeHTML(item.id)}"><div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id === data.instance_id ? '（本机）' : ''}</h2><p class="micro-copy">${escapeHTML(item.id)} · ${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${escapeHTML(item.id)}">${item.online ? '在线' : '离线'}${item.paused ? ' · 已暂停领取' : ''}</span></div><div data-instance-live="${escapeHTML(item.id)}">${instanceLive(item)}</div><p class="micro-copy">${escapeHTML(item.directory)}</p><p class="task-error" data-instance-error="${escapeHTML(item.id)}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>下载并发<input name="worker_count" type="number" min="1" max="16" value="${item.worker_count}" required></label><label>浏览器并发<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>磁盘预留 GB<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><div class="media-library-actions"><button type="submit" class="button button-white">保存实例配置</button><button type="button" class="button button-white" data-instance-action="resume" data-instance="${escapeHTML(item.id)}">恢复领取</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${escapeHTML(item.id)}">完成当前后暂停</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${escapeHTML(item.id)}">立即停止</button></div><p class="micro-copy">降低并发时让当前任务先完成；离线实例的停止指令会在恢复连接后处理。</p></form></article>`).join('') : emptyState('还没有下载实例', '部署管理与下载一体或纯下载实例，连接同一个 MySQL 后会自动注册。');
+    const expanded=new Set($$('[data-instance-options][open]').map(node=>node.dataset.instanceOptions));
+    $('#fleet-instances').innerHTML = workers.length ? workers.map(item=>instanceCard(item,expanded.has(item.id))).join('') : emptyState('还没有下载实例', '在其他机器启动服务，连接同一个 MySQL 后会自动注册。');
   }
   for (const item of workers) {
     const live = [...$$('[data-instance-live]')].find(node => node.dataset.instanceLive===item.id);
     const html = instanceLive(item);
     if (live && live.innerHTML!==html) live.innerHTML=html;
     const badge = [...$$('[data-instance-state]')].find(node => node.dataset.instanceState===item.id);
-    if (badge) badge.textContent = `${item.online?'在线':'离线'}${item.paused?' · 已暂停领取':''}`;
+    if (badge) { badge.textContent = instanceState(item); badge.dataset.online=String(item.online); }
     const error = [...$$('[data-instance-error]')].find(node => node.dataset.instanceError===item.id);
     if (error) { error.textContent=item.error || ''; error.hidden=!item.error; }
   }
 }
 async function initializeFleet() {
-  if (!['manager', 'hybrid'].includes(serviceRole)) return;
+  if (!fleetEnabled) return;
   $('#fleet-nav').hidden = false;
   renderInstanceScope();
   state.instanceId = new URLSearchParams(location.search).get('instance_id') || localStorage.getItem('frameflow-instance:' + location.origin) || '';
@@ -93,6 +111,8 @@ async function initializeFleet() {
     }
     state.instanceId = event.target.value;
     const instance = state.instanceId;
+    const diskChip=$('#workspace-disk-status');
+    diskChip.textContent='磁盘状态读取中'; diskChip.classList.remove('warning','unavailable'); diskChip.title='当前实例的磁盘状态正在更新';
     localStorage.setItem('frameflow-instance:' + location.origin, state.instanceId);
     resetPage('media'); state.media = [];
     try {
@@ -100,6 +120,7 @@ async function initializeFleet() {
       const data = await api('/api/config');
       if (state.instanceId !== instance) return;
       fillConfig(data.config); renderDownloadControl(); await refresh();
+      if (typeof refreshDisk==='function') refreshDisk();
     }
     catch (error) { toast(error.message, true); }
   });

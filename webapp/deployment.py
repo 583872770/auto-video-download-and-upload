@@ -19,11 +19,10 @@ from sqlalchemy.pool import NullPool
 from werkzeug.exceptions import HTTPException
 
 from Utils.runtime import ROOT
-from webapp.deployment_errors import ClusterRoleConflict, explain_startup_error
+from webapp.deployment_errors import explain_startup_error
 from webapp.fleet import InstanceIdentityConflict
-from webapp.modes import check_conversion, single_state
-
-ROLES = {'hybrid', 'manager', 'worker', 'all'}
+from webapp.modes import single_state
+from webapp.service_role import normalize_role
 
 
 def mysql_url(profile):
@@ -47,8 +46,7 @@ def validate_profile(data, previous):
             value[key] = value.get(key, '').strip()
     if not data.get('mysql_password'):
         value['mysql_password'] = previous.get('mysql_password', '')
-    if value.get('role') not in ROLES:
-        raise ValueError('请选择管理与下载一体、纯管理端、纯下载实例或单机模式。')
+    value['role'] = normalize_role(value.get('role'))
     port = value.get('mysql_port', 3306)
     if isinstance(port, str) and port.isascii() and port.isdigit():
         port = int(port)
@@ -74,8 +72,8 @@ def validate_profile(data, previous):
             valid = False
         if not valid:
             raise ValueError('实例地址请填写完整 HTTP(S) 地址，例如 http://10.0.0.12:5000。')
-    if value['role'] in ('worker', 'hybrid') and not address:
-        raise ValueError('请填写各管理页面能够访问的本机实例地址。')
+    # A single installation uses local calls and needs no public address.
+    # Other instances require an explicit reachable URL before remote control.
     value['instance_url'] = address
     if not value.get('web_hosts'):
         raise ValueError('请填写页面访问域名或 IP，多个用逗号分隔。')
@@ -154,7 +152,13 @@ class DeploymentGateway:
         invalid_saved = False
         if self.path.is_file():
             try:
-                self.profile = validate_profile(json.loads(self.path.read_text(encoding='utf-8')), self.profile)
+                saved = json.loads(self.path.read_text(encoding='utf-8'))
+                # Older wizards could save 'all' over an existing fleet identity.
+                if isinstance(saved, dict) and saved.get('role') == 'all' and not instance_id and not single_state(self.directory):
+                    state = self.cluster_state()
+                    if state:
+                        saved['instance_id'] = state['instance_id']
+                self.profile = validate_profile(saved, self.profile)
             except (ValueError, OSError):
                 self.startup_error = '已保存的部署配置无法读取，请重新配置。'
                 invalid_saved = True
@@ -162,27 +166,11 @@ class DeploymentGateway:
                            'instance_name': instance_name}.items():
             if value:
                 self.profile[key] = value
-        # Older deployments have a fleet identity but no deployment.json yet.
-        # Preserve that role instead of applying the new wizard's default.
-        if not self.path.exists() and not role and not os.environ.get('VIDEO_SERVICE_ROLE'):
-            try:
-                state = self.cluster_state()
-                if state:
-                    self.profile['role'] = state['role']
-            except (OSError, ValueError):
-                self.startup_error = '本机集群身份记录无法读取，请保留状态目录并检查 fleet-runtime.json。'
-                invalid_saved = True
         if not invalid_saved and all(self.profile.get(key) for key in ('mysql_host', 'mysql_database', 'mysql_user', 'mysql_password')):
             try:
-                if (self.path.is_file() and not role and not instance_id and self.profile['role'] == 'all'
-                        and not single_state(self.directory)):
-                    self.recover_cluster_profile()
                 self.profile = validate_profile(self.profile, self.profile)
                 self.resolve_identity(self.profile)
                 self.auto_start = True
-            except ClusterRoleConflict as error:
-                self.startup_stage = '正在检查本机实例配置…'
-                self.record_failure(error)
             except OSError as error:
                 self.startup_stage = '正在保存恢复后的部署配置…'
                 self.record_failure(error)
@@ -253,7 +241,7 @@ class DeploymentGateway:
 
     @staticmethod
     def environment_profile():
-        value = {'role': os.environ.get('VIDEO_SERVICE_ROLE') or 'hybrid',
+        value = {'role': normalize_role(os.environ.get('VIDEO_SERVICE_ROLE')),
                  'instance_id': os.environ.get('VIDEO_INSTANCE_ID', ''),
                  'instance_name': os.environ.get('VIDEO_INSTANCE_NAME') or socket.gethostname(),
                  'instance_url': os.environ.get('VIDEO_INSTANCE_URL', ''),
@@ -285,15 +273,13 @@ class DeploymentGateway:
             raise ValueError('本机集群身份记录无效，请保留状态目录并检查 fleet-runtime.json。')
         return {'role': saved['role'], 'instance_id': saved['id']}
 
-    def resolve_identity(self, profile, *, allow_transition=False):
+    def resolve_identity(self, profile):
+        profile['role'] = normalize_role(profile.get('role'))
         state = self.cluster_state()
         single = single_state(self.directory)
-        permitted = allow_transition or (single and state and single['instance_id'] == state['instance_id'])
-        if state and profile['role'] == 'all' and not permitted:
-            raise ClusterRoleConflict(state['role'], state['instance_id'])
-        if profile['role'] != 'all' and not profile['instance_id']:
-            if state:
-                profile['instance_id'] = state['instance_id']
+        if not profile.get('instance_id'):
+            if state or single:
+                profile['instance_id'] = (state or single)['instance_id']
                 return
             try:
                 saved = json.loads((self.directory / 'instance.json').read_text(encoding='utf-8'))
@@ -304,26 +290,12 @@ class DeploymentGateway:
                 identity = uuid.uuid4().hex
             profile['instance_id'] = identity
 
-    def recover_cluster_profile(self):
-        state = self.cluster_state()
-        if not state:
-            return
-        candidate = {**self.profile, 'role': state['role'], 'instance_id': state['instance_id']}
-        try:
-            candidate = validate_profile(candidate, self.profile)
-        except ValueError:
-            # A worker without a reachable address still needs the setup form.
-            raise ClusterRoleConflict(state['role'], state['instance_id']) from None
-        write_profile(self.path, candidate)
-        self.profile = candidate
-        self.startup_error = ''
-        label = {'manager': '管理后台', 'worker': '下载实例', 'hybrid': '管理与下载一体'}[state['role']]
-        self.report_startup(f'已自动恢复原集群配置：{label}，实例 ID {state["instance_id"]}，正在继续启动…')
-
     def activate(self, profile):
         # Reject incompatible local identities before starting any processes or DDL.
         self.resolve_identity(profile)
-        if os.environ.get('YT5S_BROWSER_ENABLED') == '1' and profile['role'] != 'manager' and not self.desktop_started:
+        write_profile(self.path, profile)
+        self.profile = profile
+        if os.environ.get('YT5S_BROWSER_ENABLED') == '1' and not self.desktop_started:
             self.report_startup('正在启动浏览器桌面环境…')
             spec = importlib.util.spec_from_file_location('frameflow_desktop', ROOT / 'docker/browser_desktop.py')
             module = importlib.util.module_from_spec(spec)
@@ -339,7 +311,7 @@ class DeploymentGateway:
         app = factory(self.config_path, self.directory, role=profile['role'], instance_id=profile['instance_id'] or None,
                       instance_url=profile['instance_url'], instance_name=profile['instance_name'], database_url=mysql_url(profile),
                       startup_report=self.report_startup)
-        app.config['TRUSTED_HOSTS'] = None if profile['role'] == 'worker' else [item.strip() for item in profile['web_hosts'].split(',')]
+        app.config['TRUSTED_HOSTS'] = [item.strip() for item in profile['web_hosts'].split(',')]
         app.config['DEPLOYMENT_SETUP_AVAILABLE'] = True
         self.active = app
         self.running_role = profile['role']
@@ -407,7 +379,6 @@ class DeploymentGateway:
             public = {key: value for key, value in self.profile.items() if key != 'mysql_password'}
             return jsonify(config=public, password_saved=bool(self.profile.get('mysql_password')),
                            cluster_state=self.cluster_state(),
-                           single_conversion=(single_state(self.directory) or {}).get('status'),
                            running=self.active is not None, running_role=self.running_role,
                            pending_restart=self.pending_restart, error=self.startup_error,
                            diagnostic=self.failure, **self.startup_status())
@@ -428,40 +399,20 @@ class DeploymentGateway:
             if not self.lock.acquire(blocking=False):
                 return jsonify(error='服务正在初始化或配置正在保存，请稍后再试。'), 409
             transferred = False
-            request_created = False
-            profile_saved = False
             try:
                 data = request.get_json(silent=True)
                 if not isinstance(data, dict):
                     raise ValueError('请提交有效的部署配置。')
-                transition = data.pop('single_transition', False)
-                if type(transition) is not bool:
-                    raise ValueError('请确认是否切换单机模式。')
+                # Accept old clients, but never create a standalone conversion.
+                data.pop('single_transition', None)
                 value = validate_profile(data, self.profile)
-                state = self.cluster_state()
-                converting = bool(state and value['role'] == 'all')
-                self.resolve_identity(value, allow_transition=transition and converting)
-                if converting:
-                    if self.profile.get('mysql_host') and any(value[key] != self.profile[key] for key in ('mysql_host', 'mysql_port', 'mysql_database')):
-                        raise ValueError('切换单机模式时请保留原 MySQL 地址、端口和库名。')
-                    if self.active and self.active.extensions.get('task_store'):
-                        check_conversion(self.active.extensions['task_store'], state['instance_id'])
-                    value['instance_id'] = state['instance_id']
+                self.resolve_identity(value)
                 test_mysql(value)
                 was_running = self.active is not None
-                if converting and not single_state(self.directory):
-                    write_profile(self.directory / 'single-mode.json', {
-                        'instance_id': state['instance_id'], 'owner': uuid.uuid4().hex, 'status': 'requested'})
-                    request_created = True
-                    if self.active and self.active.extensions.get('task_store'):
-                        check_conversion(self.active.extensions['task_store'], state['instance_id'])
                 # Persist before starting dispatch threads: a write failure must
                 # never leave a service running with unsaved credentials.
                 write_profile(self.path, value)
-                profile_saved = True
                 self.profile = value
-                if value['role'] != 'all' and (single_state(self.directory) or {}).get('status') == 'requested':
-                    (self.directory / 'single-mode.json').unlink(missing_ok=True)
                 if not was_running:
                     transferred = True
                     self.begin_initialization('配置已保存，连接测试已通过。')
@@ -470,18 +421,13 @@ class DeploymentGateway:
                 self.pending_restart = was_running
                 self.startup_error = ''
                 self.failure = None
-                return jsonify(message=('单机转换配置已保存，重启本机服务后完成转换；转换后下载保持暂停。' if converting
-                               else '配置已保存，重启本机服务后生效。') if was_running else '配置已保存，服务已启动。',
+                return jsonify(message='配置已保存，重启本机服务后生效。',
                                pending_restart=was_running, role=value['role'])
             except OSError:
                 return jsonify(error='部署配置无法保存，请检查本机状态目录的写入权限。'), 400
             finally:
-                try:
-                    if request_created and not profile_saved:
-                        (self.directory / 'single-mode.json').unlink(missing_ok=True)
-                finally:
-                    if not transferred:
-                        self.lock.release()
+                if not transferred:
+                    self.lock.release()
 
         @app.get('/health')
         def health():

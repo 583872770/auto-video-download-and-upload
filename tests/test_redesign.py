@@ -189,7 +189,7 @@ class NodeIsolationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.json)
             execution = response.json['execution']
             paused = next(item for item in execution['blockers'] if item['code'] == 'instances_paused')
-            self.assertIn('2 个在线下载实例', paused['message'])  # Online manager is not an executor.
+            self.assertIn('3 个在线下载实例', paused['message'])  # All unified instances can execute downloads.
             self.assertEqual(paused['href'], '/#instances')
             self.assertIn('单独恢复', response.json['message'])
             self.assertTrue(self.a.fleet.row()['paused'])

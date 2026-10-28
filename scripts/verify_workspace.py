@@ -45,7 +45,7 @@ def main():
         try:
             with patch('app.require_downmp3_environment'), sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True, **browser_options(pw.chromium))
-                page = browser.new_page(viewport={'width':1440,'height':1050})
+                page = browser.new_page(viewport={'width':1440,'height':1050}, reduced_motion='reduce')
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('request', lambda request: mutations.append(request.url) if request.method=='POST' else None)
                 page.goto(base)
@@ -146,6 +146,34 @@ def main():
                 page.locator('#jobs-mobile-menu').click()
                 expect(page.locator('#sidebar')).to_have_class('sidebar mobile-open')
                 page.screenshot(path=str(output / 'task-navigation-mobile.png'), full_page=True)
+
+                # Failed counts link to the correct job's failed videos, without mutation.
+                page.set_viewport_size({'width':1440,'height':1050})
+                page.goto(base + '/?job=' + b + '#overview')
+                page.locator('#download-queue-start').click()
+                expect(page.locator('#download-queue-start')).to_have_text('任务已开始')
+                failed = store.claim(store.owner)
+                assert failed['batch_id'] == b
+                store.finish(failed['id'], error='模拟网络失败，仅用于界面验证', worker_id=store.owner)
+                page.goto(base + '/jobs')
+                page.locator(f'[data-open="{b}"][data-failed]').click()
+                expect(page.locator('#detail-heading h1')).to_have_text('Order B')
+                expect(page.locator('#video-filter')).to_have_value('failed')
+                expect(page.locator('#detail-content tbody')).to_contain_text('模拟网络失败')
+                page.locator('[data-tab=overview]').click()
+                expect(page.locator('#detail-content')).to_contain_text('视频处理进度')
+                page.screenshot(path=str(output / 'task-overview-desktop.png'), full_page=True)
+                for customer_task in ['品牌宣传 · 秋季素材', '访谈节目 · 第一批', '产品演示 · 海外频道', '月度视频归档']:
+                    create(customer_task, '')
+                page.goto(base + '/jobs')
+                expect(page.locator('#task-table tbody tr')).to_have_count(6)
+                for width, height in [(1440,1050),(1280,800),(768,1024),(390,844)]:
+                    page.set_viewport_size({'width':width,'height':height})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'task center at {width}'
+                    expect(page.locator('#new-task')).to_be_in_viewport()
+                    if width < 760:
+                        expect(page.locator('#sidebar')).not_to_be_in_viewport()
+                    page.screenshot(path=str(output / f'task-center-{width}.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
         finally:

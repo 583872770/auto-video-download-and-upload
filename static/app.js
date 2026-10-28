@@ -3,7 +3,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
-const serviceRole = $('meta[name="service-role"]')?.content || 'all';
+const fleetEnabled = $('meta[name="fleet-enabled"]')?.content === 'true';
 const state = { config: null, media: [], tasks: [], counts: null, status: null, clash: null, selectedTask: null, logOffset: 0, logs: '', polling: false, detailBusy: false };
 const initialJobId = new URLSearchParams(location.search).get('job');
 let selectedJob = null;
@@ -36,9 +36,9 @@ const actionNames = { download: '下载视频', check: '下载环境检查', imp
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
-  instances: ['下载实例', '多台机器，一个下载队列', '统一管理实例并发、运行状态和暂停指令。'],
+  instances: ['下载实例', '下载实例', '集中查看各实例的任务、速度与异常；每个实例独立控制。'],
   overview: ['下载工作台', '下载工作台', '选择已有任务，开始下载并查看运行状态。'],
-  media: ['素材库', '下载的视频，都在这里', '查看本机保存的视频原片、封面和文件大小。'],
+  media: ['素材库', '素材库', '查看当前实例的成品、封面和文件大小。'],
   tasks: ['执行日志', '执行日志', '排查单个视频或后台操作的执行结果；客户任务在任务中心管理。'],
   statistics: ['交付与账单', '交付与账单', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
   settings: ['系统设置', '系统设置', '维护当前下载实例的下载策略、目录、登录和资源配置。'],
@@ -90,8 +90,6 @@ function setView(name) {
   $$('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === name));
   $('#breadcrumb-current').textContent = label;
   $('#page-title').replaceChildren(document.createTextNode(title));
-  const dot = document.createElement('span'); dot.className = 'heading-dot'; dot.textContent = '.';
-  $('#page-title').append(dot);
   $('#page-description').textContent = description;
   $('#sidebar').classList.remove('mobile-open');
   history.replaceState(null, '', `${location.search}#${name}`);
@@ -179,7 +177,7 @@ function downloadProgress(task) {
   const stageName = stage => progressLabel({ action: 'download', status: 'running', progress: { stage } });
   const timing = stageSeconds !== null || slowest ? `<p class="micro-copy stage-timing">${stageSeconds !== null ? `本阶段已用 ${etaText(stageSeconds)}` : `${queued ? '上次' : '本次'}执行已记录用时 ${etaText(data.elapsed || 0)}`}${slowest ? ` · ${active ? '已结束阶段中最久' : '耗时最长阶段'}：${escapeHTML(stageName(slowest[0]))} ${etaText(slowest[1])}` : ''}</p>` : '';
   const methods = data.selected_download_methods;
-  const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}执行顺序：${escapeHTML(methods.map(method => providerNames[method] || method).join(' → '))}${queued ? '；重新领取时读取执行实例的最新设置。' : ''}${task.instance_id && ['manager','hybrid'].includes(serviceRole) ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">配置执行实例：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
+  const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}执行顺序：${escapeHTML(methods.map(method => providerNames[method] || method).join(' → '))}${queued ? '；重新领取时读取执行实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">配置执行实例：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
   return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
@@ -219,10 +217,9 @@ function decimalGB(value) {
 }
 function renderTasks() {
   const counts = state.overview.download_counts || {};
-  const sizes = state.overview.accounting || {};
   $('#stat-active').textContent = selectedJob?.queued || 0;
   $('#stat-running').textContent = state.workbench?.running || 0;
-  $('#stat-complete').textContent = sizes.file_count || 0;
+  $('#stat-complete').textContent = selectedJob?.file_count || 0;
   $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
   $('#active-caption').textContent = state.workbench?.paused ? '当前实例已停止领取' : '选择任务后开始下载';
   $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
@@ -483,10 +480,10 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     const stamp = Date.now();
     const due = (name, visible, interval) => !poll || (visible && (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
     const requests = {
-      media: (!['manager', 'hybrid'].includes(serviceRole) || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
+      media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
       tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
       status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
-      clash: (!['manager', 'hybrid'].includes(serviceRole) || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
+      clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
       overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
     };
     const pendingRequests = Object.entries(requests).filter(([, path]) => path);
@@ -591,7 +588,7 @@ setInterval(() => {
   if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
 }, 1000);
 async function refreshSelectedJob() {
-  if (queueControlBusy || (['manager','hybrid'].includes(serviceRole) && !state.instanceId)) return;
+  if (queueControlBusy || (fleetEnabled && !state.instanceId)) return;
   const id = selectedJobId;
   const instance = state.instanceId;
   const epoch = ++workbenchEpoch;

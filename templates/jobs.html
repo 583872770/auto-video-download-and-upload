@@ -7,7 +7,7 @@
 <meta name="csrf-token" content="{{ csrf }}">
 <script src="/static/jobs.js" defer></script>
 <script src="/static/console-permissions.js" defer></script>
-<link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/jobs.css">
+<link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/jobs.css"><link rel="stylesheet" href="/static/workspace.css">
 </head>
 <body data-console-role="{{ console_user.role if console_user else 'admin' }}">
   <svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -31,15 +31,14 @@
   </defs></svg>
 
 {% set workspace_page = 'jobs' %}{% include 'workspace_nav.html' %}
-<div class="workspace jobs-workspace"><header class="topbar"><div class="breadcrumb"><button id="jobs-mobile-menu" class="icon-button" aria-label="展开导航">☰</button><span>任务中心</span></div></header>
+<div class="workspace jobs-workspace"><header class="topbar"><div class="breadcrumb"><button id="jobs-mobile-menu" class="icon-button" aria-label="展开导航">☰</button><span>工作区</span><span class="slash">/</span><strong>任务中心</strong></div><span class="scope-badge">全部客户任务</span>{% include 'console_identity.html' %}</header>
 <main>
-{% include 'console_identity.html' %}
 <div id="system-note" class="notice" hidden></div>
 
 <section id="center-view">
-<div class="heading"><div><h1>任务中心</h1><p>建立客户任务，在任务内添加视频并查看账单；下载策略由执行实例设置。</p></div><button class="primary" id="new-task">＋ 新建任务</button></div>
+<div class="heading center-heading"><div><h1>任务中心</h1><p>从客户清单到下载交付，进度与费用在这里核对。</p></div><div class="tools"><a class="secondary-link" href="/#overview">下载工作台 ↗</a><button class="primary" id="new-task">＋ 新建任务</button></div></div>
 <div id="center-cards" class="cards"></div>
-<div class="panel"><div class="heading"><h2>客户任务</h2><div class="tools"><input class="search" id="search" placeholder="搜索客户 / 任务名称" aria-label="搜索客户或任务名称"><select id="state-filter" class="unit" aria-label="任务状态"><option value="active">未归档任务</option><option value="archived">已归档</option></select></div></div><p id="page-error" class="form-error" role="alert" hidden></p><div class="table-wrap" id="task-table"></div><div class="dialog-actions"><button id="jobs-prev">上一页</button><span id="jobs-page-label"></span><button id="jobs-next">下一页</button></div></div>
+<div class="panel task-list-panel"><div class="heading"><div class="inline-heading"><h2>客户任务</h2><span class="muted subtle" id="task-list-count">正在读取…</span></div><div class="tools"><input type="search" class="search" id="search" placeholder="搜索客户、任务或编号" aria-label="搜索客户或任务名称"><select id="state-filter" class="unit" aria-label="任务状态"><option value="active">未归档任务</option><option value="archived">已归档</option></select></div></div><p id="page-error" class="form-error" role="alert" hidden></p><div class="table-wrap" id="task-table"></div><div class="dialog-actions table-pagination"><span id="jobs-page-label"></span><button id="jobs-prev">上一页</button><button id="jobs-next">下一页</button></div></div>
 </section>
 <section id="detail-view" hidden><button class="back" id="back">← 返回任务中心</button><div id="detail-heading"></div><div class="context" id="task-context"></div><div class="tabs" role="tablist"><button role="tab" data-tab="overview">任务概览</button><button role="tab" data-tab="videos">视频清单</button><button role="tab" data-tab="billing">交付与账单</button><button role="tab" data-tab="history">操作记录</button><button role="tab" data-tab="settings">任务设置</button></div><div id="detail-content"></div></section>
 </main></div>

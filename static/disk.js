@@ -5,13 +5,21 @@ const diskBytes = value => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2
   : `${(value / 1024 ** 2).toFixed(2)} MiB`;
 async function refreshDisk() {
   if (diskRefreshRunning || !document.getElementById('disk-panel')) return;
-  if (['manager', 'hybrid'].includes(serviceRole) && !state.instanceId) {
+  if (fleetEnabled && !state.instanceId) {
     document.getElementById('disk-summary').textContent = '请先选择要查看和配置的实例。';
+    document.getElementById('workspace-disk-status').textContent = '尚无下载实例';
     return;
   }
   diskRefreshRunning = true;
+  const instance = state.instanceId;
+  const chip = document.getElementById('workspace-disk-status');
   try {
     const disk = await api('/api/disk');
+    if (instance !== state.instanceId) return;
+    chip.textContent = `实例磁盘剩余 ${diskBytes(disk.free_bytes)}`;
+    chip.classList.toggle('warning', !!disk.low_space || disk.committed_bytes >= disk.budget_bytes);
+    chip.classList.remove('unavailable');
+    chip.title = `${instance ? instanceName(instance) : '本机'} · 临时文件 ${diskBytes(disk.used_bytes)} / ${diskBytes(disk.budget_bytes)}${disk.message?' · '+disk.message:''} · 点击查看磁盘管理与自动清理`;
     document.getElementById('disk-summary').textContent =
       `临时文件 ${diskBytes(disk.used_bytes)} / ${diskBytes(disk.budget_bytes)} · 含预留 ${diskBytes(disk.committed_bytes)} · 磁盘剩余 ${diskBytes(disk.free_bytes)}`;
     const names = {test: '测试文件', browsers: '浏览器缓存', logs: '技术日志', imports: '导入与上传', cache: '诊断及缓存'};
@@ -28,9 +36,15 @@ async function refreshDisk() {
       const row = document.createElement('p'); row.textContent = text; return row;
     }));
   } catch (error) {
+    if (instance !== state.instanceId) return;
+    chip.textContent = '磁盘状态暂不可用';
+    chip.classList.remove('warning');
+    chip.classList.add('unavailable');
+    chip.title = error.message;
     document.getElementById('disk-summary').textContent = `磁盘状态未更新：${error.message}`;
   } finally {
     diskRefreshRunning = false;
+    if (instance !== state.instanceId) refreshDisk();
   }
 }
 
@@ -67,5 +81,5 @@ document.getElementById('instance-logs-close')?.addEventListener('click', () => 
   document.getElementById('instance-logs-dialog').close();
 });
 window.addEventListener('hashchange', () => { if (location.hash === '#settings') refreshDisk(); });
-setInterval(() => { if (location.hash === '#settings') refreshDisk(); }, 10000);
+setInterval(() => { if (!document.hidden) refreshDisk(); }, 10000);
 refreshDisk();
