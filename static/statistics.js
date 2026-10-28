@@ -34,7 +34,7 @@
     $('#statistics-summary-export').href = `/api/statistics/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     $('#statistics-methods-export').href = `/api/statistics/methods/export?${new URLSearchParams({ q: $('#statistics-search').value.trim() })}`;
     renderMethods('#statistics-methods', data.methods);
-    $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。按 yt5s、yt-dlp、downmp3、yt1d 分别统计；按配置顺序切换时，前一下载器计失败，下一下载器单独计尝试；同一会话中每个视频对同一下载器只计一次。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
+    $('#statistics-methods-since').textContent = `下载提供方统计起始于 ${formatDate(data.method_tracking_since, true)}。按 yt5s、yt-dlp、downmp3、yt1d、Bergung 分别统计；按配置顺序切换时，前一下载器计失败，下一下载器单独计尝试；同一会话中每个视频对同一下载器只计一次。旧记录显示为历史未分类。成功率 = 成功尝试（含测试）÷ 成功与失败尝试之和。`;
     $('#statistics-since').textContent = `执行大小统计起始于 ${formatDate(data.tracking_since, true)}；测试大小统计起始于 ${formatDate(data.test_tracking_since, true)}。执行记录可按备注筛选；商业金额统一按客户任务汇总，每个任务四舍五入到分。未归属客户任务的历史执行不补造费用。`;
     const active = data.active;
     $('#statistics-active').hidden = !active;

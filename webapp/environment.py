@@ -44,6 +44,21 @@ def check_download_environment(config=None, base=None):
     missing = []
     from webapp.settings import download_methods
     methods = download_methods(config or {})
+    if 'bergung' in methods and 'yt_dlp' not in methods:
+        for module in ('yaml', 'PIL', 'yt_dlp', 'playwright'):
+            found = importlib.util.find_spec(module) is not None
+            print(f'{module}: {"OK" if found else "缺失"}', flush=True)
+            if not found:
+                missing.append(module)
+        from pathlib import Path
+        from webapp.bergung import require_environment
+        try:
+            require_environment(config, Path(base or '.'))
+        except (RuntimeError, OSError) as error:
+            print(str(error), flush=True)
+            missing.append('Bergung browser / ffprobe')
+        print('Bergung: 使用网站验证与解析；无需 YouTube Cookie 或独立 JavaScript 运行时。', flush=True)
+        return int(bool(missing))
     if 'yt1d' in methods and 'yt_dlp' not in methods:
         for module in ('yaml', 'PIL', 'yt_dlp', 'playwright'):
             found = importlib.util.find_spec(module) is not None

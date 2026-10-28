@@ -16,6 +16,7 @@ from webapp.service_role import normalize_role
 
 POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
+                 'bergung_quality', 'bergung_timeout',
                  'fragment_concurrency', 'storage_mode'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',

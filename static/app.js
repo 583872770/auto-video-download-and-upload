@@ -21,7 +21,11 @@ let settingsBaseline = {};
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
-const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d' };
+const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d', bergung: 'Bergung' };
+$('#settings-form [name="yt1d_timeout"]').closest('label').after($('#bergung-settings-template').content.cloneNode(true));
+const browserCountLabel = $('#settings-form [name="yt5s_browser_count"]').closest('label');
+browserCountLabel.dataset.providerSetting += ' bergung';
+browserCountLabel.firstChild.textContent = '浏览器并发数（yt5s / yt1d / Bergung 共享）';
 const selectedProviders = () => state.config?.download_methods || (state.config?.download_method === 'yt5s_fallback' ? ['yt5s', 'yt_dlp'] : [state.config?.download_method || 'yt_dlp']);
 let nodeSignature = '';
 let rotationDraft = null;
@@ -230,13 +234,13 @@ function renderStatus() {
   const { tools } = state.status;
   const methods = selectedProviders();
   const methodFour = methods.length === 1 && methods[0] === 'downmp3';
-  const browserReady = !methods.some(method => ['yt5s', 'yt1d'].includes(method)) || (tools.yt5s_browser && tools.yt5s_display && tools.playwright);
+  const browserReady = !methods.some(method => ['yt5s', 'yt1d', 'bergung'].includes(method)) || (tools.yt5s_browser && tools.yt5s_display && tools.playwright);
   const nativeReady = !methods.includes('yt_dlp') || (tools.ffmpeg && tools.ffprobe && (tools.node || tools.deno));
-  const needsProbe = methods.some(method => ['downmp3', 'yt1d'].includes(method));
+  const needsProbe = methods.some(method => ['downmp3', 'yt1d', 'bergung'].includes(method));
   const ready = browserReady && nativeReady && (!needsProbe || tools.ffprobe);
   $('.environment-card').classList.toggle('warning', !ready);
   $('#environment-title').innerHTML = `${ready ? '工具已就绪' : '待完善'}<span class="status-dot"></span>`;
-  $('#environment-note').textContent = !browserReady ? '缺少 yt5s / yt1d 浏览器或显示环境' : !nativeReady ? '缺少 yt-dlp 所需 FFmpeg 或 JS 运行时' : needsProbe && !tools.ffprobe ? '缺少 ffprobe' : methodFour ? 'API 下载 · 无需浏览器和 JS 运行时' : `Python ${state.status.python}`;
+  $('#environment-note').textContent = !browserReady ? '缺少网页下载器所需浏览器或显示环境' : !nativeReady ? '缺少 yt-dlp 所需 FFmpeg 或 JS 运行时' : needsProbe && !tools.ffprobe ? '缺少 ffprobe' : methodFour ? 'API 下载 · 无需浏览器和 JS 运行时' : `Python ${state.status.python}`;
   renderYouTubeLogin();
   $('#database-health').textContent = `数据库：${state.status.database === 'mysql' ? 'MySQL' : 'SQLite 测试模式'} · 最近请求成功`;
   $('#proxy-health').textContent = state.config?.proxy_mode === 'clash' ? `代理：Mihomo · ${state.clash?.running ? '控制接口可用' : '尚未确认内核状态'}（不代表下载链路已验证）` : state.config?.proxy_mode === 'manual' && state.config?.proxy ? '代理：手动代理（未探测连通性）' : '连接：直连（未探测外网连通性）';
@@ -424,6 +428,7 @@ function renderDownloadMethod() {
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
+  if (methods.includes('bergung')) notes.push(`Bergung ${qualityLabel(state.config?.bergung_quality, 'bergung')}，验证等待上限 ${state.config?.bergung_timeout ?? 180} 秒；与其他网页下载器共享浏览器名额，可能需要人工完成 Cloudflare 验证。`);
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
   notes.push('保存后仅影响当前实例后续领取的视频，无需暂停或重启；其他实例使用各自策略，正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
@@ -691,7 +696,7 @@ function renderDownloadControl() {
 }
 function instancePolicyText(policy) {
   const methods = (policy.download_methods || (policy.download_method==='yt5s_fallback'?['yt5s','yt_dlp']:[policy.download_method || 'yt_dlp'])).map(method => providerNames[method] || method).join(' → ');
-  const qualities = {yt5s:policy.yt5s_quality, downmp3:policy.downmp3_quality, yt1d:policy.yt1d_quality};
+  const qualities = {yt5s:policy.yt5s_quality, downmp3:policy.downmp3_quality, yt1d:policy.yt1d_quality, bergung:policy.bergung_quality};
   const quality = Object.entries(qualities).filter(([method]) => (policy.download_methods || [policy.download_method]).includes(method)).map(([method,value]) => `${method} ${!value || value==='best'?'最高画质':value+'p'}`).join(' / ');
   return `下载顺序：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':'保存成品'}`;
 }

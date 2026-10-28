@@ -292,7 +292,7 @@ class Jobs:
         with self.store.connect() as db:
             if self.store.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
-            if self.store.fleet:
+            if self.store.fleet and action != 'retry':
                 db.execute(select(schema_settings.c.key).where(schema_settings.c.key == 'fleet_budget').with_for_update()).first()
             # Claims lock system permission before the job; starts use that order too.
             if action == 'start':

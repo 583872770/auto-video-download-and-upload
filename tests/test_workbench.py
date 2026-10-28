@@ -85,6 +85,14 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertEqual(cards['alpha']['selected_job']['id'], a)
         self.assertEqual(cards['beta']['selected_job']['id'], b)
 
+    def test_download_worker_only_sees_its_selected_batch(self):
+        a, b = self.pair()
+        self.assertEqual(self.a.runnable_counts().get('download'), 3)
+        self.assertEqual(self.b.runnable_counts().get('download'), 3)
+        self.assertEqual(self.a.claim('alpha-regular', exclude=('import', 'index'))['batch_id'], a)
+        self.assertEqual(self.a.claim('alpha-owner', actions=('download',))['batch_id'], a)
+        self.assertEqual(self.b.claim('beta-owner', actions=('download',))['batch_id'], b)
+
     def test_switch_only_revokes_current_instances_old_job(self):
         a, b = self.pair()
         first, second = self.a.claim('alpha-owner'), self.b.claim('beta-owner')

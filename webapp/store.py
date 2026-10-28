@@ -407,6 +407,9 @@ class TaskStore:
                 if self.fleet:
                     statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
                         and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
+                    if role == 'download' and (job := self.workbench_job(db)):
+                        statement = statement.where(tasks.c.batch_id == job).order_by(tasks.c.seq)
+                        statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_seq)', dialect_name='mysql')
                 count = len(db.execute(statement).all())
                 if count:
                     counts[role] = count
@@ -713,7 +716,19 @@ class TaskStore:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:
                 statement = statement.where(~tasks.c.action.in_(exclude))
-            row = db.execute(self._locked(statement.order_by(tasks.c.available_at, tasks.c.seq).limit(1), skip=True)).mappings().first()
+            download_only = actions and set(actions) == {'download'}
+            regular_worker = actions is None and set(exclude or ()) == {'import', 'index'}
+            workbench_download = self.workbench_job(db) if self.fleet and (download_only or regular_worker) else None
+            row = None
+            if workbench_download and regular_worker:
+                check = statement.where(tasks.c.action == 'check').order_by(tasks.c.available_at, tasks.c.seq).limit(1)
+                row = db.execute(self._locked(check, skip=True)).mappings().first()
+            if workbench_download:
+                statement = statement.where(tasks.c.action == 'download', tasks.c.batch_id == workbench_download)
+                statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_seq)', dialect_name='mysql')
+            ordering = (tasks.c.seq,) if workbench_download else (tasks.c.available_at, tasks.c.seq)
+            if row is None:
+                row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
             if row is None:
                 return None
             self._transition(db, row, 'running')
@@ -731,7 +746,8 @@ class TaskStore:
                 payload.pop('download_session_id', None)
                 payload = self.effective_download_payload(row['id'], payload, db)
                 payload['_execution_settings'] = True
-                transfer_keys = ('download_method', 'download_methods', 'download_format', 'yt5s_quality', 'downmp3_quality', 'yt1d_quality')
+                transfer_keys = ('download_method', 'download_methods', 'download_format', 'yt5s_quality',
+                                 'downmp3_quality', 'yt1d_quality', 'bergung_quality')
                 payload['_restart_transfer'] = bool(payload.get('_restart_transfer') or (
                     previous_config is not None and any(
                         previous_config.get(key) != payload.get('config', {}).get(key) for key in transfer_keys)))

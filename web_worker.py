@@ -144,6 +144,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
               downmp3_quality=config.get('downmp3_quality', 'best'),
               yt1d_quality=config.get('yt1d_quality', 'best'),
               yt1d_timeout=config.get('yt1d_timeout', 180),
+              bergung_quality=config.get('bergung_quality', 'best'),
+              bergung_timeout=config.get('bergung_timeout', 180),
               storage_mode=config.get('storage_mode', 'local'),
               fragment_concurrency=config.get('fragment_concurrency', 4),
               download_format=config.get('download_format') or 'bestvideo*+bestaudio/best',
@@ -213,6 +215,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         if 'yt1d' in methods:
             from webapp.yt1d import require_environment
             require_environment(config, base)
+        if 'bergung' in methods:
+            from webapp.bergung import require_environment
+            require_environment(config, base)
         if 'yt5s' in methods and 'yt_dlp' in methods:
             progress.state.update(stage='checking_environment')
             progress.save(force=True)
@@ -250,7 +255,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             path = Path(io_path(filename)).resolve()
             if path.suffix.lower() not in VIDEO_SUFFIXES:
                 return
-            if progress.state.get('download_method') in ('downmp3', 'yt1d'):
+            if progress.state.get('download_method') in ('downmp3', 'yt1d', 'bergung'):
                 from webapp.yt5s import verify_media
                 try:
                     verified = verify_media(path)
@@ -379,9 +384,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 info = resolve(url, provider_config, base, api_stage)
                                 downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
-                        elif provider in ('yt5s', 'yt1d'):
+                        elif provider in ('yt5s', 'yt1d', 'bergung'):
                             if provider == 'yt1d':
                                 from webapp.yt1d import resolve
+                            elif provider == 'bergung':
+                                from webapp.bergung import resolve
                             else:
                                 from webapp.yt5s import resolve
 
@@ -469,6 +476,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 def drain(directory, slot=0, role='all'):
     from webapp.disk_budget import DiskPressure, is_disk_full, MIB
     from webapp.downmp3 import Downmp3Error
+    from webapp.bergung import BergungError
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost
@@ -614,7 +622,7 @@ def drain(directory, slot=0, role='all'):
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = safe_text(str(error) or type(error).__name__)[:2000]
-                    transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error)) else
+                    transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error, BergungError)) else
                                  isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)

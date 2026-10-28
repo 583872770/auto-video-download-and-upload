@@ -6,10 +6,10 @@
         <entry key="0">
           <value>
             <TabSessionState>
-              <option name="projectPath" value="D:\ProgramData\auto-video-download-and-upload" />
+              <option name="projectPath" value="D:\pydaima\auto-video-download-and-upload" />
               <option name="provider" value="codex" />
-              <option name="sessionId" value="01a175f6-4c63-78f3-9e43-51bb5c3997bc" />
-              <option name="cwd" value="D:\ProgramData\auto-video-download-and-upload" />
+              <option name="sessionId" value="01a18305-b591-72a2-bcef-c03b0dfe2826" />
+              <option name="cwd" value="D:\pydaima\auto-video-download-and-upload" />
               <option name="model" value="gpt-6-sol" />
               <option name="permissionMode" value="bypassPermissions" />
             </TabSessionState>
@@ -18,11 +18,11 @@
         <entry key="1">
           <value>
             <TabSessionState>
-              <option name="projectPath" value="D:\ProgramData\auto-video-download-and-upload" />
-              <option name="provider" value="claude" />
-              <option name="sessionId" value="f2a44f59-10e9-49b9-8a1f-05f0468f0e49" />
-              <option name="cwd" value="D:\ProgramData\auto-video-download-and-upload" />
-              <option name="model" value="claude-opus-5-5[1m]" />
+              <option name="projectPath" value="D:\pydaima\auto-video-download-and-upload" />
+              <option name="provider" value="codex" />
+              <option name="sessionId" value="01a18359-a326-7f53-9426-f6d20206358f" />
+              <option name="cwd" value="D:\pydaima\auto-video-download-and-upload" />
+              <option name="model" value="gpt-6-sol" />
               <option name="permissionMode" value="bypassPermissions" />
             </TabSessionState>
           </value>

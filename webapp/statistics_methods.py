@@ -12,6 +12,7 @@ METHODS = {
     'yt5s': 'yt5s',
     'downmp3': 'downmp3',
     'yt1d': 'yt1d',
+    'bergung': 'Bergung',
     'unknown': '历史未分类',
 }
 FIELDS = (*COUNTERS, 'test_file_count', 'test_file_bytes', 'fallback_tasks')

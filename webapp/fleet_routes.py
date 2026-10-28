@@ -211,6 +211,9 @@ def check_instance(app, fleet, policy):
     if 'yt1d' in methods:
         from webapp.yt1d import require_environment
         require_environment(config, base)
+    if 'bergung' in methods:
+        from webapp.bergung import require_environment
+        require_environment(config, base)
     if 'downmp3' in methods:
         require_downmp3_environment()
     if 'yt5s' in methods:

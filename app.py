@@ -325,6 +325,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         methods = download_methods(config)
         if 'yt1d' in methods:
             require_yt1d_environment(config, base)
+        if 'bergung' in methods:
+            from webapp.bergung import require_environment
+            require_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods and 'yt_dlp' in methods:
@@ -656,6 +659,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         methods = download_methods(config)
         if 'yt1d' in methods:
             require_yt1d_environment(config, base)
+        if 'bergung' in methods:
+            from webapp.bergung import require_environment
+            require_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods:
@@ -798,6 +804,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         methods = download_methods(config)
         if 'yt1d' in methods:
             require_yt1d_environment(config, base)
+        if 'bergung' in methods:
+            from webapp.bergung import require_environment
+            require_environment(config, base)
         if 'downmp3' in methods:
             require_downmp3_environment()
         if 'yt5s' in methods:

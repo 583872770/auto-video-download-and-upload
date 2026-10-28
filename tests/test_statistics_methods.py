@@ -50,8 +50,9 @@ class MethodStatisticsContract:
             self.store.finish(job['id'], result={'test_mode': index == 2,
                 'download_method': 'yt_dlp' if index == 2 else 'yt5s', 'fallback_used': index == 2}, worker_id=self.store.owner)
         rows = self.methods(identity)
-        self.assertEqual(set(rows), {'yt_dlp', 'yt5s', 'downmp3', 'yt1d'})
+        self.assertEqual(set(rows), {'yt_dlp', 'yt5s', 'downmp3', 'yt1d', 'bergung'})
         self.assertEqual(rows['yt1d']['attempted'], 0)
+        self.assertEqual(rows['bergung']['attempted'], 0)
         self.assertEqual((rows['yt_dlp']['attempted'], rows['yt_dlp']['succeeded'], rows['yt_dlp']['file_bytes']), (2, 1, 101))
         self.assertEqual((rows['yt_dlp']['file_bytes'], rows['yt_dlp']['test_file_bytes'], rows['yt_dlp']['test_succeeded'], rows['yt_dlp']['fallback_tasks']), (101, 303, 1, 1))
         self.assertEqual(rows['yt_dlp']['downloaded_file_bytes_exact'], '404')
@@ -149,7 +150,7 @@ class MethodStatisticsContract:
         self.assertEqual(exported.status_code, 200)
         self.assertTrue(exported.data.startswith(b'\xef\xbb\xbf'))
         csv_rows = list(csv.DictReader(StringIO(exported.data.decode('utf-8-sig'))))
-        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '102', '0', '0'])
+        self.assertEqual([row['交付精确字节数(计费)'] for row in csv_rows], ['100', '102', '0', '0', '0'])
         size = 9007199254740993
         with self.store.connect() as db:
             db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(file_bytes=size))

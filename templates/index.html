@@ -42,6 +42,22 @@
 
   {% set workspace_page = 'index' %}{% include 'workspace_nav.html' %}
 
+  <template id="bergung-settings-template">
+    <label data-provider-setting="bergung">Bergung 画质
+      <select name="bergung_quality">
+        <option value="best">尽可能最高画质</option><option value="360">360p</option>
+        <option value="480">480p</option><option value="720">720p</option>
+        <option value="1080">1080p</option><option value="1440">1440p</option>
+        <option value="2160">2160p</option><option value="4320">4320p</option>
+      </select>
+      <small>按网站可用档位选择；最高画质使用 AV1，成品可能是 WebM。</small>
+    </label>
+    <label data-provider-setting="bergung">Bergung 网站验证等待上限（秒）
+      <input name="bergung_timeout" type="number" min="30" max="1800" required>
+      <small>网站可能要求在远程桌面完成 Cloudflare 验证。</small>
+    </label>
+  </template>
+
   <div class="workspace">
     <header class="topbar"><div class="breadcrumb"><button id="mobile-menu" class="icon-button" aria-label="展开导航"><svg><use href="#i-list"/></svg></button><span>工作区</span><span class="slash">/</span><strong id="breadcrumb-current">下载工作台</strong></div><div class="topbar-right"><a id="workspace-disk-status" class="resource-chip" href="/#settings" data-view="settings" aria-label="查看当前实例磁盘管理">磁盘状态读取中</a><span class="topbar-date" id="today"></span>{% include 'console_identity.html' %}</div></header>
     <main><p id="connection-warning" class="clash-notice" hidden role="alert"></p>
@@ -100,7 +116,7 @@
         <div id="statistics-active" class="accounting-active" hidden></div>
         <div class="accounting-policy"><strong>计费口径</strong><p>只登记成功处理的视频成品，采用实际文件字节数。封面、字幕、元数据、失败残留、已存在而跳过的文件和测试模式不计费；测试视频在删除前登记实际大小，单独累计并保留明细，不计入费用。同一客户任务的视频交付不重复登记；跨客户任务独立处理。暂停后续传成功，成品计入完成时的执行会话和所属客户任务。</p><p id="statistics-since">正在读取统计起始时间…</p></div>
         <section class="panel accounting-methods">
-          <div class="panel-heading"><div><h2>按下载提供方统计</h2><p class="panel-subtitle">分别观察 yt-dlp、yt5s、downmp3 和 yt1d 的成功率、失败数和完成大小；失败切换前后的下载器分别计数。</p></div><a class="button button-white" id="statistics-methods-export" href="/api/statistics/methods/export" download>导出提供方统计 CSV</a></div>
+          <div class="panel-heading"><div><h2>按下载提供方统计</h2><p class="panel-subtitle">分别观察 yt-dlp、yt5s、downmp3、yt1d 和 Bergung 的成功率、失败数和完成大小；失败切换前后的下载器分别计数。</p></div><a class="button button-white" id="statistics-methods-export" href="/api/statistics/methods/export" download>导出提供方统计 CSV</a></div>
           <div class="accounting-table-wrap"><table class="accounting-table accounting-method-table"><thead><tr><th>下载提供方</th><th>尝试次数</th><th>成功 / 失败尝试</th><th>跳过 / 未完成</th><th>交付大小（计费）</th><th>测试大小（不计费）</th><th>全部完成大小</th><th>自动切换任务数</th></tr></thead><tbody id="statistics-methods"></tbody></table></div>
           <p class="accounting-exact" id="statistics-methods-since">正在读取下载方式统计…</p>
         </section>
@@ -110,7 +126,7 @@
           <div class="panel-heading"><div><span class="section-kicker">SESSION DETAILS</span><h2 id="statistics-detail-title">会话明细</h2><p class="panel-subtitle" id="statistics-detail-period"></p></div><button type="button" class="text-button" id="statistics-close-detail">收起明细</button></div>
           <div class="accounting-cards" id="statistics-detail-totals"></div>
           <p class="accounting-exact" id="statistics-exact-bytes"></p>
-          <div class="panel-heading"><div><h3>本次会话 · 按下载提供方统计</h3><p class="panel-subtitle">显示 yt-dlp、yt5s、downmp3、yt1d 各自的成功率；成功任务包含测试成功。</p></div><a class="button button-white" id="statistics-detail-methods-export" href="#" download>导出本次提供方统计 CSV</a></div>
+          <div class="panel-heading"><div><h3>本次会话 · 按下载提供方统计</h3><p class="panel-subtitle">显示 yt-dlp、yt5s、downmp3、yt1d、Bergung 各自的成功率；成功任务包含测试成功。</p></div><a class="button button-white" id="statistics-detail-methods-export" href="#" download>导出本次提供方统计 CSV</a></div>
           <div class="accounting-table-wrap accounting-session-methods"><table class="accounting-table accounting-method-table"><thead><tr><th>下载提供方</th><th>尝试次数</th><th>成功 / 失败尝试</th><th>跳过 / 未完成</th><th>交付大小（计费）</th><th>测试大小（不计费）</th><th>全部完成大小</th><th>自动切换任务数</th></tr></thead><tbody id="statistics-detail-methods"></tbody></table></div>
           <form id="statistics-session-form" class="accounting-form"><label class="accounting-customer">执行备注<input name="label" maxlength="200" placeholder="例如：客户 A · 10 月视频清单"></label><button class="button button-dark" type="submit">保存执行备注</button></form>
           <div class="accounting-detail-toolbar"><div class="accounting-tabs" role="group" aria-label="会话明细类型"><button type="button" class="button button-dark" data-statistics-kind="files">交付文件</button><button type="button" class="button button-white" data-statistics-kind="test_files">测试文件（已删除）</button><button type="button" class="button button-white" data-statistics-kind="failed">失败任务</button><button type="button" class="button button-white" data-statistics-kind="tasks">全部参与任务</button></div><a class="button button-white" id="statistics-export" href="#" download>导出当前明细 CSV</a></div>

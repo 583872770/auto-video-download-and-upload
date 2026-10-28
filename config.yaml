@@ -24,6 +24,8 @@ downmp3_quality: best
 downmp3_timeout: 300
 yt1d_quality: best
 yt1d_timeout: 180
+bergung_quality: best
+bergung_timeout: 180
 disk_budget_gb: 20
 disk_test_budget_gb: 16
 disk_browser_budget_mb: 1024

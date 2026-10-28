@@ -5,7 +5,8 @@ import tempfile
 from urllib.parse import urlsplit
 
 YOUTUBE_PREFIX = 'https://www.youtube.com/watch?v='
-PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': 'yt1d'}
+PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': 'yt1d',
+             'bergung': 'Bergung'}
 
 import yaml
 from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
@@ -20,16 +21,19 @@ DEFAULTS = {
     'fragment_concurrency': 4,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
+    'bergung_quality': 'best', 'bergung_timeout': 180,
     **DISK_DEFAULTS,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
                    'download_method', 'download_methods', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
-                   'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout'}
+                   'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
+                   'bergung_quality', 'bergung_timeout'}
 DOWNLOAD_FIELDS |= DISK_FIELDS
 INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
-                  'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800)}
+                  'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
+                  'bergung_timeout': (30, 1800)}
 INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
                        for key in DISK_FIELDS})
 
@@ -79,6 +83,8 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('downmp3 画质请选择尽可能最高画质、360p、480p、720p 或 1080p。')
     if config.get('yt1d_quality', 'best') not in ('best', '360', '480', '720', '1080', '1440', '2160'):
         raise ValueError('yt1d 画质请选择尽可能最高画质或 360p、480p、720p、1080p、1440p、2160p。')
+    if config.get('bergung_quality', 'best') not in ('best', '360', '480', '720', '1080', '1440', '2160', '4320'):
+        raise ValueError('Bergung 画质请选择尽可能最高画质或 360p、480p、720p、1080p、1440p、2160p、4320p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():
@@ -114,7 +120,7 @@ def validate_method_urls(config, urls):
     if any(method != 'yt_dlp' for method in download_methods(config)):
         from webapp.store import source_identity
         if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            raise ValueError('yt5s、downmp3、yt1d 仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
+            raise ValueError('yt5s、downmp3、yt1d、Bergung 仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

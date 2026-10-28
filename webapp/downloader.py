@@ -87,7 +87,7 @@ def build_ydl_options(config, base):
         if not config.get('_resolved_clash_proxy'):
             raise ValueError('请通过 Web 页面创建使用 Clash 订阅代理的下载任务。')
         options['proxy'] = config['_resolved_clash_proxy']
-    if config.get('download_method', 'yt_dlp') in ('yt5s', 'downmp3', 'yt1d'):
+    if config.get('download_method', 'yt_dlp') in ('yt5s', 'downmp3', 'yt1d', 'bergung'):
         options.update(format='best', writesubtitles=False, writeautomaticsub=False, ignoreerrors=False)
     elif config.get('youtube_cookie'):
         cookie = resolve_path(base, config['youtube_cookie'])
@@ -115,8 +115,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config, base = load_config(args.config)
-        if config.get('download_method') in ('downmp3', 'yt1d'):
-            raise ValueError('downmp3、yt1d 请通过 Web 页面下载，以记录转换进度和下载统计。')
+        if config.get('download_method') in ('downmp3', 'yt1d', 'bergung'):
+            raise ValueError('downmp3、yt1d、Bergung 请通过 Web 页面下载，以记录解析进度和下载统计。')
         urls = args.urls or config.get('url', [])
         if isinstance(urls, str):
             urls = [urls]
