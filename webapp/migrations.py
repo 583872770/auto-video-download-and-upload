@@ -7,14 +7,21 @@ from datetime import datetime, timezone
 
 from sqlalchemy import inspect, select
 
-from webapp.database import deliveries, schema_migrations, test_files
+from webapp.database import deliveries, download_lists, job_profiles, schema_migrations, test_files
 
 
-def upgrade(engine):
-    version = '20261026_job_edit_versions'
+def _applied(engine, version):
     with engine.connect() as db:
-        if db.execute(select(schema_migrations.c.version).where(schema_migrations.c.version == version)).first():
-            return
+        return bool(db.execute(select(schema_migrations.c.version).where(schema_migrations.c.version == version)).first())
+
+
+def _record(engine, version):
+    with engine.begin() as db:
+        db.execute(schema_migrations.insert().values(version=version,
+            applied_at=datetime.now(timezone.utc).isoformat(timespec='seconds')))
+
+
+def _job_edit_versions(engine):
     columns = {column['name'] for column in inspect(engine).get_columns('job_profiles')}
     with engine.begin() as db:
         for name in ('edit_version', 'policy_version'):
@@ -24,6 +31,21 @@ def upgrade(engine):
         for index in table.indexes:
             if index.name.endswith('_task_seq'):
                 index.create(engine, checkfirst=True)
-    with engine.begin() as db:
-        db.execute(schema_migrations.insert().values(version=version,
-            applied_at=datetime.now(timezone.utc).isoformat(timespec='seconds')))
+
+
+def _task_center_indexes(engine):
+    # create_all only creates missing tables; existing job tables need these
+    # indexes added explicitly. Both tables hold one row per customer task.
+    for table, name in ((download_lists, 'ix_download_lists_released'), (job_profiles, 'ix_job_profiles_lifecycle')):
+        next(index for index in table.indexes if index.name == name).create(engine, checkfirst=True)
+
+
+STEPS = (('20261026_job_edit_versions', _job_edit_versions),
+         ('20261027_task_center_indexes', _task_center_indexes))
+
+
+def upgrade(engine):
+    for version, step in STEPS:
+        if not _applied(engine, version):
+            step(engine)
+            _record(engine, version)

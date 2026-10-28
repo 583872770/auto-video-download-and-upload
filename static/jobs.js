@@ -4,7 +4,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const labels = { empty:'空任务', paused:'待开始 / 已暂停', waiting:'等待执行条件', queued:'排队中', running:'执行中', draining:'暂停中', importing:'导入中', completed:'已完成', partial:'完成但有失败', archived:'已归档', deleted:'已删除' };
   const videoLabels = { queued:'待处理', running:'执行中', succeeded:'处理成功', failed:'失败', interrupted:'已中断', removed:'已移除' };
-  const state = { id:null, job:null, tab:'overview', jobs:[], rows:[], cursor:null, history:[], next:null, videoCursor:null, videoHistory:[], videoNext:null, videoStatus:'', videoQuery:'', selected:new Set(), mode:'new', editorJob:null, page:1, epoch:0, busy:false };
+  const state = { id:null, job:null, tab:'overview', jobs:[], rows:[], cursor:null, history:[], next:null, videoCursor:null, videoHistory:[], videoNext:null, videoStatus:'', videoQuery:'', selected:new Set(), mode:'new', editorJob:null, page:1, epoch:0, busy:false, summary:null };
   const size = value => `${(Number(value || 0) / 1e9).toLocaleString('zh-CN',{minimumFractionDigits:3,maximumFractionDigits:6})} GB`;
   const money = j => j.amount === null ? '待设置单价' : `¥ ${j.amount}`;
   const metric = (label, value, note='') => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;
@@ -32,6 +32,9 @@
     note.append(document.createTextNode(blockers.map(item=>item.message).join(' ')));
     const link=document.createElement('a');link.href=state.id?`/?job=${state.id}#overview`:'/#overview';link.textContent='选择任务并开始下载 ↗';note.append(document.createTextNode(' '),link);
     for(const blocker of blockers){if(!blocker.href)continue;const link=document.createElement('a');link.href=blocker.href;link.textContent=blocker.label;note.append(document.createTextNode(' '),link);}
+  }
+  function renderCenterSummary(summary) {
+    $('center-cards').innerHTML=metric('有效任务',summary.total,'未归档的客户任务')+metric('执行中任务',summary.running,'按下载实例独立执行')+metric('累计交付',size(summary.file_bytes_exact),'含归档与删除任务的历史交付')+metric('预计费用合计',`¥ ${summary.amount}`,`单价待设置 ${summary.unset} 单`);
   }
   async function api(path, options={}) {
     const headers = { 'X-CSRF-Token':document.querySelector('meta[name="csrf-token"]').content };
@@ -104,17 +107,25 @@
     try {
       if (!id) {
         const params=new URLSearchParams({q:$('search').value.trim(),lifecycle:$('state-filter').value,...(state.cursor?{cursor:state.cursor}:{})});
-        const [data,summary,system]=await Promise.all([api('/api/jobs?'+params,opt),api('/api/jobs/summary',opt),api('/api/jobs/system/status',opt)]);
+        // Render the task rows as soon as their query returns. The summary and
+        // system status can scan more data and must not hold the first paint.
+        const data=await api('/api/jobs?'+params,opt);
         if (ticket!==state.epoch) return;
         state.next=data.next_cursor;state.jobs=data.items;
-        $('center-cards').innerHTML=metric('有效任务',summary.total,'未归档的客户任务')+metric('执行中任务',summary.running,'按下载实例独立执行')+metric('累计交付',size(summary.file_bytes_exact),'含归档与删除任务的历史交付')+metric('预计费用合计',`¥ ${summary.amount}`,`单价待设置 ${summary.unset} 单`);
-        state.system=system;renderSystemNote();
+        // Placeholders only before the first summary; auto-refresh keeps the last values visible.
+        if (!state.summary) $('center-cards').innerHTML=metric('有效任务','读取中…','未归档的客户任务')+metric('执行中任务','读取中…','按下载实例独立执行')+metric('累计交付','读取中…','历史交付')+metric('预计费用合计','读取中…','正在计算费用');
         $('task-list-count').textContent=`本页 ${data.items.length} 项 · 自动更新`;
         $('task-table').innerHTML=data.items.length?`<table class="jobs-table"><thead><tr><th>任务 / 客户</th><th>状态</th><th>处理完成率</th><th>处理结果</th><th>实际交付</th><th>预计费用</th><th>操作</th></tr></thead><tbody>${taskRows(data.items)}</tbody></table>`:'<div class="empty"><strong>从第一个客户任务开始</strong><p>新建任务 → 添加视频清单 → 前往下载 → 核对交付与费用</p><button class="primary" data-action="new">＋ 新建任务</button></div>';
         if (!data.items.length && ($('search').value.trim() || $('state-filter').value==='archived')) $('task-table').innerHTML='<div class="empty"><strong>没有匹配的任务</strong><p>试试其他客户、任务名称或归档状态。</p></div>';
         $('jobs-prev').disabled=!state.history.length; $('jobs-next').disabled=!state.next;
         $('jobs-page-label').textContent=`第 ${state.history.length+1} 页 · 每页 20 条`;
         error('page-error','');
+        const [summaryResult,systemResult]=await Promise.allSettled([api('/api/jobs/summary',opt),api('/api/jobs/system/status',opt)]);
+        if (ticket!==state.epoch) return;
+        if (summaryResult.status==='fulfilled') { state.summary=summaryResult.value;renderCenterSummary(state.summary); }
+        else if (summaryResult.reason?.name!=='AbortError') toast(`任务汇总读取失败：${summaryResult.reason.message}`);
+        if (systemResult.status==='fulfilled') { state.system=systemResult.value;renderSystemNote(); }
+        else if (systemResult.reason?.name!=='AbortError') toast(`系统状态读取失败：${systemResult.reason.message}`);
       } else {
         const params=new URLSearchParams({q:state.videoQuery,...(state.videoStatus?{status:state.videoStatus}:{}),...(state.videoCursor?{cursor:state.videoCursor}:{})});
         const [j,extra,system]=await Promise.all([api(endpoint(id),opt),tab==='videos'?api(endpoint(id)+'/videos?'+params,opt):['billing','history'].includes(tab)?api(endpoint(id)+'/statistics',opt):Promise.resolve(null),api('/api/jobs/system/status',opt)]);

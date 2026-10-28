@@ -3,12 +3,12 @@ from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from werkzeug.exceptions import Conflict
 
 from tests import test_jobs, test_scale, test_fleet
 from tests.test_mysql import MySQLFixture
-from webapp.database import schema_migrations
+from webapp.database import download_lists, schema_migrations
 from webapp.jobs import Jobs
 
 
@@ -161,6 +161,29 @@ class RedesignContract:
         detail = self.detail(identity)
         self.assertEqual((detail['note'], detail['price'], detail['edit_version'], detail['policy_version']),
             ('historical note', '7', 1, 1))
+
+    def test_upgrade_adds_task_center_indexes_to_existing_tables(self):
+        self.create()
+        names = ('ix_download_lists_released', 'ix_job_profiles_lifecycle')
+        with self.store.connect() as db:
+            db.execute(schema_migrations.delete().where(schema_migrations.c.version == '20261027_task_center_indexes'))
+            for table, name in zip(('download_lists', 'job_profiles'), names):
+                db.exec_driver_sql(f'DROP INDEX {name} ON {table}' if self.store.db.mysql else f'DROP INDEX {name}')
+        self.store.db.initialize()
+        self.store.db.initialize()
+        indexes = {index['name'] for table in ('download_lists', 'job_profiles')
+                   for index in inspect(self.store.db.engine).get_indexes(table)}
+        self.assertTrue(set(names) <= indexes)
+
+    def test_summary_rounds_each_job_half_up_like_job_detail(self):
+        # 0.015 is not exact in binary floating point; SQL ROUND on SQLite
+        # would return 0.01 per job instead of the bill's 0.02.
+        a, b = self.create(price='1'), self.create('List B', price='1')
+        with self.store.connect() as db:
+            db.execute(download_lists.update().where(download_lists.c.id.in_([a, b])).values(file_bytes=15000000))
+        self.assertEqual([self.detail(key)['amount'] for key in (a, b)], ['0.02', '0.02'])
+        summary = self.client.get('/api/jobs/summary').json
+        self.assertEqual((summary['amount'], summary['file_bytes_exact'], summary['unset']), ('0.04', '30000000', 0))
 
 
 class SQLiteRedesignTests(RedesignContract, unittest.TestCase):

@@ -70,6 +70,7 @@ download_lists = Table('download_lists', metadata,
     Column('tracking_since', String(40), nullable=False),
     *(Column(name, BigInteger, nullable=False, server_default='0') for name in
       ('file_count', 'file_bytes', 'test_file_count', 'test_file_bytes', 'test_succeeded', 'skipped')))
+Index('ix_download_lists_released', download_lists.c.released, download_lists.c.id)
 reservations = Table('download_reservations', metadata, Column('key', String(128), primary_key=True),
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),
@@ -81,6 +82,7 @@ job_profiles = Table('job_profiles', metadata,
     Column('price_set', Integer, nullable=False), Column('updated_at', String(40), nullable=False),
     Column('edit_version', BigInteger, nullable=False, server_default='1'),
     Column('policy_version', BigInteger, nullable=False, server_default='1'))
+Index('ix_job_profiles_lifecycle', job_profiles.c.deleted, job_profiles.c.archived, job_profiles.c.id)
 schema_migrations = Table('schema_migrations', metadata,
     Column('version', String(80), primary_key=True), Column('applied_at', String(40), nullable=False))
 console_users = Table('console_users', metadata,
@@ -229,8 +231,12 @@ class Database:
                     options['poolclass'] = NullPool
                 else:
                     # Engines are process-local: bound both idle and busy connections.
-                    options.update(pool_size=2, max_overflow=0, pool_timeout=15,
-                                   pool_pre_ping=True, pool_recycle=300)
+                    # The task center opens the list, summary, and status paths
+                    # concurrently. Keep enough connections for those reads while
+                    # retaining a hard per-process cap for small MySQL servers.
+                    options.update(pool_size=max(2, int(os.environ.get('VIDEO_DB_POOL_SIZE', '5'))),
+                                   max_overflow=max(0, int(os.environ.get('VIDEO_DB_MAX_OVERFLOW', '5'))),
+                                   pool_timeout=15, pool_pre_ping=True, pool_recycle=300)
                 engine = create_engine(self.url, hide_parameters=True, **options)
                 if engine.dialect.name == 'sqlite':
                     @event.listens_for(engine, 'connect')
