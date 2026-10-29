@@ -1,6 +1,7 @@
 ﻿"""Apply connection changes to large paused queues without rewriting jobs."""
 from copy import deepcopy
 from io import BytesIO
+import time
 import unittest
 from unittest.mock import patch
 
@@ -178,6 +179,10 @@ class ConnectionContract:
         with patch.object(manager, 'snapshot', return_value=clash):
             self.assertEqual(self.apply().status_code, 200)
         for slot in (0, 1):
+            # execute now acquires fenced channel permits, just like a worker.
+            with self.store.connect() as db:
+                db.execute(tasks.update().where(tasks.c.id == task['id']).values(
+                    status='running', worker_id=self.store.owner, lease_until=time.time() + 60))
             resolved = {**clash, 'proxy': f'http://127.0.0.1:{17890 + slot}'}
             with self.subTest(slot=slot), patch('webapp.clash.ClashManager.for_worker', return_value=manager), \
                     patch('webapp.clash.ClashManager.snapshot', return_value=clash), \

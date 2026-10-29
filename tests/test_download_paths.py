@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -31,7 +32,9 @@ class DownloadPathTests(unittest.TestCase):
     def options(self, config=None):
         # Exercise Windows' budget on every CI platform. Only option building
         # uses the override; file operations run on the actual host platform.
-        with patch('webapp.downloader.sys.platform', 'win32'):
+        # Replace this module's platform view only. Mutating global sys.platform
+        # makes Linux shutil.which call unavailable Windows runtime functions.
+        with patch('webapp.downloader.sys', SimpleNamespace(platform='win32')):
             return build_ydl_options(config or self.config, self.root)
 
     def test_real_metadata_write_in_deep_job_directory_preserves_full_title(self):

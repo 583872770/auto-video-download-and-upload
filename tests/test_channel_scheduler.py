@@ -10,9 +10,10 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sqlalchemy import select
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from webapp.bergung import BergungError
 from webapp.channel_scheduler import ChannelScheduler, retry_after
@@ -72,6 +73,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(retry_after(date, 100), 100)
         self.assertIsNone(retry_after('nan'))
         self.assertIsNone(retry_after('invalid'))
+
+    def test_legacy_browser_resolver_configuration_is_normalized(self):
+        config = {'download_method': 'bergung', 'download_channels': [channel('alias', resolver_mode='browser')]}
+        validate_settings(config)
+        self.assertNotIn('resolver_mode', config['download_channels'][0])
+        self.assertEqual(registry(config)[1].id, 'alias')
+        with self.assertRaises(ValueError):
+            registry({'download_method': 'bergung', 'download_channels': [channel('alias', resolver_mode='api')]})
 
 
 class AdmissionTests(unittest.TestCase):
@@ -167,3 +176,136 @@ except PipelineBusy: print('busy')
                                      self.second.owner, json.dumps(self.config), child.task_id], capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'busy')
+
+
+class AutoSchedulerTests(unittest.TestCase):
+    setUp = AdmissionTests.setUp
+    scheduler = AdmissionTests.scheduler
+
+    def setUp(self):
+        AdmissionTests.setUp(self)
+        limits = patch('webapp.channel_scheduler.runtime_limits', return_value={
+            'transfers':16, 'workers':20, 'browsers':3, 'groups':{}})
+        limits.start()
+        self.addCleanup(limits.stop)
+        self.config = {'download_methods':['bergung'], 'scheduler_mode':'auto', 'worker_count':16,
+            'download_connection_limit':4, 'download_channels':[
+                channel('bergung', 'shared', transfer_limit=32, api_url='https://first.example.com/'),
+                channel('alias', 'shared', transfer_limit=32, api_url='https://second.example.com/')]}
+
+    def warm(self, scheduler, rates=None):
+        for index, item in enumerate(scheduler.channels):
+            rate = rates[index] if rates else 8 * 1024**2
+            scheduler.outcome(item, success=True, size=64*1024**2, elapsed=4+64*1024**2/rate,
+                              resolve_elapsed=4, transfer_elapsed=64*1024**2/rate)
+
+    def state(self, scheduler, channel):
+        with scheduler.transaction() as (db, stamp):
+            return scheduler._state(db, 'channel:' + channel.id)
+
+    def test_routes_across_providers_without_using_order(self):
+        config = {**self.config, 'download_methods':['bergung','downmp3'], 'download_channels':[]}
+        scheduler = self.scheduler(config=config)
+        self.warm(scheduler, [1024**2, 8*1024**2])
+        with scheduler.assignment(scheduler.channels) as chosen:
+            self.assertEqual(chosen.adapter, 'downmp3')
+
+    def test_only_one_unproven_entrance_can_occupy_preparation(self):
+        first, second = self.scheduler(), self.scheduler(self.second)
+        with first.assignment(first.channels) as initial:
+            with self.assertRaises(PipelineBusy):
+                with second.assignment(second.channels):
+                    self.fail('all browsers occupied by unproven routes')
+        with second.assignment(second.channels) as next_route:
+            self.assertNotEqual(initial.id, next_route.id)
+
+    def test_warm_work_can_continue_while_one_cold_route_is_probed(self):
+        first, second = self.scheduler(), self.scheduler(self.second)
+        first.outcome(first.channels[0], success=True, size=64*1024**2, elapsed=10, transfer_elapsed=8)
+        with first.assignment(first.channels) as probe:
+            self.assertEqual(probe.id, 'alias')
+            with second.assignment(second.channels) as warm:
+                self.assertEqual(warm.id, 'bergung')
+
+    def test_ready_first_file_frees_probe_but_retains_entrance_ownership(self):
+        first, second, third = self.scheduler(), self.scheduler(self.second), self.scheduler()
+        with first.assignment(first.channels) as route:
+            first.prepared()
+            with second.assignment(second.channels) as next_route:
+                self.assertNotEqual(route.id, next_route.id)
+                second.prepared()
+                with self.assertRaises(PipelineBusy):
+                    with third.assignment(third.channels):
+                        self.fail('an unmeasured entrance received a duplicate first task')
+
+    def test_same_api_alias_cannot_multiply_route_or_resolver_capacity(self):
+        entries = [channel('bergung', 'one', task_limit=1, resolver_limit=1, api_url='https://API.example.com/'),
+                   channel('alias', 'two', task_limit=1, resolver_limit=1, api_url='https://api.example.com:443/')]
+        config = {**self.config, 'download_channels':entries}
+        first, second = self.scheduler(config=config), self.scheduler(self.second, config)
+        self.warm(first)
+        with first.assignment(first.channels):
+            with self.assertRaises(PipelineBusy):
+                with second.assignment(second.channels):
+                    self.fail('same backend gained another task allocation')
+        with first.permit(first.channels[0], 'resolve', timeout=0):
+            with self.assertRaises(PipelineBusy):
+                with second.permit(second.channels[1], 'resolve', timeout=0):
+                    self.fail('same API gained another parser allocation')
+
+    def test_same_api_throttle_propagates_even_with_different_configured_groups(self):
+        entries = [channel('bergung', 'one', api_url='https://same.example.com/'),
+                   channel('alias', 'two', api_url='https://same.example.com/'),
+                   channel('other', 'three', api_url='https://other.example.com/')]
+        config = {**self.config, 'download_channels':entries}
+        first, second = self.scheduler(config=config), self.scheduler(self.second, config)
+        first.outcome(first.channels[0], success=False,
+            error=BergungError('limited', http_status=429, retry_after=30))
+        with self.assertRaises(PipelineBusy):
+            with second.permit(second.channels[1], 'resolve', timeout=0):
+                pass
+        with second.permit(second.channels[2], 'resolve', timeout=0):
+            pass
+
+    def test_video_and_local_failures_do_not_poison_channel_health(self):
+        scheduler = self.scheduler()
+        self.warm(scheduler)
+        before = self.state(scheduler, scheduler.channels[0])
+        for error in (BergungError('private', failure_scope='video'), DownloadLeaseLost('expired'),
+                      OSError(28, 'no space'), PipelineBusy('capacity'), PoolTimeoutError('pool busy')):
+            scheduler.outcome(scheduler.channels[0], success=False, error=error)
+            self.assertEqual(self.state(scheduler, scheduler.channels[0]), before)
+
+    def test_wrapped_transient_failure_cools_only_its_route(self):
+        scheduler = self.scheduler()
+        error = RuntimeError('downloader wrapper')
+        error.__cause__ = BergungError('upstream unavailable', retryable=True)
+        scheduler.outcome(scheduler.channels[0], success=False, error=error)
+        with scheduler.assignment(scheduler.channels) as chosen:
+            self.assertEqual(chosen.id, 'alias')
+        self.assertGreater(self.state(scheduler, scheduler.channels[0])['cooldown_until'], time.time())
+
+    def test_reference_file_scoring_does_not_prefer_short_clips(self):
+        scheduler = self.scheduler()
+        for item, size in zip(scheduler.channels, (64*1024**2, 1024**2)):
+            scheduler.outcome(item, success=True, size=size, elapsed=4+size/1024**2,
+                              resolve_elapsed=4, transfer_elapsed=size/1024**2)
+        with scheduler.assignment(scheduler.channels) as chosen:
+            self.assertEqual(chosen.id, 'bergung')
+
+    def test_connection_budget_cannot_be_exceeded_by_fragment_permits(self):
+        first, second = self.scheduler(), self.scheduler(self.second)
+        with first.permit(first.channels[0], 'transfer', streams=3, timeout=0):
+            with self.assertRaises(PipelineBusy):
+                with second.permit(second.channels[1], 'transfer', streams=2, timeout=0):
+                    pass
+        with second.permit(second.channels[1], 'transfer', streams=2, timeout=0):
+            pass
+
+    def test_auto_setting_roundtrip_includes_catalog_and_resource_control(self):
+        from webapp.cobalt_catalog import verified_channels
+        config = {'download_methods':['bergung'], 'scheduler_mode':'auto', 'throughput_mode':'manual',
+                  'download_channels':verified_channels(), 'auto_channel_attempts':3}
+        validate_settings(config)
+        self.assertEqual(config['throughput_mode'], 'auto')
+        self.assertTrue(all(item['verification'] == 'auto' for item in config['download_channels']))

@@ -21,10 +21,11 @@ RETRYABLE_NAVIGATION_ERRORS = ('net::ERR_CONNECTION_CLOSED', 'net::ERR_CONNECTIO
 
 
 class BergungError(RuntimeError):
-    def __init__(self, message, *, retryable=False, http_status=None, retry_after=None):
+    def __init__(self, message, *, retryable=False, http_status=None, retry_after=None, failure_scope='channel'):
         super().__init__(message)
         self.retryable = retryable
         self.http_status, self.retry_after = http_status, retry_after
+        self.failure_scope = failure_scope
 
 
 def require_environment(config, base):
@@ -51,19 +52,27 @@ def result_info(data, video_id, quality, http_status=200, *, site_url=SITE_URL):
         if not isinstance(code, str) or len(code) > 120:
             code = ''
         if 'auth' in code or 'captcha' in code:
-            raise BergungError('Bergung 验证或授权未完成，请在远程桌面完成网站验证。')
+            raise BergungError('Bergung / Cobalt 验证或授权未完成，请在远程桌面完成网站验证。', retryable=True)
+        video_error = any(term in code for term in ('.unavailable', '.not_found', '.notfound', '.private', '.deleted', '.restricted'))
         raise BergungError('Bergung 解析失败，视频可能不可用或当前出口受限。'
                            + (f'（{code}）' if code and code.isascii() and code.replace('.', '').replace('_', '').isalnum() else ''),
                            retryable=http_status in (408, 429, 500, 502, 503, 504)
-                           or 'rate' in code or 'timeout' in code or 'unreachable' in code,
-                           http_status=429 if 'rate' in code else http_status)
-    if status not in ('redirect', 'tunnel'):
+                           or 'rate' in code or 'timeout' in code or 'unreachable' in code
+                           or code in ('error.api.youtube.login', 'error.api.fetch.fail'),
+                           http_status=429 if 'rate' in code else http_status,
+                           failure_scope='video' if video_error else 'channel')
+    merge = status == 'local-processing' and data.get('type') == 'merge' and data.get('service') == 'youtube'
+    if status not in ('redirect', 'tunnel') and not merge:
         raise BergungError('Bergung 未返回单个可下载视频，请检查网站的处理方式或画质设置。')
+    links = data.get('tunnel') if merge else [data.get('url')]
+    if not isinstance(links, list) or len(links) != (2 if merge else 1):
+        raise BergungError('Cobalt 音视频合并结果缺少两个可靠的媒体地址。')
     try:
-        link = media_url(data.get('url'))
+        links = [media_url(link) for link in links]
     except RuntimeError:
         raise BergungError('Bergung 未返回有效的公网视频地址。') from None
-    filename = data.get('filename')
+    output = data.get('output') if merge else data
+    filename = output.get('filename') if isinstance(output, dict) else None
     if not isinstance(filename, str) or len(filename) > 512:
         raise BergungError('Bergung 未返回有效的视频文件名。')
     filename = filename.replace('\\', '/').rsplit('/', 1)[-1]
@@ -71,12 +80,21 @@ def result_info(data, video_id, quality, http_status=200, *, site_url=SITE_URL):
     if suffix not in ('.mp4', '.webm', '.mkv'):
         raise BergungError('Bergung 返回的文件不是支持的视频格式。')
     title = Path(filename).stem.strip() or video_id
-    return {'id': video_id, 'title': title, 'url': link, 'ext': suffix[1:],
+    info = {'id': video_id, 'title': title, 'url': links[0], 'ext': suffix[1:],
             'format_id': 'bergung-' + quality,
             'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
             'webpage_url': f'https://www.youtube.com/watch?v={video_id}',
             'extractor': 'youtube', 'extractor_key': 'Youtube',
             'http_headers': {'Referer': site_url}, '_bergung_status': status}
+    if merge:
+        # The merge contract orders video then audio from this one resolution.
+        # yt-dlp downloads them sequentially and FFmpeg only remuxes the tracks.
+        info.update(_cobalt_merge=True, formats=[
+            {'format_id': 'cobalt_video', 'url': links[0], 'ext': suffix[1:],
+             'vcodec': 'unknown', 'acodec': 'none', 'http_headers': info['http_headers']},
+            {'format_id': 'cobalt_audio', 'url': links[1], 'ext': 'webm' if suffix == '.webm' else 'm4a',
+             'vcodec': 'none', 'acodec': 'unknown', 'http_headers': info['http_headers']}])
+    return info
 
 
 async def open_site(page, url):
@@ -171,18 +189,22 @@ async def probe(args, owner, on_stage=None):
             await link_input.wait_for(state='visible', timeout=30000)
             await select_setting(page, 'downloadMode', 'auto')
             await link_input.fill(f'https://www.youtube.com/watch?v={args.video_id}')
-            stage('waiting_verification')
-            print(f'Bergung 正在等待网站验证，最多 {args.timeout} 秒；需要时可在远程桌面完成。', flush=True)
-            try:
-                await page.wait_for_function(
-                    "() => Boolean(document.querySelector('input[name=\"cf-turnstile-response\"]')?.value)",
-                    timeout=args.timeout * 1000)
-            except BrowserTimeoutError:
-                raise WebsiteTimeoutError('Bergung 网站验证超时，请在远程桌面完成验证或更换节点。') from None
+            # Cobalt frontends may retain a normal authenticated session after
+            # removing the challenge widget, or have no challenge at all. Let
+            # those frontends perform their own authorization on submission.
+            if getattr(args, 'verification', 'required') == 'required':
+                stage('waiting_verification')
+                print(f'Bergung 正在等待网站验证，最多 {args.timeout} 秒；需要时可在远程桌面完成。', flush=True)
+                try:
+                    await page.wait_for_function(
+                        "() => Boolean(document.querySelector('input[name=\"cf-turnstile-response\"]')?.value)",
+                        timeout=args.timeout * 1000)
+                except BrowserTimeoutError:
+                    raise WebsiteTimeoutError('Bergung 网站验证超时，请在远程桌面完成验证或更换节点。') from None
             stage('submitting_site')
             await page.locator('#download-button').click(timeout=30000)
             stage('extracting')
-            await asyncio.wait_for(completed.wait(), timeout=45)
+            await asyncio.wait_for(completed.wait(), timeout=min(args.timeout, 90))
             if result.get('error'):
                 raise result['error']
             if result['status'] >= 400 and (not isinstance(result.get('data'), dict)
@@ -236,7 +258,8 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     quality = str(config.get('bergung_quality', 'best'))
     args = SimpleNamespace(video_id=video_id, quality='max' if quality == 'best' else quality,
                            timeout=int(config.get('bergung_timeout', 180)), proxy=proxy,
-                           browser_executable=executable, site_url=site, api_url=api)
+                           browser_executable=executable, site_url=site, api_url=api,
+                           verification=config.get('_cobalt_verification', 'required'))
 
     def waiting():
         if on_stage:
@@ -247,7 +270,15 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
             **({'disk_directory': config['_disk_state'], 'disk_config': config} if config.get('_disk_state') else {})) as owner:
         try:
             from webapp.parser_broker import cancellable
-            return asyncio.run(cancellable(probe(args, owner, on_stage), config.get('_parser_cancel_check')))
+            async def run():
+                work = cancellable(probe(args, owner, on_stage), config.get('_parser_cancel_check'))
+                if config.get('_resolver_deadline'):
+                    try:
+                        return await asyncio.wait_for(work, timeout=int(config['_resolver_deadline']))
+                    except TimeoutError:
+                        raise BergungError('渠道解析超时，自动策略将尝试其他可用渠道。', retryable=True) from None
+                return await work
+            return asyncio.run(run())
         except BrowserError as error:
             raise BergungError('Bergung 浏览器连接网站失败，请检查当前网络或代理节点。',
                                retryable=True) from error

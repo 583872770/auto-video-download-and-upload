@@ -230,7 +230,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/')
     def index():
-        return render_template('index.html', csrf=session['csrf'], service_role=service_role)
+        from webapp.cobalt_catalog import catalog
+        return render_template('index.html', csrf=session['csrf'], service_role=service_role, cobalt_catalog=catalog())
 
     @app.get('/api/config')
     def read_config():
@@ -295,7 +296,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                    'path': str(youtube_file) if youtube_file else None, 'login': youtube_login.status(),
                    'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
         queue = store.download_queue()
+        from webapp.throughput import runtime_limits
         return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
+                       throughput=runtime_limits(config, store.directory),
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=queue,
                        execution=app.extensions['execution_control'].status(queue),

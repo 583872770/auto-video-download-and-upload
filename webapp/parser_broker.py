@@ -27,6 +27,7 @@ CONFIG_KEYS = {'proxy_mode', 'proxy', '_resolved_clash_proxy', '_resolved_clash_
                '_bergung_site_url', '_bergung_api_url', '_channel_id', 'yt5s_browser_count',
                'throughput_mode', 'worker_count', 'bandwidth_mbps', 'disk_min_free_gb',
                'disk_resume_free_gb'}
+CONFIG_KEYS |= {'_cobalt_verification', '_resolver_deadline'}
 
 
 def disconnected(stream):
@@ -78,10 +79,13 @@ class ParserBroker:
         key = (config.get('_resolved_clash_node') or config.get('proxy', ''),
                config.get('_bergung_site_url', ''), config.get('_bergung_api_url', ''))
         slot = None
+        deadline = time.monotonic() + (90 if config.get('_resolver_deadline') else 300)
         try:
             while slot is None:
                 if self.stop.is_set() or cancelled():
                     raise asyncio.CancelledError()
+                if time.monotonic() >= deadline:
+                    raise PipelineBusy('解析浏览器额度繁忙，稍后重新准备。')
                 with self.condition:
                     capacity = self.capacity()
                     # Retire idle browsers above a newly reduced ceiling.
@@ -175,6 +179,7 @@ class ParserBroker:
                     try:
                         send({'error': safe_text(str(error))[:2000], 'type': type(error).__name__,
                               'retryable': bool(getattr(error, 'retryable', False)),
+                              'failure_scope': getattr(error, 'failure_scope', 'channel'),
                               'http_status': getattr(error, 'http_status', None),
                               'connection_failure': connection_failure(error),
                               'errno': getattr(error, 'errno', None),
@@ -227,7 +232,8 @@ def resolve_remote(url, config, base, directory, on_stage=None):
                    'config': {key: value for key, value in config.items() if key in CONFIG_KEYS}}
         connection.sendall((json.dumps(request) + '\n').encode())
         data = b''
-        deadline = time.monotonic() + int(config.get('bergung_timeout', 180)) + 240
+        deadline = time.monotonic() + (int(config['_resolver_deadline']) + 110
+            if config.get('_resolver_deadline') else int(config.get('bergung_timeout', 180)) + 360)
         while time.monotonic() < deadline:
             try:
                 part = connection.recv(65536)
@@ -263,7 +269,8 @@ def resolve_remote(url, config, base, directory, on_stage=None):
                     if value.get('errno') in (5, 13, 28, 30, 122):
                         raise OSError(value['errno'], value['error'])
                     error = BergungError(value['error'], retryable=value.get('retryable', False),
-                                         http_status=value.get('http_status'), retry_after=value.get('retry_after'))
+                                         http_status=value.get('http_status'), retry_after=value.get('retry_after'),
+                                         failure_scope=value.get('failure_scope', 'channel'))
                     error.connection_failure = value.get('connection_failure', False)
                     raise error
         raise PipelineBusy('解析服务等待超时，稍后重新准备下载。')

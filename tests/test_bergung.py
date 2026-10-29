@@ -95,6 +95,37 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(page.goto.await_count, 2)
         sleep.assert_awaited_once_with(1)
 
+    def test_merge_contract_rejects_unsafe_or_incomplete_tasks(self):
+        data = {'status':'local-processing', 'type':'merge', 'service':'youtube',
+                'tunnel':[CDN, 'https://cdn.example.com/audio.m4a'], 'output':{'filename':'Video.mp4'}}
+        info = result_info(data, 'QkCWK_YJ7uY', '360')
+        self.assertTrue(info['_cobalt_merge'])
+        self.assertEqual([item['vcodec'] for item in info['formats']], ['unknown','none'])
+        for invalid in ({**data,'type':'transcode'}, {**data,'tunnel':[CDN]},
+                        {**data,'tunnel':[CDN,'http://127.0.0.1/audio']}, {**data,'output':None}):
+            with self.subTest(invalid=invalid), self.assertRaises(BergungError):
+                result_info(invalid, 'QkCWK_YJ7uY', '360')
+
+    def test_video_error_is_typed_without_poisoning_upstream(self):
+        with self.assertRaises(BergungError) as caught:
+            result_info({'status':'error','error':{'code':'error.api.content.video.unavailable'}}, 'QkCWK_YJ7uY', '360')
+        self.assertEqual(caught.exception.failure_scope, 'video')
+
+    def test_auto_parse_deadline_cancels_work_and_releases_browser_session(self):
+        cancelled = []
+        async def stuck(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+        with patch('webapp.bergung.require_environment',return_value='/browser'), \
+             patch('webapp.bergung.session') as session, patch('webapp.bergung.probe',side_effect=stuck):
+            with self.assertRaises(BergungError) as caught:
+                resolve(VIDEO, {'shared_parser':False,'_resolver_deadline':1}, Path('.'), Path('state'))
+        self.assertTrue(caught.exception.retryable)
+        self.assertEqual(cancelled,[True])
+        self.assertTrue(session.return_value.use.return_value.__exit__.called)
+
 
 class WebsiteTests(unittest.TestCase):
     def test_chromium_page_settings_and_cobalt_response(self):
@@ -103,6 +134,7 @@ class WebsiteTests(unittest.TestCase):
         except RuntimeError:
             self.skipTest('Chrome/Chromium required for website fixture')
         requests = []
+        widget = [True]
 
         class Website(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -133,6 +165,8 @@ class WebsiteTests(unittest.TestCase):
                           token: document.querySelector('input[name=cf-turnstile-response]')?.value || ''})});
                     };
                     </script>'''
+                if not widget[0]:
+                    body = body.replace(b"token.name = 'cf-turnstile-response';", b"token.name = 'unused';")
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html')
                 self.end_headers()
@@ -163,6 +197,12 @@ class WebsiteTests(unittest.TestCase):
         self.assertEqual(requests, [{'url': VIDEO, 'token': 'fixture-token'}])
         self.assertIn('waiting_verification', stages)
         self.assertIn('extracting', stages)
+        widget[0] = False
+        args.verification = 'auto'
+        with patch('builtins.print'):
+            self.assertEqual(asyncio.run(probe(args, owner))['url'], CDN)
+        self.assertEqual(requests[-1]['token'], '')
+        widget[0] = True
         # Exercise the real browser through the local broker twice: these are
         # separate client requests and must reuse the same Chromium process.
         from webapp.parser_broker import ParserBroker, resolve_remote
@@ -221,6 +261,12 @@ class WorkflowTests(unittest.TestCase):
         downmp3.assert_called_once()
 
     def test_verified_file_is_counted_for_bergung(self):
+        self.verified_fixture()
+
+    def test_cobalt_merge_downloads_two_tracks_and_counts_only_verified_output(self):
+        self.verified_fixture(merge=True)
+
+    def verified_fixture(self, merge=False):
         ffmpeg = shutil.which('ffmpeg')
         if not ffmpeg:
             self.skipTest('FFmpeg required for media fixture')
@@ -229,6 +275,10 @@ class WorkflowTests(unittest.TestCase):
         subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
                         'color=c=black:s=64x64:d=0.3', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono',
                         '-shortest', '-c:v', 'libx264', '-c:a', 'aac', str(source / 'fixture.mp4')], check=True)
+        if merge:
+            for name, selection in (('video.mp4','0:v:0'),('audio.m4a','0:a:0')):
+                subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-i',str(source/'fixture.mp4'),
+                                '-map',selection,'-c','copy',str(source/name)],check=True)
 
         class Quiet(SimpleHTTPRequestHandler):
             def log_message(self, *args):
@@ -244,15 +294,36 @@ class WorkflowTests(unittest.TestCase):
         info = {'id': 'QkCWK_YJ7uY', 'title': 'Fixture', 'url':
                 f'http://127.0.0.1:{server.server_port}/fixture.mp4', 'ext': 'mp4',
                 'extractor': 'youtube', 'extractor_key': 'Youtube'}
+        if merge:
+            with patch('webapp.yt1d.media_url',side_effect=lambda value:value):
+                info = result_info({'status':'local-processing','type':'merge','service':'youtube',
+                    'tunnel':[f'http://127.0.0.1:{server.server_port}/video.mp4',
+                              f'http://127.0.0.1:{server.server_port}/audio.m4a'],
+                    'output':{'filename':'Fixture.mp4'}}, 'QkCWK_YJ7uY','720')
         with patch('webapp.bergung.require_environment'), \
                 patch('webapp.bergung.resolve', return_value=info), patch('builtins.print'):
             result = execute('download', claimed['payload'], store=self.store, task_id=task['id'])
         self.assertEqual(result['download_method'], 'bergung')
-        self.assertEqual(result['file_bytes'], (source / 'fixture.mp4').stat().st_size)
+        self.assertEqual(result['file_count'], 1)
+        if not merge:
+            self.assertEqual(result['file_bytes'], (source / 'fixture.mp4').stat().st_size)
+        else:
+            self.assertGreater(result['file_bytes'], 0)
         self.store.finish(task['id'], result=result, worker_id=self.store.owner)
         rows = {item['method']: item for item in self.client.get('/api/statistics').json['methods']}
         self.assertEqual((rows['bergung']['succeeded'], rows['bergung']['file_bytes']),
                          (1, result['file_bytes']))
+
+    def test_auto_attempt_budget_does_not_walk_all_failed_sites(self):
+        self.save(['bergung'], scheduler_mode='auto', auto_channel_attempts=2,
+            download_channels=[dict(id='alias'+str(index), api_url=f'https://api{index}.example.com/') for index in range(5)])
+        task = self.store.create('download', {'urls':[VIDEO]})
+        claimed = self.store.claim()
+        with patch('webapp.bergung.require_environment'), patch('builtins.print'), \
+             patch('webapp.bergung.resolve',side_effect=BergungError('upstream timed out',retryable=True)) as resolver:
+            with self.assertRaises(BergungError):
+                execute('download',claimed['payload'],store=self.store,task_id=task['id'])
+        self.assertEqual(resolver.call_count, 2)
 
 
 if __name__ == '__main__':

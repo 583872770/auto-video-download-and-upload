@@ -28,7 +28,7 @@ def policy_key(config):
 
 
 def automatic(config):
-    return config.get('throughput_mode', 'manual') == 'auto'
+    return config.get('throughput_mode', 'manual') == 'auto' or config.get('scheduler_mode') == 'auto'
 
 
 def _number(path):
@@ -186,6 +186,7 @@ class ThroughputController:
         metrics = read_counters(self.directory)
         received = verified = resolved = 0
         group_deltas = {}
+        channel_deltas = {}
         if self.metric_previous is not None and tick > self.last:
             for identity, value in metrics.items():
                 previous = self.metric_previous.get(identity, {})
@@ -197,7 +198,12 @@ class ThroughputController:
                     delta = group_deltas.setdefault(group, {'bytes': 0, 'failed': 0, 'succeeded': 0, 'upstream_failed': 0})
                     for key, name in (('bytes', 'received_bytes'), ('failed', 'failed'), ('succeeded', 'succeeded'), ('upstream_failed', 'upstream_failed')):
                         delta[key] += max(0, current.get(name, 0) - before.get(name, 0))
-            self.metric_history.append((tick - self.last, received, verified, group_deltas, resolved))
+                for channel, current in value.get('channels', {}).items():
+                    before = previous.get('channels', {}).get(channel, {})
+                    delta = channel_deltas.setdefault(channel, {})
+                    for name in ('received_bytes','verified_bytes','succeeded','failed','resolved','resolve_seconds'):
+                        delta[name] = delta.get(name, 0) + max(0, current.get(name, 0) - before.get(name, 0))
+            self.metric_history.append((tick - self.last, received, verified, group_deltas, resolved, channel_deltas))
         self.metric_previous = metrics
         metric_seconds = sum(item[0] for item in self.metric_history) or 1
         media_rate = sum(item[1] for item in self.metric_history) / metric_seconds
@@ -262,9 +268,18 @@ class ThroughputController:
             self.adjusted = tick
         from webapp.channels import group_caps, registry
         channels = registry(config)
+        channel_rates = {}
+        for channel in channels:
+            total = {name: sum(item[5].get(channel.id, {}).get(name, 0) for item in self.metric_history)
+                     for name in ('received_bytes','verified_bytes','succeeded','failed','resolved','resolve_seconds')}
+            channel_rates[channel.id] = dict(label=channel.label,
+                receive_mbps=round(total['received_bytes'] * 8 / metric_seconds / 1e6, 2),
+                verified_mbps=round(total['verified_bytes'] * 8 / metric_seconds / 1e6, 2),
+                succeeded=total['succeeded'], failed=total['failed'], resolved=total['resolved'],
+                resolve_seconds=round(total['resolve_seconds'] / total['resolved'], 1) if total['resolved'] else None)
         upstream_caps = {key.split(':', 1)[1]: cap for key, cap in group_caps(channels).items() if key.startswith('upstream:')}
         if 'youtube-origin' in group_active:
-            upstream_caps.setdefault('youtube-origin', 8)
+            upstream_caps.setdefault('youtube-origin', 32 if config.get('scheduler_mode') == 'auto' else 8)
         groups = {}
         for group, cap in upstream_caps.items():
             cap = min(cap, transfers)
@@ -301,11 +316,11 @@ class ThroughputController:
             preparation = browsers + min(2, browsers) if browser_methods else 2
             workers = max(transfers, min(MAX_WORKERS, nominal_workers, transfers + preparation))
             workers = min(workers, nominal_workers, sum(value['limit'] for value in groups.values()) + preparation)
-        self.state = {'time': time.time(), 'policy': policy_key(config), 'mode': config.get('throughput_mode', 'manual'),
+        self.state = {'time': time.time(), 'policy': policy_key(config), 'mode': 'auto' if automatic(config) else 'manual',
                       'transfers': transfers, 'workers': workers, 'browsers': browsers,
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
                       'media_receive_mbps': round(media_rate * 8 / 1e6, 2),
-                      'verified_mbps': round(verified_rate * 8 / 1e6, 2), 'groups': groups,
+                      'verified_mbps': round(verified_rate * 8 / 1e6, 2), 'groups': groups, 'channels':channel_rates,
                       'resolves_per_minute': round(resolve_rate * 60, 2),
                       'io_pressure': resources['io_pressure'], 'db_worker_cap': db_worker_cap,
                       'cpu_cores': round(resources['cpu_cores'], 2),

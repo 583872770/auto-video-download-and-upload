@@ -16,10 +16,12 @@ class DownloadMeter:
         self.last = 0
         self.streams = {}
         self.channel = self.group = None
+        self.resolve_seconds = 0
 
     def begin(self, channel):
         self.channel, self.group = channel.id, channel.upstream_group
         self.streams = {}
+        self.resolve_seconds = 0
 
     def _add(self, key, value):
         self.data[key] = self.data.get(key, 0) + value
@@ -45,6 +47,7 @@ class DownloadMeter:
         self.publish(force=True)
 
     def resolved(self, seconds):
+        self.resolve_seconds += seconds
         self._add('resolved', 1)
         self._add('resolve_seconds', seconds)
         self.publish(force=True)

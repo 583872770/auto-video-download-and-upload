@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -14,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from tests import test_scale
 from webapp.downmp3 import Downmp3Error, api_url, media_url, request_json, resolve
 from webapp.downloader import build_ydl_options
+from webapp.database import tasks
 from webapp.settings import validate_method_urls
 from web_worker import drain, execute
 
@@ -157,6 +159,9 @@ class Downmp3WebTests(unittest.TestCase):
         new = self.client.post('/api/downloads', json={'urls': '2Gu7q-KUXCk'}, headers=self.headers)
         self.assertEqual(new.status_code, 202, new.json)
         for task, expected in ((old, 'downmp3'), (new.json['items'][0], 'downmp3')):
+            with self.store.connect() as db:
+                db.execute(tasks.update().where(tasks.c.id == task['id']).values(
+                    status='running', worker_id=self.store.owner, lease_until=time.time() + 60))
             with self.subTest(provider=expected), \
                     patch('webapp.yt5s.resolve', return_value={'id': 'fixture'}) as yt5s, \
                     patch('webapp.downmp3.resolve', return_value={'id': 'fixture'}) as downmp3, \

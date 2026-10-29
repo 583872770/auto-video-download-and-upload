@@ -21,7 +21,7 @@ let settingsBaseline = {};
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
-const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d', bergung: 'Bergung' };
+const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d', bergung: 'Bergung / Cobalt' };
 $('#settings-form [name="yt1d_timeout"]').closest('label').after($('#bergung-settings-template').content.cloneNode(true));
 const browserCountLabel = $('#settings-form [name="yt5s_browser_count"]').closest('label');
 $('.task-defaults-panel').after($('#channel-settings-template').content.cloneNode(true));
@@ -234,6 +234,7 @@ function renderTasks() {
 function renderStatus() {
   if (!state.status) return;
   const { tools } = state.status;
+  if (!fleetEnabled) renderChannelPerformance(state.status.throughput);
   const methods = selectedProviders();
   const methodFour = methods.length === 1 && methods[0] === 'downmp3';
   const browserReady = !methods.some(method => ['yt5s', 'yt1d', 'bergung'].includes(method)) || (tools.yt5s_browser && tools.yt5s_display && tools.playwright);
@@ -407,35 +408,65 @@ function fillConfig(config) {
   renderStorageSettings();
   renderDownloadMethod();
 }
-const channelFields = [['id','渠道标识'],['label','名称'],['site_url','网站地址'],['api_url','API 地址'],['upstream_group','带宽组'],['resolver_group','解析组'],['quota_group','配额组'],['transfer_limit','同组传输上限'],['resolver_limit','同组解析上限'],['connection_limit','同组媒体连接上限'],['weight','分配权重']];
+const channelFields = [['id','渠道标识'],['label','名称'],['site_url','网站地址'],['api_url','API 地址'],['upstream_group','带宽组'],['resolver_group','解析组'],['quota_group','配额组'],['transfer_limit','同组传输上限'],['resolver_limit','同组解析上限'],['connection_limit','同组媒体连接上限'],['task_limit','此入口任务上限'],['weight','分配权重'],['verification','网站验证流程']];
+const channelNumbers = {transfer_limit:64,resolver_limit:16,connection_limit:128,task_limit:64,weight:10};
 function renderChannels(entries) {
-  $('#channel-entries').innerHTML = entries.map(item => `<fieldset class="channel-entry"><div class="scale-fields">${channelFields.map(([key,label])=>`<label>${label}<input data-channel-field="${key}" value="${escapeHTML(item[key] ?? '')}" ${['transfer_limit','resolver_limit','connection_limit','weight'].includes(key)?'type="number" min="1" max="128"':'type="text"'} required></label>`).join('')}</div><button type="button" class="text-button" data-channel-remove>移除此入口</button></fieldset>`).join('');
+  $('#channel-entries').innerHTML = entries.map(item => `<fieldset class="channel-entry"><div class="scale-fields">${channelFields.map(([key,label])=>`<label>${label}${key === 'verification' ? `<select data-channel-field="verification"><option value="auto"${item[key]==='auto'?' selected':''}>由网站自动处理（推荐）</option><option value="required"${!item[key]||item[key]==='required'?' selected':''}>先等待验证控件</option><option value="none"${item[key]==='none'?' selected':''}>直接提交网站</option></select>` : `<input data-channel-field="${key}" value="${escapeHTML(item[key] ?? (key==='task_limit'?8:''))}" ${channelNumbers[key]?`type="number" min="1" max="${channelNumbers[key]}"`:'type="text"'} required>`}</label>`).join('')}</div><button type="button" class="text-button" data-channel-remove>移除此入口</button></fieldset>`).join('');
 }
 function readChannels() {
   return $$('.channel-entry').map(row => Object.fromEntries([['adapter','bergung'], ...channelFields.map(([key]) => {
     const input = $(`[data-channel-field="${key}"]`, row);
-    return [key, input.type==='number' ? Number(input.value) : input.value.trim()];
+    return [key, channelNumbers[key] ? Number(input.value) : input.value.trim()];
   })]));
+}
+function channelSignature(entries) {
+  return JSON.stringify(entries.map(item => channelFields.map(([key]) => item[key] ?? (key==='task_limit'?8:key==='verification'?'required':''))));
+}
+function renderChannelPerformance(rate) {
+  $('#channel-performance').textContent = rate ? `媒体接收 ${rate.media_receive_mbps ?? '—'} Mbps · 校验成品 ${rate.verified_mbps ?? '—'} Mbps（滚动窗口） · ${rate.reason || '等待采样'}` : '等待实例资源采样。';
+  $('#channel-rates').replaceChildren(...Object.values(rate?.channels || {}).filter(item => item.receive_mbps || item.succeeded || item.failed || item.resolved).map(item => {
+    const line = document.createElement('p');
+    line.textContent = `${item.label}：接收 ${item.receive_mbps} Mbps · 成功 ${item.succeeded} · 失败 ${item.failed}${item.resolve_seconds == null ? '' : ` · 平均解析 ${item.resolve_seconds} 秒`}（当前滚动窗口）`;
+    return line;
+  }));
 }
 $('#channel-add').addEventListener('click', () => {
   const entries = readChannels();
   if (entries.length >= 16) { toast('最多配置 16 个渠道。', true); return; }
-  entries.push({id:`bergung_${entries.length+1}`,label:`Bergung ${entries.length+1}`,site_url:'https://bergung.hoffnungfuerdiezukunft.net/',api_url:'https://bergung-api.hoffnungfuerdiezukunft.net/',upstream_group:'unverified-media',resolver_group:'bergung',quota_group:'bergung',transfer_limit:8,resolver_limit:4,connection_limit:16,weight:1});
+  let suffix = entries.length + 1;
+  while (entries.some(entry => entry.id === `bergung_${suffix}`)) suffix++;
+  entries.push({id:`bergung_${suffix}`,label:`Bergung ${suffix}`,site_url:'https://bergung.hoffnungfuerdiezukunft.net/',api_url:'https://bergung-api.hoffnungfuerdiezukunft.net/',upstream_group:'unverified-media',resolver_group:'bergung',quota_group:'bergung',transfer_limit:8,resolver_limit:4,connection_limit:16,task_limit:4,weight:1,verification:'auto'});
   renderChannels(entries); settingsDirty = true;
+});
+$('#cobalt-catalog-add').addEventListener('click', () => {
+  const option = $('#cobalt-catalog-choice').selectedOptions[0];
+  if (!option) return;
+  const entry = JSON.parse(option.dataset.channel);
+  const entries = readChannels();
+  if (entries.some(item => item.id === entry.id || item.api_url === entry.api_url)) { toast('这个后台已经在当前实例的渠道中。'); return; }
+  if (entries.length >= 16) { toast('最多配置 16 个渠道。', true); return; }
+  entries.push(entry); renderChannels(entries); settingsDirty = true;
+  const methods = providerDraft || selectedProviders();
+  if (!methods.includes('bergung')) providerDraft = [...methods, 'bergung'];
+  renderDownloadMethod(); renderDownloadControl();
+  $('#settings-save-state').textContent = '入口已添加，点击保存设置后生效';
+  toast('入口已添加到当前实例，请保存设置。');
 });
 $('#channel-entries').addEventListener('click', event => {
   const button = event.target.closest('[data-channel-remove]');
   if (button) { button.closest('.channel-entry').remove(); settingsDirty = true; }
 });
 function renderProviderChoices(container, methods, busy = false) {
-  const signature = JSON.stringify([methods, busy]);
+  const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
+  $('.task-defaults-panel .field-label').textContent = auto ? '参与自动调度的下载方式' : '下载方式与优先级';
+  const signature = JSON.stringify([methods, busy, auto]);
   if (container.dataset.signature === signature) return;
   container.dataset.signature = signature;
   const order = [...methods, ...Object.keys(providerNames).filter(method => !methods.includes(method))];
   container.innerHTML = order.map(method => {
     const index = methods.indexOf(method);
     const enabled = index >= 0;
-    return `<div class="provider-choice" data-provider="${method}"><label><input type="checkbox" data-provider-toggle ${enabled ? 'checked' : ''} ${busy ? 'disabled' : ''}><span class="provider-rank">${enabled ? index + 1 : '—'}</span><strong>${providerNames[method]}</strong><small>${enabled ? index === 0 ? '优先使用' : '前项失败后尝试' : '未启用'}</small></label><div class="provider-order"><button type="button" data-method-move="-1" aria-label="提高 ${providerNames[method]} 优先级" ${busy || !enabled || index === 0 ? 'disabled' : ''}>↑</button><button type="button" data-method-move="1" aria-label="降低 ${providerNames[method]} 优先级" ${busy || !enabled || index === methods.length - 1 ? 'disabled' : ''}>↓</button></div></div>`;
+    return `<div class="provider-choice" data-provider="${method}"><label><input type="checkbox" data-provider-toggle ${enabled ? 'checked' : ''} ${busy ? 'disabled' : ''}><span class="provider-rank">${enabled ? auto ? '✓' : index + 1 : '—'}</span><strong>${providerNames[method]}</strong><small>${enabled ? auto ? '自动候选' : index === 0 ? '优先使用' : '前项失败后尝试' : '未启用'}</small></label><div class="provider-order"${auto?' hidden':''}><button type="button" data-method-move="-1" aria-label="提高 ${providerNames[method]} 优先级" ${busy || !enabled || index === 0 ? 'disabled' : ''}>↑</button><button type="button" data-method-move="1" aria-label="降低 ${providerNames[method]} 优先级" ${busy || !enabled || index === methods.length - 1 ? 'disabled' : ''}>↓</button></div></div>`;
   }).join('');
 }
 function readProviderChoices(container) {
@@ -447,7 +478,12 @@ function renderDownloadMethod() {
   renderProviderChoices($('#download-method'), providerDraft || methods, downloadMethodBusy || !state.config);
   $('#strategy-save-state').textContent = providerDraft ? `${target}有未保存修改，请点击下方“保存设置”` : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
   const tools = state.status?.tools;
-  const notes = [`尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
+  const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
+  const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。服务器负载或限流升高时自动收敛并发。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
+  const throughput = $('#settings-form [name="throughput_mode"]');
+  // Auto routing and the resource controller are one saved strategy.
+  if (auto) throughput.value = 'auto';
+  throughput.disabled = auto;
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
@@ -456,6 +492,7 @@ function renderDownloadMethod() {
   notes.push('保存后仅影响当前实例后续领取的视频，无需暂停或重启；其他实例使用各自策略，正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
 }
+$('#settings-form [name="scheduler_mode"]').addEventListener('change', renderDownloadMethod);
 for (const id of ['download-method']) {
   const container = $(`#${id}`);
   const update = async (event, moving) => {
@@ -1026,7 +1063,7 @@ $('#settings-form').addEventListener('submit', event => {
     downloadMethodBusy = true; renderDownloadMethod();
     const data = Object.fromEntries([...new FormData(event.target)].filter(([key,value]) => value !== settingsBaseline[key]));
     const channels = readChannels();
-    if (JSON.stringify(channels) !== JSON.stringify(state.config?.download_channels || [])) data.download_channels = channels;
+    if (channelSignature(channels) !== channelSignature(state.config?.download_channels || [])) data.download_channels = channels;
     if (providerDraft) data.download_methods = [...providerDraft];
     try {
       await api('/api/config', { method:'PUT', body:data });

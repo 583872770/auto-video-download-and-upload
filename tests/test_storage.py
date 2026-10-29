@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -101,6 +102,10 @@ class StorageContract:
         payload = {'config': {'path': 'videos', 'proxy_mode': 'direct'}, 'base': str(self.root),
                    'urls': ['https://example.test/failure.mp4']}
         task = self.store.create('download', payload)
+        with self.store.connect() as db:
+            from webapp.database import tasks
+            db.execute(tasks.update().where(tasks.c.id == task['id']).values(
+                status='running', worker_id=self.store.owner, lease_until=time.time() + 60))
         root = self.store.directory / 'test-downloads' / task['id']
 
         def download(downloader, urls):

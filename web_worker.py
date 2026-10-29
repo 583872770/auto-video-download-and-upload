@@ -132,10 +132,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         progress.state['worker_slot'] = worker_slot
         from webapp.settings import PROVIDERS, download_methods, validate_method_urls
         methods = download_methods(config)
-        from webapp.channels import execution_config, registry
+        from webapp.channels import backend_key, execution_config, registry
         from webapp.channel_scheduler import ChannelScheduler
         from webapp.download_metrics import meter_for
         channels = registry(config)
+        def route_key(channel):
+            return ('cobalt:' + backend_key(channel) if config.get('scheduler_mode') == 'auto'
+                    and channel.adapter == 'bergung' else channel.adapter)
         automatic = len(channels) > 1
         scheduler = ChannelScheduler(store, config, payload.get('_task_id'))
         meter = meter_for(store.directory if store else base / '.cache', worker_slot)
@@ -205,7 +208,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     raise RuntimeError('自动轮换需要通过下载队列执行。')
                 rotation_id = rotation['id'] + (f':{worker_slot}' if worker_slot else '')
                 completed = rotation_completed(rotation_id, rotation['count_failures'])
-            proxy['health_providers'] = methods
+            proxy['health_providers'] = list(dict.fromkeys(route_key(channel) for channel in channels))
             snapshot = manager.download_snapshot(proxy, completed)
             progress.state.update(proxy_node=snapshot['node'])
             if rotation:
@@ -217,14 +220,15 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                       '_parser_clash_directory': str(manager.directory)}
             from webapp.proxy_health import ProxyHealth, ProxyCoolingDown
             route_health = ProxyHealth(manager.directory)
-            eligible = [provider for provider in methods if route_health.eligible(snapshot['node'], provider)]
+            eligible_channels = [channel for channel in channels if route_health.eligible(snapshot['node'], route_key(channel))]
+            eligible = [provider for provider in methods if any(channel.adapter == provider for channel in eligible_channels)]
             for provider in methods:
                 if provider not in eligible:
                     event('provider_cooling_down', provider=provider, proxy_node=snapshot['node'])
             if not eligible:
                 raise ProxyCoolingDown('当前出口的下载方式均在冷却，稍后重新选择健康线路。')
             methods = eligible
-            channels = [channel for channel in channels if channel.adapter in eligible]
+            channels = eligible_channels
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         event('connection_selected', proxy_mode=config.get('proxy_mode', 'manual'),
               proxy_node=config.get('_resolved_clash_node', ''))
@@ -376,7 +380,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
         @contextmanager
         def transmitting(channel, info, streams):
-            nonlocal failure_phase
+            nonlocal failure_phase, transfer_seconds
             last_wait = [0]
             def waiting():
                 # A ready URL must not retain an idle browser while waiting for
@@ -405,13 +409,19 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     # Initial media requests can be throttled before yt-dlp's
                     # first progress event; the displayed stage is still extracting.
                     failure_phase = 'transfer'
-                    yield
+                    started = time.monotonic()
+                    try:
+                        yield
+                    finally:
+                        transfer_seconds += time.monotonic() - started
 
+        transfer_seconds = 0
         def attempt(channel, addresses):
-            nonlocal failure, failure_phase
+            nonlocal failure, failure_phase, transfer_seconds
             # Each provider needs its own error collector and Cookie policy.
             failure = DownloadFailure()
             failure_phase = 'resolve'
+            transfer_seconds = 0
             provider = channel.adapter
             provider_config = execution_config(config, channel)
             meter.begin(channel)
@@ -446,6 +456,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 with scheduler.permit(channel, 'resolve', on_wait=waiting):
                     yield
                 meter.resolved(time.monotonic() - started)
+                scheduler.prepared()
 
             def transfer(info):
                 protocols = [item.get('protocol', '') for item in info.get('requested_formats') or [info]]
@@ -488,6 +499,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 with resolving():
                                     info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage,
                                                    worker_slot=worker_slot, browser_capacity=browser_capacity)
+                                downloader.params['format'] = 'cobalt_video+cobalt_audio' if info.get('_cobalt_merge') else options['format']
+                                downloader.format_selector = downloader.build_format_selector(downloader.params['format'])
                                 with transfer(info):
                                     downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
@@ -517,10 +530,10 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         skipped_any = False
         used_fallback = False
 
-        def record_route(provider, **outcome):
+        def record_route(channel, **outcome):
             if route_health:
                 try:
-                    route_health.record(config['_resolved_clash_node'], provider, **outcome)
+                    route_health.record(config['_resolved_clash_node'], route_key(channel), **outcome)
                 except OSError as error:
                     event('route_health_unavailable', error_type=type(error).__name__)
 
@@ -528,7 +541,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.state.update(fallback_used=False, fallback_reason='', fallback_from='')
             pending = list(channels)
             previous_error = None
-            for index in range(len(channels)):
+            budget = min(len(channels), int(config.get('auto_channel_attempts', 3))) if config.get('scheduler_mode') == 'auto' else len(channels)
+            for index in range(budget):
                 assignment = ExitStack()
                 try:
                     channel = assignment.enter_context(scheduler.assignment(pending, allow_fallback=previous_error is not None))
@@ -554,10 +568,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                             if config.get('proxy_mode') == 'clash' else {}))
                     skipped_any |= attempt(channel, addresses)
                     scheduler.outcome(channel, success=True, elapsed=time.monotonic() - provider_started,
-                                      size=sum(output_files.values()) - before_bytes)
+                                      size=sum(output_files.values()) - before_bytes,
+                                      resolve_elapsed=meter.resolve_seconds, transfer_elapsed=transfer_seconds)
                     meter.finish(True)
                     if route_health and progress.state.get('downloaded_bytes', 0) > 0:
-                        record_route(provider,
+                        record_route(channel,
                             transferred_bytes=progress.state['downloaded_bytes'],
                             elapsed=progress.state.get('stage_seconds', {}).get('downloading', 0))
                     event('provider_end', provider=provider, outcome='completed',
@@ -573,12 +588,12 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     from webapp.channel_scheduler import throttle_details
                     status, _ = throttle_details(error)
                     meter.finish(False, upstream_failure=phase == 'transfer' and status in (429, 503))
-                    record_route(provider, error=error)
+                    record_route(channel, error=error)
                     event('provider_end', provider=provider, outcome='failed',
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
                           proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
-                    if not pending:
+                    if not pending or index + 1 >= budget:
                         raise
                     # Local storage errors, missing dependencies and loss of
                     # ownership require intervention rather than another transfer.
@@ -769,8 +784,10 @@ def drain(directory, slot=0, role='all'):
                     transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error, BergungError)) else
                                  isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
-                    from webapp.channel_scheduler import throttle_details
+                    from webapp.channel_scheduler import throttle_details, error_traits
                     _, server_delay = throttle_details(error)
+                    typed_retry, video_error = error_traits(error)
+                    transient = (transient or typed_retry) and not video_error
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])
                     event('attempt_end', outcome=current['status'] if current else 'unknown',

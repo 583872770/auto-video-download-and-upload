@@ -49,7 +49,9 @@ class BrowserPoolTests(unittest.TestCase):
         children = [context.Process(target=occupy_browser, args=(str(self.root), capacity, messages, release, active, peak))
                     for _ in range(count)]
 
-        def cleanup():
+        # Keep the shared counter alive until spawned children have unpickled
+        # its POSIX semaphore; Process drops its argument references on start.
+        def cleanup(active=active):
             release.touch()
             for child in children:
                 child.join(timeout=5)
