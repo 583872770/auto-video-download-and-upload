@@ -180,6 +180,58 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(reverted['media_receive_mbps'],8)
             self.assertEqual(reverted['receive_mbps'],0)
 
+    def test_ready_transfer_backlog_counts_as_demand_for_global_and_group_probe(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 3, 'yt5s_browser_count': 2,
+                  'download_methods': ['bergung']}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda: clock[0])
+        sample = {'cpu_cores': 4, 'memory_total': 8192*MIB, 'memory_available': 4096*MIB,
+                  'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        counters = {'worker': {'received_bytes': 0, 'verified_bytes': 0,
+                               'groups': {'unverified-media': {'received_bytes': 0}}}}
+        with patch.object(controller, 'sample', side_effect=lambda: dict(sample)), \
+             patch('webapp.download_metrics.read_counters', side_effect=lambda *_: json.loads(json.dumps(counters))):
+            controller.update(config)
+            clock[0] += 61
+            counters['worker']['received_bytes'] += 61_000_000
+            counters['worker']['groups']['unverified-media']['received_bytes'] += 61_000_000
+            state = controller.update(config, [
+                {'stage': 'downloading', 'upstream_group': 'unverified-media'},
+                {'stage': 'downloading', 'upstream_group': 'unverified-media'},
+                {'stage': 'waiting_transfer', 'upstream_group': 'unverified-media',
+                 'stage_started_at': time.time() - 20},
+                {'stage': 'waiting_transfer', 'upstream_group': 'unverified-media',
+                 'stage_started_at': time.time() - 10},
+            ])
+        self.assertEqual(state['ready_transfer_count'], 2)
+        self.assertEqual(state['groups']['unverified-media']['ready'], 2)
+        self.assertEqual(state['transfers'], 3)
+        self.assertEqual(state['groups']['unverified-media']['limit'], 3)
+        self.assertGreaterEqual(state['oldest_ready_seconds'], 10)
+
+    def test_supply_gap_does_not_mark_group_probe_as_bandwidth_plateau(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 16, 'yt5s_browser_count': 2,
+                  'download_methods': ['bergung']}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda: clock[0])
+        sample = {'cpu_cores': 4, 'memory_total': 8192*MIB, 'memory_available': 4096*MIB,
+                  'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        counter = {'worker': {'received_bytes': 0, 'groups': {'unverified-media': {'received_bytes': 0}}}}
+        active = [{'stage': 'downloading', 'upstream_group': 'unverified-media'}]*2
+        with patch.object(controller, 'sample', side_effect=lambda: dict(sample)), \
+             patch('webapp.download_metrics.read_counters', side_effect=lambda *_: json.loads(json.dumps(counter))):
+            controller.update(config)
+            clock[0] += 61
+            counter['worker']['received_bytes'] += 61_000_000
+            counter['worker']['groups']['unverified-media']['received_bytes'] += 61_000_000
+            grown = controller.update(config, active)
+            self.assertEqual(grown['groups']['unverified-media']['limit'], 3)
+            clock[0] += 61
+            counter['worker']['received_bytes'] += 30_000_000
+            counter['worker']['groups']['unverified-media']['received_bytes'] += 30_000_000
+            gap = controller.update(config, active[:1])
+        self.assertEqual(gap['groups']['unverified-media']['limit'], 3)
+
     def test_browser_probe_reverts_and_worker_budget_counts_per_process_pools(self):
         config={'throughput_mode':'auto','worker_count':16,'yt5s_browser_count':4,'download_methods':['bergung']}
         clock=[100]
@@ -197,6 +249,39 @@ class ResourceFeedbackTests(unittest.TestCase):
             reverted=controller.update(config,['waiting_browser']*4)
             self.assertEqual(reverted['browsers'],2)
             self.assertEqual(runtime_limits(config,self.directory)['workers'],reverted['workers'])
+
+    def test_parser_cpu_pressure_retires_browser_before_media_capacity(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 16, 'yt5s_browser_count': 3,
+                  'download_methods': ['bergung']}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda: clock[0])
+        sample = {'cpu_cores': 4, 'memory_total': 8192*MIB, 'memory_available': 4096*MIB,
+                  'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        with patch.object(controller, 'sample', side_effect=lambda: dict(sample)):
+            before = controller.update(config)
+            clock[0] += 61
+            sample['cpu_percent'] = 97
+            after = controller.update(config, ['opening_site', 'downloading'])
+        self.assertEqual(after['transfers'], before['transfers'])
+        self.assertEqual(after['browsers'], before['browsers'] - 1)
+
+    def test_known_bandwidth_target_stops_group_expansion(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 16, 'yt5s_browser_count': 2,
+                  'download_methods': ['bergung'], 'bandwidth_mbps': 300}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda: clock[0])
+        sample = {'cpu_cores': 4, 'memory_total': 8192*MIB, 'memory_available': 4096*MIB,
+                  'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        counter = {'worker': {'received_bytes': 0, 'groups': {'unverified-media': {'received_bytes': 0}}}}
+        with patch.object(controller, 'sample', side_effect=lambda: dict(sample)), \
+             patch('webapp.download_metrics.read_counters', side_effect=lambda *_: json.loads(json.dumps(counter))):
+            controller.update(config)
+            clock[0] += 61
+            counter['worker']['received_bytes'] = 61 * 35_000_000
+            counter['worker']['groups']['unverified-media']['received_bytes'] = 61 * 35_000_000
+            state = controller.update(config, [{'stage': 'downloading', 'upstream_group': 'unverified-media'}]*2)
+        self.assertEqual(state['groups']['unverified-media']['limit'], 2)
+        self.assertEqual(state['target_mbps'], 300)
 
     def test_video_failures_do_not_reduce_shared_bandwidth_capacity(self):
         config={'throughput_mode':'auto','worker_count':16,'yt5s_browser_count':2,'download_methods':['bergung']}

@@ -1,5 +1,6 @@
 """Resolve YouTube videos through the Bergung Cobalt website."""
 import asyncio
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +10,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeoutError, async_playwright
 
 from webapp.yt5s import BrowserEnvironmentRequired, WebsiteTimeoutError, require_browser_environment
-from webapp.yt5s_browser import session
+from webapp.yt5s_browser import BrowserSession, session
 
 
 SITE_URL = 'https://bergung.hoffnungfuerdiezukunft.net/'
@@ -18,6 +19,63 @@ MAX_RESPONSE = 1024 * 1024
 RETRYABLE_NAVIGATION_ERRORS = ('net::ERR_CONNECTION_CLOSED', 'net::ERR_CONNECTION_RESET',
                                'net::ERR_TIMED_OUT', 'net::ERR_PROXY_CONNECTION_FAILED',
                                'net::ERR_TUNNEL_CONNECTION_FAILED')
+
+
+class BergungRuntime:
+    """Persistent Playwright/CDP state owned by one parser slot.
+
+    The runtime is only used from the slot's persistent asyncio loop.  A
+    signed result is still returned per request and response listeners are
+    removed after every request, so data from a previous video cannot leak
+    into the next resolution.
+    """
+    def __init__(self):
+        self.driver = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.address = None
+        self.settings = None
+
+    async def connect(self, owner, args):
+        address = await owner.start(args)
+        if self.page is not None and self.browser is not None and self.address == address:
+            try:
+                if not self.page.is_closed():
+                    return self.browser, self.context, self.page
+            except Exception:
+                pass
+        await self.close()
+        self.driver = await async_playwright().start()
+        try:
+            self.browser = await self.driver.chromium.connect_over_cdp(address, timeout=20000)
+            self.context = self.browser.contexts[0]
+            self.page = await self.context.new_page()
+            self.address = address
+            return self.browser, self.context, self.page
+        except Exception:
+            await self.close()
+            raise
+
+    async def reset_page(self):
+        page, self.page = self.page, None
+        self.settings = None
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def close(self):
+        await self.reset_page()
+        self.context = self.browser = None
+        self.address = None
+        driver, self.driver = self.driver, None
+        if driver is not None:
+            try:
+                await driver.stop()
+            except Exception:
+                pass
 
 
 class BergungError(RuntimeError):
@@ -107,7 +165,22 @@ async def open_site(page, url):
             await asyncio.sleep(1)
 
 
-async def probe(args, owner, on_stage=None):
+@asynccontextmanager
+async def _browser_scope(args, owner, runtime):
+    """Yield a browser page, keeping the connection alive when requested."""
+    if runtime is not None:
+        browser, context, page = await runtime.connect(owner, args)
+        yield browser, context, page, True
+        return
+    address = await owner.start(args)
+    async with async_playwright() as driver:
+        browser = await driver.chromium.connect_over_cdp(address, timeout=20000)
+        context = browser.contexts[0]
+        page = await context.new_page()
+        yield browser, context, page, False
+
+
+async def probe(args, owner, on_stage=None, *, runtime=None):
     def stage(value):
         if on_stage:
             on_stage(value)
@@ -129,16 +202,14 @@ async def probe(args, owner, on_stage=None):
         raise BergungError('Bergung 网页设置未生效，请检查网站是否正常加载。')
 
     stage('starting_browser')
-    address = await owner.start(args)
-    async with async_playwright() as driver:
+    async with _browser_scope(args, owner, runtime) as (_, context, page, persistent):
         stage('connecting_browser')
-        browser = await driver.chromium.connect_over_cdp(address, timeout=20000)
-        context = browser.contexts[0]
         existing_pages = set(context.pages)
-        page = await context.new_page()
         pending = set()
         completed = asyncio.Event()
         result = {}
+        success = False
+        response_handler = download_handler = None
         try:
             async def capture(response):
                 if response.url.rstrip('/') != args.api_url.rstrip('/') or response.request.method != 'POST':
@@ -157,6 +228,15 @@ async def probe(args, owner, on_stage=None):
 
             def on_response(response):
                 if response.url.rstrip('/') == args.api_url.rstrip('/') and response.request.method == 'POST':
+                    # Never accept a late response belonging to a previous
+                    # video in the resident page.
+                    try:
+                        submitted = response.request.post_data_json
+                    except Exception:
+                        return
+                    expected = f'https://www.youtube.com/watch?v={args.video_id}'
+                    if not isinstance(submitted, dict) or submitted.get('url') != expected:
+                        return
                     task = asyncio.create_task(capture(response))
                     pending.add(task)
                     task.add_done_callback(pending.discard)
@@ -166,21 +246,25 @@ async def probe(args, owner, on_stage=None):
                 pending.add(task)
                 task.add_done_callback(pending.discard)
 
-            page.on('response', on_response)
-            page.on('download', on_download)
+            response_handler, download_handler = on_response, on_download
+            page.on('download', download_handler)
             stage('opening_site')
-            response = await open_site(page, args.site_url + 'settings/video')
-            if response and response.status >= 400:
-                raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500 or response.status == 429,
-                                   http_status=response.status, retry_after=response.headers.get('retry-after'))
-            await select_setting(page, 'videoQuality', args.quality)
-            await select_setting(page, 'youtubeVideoContainer', 'auto')
-            if args.quality in ('max', '4320', '2160', '1440'):
-                await select_setting(page, 'youtubeVideoCodec', 'av1')
-            else:
-                await select_setting(page, 'youtubeVideoCodec', 'h264')
-            await open_site(page, args.site_url + 'settings/local')
-            await select_setting(page, 'localProcessing', 'disabled')
+            settings = (args.site_url, args.api_url, args.quality, getattr(args, 'verification', 'required'))
+            if runtime is None or runtime.settings != settings:
+                response = await open_site(page, args.site_url + 'settings/video')
+                if response and response.status >= 400:
+                    raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500 or response.status == 429,
+                                       http_status=response.status, retry_after=response.headers.get('retry-after'))
+                await select_setting(page, 'videoQuality', args.quality)
+                await select_setting(page, 'youtubeVideoContainer', 'auto')
+                if args.quality in ('max', '4320', '2160', '1440'):
+                    await select_setting(page, 'youtubeVideoCodec', 'av1')
+                else:
+                    await select_setting(page, 'youtubeVideoCodec', 'h264')
+                await open_site(page, args.site_url + 'settings/local')
+                await select_setting(page, 'localProcessing', 'disabled')
+                if runtime is not None:
+                    runtime.settings = settings
             response = await open_site(page, args.site_url)
             if response and response.status >= 400:
                 raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500 or response.status == 429,
@@ -202,6 +286,7 @@ async def probe(args, owner, on_stage=None):
                 except BrowserTimeoutError:
                     raise WebsiteTimeoutError('Bergung 网站验证超时，请在远程桌面完成验证或更换节点。') from None
             stage('submitting_site')
+            page.on('response', response_handler)
             await page.locator('#download-button').click(timeout=30000)
             stage('extracting')
             await asyncio.wait_for(completed.wait(), timeout=min(args.timeout, 90))
@@ -213,7 +298,9 @@ async def probe(args, owner, on_stage=None):
                                    retryable=result['status'] in (408, 429, 500, 502, 503, 504),
                                    http_status=result['status'], retry_after=result.get('retry_after'))
             try:
-                return result_info(result.get('data'), args.video_id, args.quality, result['status'], site_url=args.site_url)
+                info = result_info(result.get('data'), args.video_id, args.quality, result['status'], site_url=args.site_url)
+                success = True
+                return info
             except BergungError as error:
                 error.retry_after = result.get('retry_after')
                 raise
@@ -224,11 +311,25 @@ async def probe(args, owner, on_stage=None):
                 task.cancel()
             await asyncio.gather(*list(pending), return_exceptions=True)
             try:
-                opened = set(context.pages) - existing_pages
-                opened.add(page)
-                await asyncio.wait_for(asyncio.gather(*(item.close() for item in opened)), timeout=5)
+                if response_handler:
+                    page.remove_listener('response', response_handler)
+                if download_handler:
+                    page.remove_listener('download', download_handler)
             except Exception:
-                await asyncio.to_thread(owner.close)
+                pass
+            if persistent:
+                opened = set(context.pages) - existing_pages
+                if opened:
+                    await asyncio.wait_for(asyncio.gather(*(item.close() for item in opened)), timeout=5)
+                if not success and runtime is not None:
+                    await runtime.reset_page()
+            else:
+                try:
+                    opened = set(context.pages) - existing_pages
+                    opened.add(page)
+                    await asyncio.wait_for(asyncio.gather(*(item.close() for item in opened)), timeout=5)
+                except Exception:
+                    await asyncio.to_thread(owner.close)
 
 
 def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, browser_capacity=None):
@@ -270,14 +371,23 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
             **({'disk_directory': config['_disk_state'], 'disk_config': config} if config.get('_disk_state') else {})) as owner:
         try:
             from webapp.parser_broker import cancellable
+            runtime = None
+            if isinstance(browser_session, BrowserSession):
+                runtime = browser_session.runtime('bergung', BergungRuntime)
+
             async def run():
-                work = cancellable(probe(args, owner, on_stage), config.get('_parser_cancel_check'))
+                operation = probe(args, owner, on_stage, runtime=runtime) if runtime is not None else probe(args, owner, on_stage)
+                work = cancellable(operation, config.get('_parser_cancel_check'))
                 if config.get('_resolver_deadline'):
                     try:
                         return await asyncio.wait_for(work, timeout=int(config['_resolver_deadline']))
                     except TimeoutError:
                         raise BergungError('渠道解析超时，自动策略将尝试其他可用渠道。', retryable=True) from None
                 return await work
+            # A real BrowserSession owns the event loop.  Test doubles and
+            # direct callers retain the short-lived asyncio path.
+            if runtime is not None:
+                return browser_session.run(run)
             return asyncio.run(run())
         except BrowserError as error:
             raise BergungError('Bergung 浏览器连接网站失败，请检查当前网络或代理节点。',

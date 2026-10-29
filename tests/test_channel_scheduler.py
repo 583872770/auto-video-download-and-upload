@@ -124,6 +124,23 @@ class AdmissionTests(unittest.TestCase):
             with self.first.connect() as db:
                 self.assertFalse(db.execute(select(download_permits).where(download_permits.c.task_id == second.task_id)).first())
 
+    def test_waiting_transfer_reloads_runtime_limit_without_resolving_again(self):
+        from dataclasses import replace
+        first, second = self.scheduler(), self.scheduler(self.second)
+        route = replace(first.channels[0], transfer_limit=8)
+        first.caps['upstream:bergung'] = second.caps['upstream:bergung'] = 8
+        first.caps['quota:bergung'] = second.caps['quota:bergung'] = 8
+        limits = {'transfers': 8, 'groups': {'bergung': {'limit': 1}}}
+        waits = []
+        def waiting():
+            waits.append(second.blocked_resource)
+            limits['groups']['bergung']['limit'] = 2
+        with patch('webapp.channel_scheduler.runtime_limits', return_value=limits):
+            with first.permit(route, 'transfer', timeout=0):
+                with second.permit(route, 'transfer', timeout=5, on_wait=waiting):
+                    pass
+        self.assertEqual(waits, ['local-upstream'])
+
     def test_expired_and_reassigned_task_cannot_keep_or_obtain_capacity(self):
         first, second = self.scheduler(), self.scheduler(self.second)
         with first.permit(first.channels[0], 'transfer', timeout=0):

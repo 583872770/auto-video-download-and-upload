@@ -134,6 +134,7 @@ class WebsiteTests(unittest.TestCase):
         except RuntimeError:
             self.skipTest('Chrome/Chromium required for website fixture')
         requests = []
+        visits = []
         widget = [True]
 
         class Website(BaseHTTPRequestHandler):
@@ -141,6 +142,7 @@ class WebsiteTests(unittest.TestCase):
                 pass
 
             def do_GET(self):
+                visits.append(self.path)
                 if self.path == '/settings/video':
                     body = b'''<button id="setting-button-save-videoQuality-max" aria-pressed="false">max</button>
                     <button id="setting-button-save-youtubeVideoCodec-av1" aria-pressed="false">av1</button>
@@ -211,7 +213,16 @@ class WebsiteTests(unittest.TestCase):
                                   'disk_min_free_gb':0,'disk_resume_free_gb':0})
             broker.start()
             pids = []
+            pages = []
+            loops = []
             original_start = NativeBrowser.start
+            from webapp.bergung import BergungRuntime
+            original_connect = BergungRuntime.connect
+            async def observed_connect(runtime, owner, options):
+                result = await original_connect(runtime, owner, options)
+                pages.append(result[2])
+                loops.append(asyncio.get_running_loop())
+                return result
             async def headless_start(browser, options):
                 options.headless = True
                 address = await original_start(browser, options)
@@ -219,15 +230,22 @@ class WebsiteTests(unittest.TestCase):
                 return address
             try:
                 with patch('webapp.bergung.require_environment',return_value=executable), \
-                     patch.object(NativeBrowser,'start',headless_start), patch('builtins.print'):
+                     patch.object(NativeBrowser,'start',headless_start), \
+                     patch.object(BergungRuntime,'connect',observed_connect), patch('builtins.print'):
                     config={'proxy_mode':'direct','_bergung_site_url':root,'_bergung_api_url':root}
-                    for _ in range(2):
-                        resolved=resolve_remote(VIDEO,config,Path(directory),Path(directory))
+                    visits.clear()
+                    for url in (VIDEO, 'https://www.youtube.com/watch?v=00000000002'):
+                        resolved=resolve_remote(url,config,Path(directory),Path(directory))
                         self.assertEqual(resolved['url'],CDN)
             finally:
                 broker.close()
             self.assertEqual(len(pids),2)
             self.assertEqual(pids[0],pids[1])
+            self.assertIs(pages[0], pages[1])
+            self.assertIs(loops[0], loops[1])
+            self.assertEqual(visits.count('/settings/video'), 1)
+            self.assertEqual(visits.count('/settings/local'), 1)
+            self.assertEqual(requests[-1]['url'], 'https://www.youtube.com/watch?v=00000000002')
 
 
 class WorkflowTests(unittest.TestCase):

@@ -25,6 +25,35 @@ class BrokerTests(unittest.TestCase):
         self.broker.start()
         self.addCleanup(self.broker.close)
 
+    def test_session_event_loop_reuse_cancellation_and_cleanup(self):
+        from webapp.yt5s_browser import BrowserSession
+        session = BrowserSession()
+        self.addCleanup(session.close)
+        loops, threads, closed = [], [], []
+        class Runtime:
+            async def close(self):
+                closed.append((asyncio.get_running_loop(), threading.get_ident()))
+        runtime = session.runtime('fixture', Runtime)
+        self.assertIs(runtime, session.runtime('fixture', Runtime))
+        async def work():
+            loops.append(asyncio.get_running_loop())
+            threads.append(threading.get_ident())
+            return 'ok'
+        self.assertEqual(session.run(work), 'ok')
+        self.assertEqual(session.run(work), 'ok')
+        self.assertIs(loops[0], loops[1])
+        self.assertNotEqual(threads[0], threading.get_ident())
+        async def cancelled():
+            raise asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            session.run(cancelled)
+        self.assertEqual(session.run(work), 'ok')
+        loop_thread = session._loop_thread
+        session.close()
+        self.assertFalse(loop_thread.is_alive())
+        self.assertEqual(closed, [(loops[0], threads[0])])
+        self.assertEqual(session._runtimes, {})
+
     def test_reuses_slot_and_session_for_different_download_owners(self):
         owners = []
         def fake(*args, **kwargs):

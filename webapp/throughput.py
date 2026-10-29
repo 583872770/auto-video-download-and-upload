@@ -176,12 +176,31 @@ class ThroughputController:
         transfers = min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2)))
         counts = {}
         group_active = {}
+        group_ready = {}
+        group_demand = {}
+        wait_resources = {}
+        ready_ages = []
         for item in stages:
             stage = item.get('stage') if isinstance(item, dict) else item
             counts[stage] = counts.get(stage, 0) + 1
-            if isinstance(item, dict) and stage in ('downloading', 'processing') and item.get('upstream_group'):
+            if isinstance(item, dict) and item.get('upstream_group'):
                 group = item['upstream_group']
-                group_active[group] = group_active.get(group, 0) + 1
+                if stage in ('downloading', 'processing') or item.get('transfer_admitted'):
+                    group_active[group] = group_active.get(group, 0) + 1
+                elif stage == 'waiting_transfer':
+                    # A resolved URL is a real demand signal.  Counting it as
+                    # active work prevents the controller from mistaking a
+                    # full ready queue for an idle downloader.
+                    group_ready[group] = group_ready.get(group, 0) + 1
+                    blocked = item.get('transfer_wait_resource')
+                    if blocked in (None, 'local-upstream', 'upstream'):
+                        group_demand[group] = group_demand.get(group, 0) + 1
+            if isinstance(item, dict) and stage == 'waiting_transfer':
+                blocked = item.get('transfer_wait_resource') or 'unknown'
+                wait_resources[blocked] = wait_resources.get(blocked, 0) + 1
+                started = item.get('stage_started_at')
+                if isinstance(started, (int, float)):
+                    ready_ages.append(max(0, time.time() - started))
         from webapp.download_metrics import read_counters
         metrics = read_counters(self.directory)
         received = verified = resolved = 0
@@ -223,13 +242,22 @@ class ThroughputController:
         reason = '有界解析与传输并行'
         changed = False
         if automatic(config) and same and tick - self.adjusted >= 60:
-            active = counts.get('downloading', 0) + counts.get('processing', 0)
+            active = max(sum(group_active.values()), counts.get('downloading', 0) + counts.get('processing', 0))
             target = int(config.get('bandwidth_mbps', 0)) * 1e6 / 8
             if pressure:
-                transfers = max(1, math.floor(transfers * .8))
-                if cpu >= 95 or resources['memory_available'] < 384 * MIB:
+                parsing = sum(counts.get(stage, 0) for stage in ('starting_browser', 'connecting_browser',
+                    'opening_site', 'waiting_verification', 'submitting_site'))
+                if (parsing and browsers > 1 and resources['io_pressure'] < 15
+                        and resources['memory_available'] >= max(384 * MIB, resources['memory_total'] * .08)):
+                    # Retire idle parser slots first; admitted media transfers
+                    # should not be penalized for browser startup CPU spikes.
                     browsers = max(1, browsers - 1)
-                reason = '资源压力升高，收敛并发'
+                    reason = '解析阶段 CPU 压力升高，先减少浏览器'
+                else:
+                    transfers = max(1, math.floor(transfers * .8))
+                    if cpu >= 95 or resources['memory_available'] < 384 * MIB:
+                        browsers = max(1, browsers - 1)
+                    reason = '资源压力升高，收敛并发'
                 self.probe_baseline = None
                 self.browser_trial = None
                 self.browser_until = tick + 120
@@ -254,16 +282,24 @@ class ThroughputController:
                 self.browser_trial = {'time': tick, 'rate': control_rate, 'resolve_rate': resolve_rate}
                 reason = '解析供给不足且资源充足，试增一个浏览器'
                 changed = True
-            elif self.probe_baseline is not None and control_rate < self.probe_baseline * 1.05:
-                transfers = max(1, transfers - 1)
+            elif self.probe_baseline is not None:
+                # No additional active transfers means an upstream/ready
+                # shortage blocked the experiment.  Do not call it a failed
+                # bandwidth trial or starve the group controller below.
+                if active >= transfers:
+                    if control_rate < self.probe_baseline * 1.05:
+                        transfers = max(1, transfers - 1)
+                        self.plateau_until = tick + 120
+                        reason = '增加并发未提高接收吞吐，等待下一轮探索'
+                        changed = True
                 self.probe_baseline = None
-                self.plateau_until = tick + 120
-                reason = '增加并发未提高接收吞吐，等待下一轮探索'
-                changed = True
-            elif active >= max(1, transfers * .75) and (not target or control_rate < target * .9) and tick >= self.plateau_until:
+            elif (transfers < ceiling and (active >= max(1, transfers * .75)
+                  or wait_resources.get('local-transfers', 0))
+                  and (not target or control_rate < target * .9) and tick >= self.plateau_until):
                 self.probe_baseline = control_rate if transfers < ceiling else None
                 transfers = min(ceiling, transfers + 1)
-                reason = '传输名额持续繁忙，探索增加并发'
+                reason = ('就绪任务等待传输，探索增加并发'
+                          if counts.get('waiting_transfer', 0) else '传输名额持续繁忙，探索增加并发')
                 changed = True
             self.adjusted = tick
         from webapp.channels import group_caps, registry
@@ -278,7 +314,7 @@ class ThroughputController:
                 succeeded=total['succeeded'], failed=total['failed'], resolved=total['resolved'],
                 resolve_seconds=round(total['resolve_seconds'] / total['resolved'], 1) if total['resolved'] else None)
         upstream_caps = {key.split(':', 1)[1]: cap for key, cap in group_caps(channels).items() if key.startswith('upstream:')}
-        if 'youtube-origin' in group_active:
+        if 'youtube-origin' in group_active or 'youtube-origin' in group_ready:
             upstream_caps.setdefault('youtube-origin', 32 if config.get('scheduler_mode') == 'auto' else 8)
         groups = {}
         for group, cap in upstream_caps.items():
@@ -294,10 +330,17 @@ class ThroughputController:
                     control.pop('baseline', None)
                     control['until'] = tick + 120
                 elif 'baseline' in control:
-                    if group_rate < control.pop('baseline') * 1.08:
+                    baseline = control.pop('baseline')
+                    # A supply gap does not measure the added connection's
+                    # effect. Keep the allowance until enough resolved tasks
+                    # actually use it, rather than repeatedly shrinking a
+                    # group merely because a file ended during the trial.
+                    if group_active.get(group, 0) >= limit and group_rate < baseline * 1.08:
                         limit = max(1, limit - 1)
                         control['until'] = tick + 120
-                elif (group_active.get(group, 0) >= limit and group_rate > 0 and limit < cap
+                elif ((group_active.get(group, 0) + group_demand.get(group, 0)) >= limit
+                      and group_rate > 0 and limit < cap
+                      and (not int(config.get('bandwidth_mbps', 0)) or control_rate < int(config['bandwidth_mbps']) * 1e6 / 8 * .9)
                       and tick >= control['until']):
                     control['baseline'] = group_rate
                     limit += 1
@@ -306,6 +349,7 @@ class ThroughputController:
             control['limit'] = limit
             groups[group] = {'limit': limit if automatic(config) else cap,
                              'active': group_active.get(group, 0), 'receive_mbps': round(group_rate * 8 / 1e6, 2),
+                             'ready': group_ready.get(group, 0),
                              'failed': total['failed'], 'upstream_failed': total['upstream_failed'], 'succeeded': total['succeeded']}
         if not automatic(config):
             transfers, workers, browsers = requested, requested, browser_requested
@@ -325,7 +369,10 @@ class ThroughputController:
                       'io_pressure': resources['io_pressure'], 'db_worker_cap': db_worker_cap,
                       'cpu_cores': round(resources['cpu_cores'], 2),
                       'memory_available_mb': round(resources['memory_available'] / MIB),
-                      'stages': counts, 'reason': reason}
+                      'stages': counts, 'ready_transfer_count': counts.get('waiting_transfer', 0),
+                      'transfer_wait_resources': wait_resources, 'target_mbps': int(config.get('bandwidth_mbps', 0)),
+                      'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
+                      'reason': reason}
         _atomic(self.directory / 'throughput.json', self.state)
         self.previous, self.last = resources, tick
         return self.state

@@ -137,12 +137,14 @@ class ChannelScheduler:
             tasks.c.lease_until > stamp)).first()
 
     def _admit(self, db, stamp, requirements):
+        self.blocked_resource = None
         if not self._owned(db, stamp):
             from webapp.downloads import DownloadLeaseLost
             raise DownloadLeaseLost('渠道准入时任务租约已失效。')
         for scope, cap, units in requirements:
             state = self._state(db, scope)
             if state.get('cooldown_until', 0) > stamp:
+                self.blocked_resource = scope.split(':', 1)[0] + ':cooldown'
                 return None, state['cooldown_until'] - stamp
             # Take the minimum of live instance policies for this shared group.
             policies = {k: v for k, v in state.get('policies', {}).items() if v['time'] > stamp - 90}
@@ -153,6 +155,7 @@ class ChannelScheduler:
                 cap = 1
             self._save(db, scope, state)
             if self._active(db, scope, stamp) + units > cap:
+                self.blocked_resource = scope.split(':', 1)[0]
                 return None, 2
         token = uuid.uuid4().hex
         for scope, cap, units in requirements:
@@ -353,25 +356,29 @@ class ChannelScheduler:
         if phase == 'resolve':
             requirements = [('resolver:' + actual.resolver_group, self.caps['resolver:' + actual.resolver_group], 1),
                             ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
-        else:
+        def transfer_requirements():
             ceiling = self.caps.get('upstream:' + actual.upstream_group, actual.transfer_limit)
-            local = runtime_limits(self.config, self.store.directory).get('groups', {}).get(actual.upstream_group, {})
-            limit = min(ceiling, local.get('limit', ceiling))
-            requirements = [('upstream:' + actual.upstream_group, ceiling, 1),
-                            ('local-transfers:' + self.instance, runtime_limits(self.config, self.store.directory)['transfers'], 1),
-                            ('local-upstream:' + self.instance + ':' + actual.upstream_group, limit, 1),
-                            ('connections:' + actual.upstream_group, self.caps.get('connections:' + actual.upstream_group, actual.connection_limit), streams),
-                            ('local-connections:' + self.instance, int(self.config.get('download_connection_limit', 32)), streams),
-                            ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
+            local = runtime_limits(self.config, self.store.directory)
+            limit = min(ceiling, local.get('groups', {}).get(actual.upstream_group, {}).get('limit', ceiling))
+            return [('upstream:' + actual.upstream_group, ceiling, 1),
+                    ('local-transfers:' + self.instance, local['transfers'], 1),
+                    ('local-upstream:' + self.instance + ':' + actual.upstream_group, limit, 1),
+                    ('connections:' + actual.upstream_group, self.caps.get('connections:' + actual.upstream_group, actual.connection_limit), streams),
+                    ('local-connections:' + self.instance, int(self.config.get('download_connection_limit', 32)), streams),
+                    ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
+        backend = []
         if self.config.get('scheduler_mode') == 'auto':
             _, resolving, quota = self.backend_caps[backend_key(channel)]
-            requirements.append(('backend-quota:' + backend_key(channel), quota, 1))
+            backend.append(('backend-quota:' + backend_key(channel), quota, 1))
             if phase == 'resolve':
-                requirements.append(('backend-resolver:' + backend_key(channel), resolving, 1))
+                backend.append(('backend-resolver:' + backend_key(channel), resolving, 1))
         deadline = time.monotonic() + timeout
         while True:
+            # Waiting owners must see a controller limit change immediately;
+            # capturing the old limit until timeout caused needless re-parses.
+            current = (transfer_requirements() if phase == 'transfer' else requirements) + backend
             with self.transaction() as (db, stamp):
-                token, delay = self._admit(db, stamp, requirements)
+                token, delay = self._admit(db, stamp, current)
             if token:
                 break
             if on_wait:

@@ -1,6 +1,7 @@
 """Short-lived native browser reuse with a lease for every resident browser."""
 import atexit
 import asyncio
+from concurrent.futures import CancelledError as FutureCancelledError
 from contextlib import contextmanager
 from pathlib import Path
 import os
@@ -141,6 +142,82 @@ class BrowserSession:
         self.lease = None
         self.signature = None
         self.generation = 0
+        # Playwright objects are bound to one asyncio loop.  Keep the loop
+        # resident with the browser slot so a provider can reuse its CDP
+        # connection/page across sequential resolutions without crossing
+        # event-loop ownership boundaries.
+        self._loop = None
+        self._loop_thread = None
+        self._runtimes = {}
+
+    def _ensure_loop(self):
+        with self.lock:
+            if self._loop and self._loop_thread and self._loop_thread.is_alive():
+                return self._loop
+            ready = threading.Event()
+            loop_holder = {}
+            def runner():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop_holder['loop'] = loop
+                ready.set()
+                loop.run_forever()
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
+            thread = threading.Thread(target=runner, name='video-parser-loop', daemon=True)
+            thread.start()
+            ready.wait(5)
+            loop = loop_holder.get('loop')
+            if loop is None:
+                raise RuntimeError('解析事件循环启动失败。')
+            self._loop, self._loop_thread = loop, thread
+            return loop
+
+    def run(self, factory):
+        """Run an async factory on this slot's persistent event loop."""
+        loop = self._ensure_loop()
+        future = asyncio.run_coroutine_threadsafe(factory(), loop)
+        try:
+            return future.result()
+        except FutureCancelledError:
+            raise asyncio.CancelledError() from None
+        except BaseException:
+            future.cancel()
+            raise
+
+    def runtime(self, key, factory):
+        with self.lock:
+            value = self._runtimes.get(key)
+            if value is None:
+                value = factory()
+                self._runtimes[key] = value
+            return value
+
+    def _close_async_state(self):
+        loop, thread = self._loop, self._loop_thread
+        if not loop or not thread:
+            return
+        async def close_all():
+            for runtime in list(self._runtimes.values()):
+                try:
+                    await runtime.close()
+                except Exception:
+                    pass
+        try:
+            asyncio.run_coroutine_threadsafe(close_all(), loop).result(10)
+        except Exception:
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=10)
+        finally:
+            self._loop = self._loop_thread = None
+            self._runtimes.clear()
 
     def close(self):
         with self.lock:
@@ -148,6 +225,7 @@ class BrowserSession:
             if self.timer:
                 self.timer.cancel()
                 self.timer = None
+            self._close_async_state()
             try:
                 if self.owner:
                     self.owner.close()

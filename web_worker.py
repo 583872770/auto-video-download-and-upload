@@ -390,16 +390,19 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 last_wait[0] = time.monotonic()
                 from webapp.yt5s_browser import close_all
                 close_all()
-                progress.state.update(stage='waiting_transfer', speed=None, eta=None)
+                progress.state.update(stage='waiting_transfer', speed=None, eta=None,
+                                      transfer_wait_resource=getattr(scheduler, 'blocked_resource', None) or 'local-transfers')
                 progress.save(force=True)
 
             def ready():
-                progress.state.update(stage='extracting', speed=None, eta=None)
+                progress.state.update(stage='extracting', speed=None, eta=None,
+                                      transfer_admitted=True, transfer_wait_resource=None)
                 progress.save(force=True)
 
             directory = store.directory if store else base / '.cache'
-            progress.state.update(stage='waiting_transfer', upstream_group=channel.upstream_group,
-                                  speed=None, eta=None)
+            from webapp.channels import observed_group
+            progress.state.update(stage='waiting_transfer', upstream_group=observed_group(channel, info),
+                                  transfer_admitted=False, transfer_wait_resource=None, speed=None, eta=None)
             progress.save(force=True)
             with scheduler.permit(channel, 'transfer', info=info, streams=streams, on_wait=waiting, timeout=60) as actual:
                 meter.group = actual.upstream_group
@@ -442,7 +445,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             require_download_tools(addresses, options)
             progress.state.update(download_method=provider, channel_id=channel.id, channel_label=channel.label,
                                   upstream_group=channel.upstream_group, stage='extracting', percent=0, provider_percent=None,
-                                  downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='')
+                                  downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='',
+                                  transfer_admitted=False, transfer_wait_resource=None)
             progress.streams = {}
             progress.save(force=True)
             @contextmanager
