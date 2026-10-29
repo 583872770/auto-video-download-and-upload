@@ -213,7 +213,7 @@ class Downmp3WebTests(unittest.TestCase):
         host = f'http://127.0.0.1:{server.server_port}'
         size = (source / 'fixture.mp4').stat().st_size
         for mode, video_id in (('local', 'npNnbj46_ik'), ('test', '2Gu7q-KUXCk')):
-            self.select(storage_mode=mode)
+            self.select(storage_mode=mode, throughput_mode='auto' if mode == 'test' else 'manual')
             created = self.client.post('/api/downloads', json={'urls': video_id}, headers=self.headers)
             self.assertEqual(created.status_code, 202, created.json)
             task = self.store.claim(self.store.owner)

@@ -182,8 +182,8 @@ def register_fleet(app, fleet):
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         value = (request.get_json() or {}).get('global_limit')
-        if type(value) is not int or not 1 <= value <= 10000:
-            raise ValueError('全局并发数必须在 1 到 10000 之间。')
+        if type(value) is not int or not 0 <= value <= 10000:
+            raise ValueError('全局并发数必须在 0 到 10000 之间，0 表示仅按实例额度执行。')
         with fleet.store.connect() as db:
             db.execute(settings.update().where(settings.c.key == 'fleet_budget').values(value=str(value)))
         return jsonify(message='全局并发上限已保存，降低上限后等待当前任务完成再领取。')

@@ -162,7 +162,7 @@ function progressLabel(task) {
   if (stage === 'switching_provider') return `正在切换到 ${providerNames[task.progress?.download_method] || '下一个下载器'}`;
   const browserStages = { waiting_browser: '等待浏览器名额', starting_browser: '启动浏览器', connecting_browser: '连接浏览器', opening_site: '打开网页', waiting_site_form: '等待网页输入框', submitting_site: '提交视频链接', waiting_verification: '等待网站验证', converting: '网站正在转换' };
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
-  return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输名额', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -347,7 +347,7 @@ function renderClash() {
   nodeSignature = signature;
   $('#clash-nodes').innerHTML = nodes.length ? `<div class="clash-node-grid">${nodes.map(node => {
     const selected = node.name === data.selected;
-    const delay = node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
+    const delay = node.cooling_until > Date.now() / 1000 ? `线路冷却 ${Math.ceil(node.cooling_until - Date.now() / 1000)} 秒` : node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
     return `<article class="clash-node${selected ? ' selected' : ''}"><div class="clash-node-heading"><strong title="${escapeHTML(node.name)}">${escapeHTML(node.name)}</strong>${selected ? '<span class="count-pill">当前节点</span>' : ''}</div><div class="clash-node-meta"><span>${escapeHTML(node.type.toUpperCase())}</span><span class="${node.delay?.ms ? 'delay-ok' : node.delay ? 'delay-failed' : ''}" title="${node.delay ? escapeHTML(formatDate(node.delay.checked_at, true)) : ''}">${delay}</span></div><div class="clash-node-actions"><button type="button" class="text-button" data-node-delay="${escapeHTML(node.name)}"${clashBusy || testing || !data.running ? ' disabled' : ''}>测试延迟</button><button type="button" class="button ${selected ? 'button-dark' : 'button-white'}" data-node-select="${escapeHTML(node.name)}"${clashBusy || data.locked || selected ? ' disabled' : ''}>${selected ? '使用中' : '使用此节点'}</button></div></article>`;
   }).join('')}</div>` : emptyState(data.nodes.length ? '没有匹配的节点' : '还没有订阅节点', data.nodes.length ? '试试其他名称或协议。' : '在上方粘贴订阅链接，保存后即可选择节点。');
 }
@@ -373,7 +373,7 @@ function renderRotation(data) {
   rotationNodeSignature = nodeSignature;
   $('#rotation-nodes').innerHTML = data.nodes.length ? data.nodes.map(node => {
     const index = rotationDraft.nodes.indexOf(node.name);
-    const delay = node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
+    const delay = node.cooling_until > Date.now() / 1000 ? `线路冷却 ${Math.ceil(node.cooling_until - Date.now() / 1000)} 秒` : node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
     const delayClass = node.delay?.ms ? 'delay-ok' : node.delay ? 'delay-failed' : '';
     const checkedAt = node.delay ? escapeHTML(formatDate(node.delay.checked_at, true)) : '';
     return `<label class="rotation-node${index >= 0 ? ' checked' : ''}"><input type="checkbox" data-rotation-node="${escapeHTML(node.name)}"${index >= 0 ? ' checked' : ''}${locked ? ' disabled' : ''}><span>${escapeHTML(node.name)}</span><small class="rotation-node-delay ${delayClass}" title="${checkedAt}">${delay}</small>${index >= 0 ? `<b>${index + 1}</b>` : ''}</label>`;

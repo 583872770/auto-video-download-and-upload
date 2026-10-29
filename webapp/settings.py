@@ -19,6 +19,7 @@ DEFAULTS = {
     'download_method': 'yt_dlp', 'yt5s_quality': 'best', 'yt5s_browser_count': 2,
     'download_methods': None,
     'fragment_concurrency': 4,
+    'throughput_mode': 'manual', 'bandwidth_mbps': 0,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -30,12 +31,14 @@ DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie'
                    'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
                    'bergung_quality', 'bergung_timeout'}
 DOWNLOAD_FIELDS |= DISK_FIELDS
-INTEGER_FIELDS = {'worker_count': (1, 16), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
+DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
+INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
                   'bergung_timeout': (30, 1800)}
 INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
                        for key in DISK_FIELDS})
+INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
 
 
 def urls_from(value):
@@ -74,6 +77,8 @@ def download_methods(config):
 def validate_settings(config, *, download_only=False):
     from Utils.download_storage import storage_mode
     storage_mode(config)
+    if config.get('throughput_mode', 'manual') not in ('manual', 'auto'):
+        raise ValueError('吞吐调节请选择手动或自动。')
     if config.get('download_method', 'yt_dlp') not in (*PROVIDERS, 'yt5s_fallback'):
         raise ValueError('请选择有效的下载方式。')
     download_methods(config)

@@ -140,6 +140,8 @@ class DownloadTests(unittest.TestCase):
             self.assertNotIn(secret, message)
 
     def test_real_batch_failure_does_not_block_next_video_and_archive_skip_is_visible(self):
+        response = self.client.put('/api/config', json={'throughput_mode': 'auto'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
         fixture = self.root / 'http'
         fixture.mkdir()
         content = b'local-download-fixture\n' * 100

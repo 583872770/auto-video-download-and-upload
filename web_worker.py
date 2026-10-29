@@ -153,6 +153,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
               download_attempts=config.get('download_attempts', 3),
               proxy_mode=config.get('proxy_mode', 'manual'))
         failure = DownloadFailure()
+        from webapp.throughput import PipelineBusy, automatic as automatic_throughput, runtime_limits, transfer_slot
+        route_health = None
         test_mode = config.get('storage_mode') == 'test'
         if store and not payload.get('_execution_settings'):
             runtime = store.runtime()
@@ -197,6 +199,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     raise RuntimeError('自动轮换需要通过下载队列执行。')
                 rotation_id = rotation['id'] + (f':{worker_slot}' if worker_slot else '')
                 completed = rotation_completed(rotation_id, rotation['count_failures'])
+            proxy['health_providers'] = methods
             snapshot = manager.download_snapshot(proxy, completed)
             progress.state.update(proxy_node=snapshot['node'])
             if rotation:
@@ -205,6 +208,15 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.save(force=True)
             config = {**config, '_resolved_clash_proxy': snapshot['proxy'],
                       '_resolved_clash_node': snapshot.get('node', '')}
+            from webapp.proxy_health import ProxyHealth, ProxyCoolingDown
+            route_health = ProxyHealth(manager.directory)
+            eligible = [provider for provider in methods if route_health.eligible(snapshot['node'], provider)]
+            for provider in methods:
+                if provider not in eligible:
+                    event('provider_cooling_down', provider=provider, proxy_node=snapshot['node'])
+            if not eligible:
+                raise ProxyCoolingDown('当前出口的下载方式均在冷却，稍后重新选择健康线路。')
+            methods = eligible
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         event('connection_selected', proxy_mode=config.get('proxy_mode', 'manual'),
               proxy_node=config.get('_resolved_clash_node', ''))
@@ -351,6 +363,24 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 else:
                     super().record_download_archive(info_dict)
 
+        @contextmanager
+        def transmitting():
+            def waiting():
+                # A ready URL must not retain an idle browser while waiting for
+                # network capacity; ownership/heartbeats stay with this task.
+                from webapp.yt5s_browser import close_all
+                close_all()
+                progress.state.update(stage='waiting_transfer', speed=None, eta=None)
+                progress.save(force=True)
+
+            def ready():
+                progress.state.update(stage='extracting', speed=None, eta=None)
+                progress.save(force=True)
+
+            directory = store.directory if store else base / '.cache'
+            with transfer_slot(directory, config, waiting, ready):
+                yield
+
         def attempt(provider, addresses):
             nonlocal failure
             # Each provider needs its own error collector and Cookie policy.
@@ -382,7 +412,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
                             for url in addresses:
                                 info = resolve(url, provider_config, base, api_stage)
-                                downloader.process_ie_result(info, download=True)
+                                with transmitting():
+                                    downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         elif provider in ('yt5s', 'yt1d', 'bergung'):
                             if provider == 'yt1d':
@@ -398,15 +429,26 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
                             def browser_capacity():
                                 runtime = store.runtime() if store else config
-                                return int(runtime.get('yt5s_browser_count', config.get('yt5s_browser_count', 2)))
+                                directory = store.directory if store else base / '.cache'
+                                return runtime_limits(runtime, directory)['browsers']
 
                             for url in addresses:
                                 info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage,
                                                worker_slot=worker_slot, browser_capacity=browser_capacity)
-                                downloader.process_ie_result(info, download=True)
+                                with transmitting():
+                                    downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         else:
-                            failed = downloader.download(addresses)
+                            if automatic_throughput(config):
+                                for address in addresses:
+                                    info = downloader.extract_info(address, download=False)
+                                    if info is None:
+                                        raise RuntimeError(failure.message())
+                                    with transmitting():
+                                        downloader.process_ie_result(info, download=True)
+                                failed = downloader._download_retcode
+                            else:
+                                failed = downloader.download(addresses)
             except yt_dlp.utils.DownloadError as error:
                 if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
                     raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
@@ -419,6 +461,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
         skipped_any = False
         used_fallback = False
+
+        def record_route(provider, **outcome):
+            if route_health:
+                try:
+                    route_health.record(config['_resolved_clash_node'], provider, **outcome)
+                except OSError as error:
+                    event('route_health_unavailable', error_type=type(error).__name__)
+
         for addresses in ([url] for url in urls) if automatic else [urls]:
             progress.state.update(fallback_used=False, fallback_reason='', fallback_from='')
             for index, provider in enumerate(methods):
@@ -432,10 +482,17 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                             {'proxy': snapshot['proxy'], 'node': snapshot['node']}
                             if config.get('proxy_mode') == 'clash' else {}))
                     skipped_any |= attempt(provider, addresses)
+                    if route_health and progress.state.get('downloaded_bytes', 0) > 0:
+                        record_route(provider,
+                            transferred_bytes=progress.state['downloaded_bytes'],
+                            elapsed=progress.state.get('stage_seconds', {}).get('downloading', 0))
                     event('provider_end', provider=provider, outcome='completed',
                           elapsed_seconds=round(time.monotonic() - provider_started, 3))
                     break
+                except PipelineBusy:
+                    raise
                 except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                    record_route(provider, error=error)
                     event('provider_end', provider=provider, outcome='failed',
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
@@ -498,7 +555,8 @@ def drain(directory, slot=0, role='all'):
                 instance_id=task.get('instance_id') or 'local', worker_id=store.owner, worker_slot=slot,
                 attempt=task.get('attempts'), max_attempts=task.get('max_attempts'),
                 execution_id=uuid.uuid4().hex)
-            if slot > 0 and slot >= int(runtime.get('worker_count', 1)):
+            from webapp.throughput import PipelineBusy, runtime_limits
+            if slot > 0 and slot >= runtime_limits(runtime, store.directory)['workers']:
                 store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
                 break
             if task['action'] == 'download':
@@ -588,6 +646,10 @@ def drain(directory, slot=0, role='all'):
                           test_mode=bool(result.get('test_mode')), skipped=bool(result.get('skipped')),
                           file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
                           stage_seconds=last_progress.get('stage_seconds', {}))
+                except PipelineBusy as error:
+                    store.release(task['id'], store.owner, str(error), delay=error.retry_after)
+                    event('attempt_released', reason='pipeline_backpressure', message=str(error))
+                    continue
                 except DiskPressure as error:
                     resource_wait = str(error)
                     store.release(task['id'], store.owner, str(error), delay=60, resource=True)

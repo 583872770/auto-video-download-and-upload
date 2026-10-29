@@ -119,7 +119,7 @@ def runtime_log(directory, slot='supervisor', config=None):
     from pathlib import Path
     from webapp.disk_budget import safe_path, MIB
     from webapp.maintenance import BoundedLog
-    if str(slot) not in {'supervisor', 'maintenance', *(str(number) for number in range(16))}:
+    if str(slot) not in {'supervisor', 'maintenance', *(str(number) for number in range(96))}:
         raise ValueError('无效的日志进程编号')
     root = Path(directory).resolve()
     path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
@@ -134,7 +134,7 @@ def read_runtime_logs(directory):
     root = Path(directory).resolve()
     sections = []
     # Fixed allowlist and 3 KiB per file: the response is bounded too.
-    for slot in ['supervisor', 'maintenance', *range(16)]:
+    for slot in ['supervisor', 'maintenance', *range(96)]:
         try:
             path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
             with path.open('rb') as stream:
@@ -179,7 +179,7 @@ def active_log_ids(directory):
     from webapp.disk_budget import safe_path, alive
     root = Path(directory).resolve()
     identities = set()
-    for name in ['maintenance', *range(16)]:
+    for name in ['maintenance', *range(96)]:
         try:
             path = safe_path(root / 'logs/instance' / f'active-{name}.json', root)
             with path.open('rb') as stream:

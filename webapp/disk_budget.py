@@ -168,6 +168,7 @@ class DiskBudget:
         self.runtime = safe_path(self.directory / 'runtime', self.directory)
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.database = safe_path(self.directory / 'disk-budget.sqlite3', self.directory)
+        self._configure_journal()
         with self.connect(write=False) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if {'leases', 'state', 'requirements'} <= tables:
@@ -187,12 +188,36 @@ class DiskBudget:
                 if statement.strip():
                     db.execute(statement)
 
+    def _configure_journal(self):
+        # WAL keeps short read-only budget/progress checks from starving the
+        # reservation writer. Keep FULL synchronization for crash-safe promises.
+        try:
+            db = sqlite3.connect(self.database, timeout=COORDINATION_TIMEOUT)
+            try:
+                mode = db.execute('PRAGMA journal_mode').fetchone()[0]
+            finally:
+                db.close()
+            if mode == 'wal':
+                return
+            with file_lock(self.directory / 'disk-journal.lock', blocking=True) as acquired:
+                if not acquired:
+                    raise DiskCoordinationBusy('本机磁盘协调初始化繁忙，稍后重试。')
+                db = sqlite3.connect(self.database, timeout=COORDINATION_TIMEOUT)
+                try:
+                    if db.execute('PRAGMA journal_mode').fetchone()[0] != 'wal':
+                        db.execute('PRAGMA journal_mode=WAL')
+                finally:
+                    db.close()
+        except sqlite3.OperationalError as error:
+            raise DiskCoordinationBusy('本机磁盘协调初始化繁忙，稍后重试。') from error
+
     @contextmanager
     def connect(self, *, write=True):
         # SQLite's busy handler retries transient locks within this deadline.
         db = sqlite3.connect(self.database, timeout=COORDINATION_TIMEOUT)
         db.row_factory = sqlite3.Row
         try:
+            db.execute('PRAGMA wal_autocheckpoint=128')
             if write:
                 db.execute('PRAGMA max_page_count=32768')  # Bound metadata to 128 MiB.
             db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')

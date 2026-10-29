@@ -188,7 +188,7 @@ class FallbackContract:
         payload = self.payload(proxy_mode='clash')
         rotation = {'enabled': True, 'id': 'fixture', 'every': 5, 'count_failures': False}
         payload['clash'] = {'directory': str(self.root / 'clash'), 'node': 'A', 'rotation': rotation}
-        manager = SimpleNamespace(config={}, reload=lambda: None, rotation=lambda: rotation)
+        manager = SimpleNamespace(directory=self.root / 'clash', config={}, reload=lambda: None, rotation=lambda: rotation)
         manager.for_worker = lambda slot: manager
         manager.download_snapshot = lambda *args: {'proxy': 'http://127.0.0.1:18888', 'node': 'B'}
         proxies = []

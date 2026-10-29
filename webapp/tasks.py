@@ -39,6 +39,8 @@ class TaskRunner:
         self._wake = threading.Event()
         self._maintenance_config = {}
         self._settings_ready = threading.Event()
+        from webapp.throughput import ThroughputController
+        self.throughput = ThroughputController(self.store.directory)
 
     def wake(self):
         """Dispatch committed queue changes without waiting for the next poll."""
@@ -124,15 +126,24 @@ class TaskRunner:
                     last_recovery = time.time()
                 config = self.settings()
                 if self.store.fleet:
-                    if time.monotonic() - last_beat >= 5:
-                        if not self.store.fleet.beat():
-                            self.stop.set()
-                            continue
-                        last_beat = time.monotonic()
                     config = self.store.fleet.local_settings()['config']
+                if self.throughput.state is None or time.monotonic() - last_beat >= 5:
+                    from sqlalchemy import select
+                    from webapp.database import tasks
+                    with self.store.connect() as db:
+                        statement = select(tasks.c.progress).where(tasks.c.status == 'running', tasks.c.action == 'download')
+                        if self.store.fleet:
+                            statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
+                        stages = [json.loads(value or '{}').get('stage') for value in db.execute(statement).scalars()]
+                    self.throughput.update(config, stages)
+                    if self.store.fleet and not self.store.fleet.beat(throughput=self.throughput.state):
+                        self.stop.set()
+                        continue
+                    last_beat = time.monotonic()
                 self._maintenance_config = config
                 self._settings_ready.set()
-                count = max(1, min(16, int(config.get('worker_count', 1))))
+                from webapp.throughput import runtime_limits
+                count = runtime_limits(config, self.store.directory)['workers']
                 diagnostic_log.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 64)) * 1024 ** 2 // 128))
                 for old_slot, previous in list(self.processes.items()):
                     code = previous.poll()
@@ -160,11 +171,12 @@ class TaskRunner:
                     roles.discard('download')
                     roles.discard('regular')
                 if roles:
+                    download_starts = role_counts.get('download', 0)
                     for slot in [-1, *range(count)]:
                         role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
                         if role not in roles:
                             continue
-                        if role == 'download' and slot >= max(1, min(count, role_counts['download'])):
+                        if role == 'download' and download_starts <= 0:
                             continue
                         previous = self.processes.get(slot)
                         if previous is not None and previous.poll() is None:
@@ -173,6 +185,8 @@ class TaskRunner:
                             continue
                         env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1',
                                    VIDEO_WORKER_DATABASE_URL=self.store.db.url)
+                        from webapp.database import schema_token
+                        env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path
                         temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{"maintenance" if slot < 0 else slot}', self.store.directory)
                         temporary.mkdir(parents=True, exist_ok=True)
@@ -186,6 +200,8 @@ class TaskRunner:
                         diagnostic_log.write((json.dumps({'time': now(), 'event': 'worker_start',
                             'slot': slot, 'pid': process.pid, 'role': role}) + '\n').encode('utf-8'))
                         self.processes[slot] = process
+                        if role in ('regular', 'download') and download_starts:
+                            download_starts -= 1
                         self.last_started[slot] = time.monotonic()
                         if slot == 0:
                             self.process = process

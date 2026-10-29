@@ -22,6 +22,7 @@ LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', '
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
 LOCAL_FIELDS |= DISK_FIELDS
+LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')
@@ -83,7 +84,7 @@ class Fleet:
         with self.store.connect() as db:
             if self.store.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
-            self.store.db.ensure(db, settings, {'key': 'fleet_budget', 'value': '32'})
+            self.store.db.ensure(db, settings, {'key': 'fleet_budget', 'value': '0'})
             db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).scalar_one()
             mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
@@ -196,14 +197,21 @@ class Fleet:
         valid = tasks.c.lease_until > stamp
         global_count = db.execute(select(func.count()).select_from(tasks).where(active, valid, tasks.c.action == 'download')).scalar_one()
         local_count = db.execute(select(func.count()).select_from(tasks).where(active, valid, tasks.c.action == 'download', tasks.c.instance_id == self.id)).scalar_one()
-        limit = int(self.local_settings(db)['config'].get('worker_count', 1))
-        return global_count < int(budget) and local_count < limit
+        from webapp.throughput import runtime_limits
+        config = self.local_settings(db)['config']
+        limit = runtime_limits(config, self.store.directory)['workers']
+        return (int(budget) == 0 or global_count < int(budget)) and local_count < limit
 
-    def beat(self, error=None):
+    def beat(self, error=None, throughput=None):
         with self.store.connect() as db:
             values = {'heartbeat': self.clock(db)}
             if error is not None:
                 values['error'] = str(error)[:500]
+            if throughput is not None:
+                local = json.loads(db.execute(select(instances.c.config).where(
+                    instances.c.id == self.id).with_for_update()).scalar_one())
+                local['throughput'] = throughput
+                values['config'] = json.dumps(local, ensure_ascii=False)
             return db.execute(instances.update().where(instances.c.id == self.id, instances.c.boot_id == self.boot_id)
                               .values(**values)).rowcount > 0
 
@@ -252,6 +260,7 @@ class Fleet:
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading'),
                     'worker_count': config.get('worker_count', 1), 'yt5s_browser_count': config.get('yt5s_browser_count', 2),
+                    'throughput': local.get('throughput'),
                     'directory': local.get('directory', ''),
                     'policy': {k: config[k] for k in POLICY_FIELDS if k in config},
                     'policy_version': local.get('policy_version', 1),
@@ -273,7 +282,7 @@ class Fleet:
                     raise ValueError('实例名称需要 1 到 100 个字符。')
                 values['name'] = data['name'].strip()
             limits = json.loads(row['limits'])
-            for key, bounds in {'worker_count': (1, 16), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}.items():
+            for key, bounds in {'worker_count': (1, 64), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}.items():
                 if key in data:
                     value = data[key]
                     if type(value) is not int or not bounds[0] <= value <= bounds[1]:

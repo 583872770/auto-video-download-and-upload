@@ -25,7 +25,7 @@ GROUP = 'DOWNLOAD'
 WORKER_GROUP_PREFIX = 'DOWNLOAD_WORKER_'
 TEST_URL = 'https://www.gstatic.com/generate_204'
 MAX_SUBSCRIPTION = 5 * 1024 * 1024
-MAX_WORKERS = 16
+MAX_WORKERS = 96
 _manager_locks = {}
 _manager_locks_guard = threading.Lock()
 _core_children = {}
@@ -91,7 +91,7 @@ class ClashManager:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.binary = Path(binary or ROOT / '.tools' / 'mihomo' / ('mihomo.exe' if os.name == 'nt' else 'mihomo')).resolve()
         if type(worker_slot) is not int or not 0 <= worker_slot < MAX_WORKERS:
-            raise ValueError('下载槽编号必须为 0 到 15。')
+            raise ValueError(f'下载槽编号必须为 0 到 {MAX_WORKERS - 1}。')
         self.worker_slot = worker_slot
         with _manager_locks_guard:
             self.lock, self._lock_state = _manager_locks.setdefault(str(self.directory),
@@ -338,7 +338,8 @@ class ClashManager:
         with self.guard():
             self.reload()
             running = self.running()
-            if running and self.config.get('listener_layout') == 1:
+            if (running and self.config.get('listener_layout') == 1
+                    and all(str(slot) in self.config.get('worker_ports', {}) for slot in range(1, MAX_WORKERS))):
                 return
             if not self.nodes():
                 raise ClashError('请先导入订阅。')
@@ -363,10 +364,13 @@ class ClashManager:
                               if str(value).isdigit()]
             for port in (self.config['proxy_port'], self.config['control_port'], *listener_ports):
                 with socket.socket() as stream:
+                    # Match Mihomo's listener behavior: recently closed TCP
+                    # connections must not prevent restarting the owned core.
+                    stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     try:
                         stream.bind(('127.0.0.1', port))
                     except OSError:
-                        raise ClashError('项目代理端口被占用，请先关闭占用该端口的程序。') from None
+                        raise ClashError(f'项目代理端口 {port} 被占用，请先关闭占用该端口的程序。') from None
             runtime_file = self.directory / 'runtime.yaml'
             atomic_text(runtime_file, yaml.safe_dump(self.runtime(self.nodes()), allow_unicode=True, sort_keys=False))
             with (self.directory / 'core.log').open('ab') as log:
@@ -551,7 +555,8 @@ class ClashManager:
             if not set(rotation['nodes']) <= available:
                 raise ClashError('轮换节点已被移除，请更新轮换配置后重试。')
             index = (rotation['start_index'] + completed // rotation['every']) % len(rotation['nodes'])
-            node = rotation['nodes'][index]
+            from webapp.proxy_health import ProxyHealth
+            node = ProxyHealth(self.directory).select(rotation['nodes'], index, queued.get('health_providers'))
             self.start()
             if self.api(self._group_path()).get('now') != node:
                 self.select(node, automatic=True)
@@ -561,7 +566,7 @@ class ClashManager:
 
     def for_worker(self, slot):
         if type(slot) is not int or not 0 <= slot < MAX_WORKERS:
-            raise ValueError('下载槽编号必须为 0 到 15。')
+            raise ValueError(f'下载槽编号必须为 0 到 {MAX_WORKERS - 1}。')
         if slot == 0:
             return self
         return ClashManager(self.directory, binary=self.binary, worker_slot=slot)
@@ -623,6 +628,8 @@ class ClashManager:
             nodes = self.nodes()
             selected = (self.config['worker_nodes'].get(str(self.worker_slot), self.config['selected'])
                         if self.worker_slot else self.config['selected'])
+            from webapp.proxy_health import ProxyHealth
+            health = ProxyHealth(self.directory).read()
             if running:
                 try:
                     selected = self.api(self._group_path()).get('now', selected)
@@ -637,4 +644,5 @@ class ClashManager:
                     'rotation': self.rotation(),
                     'notices': [node['name'] for node in nodes if is_notice(node['name'])],
                     'nodes': [{'name': node['name'], 'type': node['type'],
+                               'cooling_until': health.get(node['name'], {}).get('until', 0),
                                'delay': self.delays.get(node['name'])} for node in nodes if not is_notice(node['name'])]}

@@ -146,7 +146,7 @@ class SharedMihomoTests(unittest.TestCase):
         self.assertEqual(len({view.proxy_port for view in (self.manager, first, second)}), 3)
         self.assertFalse((self.manager.directory / 'workers').exists())
         runtime = yaml.safe_load((self.manager.directory / 'runtime.yaml').read_text(encoding='utf-8'))
-        self.assertEqual(len(runtime['listeners']), 15)
+        self.assertEqual(len(runtime['listeners']), 95)
         self.assertTrue(all(listener['listen'] == '127.0.0.1' for listener in runtime['listeners']))
         real_api = ClashManager.api
 
@@ -240,7 +240,7 @@ class SharedMihomoTests(unittest.TestCase):
         node = {**self.nodes[0], 'name': 'download_worker_1'}
         with self.assertRaises(ClashError):
             parse_subscription(yaml.safe_dump({'proxies': [node]}).encode())
-        for slot in (-1, 16, True):
+        for slot in (-1, 96, True):
             with self.assertRaises(ValueError):
                 self.manager.for_worker(slot)
 

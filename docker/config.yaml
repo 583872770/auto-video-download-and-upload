@@ -6,7 +6,9 @@ storage_mode: local
 proxy_mode: direct
 proxy: ''
 youtube_cookie: ''
-worker_count: 1
+worker_count: 64
+throughput_mode: auto
+bandwidth_mbps: 0
 download_attempts: 3
 min_free_gb: 2
 log_retention_days: 0

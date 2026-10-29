@@ -14,6 +14,14 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import SQLAlchemyError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def schema_token(url):
+    """Only a supervisor using these exact schema sources can skip child DDL."""
+    digest = hashlib.sha256(url.encode('utf-8'))
+    for path in (Path(__file__), Path(__file__).with_name('migrations.py')):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 # MySQL FLOAT loses seconds at Unix-epoch magnitudes; leases and media cursors
 # require double precision. JSON snapshots can exceed MySQL TEXT's 64 KiB.
 Float = SAFloat().with_variant(DOUBLE(asdecimal=False), 'mysql')
@@ -249,7 +257,8 @@ class Database:
                         with engine.connect():
                             if engine.dialect.is_mariadb or engine.dialect.server_version_info < (5, 7, 9):
                                 raise ValueError('请使用 MySQL 5.7.9 或更新版本，推荐 MySQL 8.4。')
-                    self.initialize()
+                    if not self.mysql or os.environ.get('VIDEO_WORKER_SCHEMA_READY') != schema_token(self.url):
+                        self.initialize()
                 except Exception:
                     engine.dispose()
                     raise

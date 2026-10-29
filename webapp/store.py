@@ -402,8 +402,9 @@ class TaskStore:
                     continue
                 # Only the number of available worker slots matters, not the
                 # size of a potentially multi-million-video backlog.
+                from webapp.throughput import MAX_WORKERS
                 statement = select(tasks.c.id).where(tasks.c.action.in_(actions),
-                    tasks.c.status == 'queued', tasks.c.available_at <= stamp, self.released_condition()).limit(16)
+                    tasks.c.status == 'queued', tasks.c.available_at <= stamp, self.released_condition()).limit(MAX_WORKERS)
                 if self.fleet:
                     statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
                         and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))

@@ -163,6 +163,25 @@ class DiskBudgetTests(unittest.TestCase):
         self.assertEqual(snapshot['active'], {})
         self.assertLess(snapshot['categories']['imports']['used_bytes'], 65536)
 
+    def test_budget_writer_commits_while_a_snapshot_reader_is_open(self):
+        done, failures = threading.Event(), []
+        def write():
+            try:
+                with self.budget.connect() as db:
+                    self.budget._set(db, 'writer-progress', True)
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                done.set()
+        with self.budget.connect(write=False) as db:
+            db.execute('SELECT * FROM state').fetchall()
+            thread = threading.Thread(target=write)
+            thread.start()
+            committed = done.wait(3)
+        thread.join(6)
+        self.assertTrue(committed, 'read-only checks must not block budget commits')
+        self.assertEqual(failures, [])
+
     def test_unchanged_checks_and_children_do_not_write_database_pages(self):
         changes = []
         original = self.budget.connect

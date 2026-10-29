@@ -91,6 +91,27 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn('download', self.a.runnable_counts())
         self.assertNotIn('download', self.b.runnable_counts())
 
+    def test_auto_pipeline_has_bounded_extra_preparation_and_zero_global_limit(self):
+        from webapp.throughput import _atomic, policy_key
+        self.queue(12)
+        self.activate(limit=0)
+        self.a.fleet.save_policy({'throughput_mode': 'auto', 'worker_count': 2, 'yt5s_browser_count': 1})
+        config = self.a.fleet.local_settings()['config']
+        _atomic(self.a.directory / 'throughput.json', {'time': time.time(), 'policy': policy_key(config),
+                'transfers': 2, 'workers': 4, 'browsers': 1})
+        with ThreadPoolExecutor(8) as pool:
+            found = list(pool.map(lambda store: store.claim(store.owner), [self.a, self.b] * 4))
+        claimed = [item for item in found if item]
+        self.assertEqual(len(claimed), 7)
+        self.assertEqual(sum(item['instance_id'] == 'alpha' for item in claimed), 4)
+        self.assertEqual(len({item['id'] for item in claimed}), 7)
+        self.assertIsNone(self.a.claim())
+        # A configured cluster cap still includes preparation tasks.
+        with self.manager.connect() as db:
+            db.execute(settings.update().where(settings.c.key == 'fleet_budget').values(value='3'))
+        self.assertIsNone(self.a.claim())
+        self.assertIsNone(self.b.claim())
+
     def test_machine_paths_and_strategy_versions_are_isolated(self):
         self.queue(3)
         version = self.manager.fleet.policy()['version']
