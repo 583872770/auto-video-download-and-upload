@@ -21,9 +21,10 @@ RETRYABLE_NAVIGATION_ERRORS = ('net::ERR_CONNECTION_CLOSED', 'net::ERR_CONNECTIO
 
 
 class BergungError(RuntimeError):
-    def __init__(self, message, *, retryable=False):
+    def __init__(self, message, *, retryable=False, http_status=None, retry_after=None):
         super().__init__(message)
         self.retryable = retryable
+        self.http_status, self.retry_after = http_status, retry_after
 
 
 def require_environment(config, base):
@@ -38,7 +39,7 @@ def require_environment(config, base):
     return executable
 
 
-def result_info(data, video_id, quality, http_status=200):
+def result_info(data, video_id, quality, http_status=200, *, site_url=SITE_URL):
     from webapp.yt1d import media_url
 
     if not isinstance(data, dict):
@@ -54,7 +55,8 @@ def result_info(data, video_id, quality, http_status=200):
         raise BergungError('Bergung 解析失败，视频可能不可用或当前出口受限。'
                            + (f'（{code}）' if code and code.isascii() and code.replace('.', '').replace('_', '').isalnum() else ''),
                            retryable=http_status in (408, 429, 500, 502, 503, 504)
-                           or 'rate' in code or 'timeout' in code or 'unreachable' in code)
+                           or 'rate' in code or 'timeout' in code or 'unreachable' in code,
+                           http_status=429 if 'rate' in code else http_status)
     if status not in ('redirect', 'tunnel'):
         raise BergungError('Bergung 未返回单个可下载视频，请检查网站的处理方式或画质设置。')
     try:
@@ -74,7 +76,7 @@ def result_info(data, video_id, quality, http_status=200):
             'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
             'webpage_url': f'https://www.youtube.com/watch?v={video_id}',
             'extractor': 'youtube', 'extractor_key': 'Youtube',
-            'http_headers': {'Referer': SITE_URL}}
+            'http_headers': {'Referer': site_url}, '_bergung_status': status}
 
 
 async def open_site(page, url):
@@ -131,6 +133,8 @@ async def probe(args, owner, on_stage=None):
                 except Exception:
                     result['error'] = BergungError('Bergung 接口未返回有效 JSON，网站可能已更新。')
                 result['status'] = response.status
+                from webapp.channel_scheduler import retry_after
+                result['retry_after'] = retry_after(response.headers.get('retry-after'))
                 completed.set()
 
             def on_response(response):
@@ -149,7 +153,8 @@ async def probe(args, owner, on_stage=None):
             stage('opening_site')
             response = await open_site(page, args.site_url + 'settings/video')
             if response and response.status >= 400:
-                raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500)
+                raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500 or response.status == 429,
+                                   http_status=response.status, retry_after=response.headers.get('retry-after'))
             await select_setting(page, 'videoQuality', args.quality)
             await select_setting(page, 'youtubeVideoContainer', 'auto')
             if args.quality in ('max', '4320', '2160', '1440'):
@@ -160,7 +165,8 @@ async def probe(args, owner, on_stage=None):
             await select_setting(page, 'localProcessing', 'disabled')
             response = await open_site(page, args.site_url)
             if response and response.status >= 400:
-                raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500)
+                raise BergungError(f'Bergung 网页返回 HTTP {response.status}。', retryable=response.status >= 500 or response.status == 429,
+                                   http_status=response.status, retry_after=response.headers.get('retry-after'))
             link_input = page.locator('#link-area')
             await link_input.wait_for(state='visible', timeout=30000)
             await select_setting(page, 'downloadMode', 'auto')
@@ -182,8 +188,13 @@ async def probe(args, owner, on_stage=None):
             if result['status'] >= 400 and (not isinstance(result.get('data'), dict)
                                             or result['data'].get('status') != 'error'):
                 raise BergungError(f'Bergung 接口返回 HTTP {result["status"]}。',
-                                   retryable=result['status'] in (408, 429, 500, 502, 503, 504))
-            return result_info(result.get('data'), args.video_id, args.quality, result['status'])
+                                   retryable=result['status'] in (408, 429, 500, 502, 503, 504),
+                                   http_status=result['status'], retry_after=result.get('retry_after'))
+            try:
+                return result_info(result.get('data'), args.video_id, args.quality, result['status'], site_url=args.site_url)
+            except BergungError as error:
+                error.retry_after = result.get('retry_after')
+                raise
         except (BrowserTimeoutError, TimeoutError):
             raise WebsiteTimeoutError('Bergung 网页加载或解析超时，请检查当前节点或在远程桌面完成验证。') from None
         finally:
@@ -202,6 +213,12 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     from webapp.settings import validate_method_urls
     from webapp.store import source_identity
 
+    if config.get('shared_parser', True) and not config.get('_parser_local'):
+        from webapp.parser_broker import resolve_remote
+        result = resolve_remote(url, config, base, directory, on_stage)
+        if result is not None:
+            return result
+
     validate_method_urls({'download_method': 'bergung'}, [url])
     video_id, _ = source_identity(url)
     proxy = '' if config.get('proxy_mode') == 'direct' else (
@@ -213,20 +230,24 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     executable = require_environment(config, base)
     pool = Path(directory) / 'yt5s'
     capacity = browser_capacity if browser_capacity is not None else config.get('yt5s_browser_count', 2)
-    signature = (executable, proxy, config.get('_resolved_clash_node', ''))
+    site = config.get('_bergung_site_url') or SITE_URL
+    api = config.get('_bergung_api_url') or API_URL
+    signature = (executable, proxy, site, api, config.get('_resolved_clash_node', ''))
     quality = str(config.get('bergung_quality', 'best'))
     args = SimpleNamespace(video_id=video_id, quality='max' if quality == 'best' else quality,
                            timeout=int(config.get('bergung_timeout', 180)), proxy=proxy,
-                           browser_executable=executable, site_url=SITE_URL, api_url=API_URL)
+                           browser_executable=executable, site_url=site, api_url=api)
 
     def waiting():
         if on_stage:
             on_stage('waiting_browser')
 
-    with session(pool, worker_slot).use(pool, capacity, waiting, worker_slot, signature,
+    browser_session = config.get('_parser_session') or session(pool, worker_slot)
+    with browser_session.use(pool, capacity, waiting, worker_slot, signature,
             **({'disk_directory': config['_disk_state'], 'disk_config': config} if config.get('_disk_state') else {})) as owner:
         try:
-            return asyncio.run(probe(args, owner, on_stage))
+            from webapp.parser_broker import cancellable
+            return asyncio.run(cancellable(probe(args, owner, on_stage), config.get('_parser_cancel_check')))
         except BrowserError as error:
             raise BergungError('Bergung 浏览器连接网站失败，请检查当前网络或代理节点。',
                                retryable=True) from error

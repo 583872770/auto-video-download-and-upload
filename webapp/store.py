@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import json
 import os
+import random
 from pathlib import Path
 import socket
 import time
@@ -810,7 +811,7 @@ class TaskStore:
                 statement = statement.where(tasks.c.lease_until > self.fleet.clock(db))
             return db.execute(statement.values(**values)).rowcount > 0
 
-    def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False):
+    def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False, retry_after=None):
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
@@ -823,6 +824,8 @@ class TaskStore:
                     or self.fleet.row(db)['boot_id'] != self.fleet.boot_id):
                 return False
             retry = bool(error and retryable and row['attempts'] < row['max_attempts'])
+            delay = min(300, 5 * 2 ** max(0, row['attempts'] - 1))
+            delay = max(delay, min(86400, retry_after or 0)) + random.uniform(0, delay * .2)
             status = 'queued' if retry else 'failed' if error else 'succeeded'
             progress = json.loads(row['progress']) if row['progress'] else {}
             if progress:
@@ -834,7 +837,7 @@ class TaskStore:
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
                 status=status, finished_at=None if retry else now(), result=json.dumps(result, ensure_ascii=False) if result else None,
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
-                available_at=(self.fleet.clock(db) if self.fleet else time.time()) + min(300, 5 * 2 ** max(0, row['attempts'] - 1)) if retry else 0,
+                available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay if retry else 0,
                 lease_until=None, worker_id=None))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')

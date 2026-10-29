@@ -1,6 +1,6 @@
 ﻿"""Run queued work outside Flask, serializing all media and browser operations."""
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack
 import json
 import os
 from pathlib import Path
@@ -132,7 +132,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         progress.state['worker_slot'] = worker_slot
         from webapp.settings import PROVIDERS, download_methods, validate_method_urls
         methods = download_methods(config)
-        automatic = len(methods) > 1
+        from webapp.channels import execution_config, registry
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.download_metrics import meter_for
+        channels = registry(config)
+        automatic = len(channels) > 1
+        scheduler = ChannelScheduler(store, config, payload.get('_task_id'))
+        meter = meter_for(store.directory if store else base / '.cache', worker_slot)
         validate_method_urls(config, payload['urls'])
         progress.state.update(download_method=methods[0], selected_download_methods=methods)
         progress.save(force=True)
@@ -207,7 +213,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 print(f'自动轮换：已计数 {completed} 个视频，每 {rotation["every"]} 个切换节点。', flush=True)
             progress.save(force=True)
             config = {**config, '_resolved_clash_proxy': snapshot['proxy'],
-                      '_resolved_clash_node': snapshot.get('node', '')}
+                      '_resolved_clash_node': snapshot.get('node', ''),
+                      '_parser_clash_directory': str(manager.directory)}
             from webapp.proxy_health import ProxyHealth, ProxyCoolingDown
             route_health = ProxyHealth(manager.directory)
             eligible = [provider for provider in methods if route_health.eligible(snapshot['node'], provider)]
@@ -217,6 +224,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if not eligible:
                 raise ProxyCoolingDown('当前出口的下载方式均在冷却，稍后重新选择健康线路。')
             methods = eligible
+            channels = [channel for channel in channels if channel.adapter in eligible]
             print(f'下载代理节点：{snapshot["node"]}', flush=True)
         event('connection_selected', proxy_mode=config.get('proxy_mode', 'manual'),
               proxy_node=config.get('_resolved_clash_node', ''))
@@ -310,6 +318,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                         catalog.index_file(path, Path(config['_job_media_root']))
                     if not test_mode:
                         billable_bytes += size
+            meter.verified(size)
 
         print(f'开始下载，共 {len(urls)} 个地址。', flush=True)
         if automatic:
@@ -363,11 +372,18 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 else:
                     super().record_download_archive(info_dict)
 
+        failure_phase = 'resolve'
+
         @contextmanager
-        def transmitting():
+        def transmitting(channel, info, streams):
+            nonlocal failure_phase
+            last_wait = [0]
             def waiting():
                 # A ready URL must not retain an idle browser while waiting for
                 # network capacity; ownership/heartbeats stay with this task.
+                if time.monotonic() - last_wait[0] < 5:
+                    return
+                last_wait[0] = time.monotonic()
                 from webapp.yt5s_browser import close_all
                 close_all()
                 progress.state.update(stage='waiting_transfer', speed=None, eta=None)
@@ -378,28 +394,63 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 progress.save(force=True)
 
             directory = store.directory if store else base / '.cache'
-            with transfer_slot(directory, config, waiting, ready):
-                yield
+            progress.state.update(stage='waiting_transfer', upstream_group=channel.upstream_group,
+                                  speed=None, eta=None)
+            progress.save(force=True)
+            with scheduler.permit(channel, 'transfer', info=info, streams=streams, on_wait=waiting, timeout=60) as actual:
+                meter.group = actual.upstream_group
+                progress.state['upstream_group'] = actual.upstream_group
+                with transfer_slot(directory, config, waiting, ready) if not scheduler.enabled else nullcontext():
+                    ready()
+                    # Initial media requests can be throttled before yt-dlp's
+                    # first progress event; the displayed stage is still extracting.
+                    failure_phase = 'transfer'
+                    yield
 
-        def attempt(provider, addresses):
-            nonlocal failure
+        def attempt(channel, addresses):
+            nonlocal failure, failure_phase
             # Each provider needs its own error collector and Cookie policy.
             failure = DownloadFailure()
-            provider_config = {**config, 'download_method': provider}
+            failure_phase = 'resolve'
+            provider = channel.adapter
+            provider_config = execution_config(config, channel)
+            meter.begin(channel)
             options = build_ydl_options(provider_config, base)
+            transfer_count = runtime_limits(config, store.directory if store else base / '.cache')['transfers']
+            fragment_budget = min(int(config.get('fragment_concurrency', 4)), channel.connection_limit,
+                                  max(1, int(config.get('download_connection_limit', 32)) // transfer_count))
+            options['concurrent_fragment_downloads'] = fragment_budget
+            options.update(retries=2, fragment_retries=2, extractor_retries=1)
             if payload.get('_restart_transfer') or automatic:
                 # The providers can return different encodings for the same filename.
                 # Never append bytes from another provider to an incomplete transfer.
                 options['continuedl'] = False
             if catalog:
                 options['download_archive'] = None
-            options.update(post_hooks=[completed_file], progress_hooks=[progress.hook],
+            options.update(post_hooks=[completed_file], progress_hooks=[progress.hook, meter.hook],
                            postprocessor_hooks=[progress.postprocess])
             require_download_tools(addresses, options)
-            progress.state.update(download_method=provider, stage='extracting', percent=0, provider_percent=None,
+            progress.state.update(download_method=provider, channel_id=channel.id, channel_label=channel.label,
+                                  upstream_group=channel.upstream_group, stage='extracting', percent=0, provider_percent=None,
                                   downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='')
             progress.streams = {}
             progress.save(force=True)
+            @contextmanager
+            def resolving():
+                nonlocal failure_phase
+                failure_phase = 'resolve'
+                started = time.monotonic()
+                def waiting():
+                    progress.state.update(stage='waiting_browser', speed=None, eta=None)
+                    progress.save()
+                with scheduler.permit(channel, 'resolve', on_wait=waiting):
+                    yield
+                meter.resolved(time.monotonic() - started)
+
+            def transfer(info):
+                protocols = [item.get('protocol', '') for item in info.get('requested_formats') or [info]]
+                fragmented = any(any(word in protocol for word in ('m3u8', 'dash', 'ism')) for protocol in protocols)
+                return transmitting(channel, info, fragment_budget if fragmented else 1)
             try:
                 with download_cookie_session(options) as session_options:
                     with ReportingDownloader(session_options) as downloader:
@@ -411,8 +462,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 progress.save(force=True)
 
                             for url in addresses:
-                                info = resolve(url, provider_config, base, api_stage)
-                                with transmitting():
+                                with resolving():
+                                    info = resolve(url, provider_config, base, api_stage)
+                                with transfer(info):
                                     downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         elif provider in ('yt5s', 'yt1d', 'bergung'):
@@ -433,22 +485,25 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 return runtime_limits(runtime, directory)['browsers']
 
                             for url in addresses:
-                                info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage,
-                                               worker_slot=worker_slot, browser_capacity=browser_capacity)
-                                with transmitting():
+                                with resolving():
+                                    info = resolve(url, provider_config, base, store.directory if store else base / '.cache', stage,
+                                                   worker_slot=worker_slot, browser_capacity=browser_capacity)
+                                with transfer(info):
                                     downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         else:
                             if automatic_throughput(config):
                                 for address in addresses:
-                                    info = downloader.extract_info(address, download=False)
+                                    with resolving():
+                                        info = downloader.extract_info(address, download=False)
                                     if info is None:
                                         raise RuntimeError(failure.message())
-                                    with transmitting():
+                                    with transfer(info):
                                         downloader.process_ie_result(info, download=True)
                                 failed = downloader._download_retcode
                             else:
-                                failed = downloader.download(addresses)
+                                with transmitting(channel, {}, fragment_budget):
+                                    failed = downloader.download(addresses)
             except yt_dlp.utils.DownloadError as error:
                 if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
                     raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
@@ -471,17 +526,36 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
         for addresses in ([url] for url in urls) if automatic else [urls]:
             progress.state.update(fallback_used=False, fallback_reason='', fallback_from='')
-            for index, provider in enumerate(methods):
+            pending = list(channels)
+            previous_error = None
+            for index in range(len(channels)):
+                assignment = ExitStack()
+                try:
+                    channel = assignment.enter_context(scheduler.assignment(pending, allow_fallback=previous_error is not None))
+                except PipelineBusy:
+                    if previous_error:
+                        raise previous_error
+                    raise
+                pending.remove(channel)
+                provider = channel.adapter
+                failure_phase = 'resolve'
                 provider_started = time.monotonic()
-                event('provider_start', provider=provider, provider_attempt=index + 1,
+                before_bytes = sum(output_files.values())
+                event('provider_start', provider=provider, channel_id=channel.id,
+                      upstream_group=channel.upstream_group, provider_attempt=index + 1,
                       proxy_node=config.get('_resolved_clash_node', ''))
                 try:
+                    if index and store and payload.get('_task_id'):
+                        store.statistics.methods.fallback(payload['_task_id'], provider)
                     if index and provider == 'yt_dlp' and store and youtube:
                         # Website conversion may have taken several minutes.
                         YouTubeAuth(store).require(config, base, **(
                             {'proxy': snapshot['proxy'], 'node': snapshot['node']}
                             if config.get('proxy_mode') == 'clash' else {}))
-                    skipped_any |= attempt(provider, addresses)
+                    skipped_any |= attempt(channel, addresses)
+                    scheduler.outcome(channel, success=True, elapsed=time.monotonic() - provider_started,
+                                      size=sum(output_files.values()) - before_bytes)
+                    meter.finish(True)
                     if route_health and progress.state.get('downloaded_bytes', 0) > 0:
                         record_route(provider,
                             transferred_bytes=progress.state['downloaded_bytes'],
@@ -492,12 +566,19 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 except PipelineBusy:
                     raise
                 except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                    previous_error = error
+                    phase = failure_phase
+                    scheduler.outcome(channel, success=False, error=error, phase=phase,
+                                      upstream_group=progress.state.get('upstream_group'))
+                    from webapp.channel_scheduler import throttle_details
+                    status, _ = throttle_details(error)
+                    meter.finish(False, upstream_failure=phase == 'transfer' and status in (429, 503))
                     record_route(provider, error=error)
                     event('provider_end', provider=provider, outcome='failed',
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
                           proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
-                    if index == len(methods) - 1:
+                    if not pending:
                         raise
                     # Local storage errors, missing dependencies and loss of
                     # ownership require intervention rather than another transfer.
@@ -512,20 +593,21 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     if any(term in str(error).lower() for term in ('no space left', 'disk full', 'permission denied', 'read-only file system')):
                         raise
                     reason = clean_download_error(error)
-                    next_provider = methods[index + 1]
+                    next_provider = pending[0].adapter
                     used_fallback = True
-                    if store and payload.get('_task_id'):
-                        store.statistics.methods.fallback(payload['_task_id'], next_provider)
                     progress.state.update(stage='switching_provider', download_method=next_provider, fallback_used=True,
                                           fallback_reason=reason, fallback_from=PROVIDERS[provider], speed=None, eta=None)
                     progress.save(force=True)
                     print(f'{PROVIDERS[provider]} 失败（{reason}）；切换到 {PROVIDERS[next_provider]}，沿用当前代理节点。', flush=True)
                     event('provider_fallback', source=provider, target=next_provider,
                           reason=reason, node_changed=False)
+                finally:
+                    assignment.close()
         skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
         return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
                 'billable_bytes': billable_bytes, 'download_method': progress.state['download_method'],
+                'channel_id': progress.state.get('channel_id'),
                 'fallback_used': used_fallback}
     raise ValueError('当前 Web 服务只支持 YouTube 下载、导入、索引和环境检查。')
 
@@ -687,7 +769,9 @@ def drain(directory, slot=0, role='all'):
                     transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error, BergungError)) else
                                  isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
                                     'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
-                    store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient)
+                    from webapp.channel_scheduler import throttle_details
+                    _, server_delay = throttle_details(error)
+                    store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])
                     event('attempt_end', outcome=current['status'] if current else 'unknown',
                           failed_stage=last_progress.get('stage'),

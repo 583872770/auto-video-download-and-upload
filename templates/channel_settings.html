@@ -1,0 +1,17 @@
+<template id="channel-settings-template">
+  <section class="panel settings-panel" id="channel-settings">
+    <div class="panel-heading"><div><h2>多渠道下载</h2><p class="panel-subtitle">在同一种下载方式的兼容渠道之间分配不同视频，下载方式仍按上方顺序回退。同一文件使用一个渠道，画质沿用上方设置。</p></div></div>
+    <div class="scale-fields">
+      <label>渠道分配<select name="scheduler_mode"><option value="ordered_fallback">按顺序尝试，失败后切换</option><option value="balanced">自动分流，利用多个上游</option></select></label>
+      <label>复用解析浏览器<select name="shared_parser"><option value="true">开启（推荐）</option><option value="false">关闭，使用原解析流程</option></select><small>Bergung 解析与下载分开运行；浏览器最多空闲保留 30 秒，同一出口可继续复用。</small></label>
+      <label>本机下载连接预算<input name="download_connection_limit" type="number" min="2" max="128" required><small>默认 32；文件及媒体分片共用此预算。网页和代理管理连接另计。</small></label>
+    </div>
+    <p id="channel-performance" class="micro-copy" role="status"></p>
+    <details><summary>配置 Bergung 兼容渠道</summary>
+      <p class="micro-copy">留空使用内置 Bergung。相同带宽组表示共用后台带宽，相同解析组和配额组也会共享限制。新增渠道默认与 Bergung 共组；只有确认后台和限流相互独立时，才设置不同组。这里的上限由同组渠道和在线实例共同遵守。</p>
+      <div id="channel-entries"></div>
+      <button id="channel-add" type="button" class="button button-white">添加兼容渠道</button>
+      <p class="micro-copy">标识使用字母、数字、下划线或短横线。标识为 bergung 时覆盖内置入口；其他标识新增入口。需同时在上方启用 Bergung 下载方式。仅填入你实际可用的网站和 API 地址。</p>
+    </details>
+  </section>
+</template>

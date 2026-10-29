@@ -14,6 +14,8 @@ class ProxyCoolingDown(PipelineBusy):
 def connection_failure(error):
     messages, seen = [], set()
     while error is not None and id(error) not in seen:
+        if getattr(error, 'connection_failure', False):
+            return True
         seen.add(id(error))
         messages.append(type(error).__name__ + ': ' + str(error))
         error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)

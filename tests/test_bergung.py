@@ -163,6 +163,31 @@ class WebsiteTests(unittest.TestCase):
         self.assertEqual(requests, [{'url': VIDEO, 'token': 'fixture-token'}])
         self.assertIn('waiting_verification', stages)
         self.assertIn('extracting', stages)
+        # Exercise the real browser through the local broker twice: these are
+        # separate client requests and must reuse the same Chromium process.
+        from webapp.parser_broker import ParserBroker, resolve_remote
+        with tempfile.TemporaryDirectory() as directory:
+            broker = ParserBroker(Path(directory), lambda: {'worker_count':4,'yt5s_browser_count':1,
+                                  'disk_min_free_gb':0,'disk_resume_free_gb':0})
+            broker.start()
+            pids = []
+            original_start = NativeBrowser.start
+            async def headless_start(browser, options):
+                options.headless = True
+                address = await original_start(browser, options)
+                pids.append(browser.process.pid)
+                return address
+            try:
+                with patch('webapp.bergung.require_environment',return_value=executable), \
+                     patch.object(NativeBrowser,'start',headless_start), patch('builtins.print'):
+                    config={'proxy_mode':'direct','_bergung_site_url':root,'_bergung_api_url':root}
+                    for _ in range(2):
+                        resolved=resolve_remote(VIDEO,config,Path(directory),Path(directory))
+                        self.assertEqual(resolved['url'],CDN)
+            finally:
+                broker.close()
+            self.assertEqual(len(pids),2)
+            self.assertEqual(pids[0],pids[1])
 
 
 class WorkflowTests(unittest.TestCase):

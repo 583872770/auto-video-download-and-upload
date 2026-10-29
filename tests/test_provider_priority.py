@@ -169,6 +169,34 @@ class ProviderPriorityTests(unittest.TestCase):
         self.assertFalse(options[1]['continuedl'])
         self.assertTrue(all('cookiefile' not in item for item in options))
 
+    def check_throttle_phase(self, transfer):
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.download_metrics import read_counters
+
+        self.save(['yt5s'])
+        job = self.job()
+        error = yt_dlp.utils.DownloadError('HTTP Error 429: Too Many Requests')
+        with patch('webapp.yt5s.resolve', return_value={'id': 'npNnbj46_ik'},
+                   side_effect=None if transfer else error), \
+                patch.object(yt_dlp.YoutubeDL, 'process_ie_result', side_effect=error):
+            with self.assertRaises(RuntimeError):
+                execute('download', job['payload'], store=self.store, task_id=job['id'])
+        scheduler = ChannelScheduler(self.store, job['payload']['config'], job['id'])
+        with self.store.connect() as db:
+            media = scheduler._state(db, 'upstream:unverified-media')
+            resolver = scheduler._state(db, 'resolver:yt5s')
+        self.assertEqual(bool(media.get('cooldown_until')), transfer)
+        self.assertEqual(bool(resolver.get('cooldown_until')), not transfer)
+        failures = sum(value.get('upstream_failed', 0)
+                       for value in read_counters(self.store.directory).values())
+        self.assertEqual(failures, int(transfer))
+
+    def test_initial_media_throttle_before_progress_cools_media_upstream(self):
+        self.check_throttle_phase(True)
+
+    def test_resolver_throttle_does_not_reduce_media_capacity(self):
+        self.check_throttle_phase(False)
+
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires FFmpeg')
     def test_invalid_downmp3_file_is_replaced_by_real_yt5s_transfer_and_billed_once(self):
         source = self.root / 'http'

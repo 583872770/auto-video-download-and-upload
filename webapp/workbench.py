@@ -34,15 +34,21 @@ class Workbench:
                 tasks.c.status == 'running')).scalar_one()
             online = row['heartbeat'] > self.store.fleet.clock(db) - ONLINE_SECONDS
             paused = bool(row['paused'])
+            enabled = not paused and not row['stop_requested']
+            from webapp.disk_budget import resource_blocked
+            blocked = resource_blocked(self.store, db, identity)
             error = row['error']
         job = self.jobs.detail(preview or selected) if preview or selected else None
         if job and job['deleted']:
             job = None
         if job:
+            desired = selected == job['id'] and enabled
             job = {**job, 'running': sum(task['batch_id'] == job['id'] for task in active),
-                   'released': selected == job['id'] and not paused,
-                   'waiting_reason': error or ('当前实例离线。' if not online else ''),
+                   'released': desired, 'desired_running': desired,
+                   'waiting_reason': (error or ('当前实例离线。' if not online else
+                       '等待下载实例释放磁盘空间' if blocked else '')) if desired and job['queued'] else '',
                    'running_videos': [task for task in active if task['batch_id'] == job['id']]}
+            job['state'] = self.jobs.execution_state(job)
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
                     queued=job['queued'] if job else 0, active_tasks=active, error=error)

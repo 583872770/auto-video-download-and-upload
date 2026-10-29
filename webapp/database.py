@@ -68,6 +68,13 @@ rotations = Table('rotation_counters', metadata, Column('id', String(128), prima
 sequences = Table('sequence_counters', metadata, Column('key', String(32), primary_key=True),
                   Column('value', BigInteger, nullable=False))
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
+download_resources = Table('download_resources', metadata,
+    Column('key', String(64), primary_key=True), Column('state', Text, nullable=False))
+download_permits = Table('download_permits', metadata,
+    Column('token', String(32), primary_key=True), Column('resource', String(64), primary_key=True),
+    Column('task_id', String(32), nullable=False), Column('owner', String(128), nullable=False),
+    Column('units', Integer, nullable=False))
+Index('ix_download_permits_resource', download_permits.c.resource)
 batches = Table('batches', metadata, Column('id', String(32), primary_key=True),
                 Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', Text, nullable=False),
                 Column('name', Text, nullable=False, default='', server_default=text("('')")))

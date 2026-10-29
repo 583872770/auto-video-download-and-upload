@@ -41,6 +41,7 @@ class TaskRunner:
         self._settings_ready = threading.Event()
         from webapp.throughput import ThroughputController
         self.throughput = ThroughputController(self.store.directory)
+        self.parser = None
 
     def wake(self):
         """Dispatch committed queue changes without waiting for the next poll."""
@@ -69,6 +70,8 @@ class TaskRunner:
         finally:
             self.stop.set()
             maintenance.join(timeout=2)
+            if self.parser:
+                self.parser.close()
 
     def _maintain(self, diagnostic_log):
         """Directory scans and retention must never hold up queue dispatch."""
@@ -134,7 +137,7 @@ class TaskRunner:
                         statement = select(tasks.c.progress).where(tasks.c.status == 'running', tasks.c.action == 'download')
                         if self.store.fleet:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
-                        stages = [json.loads(value or '{}').get('stage') for value in db.execute(statement).scalars()]
+                        stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
                     self.throughput.update(config, stages)
                     if self.store.fleet and not self.store.fleet.beat(throughput=self.throughput.state):
                         self.stop.set()
@@ -171,6 +174,11 @@ class TaskRunner:
                     roles.discard('download')
                     roles.discard('regular')
                 if roles:
+                    if (self.parser is None and config.get('shared_parser', True)
+                            and 'bergung' in (config.get('download_methods') or [config.get('download_method')])):
+                        from webapp.parser_broker import ParserBroker
+                        self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
+                        self.parser.start()
                     download_starts = role_counts.get('download', 0)
                     for slot in [-1, *range(count)]:
                         role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
@@ -185,6 +193,10 @@ class TaskRunner:
                             continue
                         env = dict(os.environ, PYTHONUTF8='1', PYTHONUNBUFFERED='1',
                                    VIDEO_WORKER_DATABASE_URL=self.store.db.url)
+                        # Every subprocess owns its own Engine. A download only
+                        # needs its progress transaction and heartbeat in parallel.
+                        env['VIDEO_DB_POOL_SIZE'] = os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2')
+                        env['VIDEO_DB_MAX_OVERFLOW'] = os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')
                         from webapp.database import schema_token
                         env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path

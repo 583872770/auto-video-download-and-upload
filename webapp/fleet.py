@@ -18,11 +18,13 @@ POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'down
                  'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
                  'bergung_quality', 'bergung_timeout',
                  'fragment_concurrency', 'storage_mode'}
+POLICY_FIELDS |= {'scheduler_mode', 'download_channels'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
 LOCAL_FIELDS |= DISK_FIELDS
 LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
+LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
 ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')

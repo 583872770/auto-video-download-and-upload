@@ -26,6 +26,7 @@ WORKER_GROUP_PREFIX = 'DOWNLOAD_WORKER_'
 TEST_URL = 'https://www.gstatic.com/generate_204'
 MAX_SUBSCRIPTION = 5 * 1024 * 1024
 MAX_WORKERS = 96
+MAX_LISTENERS = MAX_WORKERS + 16  # parser routes cannot be changed by transfer workers
 _manager_locks = {}
 _manager_locks_guard = threading.Lock()
 _core_children = {}
@@ -90,8 +91,8 @@ class ClashManager:
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.binary = Path(binary or ROOT / '.tools' / 'mihomo' / ('mihomo.exe' if os.name == 'nt' else 'mihomo')).resolve()
-        if type(worker_slot) is not int or not 0 <= worker_slot < MAX_WORKERS:
-            raise ValueError(f'下载槽编号必须为 0 到 {MAX_WORKERS - 1}。')
+        if type(worker_slot) is not int or not 0 <= worker_slot < MAX_LISTENERS:
+            raise ValueError(f'内部代理槽编号必须为 0 到 {MAX_LISTENERS - 1}。')
         self.worker_slot = worker_slot
         with _manager_locks_guard:
             self.lock, self._lock_state = _manager_locks.setdefault(str(self.directory),
@@ -339,7 +340,7 @@ class ClashManager:
             self.reload()
             running = self.running()
             if (running and self.config.get('listener_layout') == 1
-                    and all(str(slot) in self.config.get('worker_ports', {}) for slot in range(1, MAX_WORKERS))):
+                    and all(str(slot) in self.config.get('worker_ports', {}) for slot in range(1, MAX_LISTENERS))):
                 return
             if not self.nodes():
                 raise ClashError('请先导入订阅。')
@@ -350,7 +351,7 @@ class ClashManager:
             # Prepare all supported slots once.  Changing the download count
             # later never reloads the core or disturbs another active download.
             self._stop_legacy_workers()
-            for slot in range(1, MAX_WORKERS):
+            for slot in range(1, MAX_LISTENERS):
                 self._ensure_worker_port(slot)
             self.save()
             if running:
@@ -516,7 +517,13 @@ class ClashManager:
                 raise ClashError('请选择订阅中的有效节点。')
             self.start()
             self.reload()
-            self.api(self._group_path(), 'PUT', {'name': name})
+            try:
+                self.api(self._group_path(), 'PUT', {'name': name})
+            except ClashError:
+                # PUT is idempotent. A busy freshly started core may have
+                # applied it before the short control timeout elapsed.
+                if self.api(self._group_path(), timeout=5).get('now') != name:
+                    self.api(self._group_path(), 'PUT', {'name': name}, timeout=5)
             if self.worker_slot:
                 self.config['worker_nodes'][str(self.worker_slot)] = name
             else:
@@ -570,6 +577,11 @@ class ClashManager:
         if slot == 0:
             return self
         return ClashManager(self.directory, binary=self.binary, worker_slot=slot)
+
+    def for_parser(self, slot):
+        if type(slot) is not int or not 0 <= slot < 16:
+            raise ValueError('解析槽编号必须为 0 到 15。')
+        return ClashManager(self.directory, binary=self.binary, worker_slot=MAX_WORKERS + slot)
 
     def test_delays(self, name=None):
         with self.lock:

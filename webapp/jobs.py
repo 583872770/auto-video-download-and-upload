@@ -190,27 +190,60 @@ class Jobs:
                 ~select(job_imports.c.id).where(job_imports.c.id == imports.c.id).exists())).scalars()
             for identity in legacy:
                 import_counts[identity] = import_counts.get(identity, 0) + 1
-            paused, available = self.execution_context(db)
+            paused, execution = self.execution_context(db, details.values())
             items = [self.describe(details[key], profiles.get(key), counts.get(key, {}),
-                paused, available, import_counts.get(key, 0)) for key in ids]
+                paused, execution[key], import_counts.get(key, 0)) for key in ids]
         return dict(items=items, next_cursor=str(rows[limit-1].seq) if len(rows)>limit else None)
 
-    def execution_context(self, db):
+    def execution_context(self, db, rows):
+        """Read job-specific execution intent without changing shared permissions.
+
+        Scoped workbenches bypass the legacy released/global-pause switches.
+        Load the small instance snapshot once for the whole page, rather than
+        scanning video tasks or issuing a query for every job.
+        """
         from webapp.disk_budget import resource_blocked, resource_blocks
-        available = True
-        if self.store.fleet:
-            from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
-            ids = db.execute(select(instances.c.id).where(instances.c.role.in_(DOWNLOAD_ROLES),
-                instances.c.paused == 0, instances.c.heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS)).scalars().all()
-            available = bool(ids)
-            if ids and len(resource_blocks(db, ids)) == len(ids):
-                available = 'disk_wait'
-        elif resource_blocked(self.store, db):
-            available = 'disk_wait'
-        return self.store.downloads_paused(db), available
+        paused = self.store.downloads_paused(db)
+        if not self.store.fleet:
+            selected = self.store.selected_download_job(db)
+            blocked = resource_blocked(self.store, db)
+            return paused, {row['id']: dict(desired_running=bool(row['released']), waiting_reason=(
+                '系统已暂停领取' if paused else
+                '下载实例当前选择了其他任务' if selected and selected != row['id'] else
+                '等待下载实例释放磁盘空间' if blocked else '')) for row in rows}
+
+        from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
+        nodes = db.execute(select(instances.c.id, instances.c.paused, instances.c.stop_requested,
+            instances.c.heartbeat).where(instances.c.role.in_(DOWNLOAD_ROLES))).mappings().all()
+        choices = dict(db.execute(select(schema_settings.c.key, schema_settings.c.value).where(
+            schema_settings.c.key.in_(['selected_download_job'] + ['workbench_job:' + node['id'] for node in nodes]))).all())
+        selected = choices.get('selected_download_job')
+        legacy = [node for node in nodes if choices.get('workbench_job:' + node['id']) is None]
+        online_after = self.store.fleet.clock(db) - ONLINE_SECONDS
+        blocked = resource_blocks(db, [node['id'] for node in nodes
+            if not node['paused'] and not node['stop_requested'] and node['heartbeat'] > online_after])
+        execution = {}
+        for row in rows:
+            scoped = [node for node in nodes if choices.get('workbench_job:' + node['id']) == row['id']
+                      and not node['paused'] and not node['stop_requested']]
+            # Keep the intent of old job controls when a legacy executor exists
+            # (even while it is offline/paused), including a fleet with no nodes.
+            legacy_intent = bool(row['released'] and (legacy or not nodes))
+            legacy_selected = not selected or selected == row['id']
+            candidates = scoped + ([node for node in legacy if not node['paused'] and not node['stop_requested']]
+                                   if legacy_intent and not paused and legacy_selected else [])
+            live = [node for node in candidates if node['heartbeat'] > online_after]
+            desired = bool(scoped or legacy_intent)
+            reason = ('' if any(node['id'] not in blocked for node in live) else
+                      '等待下载实例释放磁盘空间' if live else
+                      '系统已暂停领取' if not scoped and legacy_intent and paused else
+                      '下载实例当前选择了其他任务' if not scoped and legacy_intent and not legacy_selected else
+                      '没有在线且启用的下载实例分配到此任务') if desired else ''
+            execution[row['id']] = dict(desired_running=desired, waiting_reason=reason)
+        return paused, execution
 
     @staticmethod
-    def describe(row, value, counts, paused, available, importing):
+    def describe(row, value, counts, paused, execution, importing):
         result = dict(row)
         for key in ('queued', 'running', 'succeeded', 'failed', 'interrupted', 'removed'):
             result[key] = counts.get(key, 0)
@@ -223,19 +256,21 @@ class Jobs:
             price_set=bool(value['price_set']) if value else True, revision=value['revision'] if value else 0,
             edit_version=value['edit_version'] if value else 0,
             policy_version=value['policy_version'] if value else 0, global_paused=paused, importing=importing,
-            desired_running=bool(result['released']))
+            desired_running=execution['desired_running'])
         result['amount'] = str(charge(result['file_bytes'], result['price'], result['unit'])) if result['price_set'] else None
         result['file_bytes_exact'] = str(result['file_bytes'])
         result['test_file_bytes_exact'] = str(result['test_file_bytes'])
-        reason = ('系统已暂停领取' if paused else '等待下载实例释放磁盘空间' if available == 'disk_wait' else
-                  '没有在线且启用的下载实例' if not available else '')
-        result['waiting_reason'] = reason if result['released'] and result['queued'] else ''
-        result['state'] = ('deleted' if result['deleted'] else 'archived' if result['archived'] else
-            'draining' if not result['released'] and result['running'] else 'running' if result['running'] else
-            'importing' if importing else 'empty' if not result['total'] else
-            ('waiting' if reason else 'queued') if result['released'] and result['queued'] else
-            'paused' if result['queued'] else 'partial' if result['failed'] else 'completed')
+        result['waiting_reason'] = execution['waiting_reason'] if result['desired_running'] and result['queued'] else ''
+        result['state'] = Jobs.execution_state(result)
         return result
+
+    @staticmethod
+    def execution_state(result):
+        return ('deleted' if result['deleted'] else 'archived' if result['archived'] else
+            'draining' if not result['desired_running'] and result['running'] else 'running' if result['running'] else
+            'importing' if result['importing'] else 'empty' if not result['total'] else
+            ('waiting' if result['waiting_reason'] else 'queued') if result['desired_running'] and result['queued'] else
+            'paused' if result['queued'] else 'partial' if result['failed'] else 'completed')
 
     def detail(self, identity):
         with self.store.connect() as db:
@@ -245,14 +280,14 @@ class Jobs:
                 return None
             value = profile(self.store, db, identity)
             counts = self.store._counts(db, ['batch:' + identity])
-            paused, available = self.execution_context(db)
+            paused, execution = self.execution_context(db, [row])
             running_videos = [self.store.decode(item) for item in db.execute(select(tasks).where(
                 tasks.c.batch_id==identity,tasks.c.action=='download',tasks.c.status=='running').order_by(tasks.c.seq).limit(16)).mappings()]
             import_ids = select(job_imports.c.id).where(job_imports.c.job_id == identity)
             records = db.execute(select(imports).where(or_(imports.c.id.in_(import_ids),imports.c.id==identity)).order_by(imports.c.id).limit(100)).mappings().all()
             importing = db.execute(select(func.count()).select_from(imports).where(
                 or_(imports.c.id.in_(import_ids),imports.c.id==identity), imports.c.finished == 0)).scalar_one()
-            result = self.describe(row, value, counts, paused, available, importing)
+            result = self.describe(row, value, counts, paused, execution[identity], importing)
             result.update(policy=None, policy_scope='instance',
                 imports=[dict(record) for record in records], running_videos=running_videos,
                 transfer_speed=sum(float((item.get('progress') or {}).get('speed') or 0)

@@ -20,6 +20,8 @@ DEFAULTS = {
     'download_methods': None,
     'fragment_concurrency': 4,
     'throughput_mode': 'manual', 'bandwidth_mbps': 0,
+    'scheduler_mode': 'ordered_fallback', 'download_channels': [],
+    'download_connection_limit': 32, 'shared_parser': True,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -32,6 +34,7 @@ DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie'
                    'bergung_quality', 'bergung_timeout'}
 DOWNLOAD_FIELDS |= DISK_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
+DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser'}
 INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
@@ -39,6 +42,7 @@ INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_fr
 INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
                        for key in DISK_FIELDS})
 INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
+INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 
 
 def urls_from(value):
@@ -82,6 +86,13 @@ def validate_settings(config, *, download_only=False):
     if config.get('download_method', 'yt_dlp') not in (*PROVIDERS, 'yt5s_fallback'):
         raise ValueError('请选择有效的下载方式。')
     download_methods(config)
+    from webapp.channels import validate_channels
+    validate_channels(config)
+    if type(config.get('shared_parser', True)) is not bool:
+        if config.get('shared_parser') in ('true', 'false'):
+            config['shared_parser'] = config['shared_parser'] == 'true'
+        else:
+            raise ValueError('复用解析浏览器必须为开关值。')
     if config.get('yt5s_quality', 'best') not in ('best', '360', '720'):
         raise ValueError('yt5s 画质请选择尽可能最高画质、360p 或 720p。')
     if config.get('downmp3_quality', 'best') not in ('best', '360', '480', '720', '1080'):
@@ -110,7 +121,7 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('请选择有效的下载连接方式。')
     for key, default in DEFAULTS.items():
         value = config.get(key, default)
-        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods'):
+        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods', 'download_channels', 'shared_parser'):
             continue
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')

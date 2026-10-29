@@ -2,6 +2,7 @@
 from collections import deque
 from contextlib import contextmanager, ExitStack
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -21,7 +22,9 @@ class PipelineBusy(RuntimeError):
 
 def policy_key(config):
     return [config.get('throughput_mode', 'manual'), int(config.get('worker_count', 1)),
-            int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0))]
+            int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0)),
+            hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
+                'download_channels', 'scheduler_mode', 'download_connection_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):
@@ -99,7 +102,7 @@ def runtime_limits(config, directory):
         saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
         if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
                 and 1 <= saved['transfers'] <= requested
-                and saved['transfers'] <= saved['workers'] <= MAX_WORKERS
+                and 1 <= saved['workers'] <= MAX_WORKERS
                 and 1 <= saved['browsers'] <= int(config.get('yt5s_browser_count', 2))):
             return saved
     except (OSError, ValueError, KeyError, TypeError):
@@ -120,6 +123,12 @@ class ThroughputController:
         self.probe_baseline = None
         self.plateau_until = 0
         self.history = deque(maxlen=6)
+        self.metric_history = deque(maxlen=12)
+        self.metric_previous = None
+        self.group_control = {}
+        self.pressure_hits = 0
+        self.browser_trial = None
+        self.browser_until = 0
 
     def sample(self):
         resources = resource_limits()
@@ -150,17 +159,50 @@ class ThroughputController:
         requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
         browser_requested = max(1, min(16, int(config.get('yt5s_browser_count', 2))))
         browser_methods = {'yt5s', 'yt1d', 'bergung'} & set(config.get('download_methods') or [config.get('download_method', 'yt_dlp')])
-        browser_ceiling = min(browser_requested, max(1, math.floor(resources['cpu_cores'] / 2)),
+        browser_ceiling = min(browser_requested, max(1, math.floor(resources['cpu_cores'] * .75)),
                               max(1, int(resources['memory_total'] * .3 / (384 * MIB)))) if browser_methods else 1
         same = self.state and self.state['policy'] == policy_key(config)
-        browsers = min(browser_ceiling, self.state['browsers']) if same else browser_ceiling
+        if not same:
+            self.group_control.clear()
+            self.browser_trial = None
+            self.probe_baseline = None
+        browsers = min(browser_ceiling, self.state['browsers']) if same else min(2, browser_ceiling)
         nominal_workers = max(1, int((resources['memory_total'] * .65 - 256 * MIB -
                                      (browsers * 384 * MIB if browser_methods else 0)) / (128 * MIB)))
+        worker_pool = max(2, int(os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2'))) + max(0, int(os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')))
+        db_worker_cap = max(1, int(os.environ.get('VIDEO_WORKER_DB_CONNECTION_BUDGET', '48')) // worker_pool)
+        nominal_workers = min(nominal_workers, db_worker_cap)
         ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
         transfers = min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2)))
         counts = {}
-        for stage in stages:
+        group_active = {}
+        for item in stages:
+            stage = item.get('stage') if isinstance(item, dict) else item
             counts[stage] = counts.get(stage, 0) + 1
+            if isinstance(item, dict) and stage in ('downloading', 'processing') and item.get('upstream_group'):
+                group = item['upstream_group']
+                group_active[group] = group_active.get(group, 0) + 1
+        from webapp.download_metrics import read_counters
+        metrics = read_counters(self.directory)
+        received = verified = resolved = 0
+        group_deltas = {}
+        if self.metric_previous is not None and tick > self.last:
+            for identity, value in metrics.items():
+                previous = self.metric_previous.get(identity, {})
+                received += max(0, value.get('received_bytes', 0) - previous.get('received_bytes', 0))
+                verified += max(0, value.get('verified_bytes', 0) - previous.get('verified_bytes', 0))
+                resolved += max(0, value.get('resolved', 0) - previous.get('resolved', 0))
+                for group, current in value.get('groups', {}).items():
+                    before = previous.get('groups', {}).get(group, {})
+                    delta = group_deltas.setdefault(group, {'bytes': 0, 'failed': 0, 'succeeded': 0, 'upstream_failed': 0})
+                    for key, name in (('bytes', 'received_bytes'), ('failed', 'failed'), ('succeeded', 'succeeded'), ('upstream_failed', 'upstream_failed')):
+                        delta[key] += max(0, current.get(name, 0) - before.get(name, 0))
+            self.metric_history.append((tick - self.last, received, verified, group_deltas, resolved))
+        self.metric_previous = metrics
+        metric_seconds = sum(item[0] for item in self.metric_history) or 1
+        media_rate = sum(item[1] for item in self.metric_history) / metric_seconds
+        verified_rate = sum(item[2] for item in self.metric_history) / metric_seconds
+        resolve_rate = sum(item[4] for item in self.metric_history) / metric_seconds
         rate, cpu = 0.0, resources['cpu_percent']
         if self.previous and tick > self.last:
             elapsed = tick - self.last
@@ -169,10 +211,12 @@ class ThroughputController:
             if 'cpu_usec' in resources and 'cpu_usec' in self.previous:
                 quota_cpu = max(0, resources['cpu_usec'] - self.previous['cpu_usec']) / 1e6 / elapsed / resources['cpu_cores'] * 100
                 cpu = max(cpu, quota_cpu)
-        pressure = (cpu >= 90 or resources['io_pressure'] >= 15
-                    or resources['memory_available'] < max(256 * MIB, resources['memory_total'] * .08))
+        self.pressure_hits = self.pressure_hits + 1 if cpu >= 90 or resources['io_pressure'] >= 15 else 0
+        pressure = (self.pressure_hits >= 3 or cpu >= 97 or resources['memory_available'] < max(256 * MIB, resources['memory_total'] * .08))
+        control_rate = media_rate if metrics else rate
         reason = '有界解析与传输并行'
-        if automatic(config) and same and tick - self.adjusted >= 30:
+        changed = False
+        if automatic(config) and same and tick - self.adjusted >= 60:
             active = counts.get('downloading', 0) + counts.get('processing', 0)
             target = int(config.get('bandwidth_mbps', 0)) * 1e6 / 8
             if pressure:
@@ -181,19 +225,73 @@ class ThroughputController:
                     browsers = max(1, browsers - 1)
                 reason = '资源压力升高，收敛并发'
                 self.probe_baseline = None
-            elif counts.get('waiting_browser', 0) >= 2 and cpu < 65 and resources['memory_available'] > 1024 * MIB and browsers < browser_ceiling:
+                self.browser_trial = None
+                self.browser_until = tick + 120
+                changed = True
+            elif self.browser_trial is not None:
+                trial = self.browser_trial
+                if tick - trial['time'] >= 120:
+                    improved = ((control_rate > trial['rate'] * 1.08 and control_rate > 0)
+                                or (resolve_rate > trial['resolve_rate'] * 1.15 and resolve_rate > 0))
+                    if not improved:
+                        browsers = max(1, browsers - 1)
+                        self.browser_until = tick + 180
+                        reason = '增加浏览器未改善解析或媒体吞吐，恢复原额度'
+                    self.browser_trial = None
+                else:
+                    reason = '观察新增浏览器的解析与下载收益'
+                changed = True
+            elif (counts.get('waiting_browser', 0) >= 2 and counts.get('waiting_transfer', 0) <= 1
+                  and cpu < 65 and resources['memory_available'] > 1024 * MIB and browsers < browser_ceiling
+                  and tick >= self.browser_until):
                 browsers += 1
-                reason = '解析等待且资源充足，恢复浏览器额度'
-            elif self.probe_baseline is not None and rate < self.probe_baseline * 1.05:
+                self.browser_trial = {'time': tick, 'rate': control_rate, 'resolve_rate': resolve_rate}
+                reason = '解析供给不足且资源充足，试增一个浏览器'
+                changed = True
+            elif self.probe_baseline is not None and control_rate < self.probe_baseline * 1.05:
                 transfers = max(1, transfers - 1)
                 self.probe_baseline = None
                 self.plateau_until = tick + 120
                 reason = '增加并发未提高接收吞吐，等待下一轮探索'
-            elif active >= max(1, transfers * .75) and (not target or rate < target * .9) and tick >= self.plateau_until:
-                self.probe_baseline = rate if transfers < ceiling else None
+                changed = True
+            elif active >= max(1, transfers * .75) and (not target or control_rate < target * .9) and tick >= self.plateau_until:
+                self.probe_baseline = control_rate if transfers < ceiling else None
                 transfers = min(ceiling, transfers + 1)
                 reason = '传输名额持续繁忙，探索增加并发'
+                changed = True
             self.adjusted = tick
+        from webapp.channels import group_caps, registry
+        channels = registry(config)
+        upstream_caps = {key.split(':', 1)[1]: cap for key, cap in group_caps(channels).items() if key.startswith('upstream:')}
+        if 'youtube-origin' in group_active:
+            upstream_caps.setdefault('youtube-origin', 8)
+        groups = {}
+        for group, cap in upstream_caps.items():
+            cap = min(cap, transfers)
+            control = self.group_control.setdefault(group, {'limit': min(2, cap), 'adjusted': tick, 'until': 0})
+            limit = min(control['limit'], cap)
+            total = {name: sum(item[3].get(group, {}).get(name, 0) for item in self.metric_history)
+                     for name in ('bytes', 'failed', 'succeeded', 'upstream_failed')}
+            group_rate = total['bytes'] / metric_seconds
+            if automatic(config) and tick - control['adjusted'] >= 60 and not changed:
+                if pressure or (total['upstream_failed'] >= 3 and total['upstream_failed'] > total['succeeded']):
+                    limit = max(1, limit - 1)
+                    control.pop('baseline', None)
+                    control['until'] = tick + 120
+                elif 'baseline' in control:
+                    if group_rate < control.pop('baseline') * 1.08:
+                        limit = max(1, limit - 1)
+                        control['until'] = tick + 120
+                elif (group_active.get(group, 0) >= limit and group_rate > 0 and limit < cap
+                      and tick >= control['until']):
+                    control['baseline'] = group_rate
+                    limit += 1
+                control['adjusted'] = tick
+                changed = True
+            control['limit'] = limit
+            groups[group] = {'limit': limit if automatic(config) else cap,
+                             'active': group_active.get(group, 0), 'receive_mbps': round(group_rate * 8 / 1e6, 2),
+                             'failed': total['failed'], 'upstream_failed': total['upstream_failed'], 'succeeded': total['succeeded']}
         if not automatic(config):
             transfers, workers, browsers = requested, requested, browser_requested
             reason = '使用手动并发'
@@ -202,9 +300,14 @@ class ThroughputController:
             # its owning leased task, never in an unbounded or cross-node cache.
             preparation = browsers + min(2, browsers) if browser_methods else 2
             workers = max(transfers, min(MAX_WORKERS, nominal_workers, transfers + preparation))
+            workers = min(workers, nominal_workers, sum(value['limit'] for value in groups.values()) + preparation)
         self.state = {'time': time.time(), 'policy': policy_key(config), 'mode': config.get('throughput_mode', 'manual'),
                       'transfers': transfers, 'workers': workers, 'browsers': browsers,
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
+                      'media_receive_mbps': round(media_rate * 8 / 1e6, 2),
+                      'verified_mbps': round(verified_rate * 8 / 1e6, 2), 'groups': groups,
+                      'resolves_per_minute': round(resolve_rate * 60, 2),
+                      'io_pressure': resources['io_pressure'], 'db_worker_cap': db_worker_cap,
                       'cpu_cores': round(resources['cpu_cores'], 2),
                       'memory_available_mb': round(resources['memory_available'] / MIB),
                       'stages': counts, 'reason': reason}

@@ -134,14 +134,14 @@ class ResourceFeedbackTests(unittest.TestCase):
         with patch.object(controller,'sample',side_effect=lambda:dict(sample)):
             initial=controller.update(config)
             self.assertEqual(initial['transfers'],8)
-            self.assertEqual(initial['workers'],12)
-            clock[0]+=31; sample['rx']+=310_000_000
+            self.assertEqual(initial['workers'],6)  # one unverified upstream + bounded preparation
+            clock[0]+=61; sample['rx']+=610_000_000
             idle=controller.update(config,['waiting_browser']*12)
             self.assertEqual(idle['transfers'],8)
-            clock[0]+=31; sample['rx']+=310_000_000
+            clock[0]+=61; sample['rx']+=610_000_000
             grown=controller.update(config,['downloading']*8)
             self.assertEqual(grown['transfers'],9)
-            clock[0]+=31; sample['rx']+=310_000_000; sample['cpu_percent']=97
+            clock[0]+=61; sample['rx']+=610_000_000; sample['cpu_percent']=97
             reduced=controller.update(config,['downloading']*9)
             self.assertLess(reduced['transfers'],9)
             self.assertEqual(runtime_limits(config,self.directory)['transfers'],reduced['transfers'])
@@ -152,6 +152,67 @@ class ResourceFeedbackTests(unittest.TestCase):
                     'transfers':64,'workers':80,'browsers':2})
         self.assertEqual(runtime_limits(config,self.directory)['workers'],2)
         self.assertEqual(runtime_limits({'worker_count':64},self.directory)['workers'],64)
+
+    def test_upstream_probe_reverts_when_more_connections_produce_no_gain(self):
+        config = {'throughput_mode':'auto','worker_count':16,'yt5s_browser_count':2,'download_methods':['bergung']}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda:clock[0])
+        sample = {'cpu_cores':4,'memory_total':8192*MIB,'memory_available':4096*MIB,
+                  'cpu_percent':30,'io_pressure':0,'rx':0}
+        counters = {'worker':{'received_bytes':0,'verified_bytes':0,
+                             'groups':{'unverified-media':{'received_bytes':0}}}}
+        def advance():
+            clock[0] += 61
+            counters['worker']['received_bytes'] += 61_000_000
+            counters['worker']['groups']['unverified-media']['received_bytes'] += 61_000_000
+            # Return a fresh object, as the filesystem reader does.
+            return json.loads(json.dumps(counters))
+        with patch.object(controller,'sample',side_effect=lambda:dict(sample)), \
+             patch('webapp.download_metrics.read_counters',side_effect=lambda *_:json.loads(json.dumps(counters))):
+            initial = controller.update(config)
+            self.assertEqual(initial['groups']['unverified-media']['limit'],2)
+            advance()
+            grown = controller.update(config,[{'stage':'downloading','upstream_group':'unverified-media'}]*2)
+            self.assertEqual(grown['groups']['unverified-media']['limit'],3)
+            advance()
+            reverted = controller.update(config,[{'stage':'downloading','upstream_group':'unverified-media'}]*3)
+            self.assertEqual(reverted['groups']['unverified-media']['limit'],2)
+            self.assertEqual(reverted['media_receive_mbps'],8)
+            self.assertEqual(reverted['receive_mbps'],0)
+
+    def test_browser_probe_reverts_and_worker_budget_counts_per_process_pools(self):
+        config={'throughput_mode':'auto','worker_count':16,'yt5s_browser_count':4,'download_methods':['bergung']}
+        clock=[100]
+        controller=ThroughputController(self.directory,clock=lambda:clock[0])
+        sample={'cpu_cores':4,'memory_total':8192*MIB,'memory_available':4096*MIB,'cpu_percent':30,'io_pressure':0,'rx':0}
+        with patch.object(controller,'sample',side_effect=lambda:dict(sample)), \
+             patch.dict(os.environ,{'VIDEO_WORKER_DB_CONNECTION_BUDGET':'12','VIDEO_WORKER_DB_POOL_SIZE':'2','VIDEO_WORKER_DB_MAX_OVERFLOW':'0'}):
+            initial=controller.update(config)
+            self.assertEqual(initial['browsers'],2)
+            self.assertLessEqual(initial['workers'],6)
+            clock[0]+=61
+            increased=controller.update(config,['waiting_browser']*4)
+            self.assertEqual(increased['browsers'],3)
+            clock[0]+=121
+            reverted=controller.update(config,['waiting_browser']*4)
+            self.assertEqual(reverted['browsers'],2)
+            self.assertEqual(runtime_limits(config,self.directory)['workers'],reverted['workers'])
+
+    def test_video_failures_do_not_reduce_shared_bandwidth_capacity(self):
+        config={'throughput_mode':'auto','worker_count':16,'yt5s_browser_count':2,'download_methods':['bergung']}
+        clock=[100]
+        controller=ThroughputController(self.directory,clock=lambda:clock[0])
+        sample={'cpu_cores':4,'memory_total':8192*MIB,'memory_available':4096*MIB,'cpu_percent':30,'io_pressure':0,'rx':0}
+        counters={'worker':{'groups':{'unverified-media':{'failed':0,'upstream_failed':0}}}}
+        with patch.object(controller,'sample',side_effect=lambda:dict(sample)), \
+             patch('webapp.download_metrics.read_counters',side_effect=lambda *_:json.loads(json.dumps(counters))):
+            controller.update(config)
+            clock[0]+=61;counters['worker']['groups']['unverified-media']['failed']=10
+            content=controller.update(config)
+            self.assertEqual(content['groups']['unverified-media']['limit'],2)
+            clock[0]+=61;counters['worker']['groups']['unverified-media']['upstream_failed']=3
+            throttled=controller.update(config)
+            self.assertEqual(throttled['groups']['unverified-media']['limit'],1)
 
 
 if __name__=='__main__':

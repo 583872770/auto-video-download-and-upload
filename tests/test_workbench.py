@@ -1,12 +1,13 @@
 """Workbench switches, claims, selections and preflight are instance-local."""
+import json
 import time
 import unittest
 from unittest.mock import patch
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from tests import test_fleet, test_jobs
-from webapp.database import instances, settings, job_profiles
+from webapp.database import instances, settings, job_profiles, download_lists
 
 
 class WorkbenchFleetTests(unittest.TestCase):
@@ -32,6 +33,103 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.control('alpha', 'start', a)
         self.control('beta', 'start', b)
         return a, b
+
+    def assert_job_state(self, job, state, desired, reason=''):
+        detail = self.client.get('/api/jobs/' + job).json
+        page = self.client.get('/api/jobs').json['items']
+        item = next(item for item in page if item['id'] == job)
+        for value in (detail, item):
+            self.assertEqual(value['state'], state, value)
+            self.assertEqual(value['desired_running'], desired, value)
+            self.assertEqual(value['waiting_reason'], reason, value)
+        return detail
+
+    def test_job_states_follow_scoped_execution_and_pause_drains(self):
+        job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')
+        self.manager.set_downloads_paused(True)
+        self.control('alpha', 'start', job)
+        self.assertFalse(self.assert_job_state(job, 'queued', True)['released'])
+        task = self.a.claim('alpha-owner')
+        self.assert_job_state(job, 'running', True)
+        self.assertEqual(self.status('alpha')['job']['state'], 'running')
+        self.control('alpha', 'pause')
+        self.assert_job_state(job, 'draining', False)
+        self.assertEqual(self.status('alpha')['job']['state'], 'draining')
+        self.assertTrue(self.a.finish(task['id'], result={}, worker_id='alpha-owner'))
+        self.assert_job_state(job, 'paused', False)
+        self.assertEqual(self.status('alpha')['job']['state'], 'paused')
+
+    def test_paused_peer_does_not_hide_other_instances_running_same_job(self):
+        job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk')
+        self.control('alpha', 'start', job)
+        self.control('beta', 'start', job)
+        self.a.claim('alpha-owner')
+        self.b.claim('beta-owner')
+        self.control('alpha', 'pause')
+        self.assert_job_state(job, 'running', True)
+        self.assertEqual(self.status('alpha')['job']['state'], 'draining')
+        self.assertEqual(self.status('beta')['job']['state'], 'running')
+        self.control('beta', 'pause')
+        self.assert_job_state(job, 'draining', False)
+
+    def test_wait_conditions_only_consider_instances_assigned_to_this_job(self):
+        job, other = self.pair()
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=time.time()-100))
+        result = self.client.get('/api/jobs/' + job).json
+        self.assertTrue(result['waiting_reason'])
+        self.assert_job_state(job, 'waiting', True, result['waiting_reason'])
+        self.assert_job_state(other, 'queued', True)
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=time.time()))
+            db.execute(self.manager.db.upsert(settings, {'key': 'disk:alpha',
+                'value': json.dumps({'blocked': True, 'time': time.time()})}, ['key']))
+        self.assert_job_state(job, 'waiting', True, '等待下载实例释放磁盘空间')
+        self.assert_job_state(other, 'queued', True)
+        self.assertEqual(self.status('alpha')['job']['state'], 'waiting')
+        self.assertEqual(self.status('alpha')['job']['waiting_reason'], '等待下载实例释放磁盘空间')
+        self.control('beta', 'start', job)
+        self.assert_job_state(job, 'queued', True)
+
+    def test_legacy_executor_can_continue_scoped_peers_paused_job(self):
+        job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')
+        self.control('alpha', 'start', job)
+        self.a.claim('alpha-owner')
+        self.control('alpha', 'pause')
+        with self.manager.connect() as db:
+            self.manager.fleet.activate(db)
+            db.execute(download_lists.update().where(download_lists.c.id == job).values(released=1))
+        self.assert_job_state(job, 'running', True)
+        self.assertEqual(self.b.claim('beta-owner')['batch_id'], job)
+
+    def test_stopped_executor_does_not_look_enabled(self):
+        job = self.create()
+        self.control('alpha', 'start', job)
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(paused=0, stop_requested=1))
+        self.assert_job_state(job, 'paused', False)
+
+    def test_instance_snapshot_queries_do_not_grow_with_job_count(self):
+        job = self.create('Unique')
+        self.control('alpha', 'start', job)
+        for index in range(19):
+            self.create('Other ' + str(index))
+        def measured(url):
+            statements = []
+            def capture(connection, cursor, statement, *args):
+                statements.append(statement)
+            event.listen(self.manager.db.engine, 'before_cursor_execute', capture)
+            try:
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200, response.json)
+                return len(statements), response.json['items']
+            finally:
+                event.remove(self.manager.db.engine, 'before_cursor_execute', capture)
+        one, _ = measured('/api/jobs?q=Unique')
+        many, items = measured('/api/jobs')
+        self.assertEqual(len(items), 20)
+        self.assertEqual(many, one)
+        self.assertLessEqual(many, 14)
 
     def test_start_does_not_enable_other_instance_or_release_shared_job(self):
         a = self.create()

@@ -24,6 +24,8 @@ const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可�
 const providerNames = { yt_dlp: 'yt-dlp', yt5s: 'yt5s', downmp3: 'downmp3', yt1d: 'yt1d', bergung: 'Bergung' };
 $('#settings-form [name="yt1d_timeout"]').closest('label').after($('#bergung-settings-template').content.cloneNode(true));
 const browserCountLabel = $('#settings-form [name="yt5s_browser_count"]').closest('label');
+$('.task-defaults-panel').after($('#channel-settings-template').content.cloneNode(true));
+browserCountLabel.querySelector('small').textContent = '默认 2；自动模式会按资源与解析供给调整，并遵守此上限。Bergung 共享解析服务会复用空闲浏览器，解析完的地址在本机有界等待传输。';
 browserCountLabel.dataset.providerSetting += ' bergung';
 browserCountLabel.firstChild.textContent = '浏览器并发数（yt5s / yt1d / Bergung 共享）';
 const selectedProviders = () => state.config?.download_methods || (state.config?.download_method === 'yt5s_fallback' ? ['yt5s', 'yt_dlp'] : [state.config?.download_method || 'yt_dlp']);
@@ -401,9 +403,30 @@ function fillConfig(config) {
     element.value = Array.isArray(value) ? value.join('\n') : value ?? '';
     settingsBaseline[element.name] = element.value;
   }
+  renderChannels(config.download_channels || []);
   renderStorageSettings();
   renderDownloadMethod();
 }
+const channelFields = [['id','渠道标识'],['label','名称'],['site_url','网站地址'],['api_url','API 地址'],['upstream_group','带宽组'],['resolver_group','解析组'],['quota_group','配额组'],['transfer_limit','同组传输上限'],['resolver_limit','同组解析上限'],['connection_limit','同组媒体连接上限'],['weight','分配权重']];
+function renderChannels(entries) {
+  $('#channel-entries').innerHTML = entries.map(item => `<fieldset class="channel-entry"><div class="scale-fields">${channelFields.map(([key,label])=>`<label>${label}<input data-channel-field="${key}" value="${escapeHTML(item[key] ?? '')}" ${['transfer_limit','resolver_limit','connection_limit','weight'].includes(key)?'type="number" min="1" max="128"':'type="text"'} required></label>`).join('')}</div><button type="button" class="text-button" data-channel-remove>移除此入口</button></fieldset>`).join('');
+}
+function readChannels() {
+  return $$('.channel-entry').map(row => Object.fromEntries([['adapter','bergung'], ...channelFields.map(([key]) => {
+    const input = $(`[data-channel-field="${key}"]`, row);
+    return [key, input.type==='number' ? Number(input.value) : input.value.trim()];
+  })]));
+}
+$('#channel-add').addEventListener('click', () => {
+  const entries = readChannels();
+  if (entries.length >= 16) { toast('最多配置 16 个渠道。', true); return; }
+  entries.push({id:`bergung_${entries.length+1}`,label:`Bergung ${entries.length+1}`,site_url:'https://bergung.hoffnungfuerdiezukunft.net/',api_url:'https://bergung-api.hoffnungfuerdiezukunft.net/',upstream_group:'unverified-media',resolver_group:'bergung',quota_group:'bergung',transfer_limit:8,resolver_limit:4,connection_limit:16,weight:1});
+  renderChannels(entries); settingsDirty = true;
+});
+$('#channel-entries').addEventListener('click', event => {
+  const button = event.target.closest('[data-channel-remove]');
+  if (button) { button.closest('.channel-entry').remove(); settingsDirty = true; }
+});
 function renderProviderChoices(container, methods, busy = false) {
   const signature = JSON.stringify([methods, busy]);
   if (container.dataset.signature === signature) return;
@@ -1002,6 +1025,8 @@ $('#settings-form').addEventListener('submit', event => {
     if (downloadMethodBusy) return;
     downloadMethodBusy = true; renderDownloadMethod();
     const data = Object.fromEntries([...new FormData(event.target)].filter(([key,value]) => value !== settingsBaseline[key]));
+    const channels = readChannels();
+    if (JSON.stringify(channels) !== JSON.stringify(state.config?.download_channels || [])) data.download_channels = channels;
     if (providerDraft) data.download_methods = [...providerDraft];
     try {
       await api('/api/config', { method:'PUT', body:data });
