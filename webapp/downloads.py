@@ -1,4 +1,5 @@
 ﻿"""Structured yt-dlp progress persisted independently of terminal output."""
+from collections import deque
 import math
 import re
 import time
@@ -110,10 +111,32 @@ class DownloadProgress:
             return
         filename = event.get('filename') or info.get('format_id') or 'video'
         previous = self.streams.get(filename, {})
-        downloaded = number(event.get('downloaded_bytes')) or previous.get('downloaded', 0)
+        downloaded = number(event.get('downloaded_bytes'))
+        if downloaded is None:
+            downloaded = previous.get('downloaded', 0)
         total = number(event.get('total_bytes')) or number(event.get('total_bytes_estimate'))
         finished = event.get('status') == 'finished'
-        self.streams[filename] = {'downloaded': downloaded, 'total': total, 'finished': finished}
+        # Some downloaders omit speed on progress events. Measure only new bytes
+        # in this stream, so resumed files and format/provider changes cannot
+        # turn existing bytes into an inflated transfer rate.
+        stamp = time.monotonic()
+        samples = previous.get('rate_samples')
+        if samples is None or downloaded < previous.get('downloaded', 0) or previous.get('finished'):
+            samples = deque()
+        while len(samples) > 1 and samples[1][0] <= stamp - 5:
+            samples.popleft()
+        if not samples or stamp - samples[-1][0] >= 0.25:
+            samples.append((stamp, downloaded))
+        elapsed = stamp - samples[0][0]
+        measured_speed = max(0, downloaded - samples[0][1]) / elapsed if elapsed >= 0.5 else None
+        speed = number(event.get('speed'))
+        if speed is None:
+            speed = measured_speed
+        eta = number(event.get('eta'))
+        if eta is None and total is not None and speed:
+            eta = max(0, total - downloaded) / speed
+        self.streams[filename] = {'downloaded': downloaded, 'total': total, 'finished': finished,
+                                  'rate_samples': samples}
         formats = info.get('requested_formats') or self.formats
         count = max(len(formats), len(self.streams), 1)
         fraction = min(downloaded / total, 1) if total else 0
@@ -129,8 +152,8 @@ class DownloadProgress:
         self.state.update(stage='processing' if finished else 'downloading',
                           percent=round(min(percent, 100), 1) if total or finished else None,
                           downloaded_bytes=sum(stream['downloaded'] for stream in self.streams.values()),
-                          total_bytes=all_total, speed=None if finished else number(event.get('speed')),
-                          eta=None if finished else number(event.get('eta')), title=str(info.get('title') or self.state['title']),
+                          total_bytes=all_total, speed=None if finished else speed,
+                          eta=None if finished else eta, title=str(info.get('title') or self.state['title']),
                           format=f'{format_name} · {info.get("format_id", "")}')
         self.save(force=finished or previous_stage != self.state['stage'])
 

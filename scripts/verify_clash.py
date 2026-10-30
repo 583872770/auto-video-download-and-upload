@@ -47,11 +47,14 @@ def main():
             if self.path.startswith('/subscribe'):
                 self.send_response(200)
                 self.end_headers()
-                nodes = [{'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': self.server.server_port}
-                         for name in ('剩余流量：100 GB', '测试节点 / A', '测试节点 B')]
+                backup = self.path.startswith('/subscribe-backup')
+                port = backup_fixture.server_port if backup else self.server.server_port
+                names = ('备用节点 A', '备用节点 B') if backup else ('剩余流量：100 GB', '测试节点 / A', '测试节点 B')
+                nodes = [{'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': port} for name in names]
                 self.wfile.write(yaml.safe_dump({'proxies': nodes}).encode())
             else:
                 self.send_response(204)
+                self.send_header('X-Proxy-Identity', str(self.server.server_port))
                 self.end_headers()
 
         def log_message(self, *args):
@@ -59,6 +62,8 @@ def main():
 
     fixture = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
     threading.Thread(target=fixture.serve_forever, daemon=True).start()
+    backup_fixture = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
+    threading.Thread(target=backup_fixture.serve_forever, daemon=True).start()
     previous_test_url = clash_module.TEST_URL
     clash_module.TEST_URL = f'http://127.0.0.1:{fixture.server_port}/probe'
     app = create_app(config, output / 'state', start_worker=False)
@@ -67,6 +72,15 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     report = {}
     errors = []
+    original_validate = clash_module.validate_subscription_url
+    subscription_url = f'http://127.0.0.1:{fixture.server_port}/subscribe?token=PRIVATE_TEST_TOKEN'
+    backup_url = f'http://127.0.0.1:{fixture.server_port}/subscribe-backup?token=PRIVATE_BACKUP_TOKEN'
+
+    def validate_fixture(url):
+        if url not in (subscription_url, backup_url):
+            original_validate(url)
+
+    clash_module.validate_subscription_url = validate_fixture
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, **browser_options(pw.chromium))
@@ -75,7 +89,8 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}/#clash', wait_until='networkidle')
                 expect(page.locator('#clash-view')).to_be_visible()
-                page.locator('#clash-subscription-url').fill(f'http://127.0.0.1:{fixture.server_port}/subscribe?token=PRIVATE_TEST_TOKEN')
+                page.locator('#clash-subscription-name').fill('常用订阅')
+                page.locator('#clash-subscription-url').fill(subscription_url)
                 page.locator('#clash-import').click()
                 expect(page.locator('#clash-core-status')).to_have_text('代理运行中', timeout=30000)
                 expect(page.locator('.clash-node')).to_have_count(2)
@@ -120,9 +135,47 @@ def main():
                 expect(page.locator('#rotation-every')).to_have_value('3')
                 expect(page.locator('#rotation-count-failures')).not_to_be_checked()
                 report['rotation_selection_order_save_and_reload'] = 'passed'
+                first = manager.config['active_subscription_id']
+                page.locator('#clash-subscription-new').click()
+                page.locator('#clash-subscription-name').fill('备用订阅')
+                page.locator('#clash-subscription-url').fill(backup_url)
+                page.evaluate('refresh()')
+                expect(page.locator('#clash-subscription-name')).to_have_value('备用订阅')
+                expect(page.locator('#clash-subscription-url')).to_have_value(backup_url)
+                page.locator('#clash-import').click()
+                expect(page.locator('#clash-subscription-badge')).to_have_text('已保存 2 个')
+                expect(page.locator('#clash-selected')).to_have_text('测试节点 B')
+                assert manager.config['active_subscription_id'] == first
+                second = next(item['id'] for item in manager.config['subscriptions'] if item['id'] != first)
+                expect(page.locator('#clash-subscription-select')).to_have_value(second)
+                page.locator('#clash-subscription-name').fill('备用订阅（已更新）')
+                page.locator('#clash-import').click()  # Blank URL refreshes this saved profile.
+                expect(page.locator('#clash-subscription-select option:checked')).to_have_text('备用订阅（已更新）')
+                page.locator('#clash-subscription-switch').click()
+                expect(page.locator('#clash-subscription-select option:checked')).to_contain_text('当前使用')
+                expect(page.locator('#clash-selected')).to_have_text('备用节点 A')
+                expect(page.locator('#rotation-enabled')).not_to_be_checked()
+                assert manager.snapshot()['node'] == '备用节点 A'
+                # Verify actual media requests follow the backup subscription's proxy.
+                from urllib.request import ProxyHandler, build_opener
+                with build_opener(ProxyHandler({'http': manager.proxy_url})).open('http://192.0.2.1/probe', timeout=5) as response:
+                    assert response.headers['X-Proxy-Identity'] == str(backup_fixture.server_port)
+                page.reload(wait_until='networkidle')
+                expect(page.locator('#clash-subscription-select')).to_have_value(second)
+                expect(page.locator('#clash-selected')).to_have_text('备用节点 A')
+                assert 'PRIVATE_BACKUP_TOKEN' not in page.content()
+                page.locator('#clash-subscription-select').select_option(first)
+                page.locator('#clash-subscription-switch').click()
+                expect(page.locator('#clash-selected')).to_have_text('测试节点 B')
+                expect(page.locator('#rotation-enabled')).to_be_checked()
+                expect(page.locator('#rotation-every')).to_have_value('3')
+                with build_opener(ProxyHandler({'http': manager.proxy_url})).open('http://192.0.2.1/probe', timeout=5) as response:
+                    assert response.headers['X-Proxy-Identity'] == str(fixture.server_port)
+                report['multiple_subscriptions_save_update_switch_route_and_reload'] = 'passed'
                 # Queue a fixture job without a worker to verify the shared lock in the UI.
                 store = app.extensions['task_store']
                 task = store.create('download', {'config': {}, 'base': str(output)})
+                page.evaluate('refresh()')
                 expect(page.locator('#clash-lock-note')).to_be_visible(timeout=10000)
                 expect(page.locator('[data-node-select="测试节点 / A"]')).to_be_disabled()
                 expect(page.locator('#clash-import')).to_be_disabled()
@@ -130,8 +183,14 @@ def main():
                 expect(page.locator('#rotation-save')).to_be_disabled()
                 expect(page.locator('#rotation-every')).to_be_disabled()
                 store.finish(task['id'], result={'message': 'fixture complete'})
+                page.evaluate('refresh()')
                 expect(page.locator('#clash-lock-note')).not_to_be_visible(timeout=10000)
                 report['queue_locks_node_changes'] = 'passed'
+                page.locator('#clash-subscription-select').select_option(second)
+                page.locator('#clash-subscription-delete').click()
+                expect(page.locator('#clash-subscription-badge')).to_have_text('已保存 1 个')
+                expect(page.locator('#clash-subscription-select')).to_have_value(first)
+                report['delete_inactive_subscription'] = 'passed'
                 page.locator('#clash-stop').click()
                 expect(page.locator('#clash-core-status')).to_have_text('代理已停止')
                 page.locator('#clash-start').click()
@@ -157,7 +216,10 @@ def main():
         manager.stop()
         fixture.shutdown()
         fixture.server_close()
+        backup_fixture.shutdown()
+        backup_fixture.server_close()
         clash_module.TEST_URL = previous_test_url
+        clash_module.validate_subscription_url = original_validate
     (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'CLASH_WEB_VERIFIED: {output / "report.json"}')
     return 0

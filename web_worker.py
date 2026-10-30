@@ -258,8 +258,18 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.state.update(stage='checking_login')
             progress.save(force=True)
             auth = YouTubeAuth(store)
-            auth.require(config, base, **({'proxy': snapshot['proxy'], 'node': snapshot['node']}
-                                        if config.get('proxy_mode') == 'clash' else {}))
+            try:
+                auth.require(config, base, **({'proxy': snapshot['proxy'], 'node': snapshot['node']}
+                                            if config.get('proxy_mode') == 'clash' else {}))
+            except YouTubeAuthRequired as error:
+                if route_health and error.connection_failure:
+                    # Preflight failures occur before provider attempts, but must
+                    # still cool a repeatedly failing route in automatic rotation.
+                    try:
+                        route_health.record(snapshot['node'], 'yt_dlp', error=error)
+                    except OSError as health_error:
+                        event('route_health_unavailable', error_type=type(health_error).__name__)
+                raise
             progress.state.update(stage='extracting')
             progress.save(force=True)
         output_files, existing_files, current_video = {}, set(), {}
@@ -773,6 +783,17 @@ def drain(directory, slot=0, role='all'):
                     event('attempt_released', reason='environment_required', **error_details(error))
                     break
                 except YouTubeAuthRequired as error:
+                    if error.retryable:
+                        retry_after = 30
+                        message = f'{error} 任务将在 {retry_after} 秒后自动重试，实例继续运行。'
+                        store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
+                            'speed': None, 'eta': None, 'retry_delay_seconds': retry_after,
+                            'retry_reason': 'youtube_auth_check_unavailable'}, store.owner)
+                        store.release(task['id'], store.owner, message, delay=retry_after)
+                        print(message, flush=True)
+                        event('attempt_released', reason='youtube_auth_check_unavailable',
+                              auth_state=error.result['state'], retry_after=retry_after, **error_details(error))
+                        continue
                     from webapp.youtube_auth import YouTubeAuth
                     from webapp.execution import isolate_download_failure
                     isolate_download_failure(store, error)

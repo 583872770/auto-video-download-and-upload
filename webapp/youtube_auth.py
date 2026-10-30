@@ -5,6 +5,7 @@ from http.cookiejar import MozillaCookieJar
 import json
 from pathlib import Path
 import re
+import ssl
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -25,6 +26,9 @@ AUTH_COOKIES = {'SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LOGIN_INFO',
 class YouTubeAuthRequired(RuntimeError):
     def __init__(self, result):
         self.result = result
+        # Missing login evidence and an unavailable check are different failures.
+        self.retryable = result['state'] in ('network_error', 'unconfirmed', 'checking')
+        self.connection_failure = result['state'] == 'network_error'
         super().__init__(result['message'])
 
 
@@ -73,9 +77,16 @@ def probe(cookie_data, proxy):
                 return 'not_logged_in', 'YouTube 未认可当前 Cookie，请重新登录或上传新的 Cookie。'
             if error.code in (403, 429):
                 return 'verification_required', '当前节点被 YouTube 限制或要求额外验证，请检查节点后重新检测。'
-            return 'network_error', '无法连接 YouTube 验证登录，请检查当前代理节点后重试。'
-        except (URLError, OSError, ValueError, HTTPException):
-            return 'network_error', '无法连接 YouTube 验证登录，请检查当前代理节点后重试。'
+            from webapp.diagnostics import event
+            event('youtube_auth_probe_unavailable', http_status=error.code, proxy_configured=bool(proxy))
+            return 'network_error', f'YouTube 登录检测暂时不可用（HTTP {error.code}），尚不能判断 Cookie 是否有效。'
+        except (URLError, OSError, ValueError, HTTPException) as error:
+            from webapp.diagnostics import event
+            cause = error.reason if isinstance(error, URLError) else error
+            event('youtube_auth_probe_unavailable', error_type=type(error).__name__,
+                  cause_type=type(cause).__name__, proxy_configured=bool(proxy))
+            reason = '连接超时' if isinstance(cause, TimeoutError) else 'TLS / 证书校验失败' if isinstance(cause, ssl.SSLError) else '网络请求失败'
+            return 'network_error', f'YouTube 登录检测{reason}，尚不能判断 Cookie 是否有效，将稍后重试。'
     authenticated = logged_in(data.decode('utf-8', errors='replace'))
     if authenticated is True:
         return 'valid', 'YouTube 登录验证通过。'

@@ -25,7 +25,7 @@ function instanceCurrentTasks(item) {
   const videos = item.current_tasks || [];
   return `<div class="fleet-current-tasks"><h3>当前执行视频</h3>${videos.length ? videos.map(video => {
     const progress = video.progress || {};
-    return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${progress.speed ? ' · '+bytes(progress.speed)+'/s' : ''}</p>`;
+    return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${Number.isFinite(progress.speed) ? ' · '+bytes(progress.speed)+'/s' : ''}</p>`;
   }).join('') : '<p class="micro-copy">当前没有正在执行的视频。</p>'}</div>`;
 }
 function instanceLive(item) {
@@ -36,16 +36,30 @@ function instanceLive(item) {
   return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>执行中 <b>${item.running}</b></span><span>传输中 <b>${item.transferring}</b></span><span>总速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'auto' ? '自动吞吐' : '手动并发'} · 传输额度 ${escapeHTML(item.throughput.transfers)} · 准备与传输总额度 ${escapeHTML(item.throughput.workers)} · 浏览器 ${escapeHTML(item.throughput.browsers)} · 接收 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
 }
 function instanceState(item) {
-  return !item.online ? '离线' : item.paused ? item.running ? '完成当前后暂停' : '已暂停领取' : item.running ? '在线 · 下载中' : '在线 · 等待任务';
+  return !item.online ? '离线' : item.paused ? item.running ? item.stop_requested ? '正在停止' : '完成当前后暂停' : '已停止' : item.running ? '在线 · 下载中' : '已启动 · 等待任务';
+}
+function instanceActionDisabled(item, action) {
+  if (!item || state.fleetControlBusy) return true;
+  const paused = !!item.paused, stopping = !!item.stop_requested;
+  if (action === 'resume') return !item.online || !paused || (stopping && item.running > 0);
+  if (action === 'drain') return paused;
+  return stopping || (paused && !item.running);
+}
+function syncInstanceControls() {
+  for (const button of $$('[data-instance-action]')) {
+    const item = state.fleet?.items.find(item => item.id === button.dataset.instance);
+    button.disabled = instanceActionDisabled(item, button.dataset.instanceAction);
+  }
 }
 function instanceCard(item, expanded) {
   const id=escapeHTML(item.id), address=encodeURIComponent(item.id);
+  const disabled = action => instanceActionDisabled(item, action) ? ' disabled' : '';
   return `<article class="fleet-instance panel"><form data-instance-form="${id}">
     <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机）':''}</h2><p class="micro-copy">${id} · ${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
     <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
     <div data-instance-live="${id}">${instanceLive(item)}</div>
     <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">打开下载工作台 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">下载策略与磁盘 ↗</a></div>
-    <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}">恢复领取</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}">完成当前后暂停</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}">立即停止</button></div>
+    <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后暂停</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
     <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>下载并发<input name="worker_count" type="number" min="1" max="64" value="${item.worker_count}" required></label><label>浏览器并发<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>磁盘预留 GB<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">降低并发时让当前视频先完成；离线实例的停止指令在恢复连接后处理。</p></details>
   </form></article>`;
 }
@@ -91,6 +105,7 @@ async function loadFleet() {
     const error = [...$$('[data-instance-error]')].find(node => node.dataset.instanceError===item.id);
     if (error) { error.textContent=item.error || ''; error.hidden=!item.error; }
   }
+  syncInstanceControls();
 }
 async function initializeFleet() {
   if (!fleetEnabled) return;
@@ -106,7 +121,7 @@ async function initializeFleet() {
   $('#instances-view').addEventListener('input', () => { state.fleetFormDirty = true; });
   await loadFleet();
   $('#fleet-selection').addEventListener('change', async event => {
-    if (queueControlBusy) { event.target.value = state.instanceId || ''; return; }
+    if (queueControlBusy || clashBusy) { event.target.value = state.instanceId || ''; return; }
     if (settingsDirty || providerDraft || downloadMethodBusy) {
       event.target.value = state.instanceId || '';
       toast('请先保存当前修改，再切换实例。', true);
@@ -146,29 +161,30 @@ async function initializeFleet() {
       toast(result.message); await loadFleet();
     });
   });
-  $('#fleet-instances').addEventListener('click', event => {
+  $('#fleet-instances').addEventListener('click', async event => {
     const button = event.target.closest('[data-instance-action]');
-    if (!button || state.fleetControlBusy) return;
-    runButton(button, async () => {
-      const label = button.textContent;
-      state.fleetControlBusy = true;
-      button.textContent = button.dataset.instanceAction === 'resume' ? '正在检查并恢复…' : '正在提交…';
-      button.setAttribute('aria-busy', 'true');
-      try {
-        const result = await api(`/api/instances/${encodeURIComponent(button.dataset.instance)}`, { method: 'PUT', body: { action: button.dataset.instanceAction }, signal: AbortSignal.timeout(90000) });
-        toast(button.dataset.instanceAction === 'resume' ? '实例已恢复领取。' : result.message);
-      } catch (error) {
-        if (error.name === 'TimeoutError') throw new Error('实例指令等待超过 90 秒，结果尚未确认，请刷新查看最新状态。');
-        throw error;
-      } finally {
-        state.fleetControlBusy = false;
-        button.textContent = label;
-        button.setAttribute('aria-busy', 'false');
-        loadFleet().catch(error => toast(error.message, true));
-        refreshSelectedJob().catch(error => toast(error.message, true));
-        refresh().catch(error => toast(error.message, true));
-      }
-    });
+    if (!button || button.disabled || state.fleetControlBusy) return;
+    const label = button.textContent;
+    state.fleetControlBusy = true;
+    syncInstanceControls();
+    button.textContent = button.dataset.instanceAction === 'resume' ? '正在检查并启动…' : '正在提交…';
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const result = await api(`/api/instances/${encodeURIComponent(button.dataset.instance)}`, { method: 'PUT', body: { action: button.dataset.instanceAction }, signal: AbortSignal.timeout(90000) });
+      toast(result.message);
+    } catch (error) {
+      toast(error.name === 'TimeoutError' ? '实例指令等待超过 90 秒，结果尚未确认，请刷新查看最新状态。' : error.message, true);
+    } finally {
+      // Keep controls disabled until the result has been read back. Polling
+      // must also update them while the instance configuration form is dirty.
+      await loadFleet().catch(error => toast(error.message, true));
+      state.fleetControlBusy = false;
+      button.textContent = label;
+      button.setAttribute('aria-busy', 'false');
+      syncInstanceControls();
+      refreshSelectedJob().catch(error => toast(error.message, true));
+      refresh().catch(error => toast(error.message, true));
+    }
   });
   document.addEventListener('viewchange', event => { if (event.detail==='instances') loadFleet().catch(error => toast(error.message,true)); });
   setInterval(() => { if (!document.hidden) loadFleet().catch(() => {}); }, 2000);

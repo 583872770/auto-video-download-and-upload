@@ -4,12 +4,13 @@ from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from app import create_app
 from tests import test_fleet
-from webapp.database import instances, settings
+from webapp.database import instances, settings, tasks
 from webapp.store import TaskStore
 
 
@@ -254,6 +255,65 @@ class HybridTests(unittest.TestCase):
         self.assertTrue(child.fleet.can_manage)
         self.assertEqual(child.fleet.id, 'alpha')
         child.db.engine.dispose()
+
+    def auth_preflight_job(self):
+        from sqlalchemy import select
+        from webapp.jobs import Jobs
+        for store in (self.a, self.b):
+            store.fleet.control(store.fleet.id, {'action': 'resume'})
+        config = self.a.fleet.local_settings()['config']
+        jobs = Jobs(self.a)
+        identity = jobs.create({'customer': 'Fixture', 'name': 'Preflight recovery',
+                                'urls': 'npNnbj46_ik', 'price': '0'}, config, self.root / 'alpha')['id']
+        jobs.control(identity, 'start', config, {})
+        with self.a.connect() as db:
+            task_id = db.execute(select(tasks.c.id).where(tasks.c.batch_id == identity)).scalar_one()
+        return identity, task_id
+
+    def test_network_preflight_retains_job_intent_and_executor_and_can_move_to_peer(self):
+        from web_worker import drain
+        from webapp.jobs import Jobs
+        from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired
+        identity, task_id = self.auth_preflight_job()
+        error = YouTubeAuthRequired({'state': 'network_error', 'message': 'Fixture timeout'})
+        with patch.dict('os.environ', {'VIDEO_WORKER_DATABASE_URL': self.url}), \
+                patch('web_worker.execute', side_effect=error) as execute, patch('web_worker.os.dup2'):
+            drain(self.a.directory)
+            execute.assert_called_once()
+        task = self.a.get(task_id)
+        self.assertEqual((task['status'], task['attempts']), ('queued', 0))
+        self.assertEqual(task['progress']['stage'], 'retrying')
+        self.assertGreater(task['available_at'], time.time() + 20)
+        self.assertTrue(Jobs(self.a).detail(identity)['desired_running'])
+        self.assertFalse(self.a.downloads_paused())
+        self.assertFalse(self.a.fleet.row()['paused'])
+        self.assertFalse(self.a.fleet.row()['error'])
+        self.assertIsNone(YouTubeAuth(self.a).block_reason())
+        self.assertIsNone(self.b.claim())  # Respect the deferred retry on all nodes.
+        after_retry = time.time() + 31
+        with patch('time.time', return_value=after_retry):
+            claimed = self.b.claim()
+        self.assertEqual(claimed['id'], task_id)
+        self.assertEqual(claimed['instance_id'], 'beta')
+        self.assertTrue(self.b.finish(task_id, result={}, worker_id=self.b.owner))
+        self.assertEqual(Jobs(self.a).detail(identity)['succeeded'], 1)
+
+    def test_confirmed_login_failure_still_isolates_only_the_failing_executor(self):
+        from web_worker import drain
+        from webapp.jobs import Jobs
+        from webapp.youtube_auth import YouTubeAuthRequired
+        identity, task_id = self.auth_preflight_job()
+        error = YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Fixture login rejected'})
+        with patch.dict('os.environ', {'VIDEO_WORKER_DATABASE_URL': self.url}), \
+                patch('web_worker.execute', side_effect=error), patch('web_worker.os.dup2'):
+            drain(self.a.directory)
+        task = self.a.get(task_id)
+        self.assertEqual((task['status'], task['attempts']), ('queued', 0))
+        self.assertTrue(Jobs(self.a).detail(identity)['desired_running'])
+        self.assertFalse(self.a.downloads_paused())
+        self.assertTrue(self.a.fleet.row()['paused'])
+        self.assertFalse(self.b.fleet.row()['paused'])
+        self.assertEqual(self.b.claim()['id'], task_id)
 
     def test_joining_or_restarting_does_not_copy_peer_policy(self):
         self.a.fleet.save_policy({'download_methods': ['downmp3'], 'downmp3_quality': '1080'})

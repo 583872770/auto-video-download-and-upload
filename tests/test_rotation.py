@@ -146,7 +146,8 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(queued['node'], 'removed-node')  # No mass rewrite of queued snapshots.
 
     @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
-    def test_real_proxy_rotation_failures_archive_skips_and_restart(self):
+    @patch('webapp.clash.validate_subscription_url')  # Permit this test's loopback subscription fixture only.
+    def test_real_proxy_rotation_failures_archive_skips_and_restart(self, validate_url):
         requests = []
         content = b'rotation fixture video\n' * 100
         nodes = []

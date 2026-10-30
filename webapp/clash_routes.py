@@ -88,15 +88,35 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             raise ValueError('请提交订阅配置。')
+        action = data.get('action', 'import')
+        if action not in ('import', 'save', 'switch', 'delete'):
+            raise ValueError('不支持的订阅操作。')
         with media_lock:
             idle(subscription=True)
-            count = manager.import_subscription(data.get('url', ''))
-            with settings_lock:
-                config, base = settings()
-                config['proxy_mode'] = 'clash'
-                save_settings(config_path, config)
-                sync_runtime(config, base)
-        return jsonify(message=f'订阅已更新，共 {count} 个节点，下载已启用 Clash 代理。', **status())
+            if action == 'delete':
+                manager.delete_subscription(data.get('id'))
+                return jsonify(message='订阅已删除。', **status())
+            if action == 'switch':
+                count = manager.switch_subscription(data.get('id'))
+                identity = data['id']
+            else:
+                count = manager.import_subscription(data.get('url', ''), identity=data.get('id'),
+                                                    name=data.get('name'), activate=action == 'import')
+                identity = data.get('id')
+                if not identity:
+                    url = data.get('url', '').strip()
+                    identity = (next(item['id'] for item in manager.config['subscriptions'] if item['url'] == url)
+                                if url else manager.config['active_subscription_id'])
+            active = identity == manager.config.get('active_subscription_id')
+            if active:
+                with settings_lock:
+                    config, base = settings()
+                    config['proxy_mode'] = 'clash'
+                    save_settings(config_path, config)
+                    sync_runtime(config, base)
+        message = (f'订阅已切换，共 {count} 个节点，下载已启用 Clash 代理。' if action == 'switch' else
+                   f'订阅已保存，共 {count} 个节点。' + ('当前正在使用此订阅。' if active else '当前订阅保持不变，可手动切换。'))
+        return jsonify(message=message, saved_subscription_id=identity, **status())
 
     @app.post('/api/clash/start')
     def start():

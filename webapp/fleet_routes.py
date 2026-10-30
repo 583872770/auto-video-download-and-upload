@@ -175,7 +175,9 @@ def register_fleet(app, fleet):
         if data.get('action') == 'resume':
             rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
         fleet.control(identity, data)
-        return jsonify(message='实例配置已保存，停止指令由对应实例执行。')
+        messages = {'resume': '实例已启动。', 'drain': '实例将在完成当前视频后暂停。',
+                    'stop': '已发送立即停止指令，正在停止当前实例的下载。'}
+        return jsonify(message=messages.get(data.get('action'), '实例配置已保存。'))
 
     @app.put('/api/instances/limits')
     def update_global_limit():

@@ -136,4 +136,5 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .task-defaults-panel{margin-bottom:22px}
 .task-defaults-panel>.download-method-row{margin:0 23px 20px}
 .task-defaults-panel .scale-fields label{margin-top:0}
+.subscription-form{display:flex;flex-direction:column;gap:10px}.subscription-form .field-label{margin-top:5px}.subscription-form .micro-copy{margin:0;line-height:1.8}.subscription-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 6px}.subscription-actions .text-button{white-space:nowrap}.subscription-form>#clash-import{align-self:flex-start}
 @media(max-width:650px){.download-console .download-job-picker,.selected-job-summary{margin-left:17px;margin-right:17px}.selected-job-counts{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.download-dashboard .stat-foot{font-size:9px}.download-dashboard .stat-number{font-size:25px}.system-download-control{padding:17px}.download-queue-controls>.button{width:100%}}

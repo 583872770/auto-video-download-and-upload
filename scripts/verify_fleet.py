@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -14,12 +15,91 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_web import QuietHandler
-from Utils.runtime import ROOT
+from Utils.runtime import ROOT, configure_runtime
 from webapp.browser import browser_options
 from webapp.database import instances
+from webapp.downloads import DownloadProgress
+
+
+def verify_instance_controls(page, apps, output):
+    alpha = page.locator('[data-instance-form="alpha"]')
+    start = alpha.locator('[data-instance-action="resume"]')
+    drain = alpha.locator('[data-instance-action="drain"]')
+    stop = alpha.locator('[data-instance-action="stop"]')
+    expect(start).to_have_text('启动')
+    expect(start).to_be_enabled()
+    expect(drain).to_be_disabled()
+    expect(stop).to_be_disabled()
+    held = []
+    def hold_start(route):
+        if route.request.method == 'PUT':
+            held.append(route)
+        else:
+            route.continue_()
+    page.route('**/api/instances/alpha', hold_start)
+    start.click()
+    expect(start).to_have_text('正在检查并启动…')
+    for button in (start, drain, stop):
+        expect(button).to_be_disabled()
+    assert len(held) == 1
+    held[0].continue_()
+    page.unroute('**/api/instances/alpha', hold_start)
+    expect(page.locator('#toasts')).to_contain_text('实例已启动')
+    expect(start).to_have_text('启动')
+    expect(start).to_be_disabled()
+    expect(drain).to_be_enabled()
+    expect(stop).to_be_enabled()
+
+    # Publish real progress through the shared queue and instance aggregation.
+    store = apps['alpha'].extensions['task_store']
+    store.set_downloads_paused(False)
+    task = store.create('download', {'urls': ['http://example.test/progress.mp4']})
+    store.activate_download_lists()
+    assert store.claim()['id'] == task['id']
+    clock = [10.0]
+    with patch('webapp.downloads.time.monotonic', side_effect=lambda: clock[0]):
+        tracker = DownloadProgress(lambda value: store.update_progress(task['id'], value, store.owner))
+        tracker.hook({'status': 'downloading', 'downloaded_bytes': 100 * 1024**2,
+                      'total_bytes': 200 * 1024**2, 'info_dict': {'title': '速度回显验证'}})
+        clock[0] += 2
+        tracker.hook({'status': 'downloading', 'downloaded_bytes': 102 * 1024**2,
+                      'total_bytes': 200 * 1024**2})
+    page.evaluate('loadFleet()')
+    expect(alpha.locator('.instance-live-metrics')).to_contain_text('1.0 MB/s')
+    expect(alpha.locator('.fleet-current-tasks')).to_contain_text('1.0 MB/s')
+    rendered = page.evaluate('task => downloadProgress(task)', store.get(task['id']))
+    assert '102.0 MB' in rendered and '1.0 MB/s' in rendered, rendered
+    page.screenshot(path=str(output / 'speed-and-started-controls.png'), full_page=True)
+
+    # Polling must update controls without replacing unsaved instance edits.
+    alpha.locator('.instance-options summary').click()
+    alpha.locator('[name=name]').fill('Unsaved fixture name')
+    drain.click()
+    expect(start).to_be_enabled()
+    expect(drain).to_be_disabled()
+    expect(stop).to_be_enabled()
+    expect(alpha.locator('[name=name]')).to_have_value('Unsaved fixture name')
+    stop.click()
+    expect(start).to_be_disabled()  # Wait until the current executor stops.
+    expect(drain).to_be_disabled()
+    expect(stop).to_be_disabled()
+    expect(alpha.locator('[data-instance-state]')).to_have_text('正在停止')
+    store.finish(task['id'], result={}, worker_id=store.owner)
+    page.evaluate('loadFleet()')
+    expect(start).to_be_enabled()
+    expect(drain).to_be_disabled()
+    expect(stop).to_be_disabled()
+    expect(alpha.locator('[name=name]')).to_have_value('Unsaved fixture name')
+    page.screenshot(path=str(output / 'stopped-controls.png'), full_page=True)
+    alpha.locator('[name=name]').fill('alpha')
+    alpha.locator('.instance-options summary').click()
+    store.set_downloads_paused(True)
+    for app in apps.values():
+        app.extensions['fleet'].beat()
 
 
 def main(hybrid=False):
+    configure_runtime()
     output = ROOT / '.cache/validation' / (('hybrid-' if hybrid else 'fleet-') + uuid.uuid4().hex[:10])
     output.mkdir(parents=True)
     servers = []
@@ -74,6 +154,7 @@ def main(hybrid=False):
                     expect(page.locator('[data-instance-form]')).to_have_count(3)
                     expect(page.locator('[data-instance-form="alpha"]')).to_contain_text('累计成功')
                     expect(page.locator('#fleet-selection')).to_have_value('alpha')
+                    verify_instance_controls(page, apps, output)
                     alpha = page.locator('[data-instance-form="alpha"]')
                     alpha.locator('.instance-options summary').click()
                     alpha.locator('[name=worker_count]').fill('2')

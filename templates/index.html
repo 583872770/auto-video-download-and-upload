@@ -139,7 +139,21 @@
 
       <section id="clash-view" class="view" hidden>
         <div class="clash-top-grid">
-          <section class="panel clash-panel"><div class="panel-heading"><div><span class="section-kicker">CLASH / MIHOMO</span><h2>订阅配置</h2></div><span id="clash-subscription-badge" class="count-pill">未配置</span></div><form id="clash-subscription-form"><label class="field-label" for="clash-subscription-url">订阅链接</label><input id="clash-subscription-url" type="password" autocomplete="new-password" placeholder="粘贴 Clash / Mihomo 订阅链接" maxlength="8192"><p class="micro-copy" id="clash-subscription-info">导入订阅后即可选择节点。链接仅保存在本机，保存后不回显。</p><button class="button button-dark" id="clash-import" type="submit"><svg><use href="#i-refresh"/></svg>保存并更新订阅</button><p class="micro-copy" id="clash-subscription-note" role="status">已有订阅时留空更新原订阅。更新失败会保留原有配置和节点。</p></form></section>
+          <section class="panel clash-panel">
+            <div class="panel-heading"><div><span class="section-kicker">CLASH / MIHOMO</span><h2>订阅管理</h2></div><span id="clash-subscription-badge" class="count-pill">未配置</span></div>
+            <form id="clash-subscription-form" class="subscription-form">
+              <label class="field-label" for="clash-subscription-select">已保存订阅</label>
+              <select id="clash-subscription-select"><option value="">＋ 新增订阅</option></select>
+              <div class="subscription-actions"><button class="button button-white" id="clash-subscription-switch" type="button" disabled>切换到此订阅</button><button class="text-button" id="clash-subscription-new" type="button">新增订阅</button><button class="text-button" id="clash-subscription-delete" type="button" disabled>删除此订阅</button></div>
+              <label class="field-label" for="clash-subscription-name">订阅名称</label>
+              <input id="clash-subscription-name" placeholder="例如：常用线路、备用线路" maxlength="80" required>
+              <label class="field-label" for="clash-subscription-url">订阅链接</label>
+              <input id="clash-subscription-url" type="password" autocomplete="new-password" placeholder="粘贴 Clash / Mihomo 订阅链接" maxlength="8192">
+              <p class="micro-copy" id="clash-subscription-info">可保存多个订阅并手动切换。链接仅保存在当前实例，保存后不回显。</p>
+              <button class="button button-dark" id="clash-import" type="submit"><svg><use href="#i-refresh"/></svg>保存订阅</button>
+              <p class="micro-copy" id="clash-subscription-note" role="status">首个订阅保存后自动启用；新增备用订阅后可手动切换。</p>
+            </form>
+          </section>
           <section class="panel clash-panel">
             <div class="panel-heading"><div><span class="section-kicker">DOWNLOAD CONNECTION</span><h2>下载连接</h2></div><span id="clash-core-status" class="count-pill">检查中</span></div>
             <div class="clash-connection">

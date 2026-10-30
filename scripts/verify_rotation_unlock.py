@@ -42,10 +42,10 @@ def main():
                 page.goto(base + '/#clash', wait_until='networkidle')
                 expect(page.locator('#rotation-enabled')).to_be_disabled()
                 expect(page.locator('#rotation-draft-note')).to_contain_text('请先停止全部下载')
-                page.locator('.nav-item[data-view=overview]').click()
-                page.locator('#download-queue-toggle').click()
-                expect(page.locator('#download-queue-toggle')).to_have_text('继续下载')
-                page.locator('.nav-item[data-view=clash]').click()
+                # Seed a paused queue; this check exercises proxy controls,
+                # independently of the workbench's task selection controls.
+                store.set_downloads_paused(True)
+                page.evaluate('refresh()')
                 expect(page.locator('#rotation-enabled')).to_be_enabled()
                 page.locator('#rotation-enabled').check()
                 page.locator('[data-rotation-node=A]').check()
@@ -55,7 +55,8 @@ def main():
                 expect(page.locator('#rotation-draft-note')).to_have_text('保存后对待下载任务生效')
                 assert manager.status()['rotation']['enabled']
                 assert manager.status()['rotation']['every'] == 4
-                assert store.download_queue() == {'paused': True, 'queued': 1, 'running': 0}
+                queue = store.download_queue()
+                assert queue['paused'] and queue['queued'] == 1 and queue['running'] == 0
                 assert store.get(task['id'])['attempts'] == 0
                 page.reload(wait_until='networkidle')
                 expect(page.locator('#rotation-enabled')).to_be_checked()

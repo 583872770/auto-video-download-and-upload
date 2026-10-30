@@ -11,10 +11,11 @@ from pathlib import Path
 import secrets
 import re
 import socket
+import ssl
 import subprocess
 import threading
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -26,6 +27,7 @@ GROUP = 'DOWNLOAD'
 WORKER_GROUP_PREFIX = 'DOWNLOAD_WORKER_'
 TEST_URL = 'https://www.gstatic.com/generate_204'
 MAX_SUBSCRIPTION = 5 * 1024 * 1024
+MAX_SUBSCRIPTIONS = 20
 MAX_WORKERS = 96
 MAX_LISTENERS = MAX_WORKERS + 16  # parser routes cannot be changed by transfer workers
 _manager_locks = {}
@@ -142,6 +144,7 @@ class ClashManager:
                 while self.config['control_port'] == self.config['proxy_port']:
                     self.config['control_port'] = free_port(0)
                 self.save()
+            self.migrate_subscriptions()
         # These fields were added when worker processes moved from one
         # Mihomo process each to listeners in a shared process.  Keep old
         # installations readable and migrate them lazily.
@@ -203,6 +206,69 @@ class ClashManager:
         self.config = json.loads((self.directory / 'settings.json').read_text(encoding='utf-8'))
         self.config.setdefault('worker_ports', {})
         self.config.setdefault('worker_nodes', {})
+
+    def subscription_file(self, identity):
+        if not isinstance(identity, str) or not re.fullmatch(r'[a-f0-9]{32}', identity):
+            raise ClashError('请选择有效的已保存订阅。')
+        return self.directory / 'subscriptions' / (identity + '.yaml')
+
+    def migrate_subscriptions(self):
+        """Keep the original subscription and node selection on upgrade."""
+        if 'subscriptions' in self.config:
+            return
+        self.config['subscriptions'] = []
+        self.config['active_subscription_id'] = ''
+        if self.config.get('subscription_url'):
+            identity = secrets.token_hex(16)
+            path = self.subscription_file(identity)
+            path.parent.mkdir(exist_ok=True)
+            source = self.directory / 'nodes.yaml'
+            if source.is_file():
+                atomic_text(path, source.read_text(encoding='utf-8'))
+            self.config['subscriptions'].append({
+                'id': identity, 'name': '原有订阅', 'url': self.config['subscription_url'],
+                'node_count': sum(not is_notice(node['name']) for node in self.nodes()),
+                'updated_at': self.config.get('updated_at'),
+                **self.subscription_state()})
+            self.config['active_subscription_id'] = identity
+        self.save()
+
+    def subscription_state(self):
+        return deepcopy({key: self.config[key] for key in ('selected', 'rotation', 'worker_nodes')
+                         if key in self.config})
+
+    def saved_subscription(self, identity):
+        self.subscription_file(identity)  # Validate before using an identifier in a path.
+        for item in self.config.get('subscriptions', []):
+            if item['id'] == identity:
+                return deepcopy(item)
+        raise ClashError('订阅已被删除，请刷新后重新选择。')
+
+    def remember_active_subscription(self):
+        for item in self.config.get('subscriptions', []):
+            if item['id'] == self.config.get('active_subscription_id'):
+                item.update(self.subscription_state())
+
+    def delete_subscription(self, identity):
+        with self.guard():
+            self.reload()
+            self.saved_subscription(identity)
+            if identity == self.config.get('active_subscription_id'):
+                raise ClashError('当前订阅正在使用，请先切换到其他订阅再删除。')
+            self.config['subscriptions'] = [item for item in self.config['subscriptions'] if item['id'] != identity]
+            self.save()
+            self.subscription_file(identity).unlink(missing_ok=True)
+
+    def switch_subscription(self, identity):
+        with self.guard():
+            self.reload()
+            if self.testing['running']:
+                raise ClashError('节点正在测速，请等待测速完成后切换订阅。')
+            profile = self.saved_subscription(identity)
+            path = self.subscription_file(identity)
+            if not path.is_file():
+                raise ClashError('此订阅尚无可用节点，请先更新订阅。')
+            return self.activate_subscription(profile, parse_subscription(path.read_bytes()))
 
     def rotation(self):
         return {'enabled': False, 'nodes': [], 'every': 1, 'count_failures': True,
@@ -460,15 +526,30 @@ class ClashManager:
                     if manager.owned_process():
                         manager.stop()
 
-    def import_subscription(self, url=''):
+    def import_subscription(self, url='', *, identity=None, name=None, activate=True):
         with self.guard():
             self.reload()
             if self.testing['running']:
                 raise ClashError('节点正在测速，请等待测速完成后更新订阅。')
             if not isinstance(url, str):
                 raise ClashError('订阅链接格式不正确。')
-            url = url.strip() or self.config['subscription_url']
+            profiles = self.config.get('subscriptions', [])
+            # Old clients refresh the active subscription when the URL is empty.
+            if identity is None:
+                identity = next((item['id'] for item in profiles if item['url'] == url.strip()),
+                                self.config.get('active_subscription_id', '') if not url.strip() else '')
+            profile = self.saved_subscription(identity) if identity else {'id': secrets.token_hex(16)}
+            if not identity and not url.strip():
+                raise ClashError('新增订阅需要填写订阅链接。')
+            if not identity and len(profiles) >= MAX_SUBSCRIPTIONS:
+                raise ClashError(f'最多保存 {MAX_SUBSCRIPTIONS} 个订阅，请先删除不再使用的订阅。')
+            url = url.strip() or profile.get('url') or self.config.get('subscription_url', '')
+            if any(item['url'] == url and item['id'] != profile['id'] for item in profiles):
+                raise ClashError('此链接已保存，请选择已有订阅进行更新或切换。')
             validate_subscription_url(url)
+            name = profile.get('name', urlsplit(url).hostname) if name is None else name
+            if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80 or any(ord(c) < 32 for c in name):
+                raise ClashError('订阅名称需要 1 到 80 个字符，不能包含换行或控制字符。')
             try:
                 request = Request(url, headers={'User-Agent': 'clash.meta', 'Accept': 'application/yaml,text/yaml,*/*'})
                 subscription = build_opener(ProxyHandler({}), SubscriptionRedirectHandler())
@@ -477,66 +558,122 @@ class ClashManager:
             except (OSError, URLError, ValueError):
                 raise ClashError('订阅获取失败，请检查链接有效性或网络连接；原订阅保持不变。') from None
             nodes = parse_subscription(content)
-            names = [node['name'] for node in nodes if not is_notice(node['name'])]
-            if not names:
+            count = sum(not is_notice(node['name']) for node in nodes)
+            if not count:
                 raise ClashError('订阅中只有流量或到期提示，没有可选节点。')
-            was_running = self.running()
-            if was_running:
-                self.start()
-                self.reload()
-            selected = self.config['selected'] if self.config['selected'] in names else names[0]
-            runtime = yaml.safe_dump(self.runtime(nodes, selected), allow_unicode=True, sort_keys=False)
-            self.validate_runtime(runtime)
-            nodes_file = self.directory / 'nodes.yaml'
-            runtime_file = self.directory / 'runtime.yaml'
-            previous_nodes = nodes_file.read_text(encoding='utf-8') if nodes_file.is_file() else None
-            previous_runtime = runtime_file.read_text(encoding='utf-8') if runtime_file.is_file() else None
-            if was_running and previous_nodes:
-                # Group selections change through the API between reloads.
-                # Build rollback content from persisted selections so a failed
-                # subscription update restores every worker's latest node.
-                previous_runtime = yaml.safe_dump(self.runtime(parse_subscription(previous_nodes.encode('utf-8'))),
-                                                  allow_unicode=True, sort_keys=False)
-            previous_config = dict(self.config)
+            profile.update(name=name.strip(), url=url, node_count=count,
+                           updated_at=datetime.now().astimezone().isoformat(timespec='seconds'))
+            if activate or not self.config.get('active_subscription_id') or identity == self.config.get('active_subscription_id'):
+                return self.activate_subscription(profile, nodes)
+            self.validate_runtime(yaml.safe_dump(self.runtime(nodes), allow_unicode=True, sort_keys=False))
+            path = self.subscription_file(profile['id'])
+            path.parent.mkdir(exist_ok=True)
+            previous = path.read_text(encoding='utf-8') if path.is_file() else None
+            before = deepcopy(self.config)
             try:
-                atomic_text(nodes_file, yaml.safe_dump({'proxies': nodes}, allow_unicode=True, sort_keys=False))
-                atomic_text(runtime_file, runtime)
-                if was_running:
-                    self.api('/configs', 'PUT', {'path': str(runtime_file)}, timeout=12)
-                else:
-                    self.start()
-                self.api('/proxies/' + GROUP, 'PUT', {'name': selected})
-                self.config.update(subscription_url=url, selected=selected, subscription_id=secrets.token_hex(16),
-                                   updated_at=datetime.now().astimezone().isoformat(timespec='seconds'))
-                rotation = self.rotation()
-                remaining = [name for name in rotation['nodes'] if name in names]
-                if remaining != rotation['nodes']:
-                    rotation.update(nodes=remaining, enabled=rotation['enabled'] and len(remaining) >= 2,
-                                    id=secrets.token_hex(16),
-                                    start_index=remaining.index(selected) if selected in remaining else 0)
-                    self.config['rotation'] = rotation
+                atomic_text(path, yaml.safe_dump({'proxies': nodes}, allow_unicode=True, sort_keys=False))
+                self.config['subscriptions'] = [profile if item['id'] == profile['id'] else item for item in profiles]
+                if not identity:
+                    self.config['subscriptions'].append(profile)
                 self.save()
-            except (ClashError, OSError):
-                if not was_running:
-                    self.stop()
-                self.config = previous_config
-                self.save()
-                if previous_nodes is not None:
-                    atomic_text(nodes_file, previous_nodes)
+            except OSError:
+                self.config = before
+                if previous is None:
+                    path.unlink(missing_ok=True)
                 else:
-                    nodes_file.unlink(missing_ok=True)
-                if previous_runtime is not None:
-                    atomic_text(runtime_file, previous_runtime)
-                    if was_running:
-                        self.api('/configs', 'PUT', {'path': str(runtime_file)}, timeout=12)
-                        if self.config['selected']:
-                            self.api('/proxies/' + GROUP, 'PUT', {'name': self.config['selected']})
-                else:
-                    runtime_file.unlink(missing_ok=True)
+                    atomic_text(path, previous)
                 raise
-            self.delays = {name: delay for name, delay in self.delays.items() if name in names}
-            self.last_error = ''
-            return len(names)
+            return count
+
+    def activate_subscription(self, profile, nodes):
+        """Apply a saved profile, restoring the previous files and core on failure.
+
+        Caller holds guard(), including during fetch/validation and rollback.
+        """
+        names = [node['name'] for node in nodes if not is_notice(node['name'])]
+        if not names:
+            raise ClashError('订阅中没有可选节点，请先更新订阅。')
+        was_running = self.running()
+        if was_running:
+            self.start()
+            self.reload()
+        previous_config = deepcopy(self.config)
+        self.remember_active_subscription()
+        same = not self.config.get('active_subscription_id') or profile['id'] == self.config['active_subscription_id']
+        if same:
+            profile.update(self.subscription_state())
+        selected = profile.get('selected') if profile.get('selected') in names else names[0]
+        self.config.update(selected=selected, worker_nodes=deepcopy(profile.get('worker_nodes', {})))
+        rotation = {'enabled': False, 'nodes': [], 'every': 1, 'count_failures': True,
+                    'id': '', 'start_index': 0, **deepcopy(profile.get('rotation', {}))}
+        remaining = [name for name in rotation['nodes'] if name in names]
+        if not same or remaining != rotation['nodes']:
+            rotation.update(nodes=remaining, enabled=rotation['enabled'] and len(remaining) >= 2,
+                            id=secrets.token_hex(16),
+                            start_index=remaining.index(selected) if selected in remaining else 0)
+        self.config['rotation'] = rotation
+        self.config['worker_nodes'] = {slot: name for slot, name in self.config['worker_nodes'].items() if name in names}
+        runtime = yaml.safe_dump(self.runtime(nodes, selected), allow_unicode=True, sort_keys=False)
+        candidate_config = deepcopy(self.config)
+        self.config = previous_config
+        self.validate_runtime(runtime)
+        nodes_file = self.directory / 'nodes.yaml'
+        runtime_file = self.directory / 'runtime.yaml'
+        cache_file = self.subscription_file(profile['id'])
+        delays_file = self.directory / 'delays.json'
+        health_file = self.directory / 'route-health.json'
+        next_delays = {name: delay for name, delay in self.delays.items() if name in names} if same else {}
+        cache_file.parent.mkdir(exist_ok=True)
+        files = (nodes_file, runtime_file, cache_file, delays_file, health_file)
+        previous_files = {path: path.read_text(encoding='utf-8') if path.is_file() else None for path in files}
+        if was_running and previous_files[nodes_file]:
+            previous_files[runtime_file] = yaml.safe_dump(
+                self.runtime(parse_subscription(previous_files[nodes_file].encode('utf-8'))),
+                allow_unicode=True, sort_keys=False)
+        try:
+            self.config = candidate_config
+            self.config.update(subscription_url=profile['url'], active_subscription_id=profile['id'],
+                               subscription_id=secrets.token_hex(16), updated_at=profile['updated_at'])
+            profile.update(self.subscription_state())
+            profiles = self.config.get('subscriptions', [])
+            self.config['subscriptions'] = [profile if item['id'] == profile['id'] else item for item in profiles]
+            if not any(item['id'] == profile['id'] for item in profiles):
+                self.config['subscriptions'].append(profile)
+            serialized = yaml.safe_dump({'proxies': nodes}, allow_unicode=True, sort_keys=False)
+            atomic_text(nodes_file, serialized)
+            atomic_text(cache_file, serialized)
+            atomic_text(runtime_file, runtime)
+            self.save()  # start() reloads settings and must see the target profile.
+            if was_running:
+                self.api('/configs', 'PUT', {'path': str(runtime_file)}, timeout=12)
+            else:
+                self.start()
+            self.api('/proxies/' + GROUP, 'PUT', {'name': selected})
+            atomic_text(delays_file, json.dumps(next_delays, ensure_ascii=False))
+            if not same:
+                # Identical node names in different subscriptions are different routes.
+                atomic_text(health_file, '{}')
+            self.save()
+        except (ClashError, OSError):
+            if not was_running:
+                self.stop()
+            self.config = previous_config
+            self.save()
+            for path, content in previous_files.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_text(path, content)
+            if was_running and previous_files[runtime_file] is not None:
+                self.api('/configs', 'PUT', {'path': str(runtime_file)}, timeout=12)
+                if self.config['selected']:
+                    self.api('/proxies/' + GROUP, 'PUT', {'name': self.config['selected']})
+            raise
+        self.delays = next_delays
+        if not same:
+            self.testing.update(done=0, total=0)
+        self.last_error = ''
+        return len(names)
 
     def select(self, name, *, automatic=False):
         with self.guard():
@@ -655,10 +792,23 @@ class ClashManager:
         try:
             with opener.open(Request('https://www.youtube.com/generate_204', headers={'User-Agent': 'Mozilla/5.0'}), timeout=12) as response:
                 if response.status not in (200, 204):
-                    raise ClashError('当前节点无法连通 YouTube，请选择其他节点。')
+                    raise ClashError(f'YouTube 测试收到 HTTP {response.status}，尚未确认访问正常；此结果不代表节点离线。')
                 response.read(1024)
-        except (OSError, URLError):
-            raise ClashError('当前节点无法连通 YouTube，请选择其他节点。') from None
+        except HTTPError as error:
+            code = error.code
+            error.close()
+            reason = {403: '访问被拒绝，可能与出口限制或站点验证有关',
+                      429: '请求受到限流，请稍后再试'}.get(code, '测试请求未通过')
+            raise ClashError(f'YouTube 测试收到 HTTP {code}：{reason}；此结果不代表节点离线。') from None
+        except (OSError, URLError) as error:
+            cause = error.reason if isinstance(error, URLError) else error
+            if isinstance(cause, TimeoutError):
+                message = '本实例通过当前代理访问 YouTube 测试地址超时（12 秒），请检查服务端出口和代理链路。'
+            elif isinstance(cause, ssl.SSLError):
+                message = 'YouTube 测试的 TLS / 证书校验失败，请检查本实例的系统时间、证书和代理链路。'
+            else:
+                message = '本实例通过当前代理访问 YouTube 测试地址失败，请检查服务端代理、DNS 和出口；此结果不代表该节点在其他设备不可用。'
+            raise ClashError(message) from None
         return {'ok': True, 'node': snapshot['node'], 'ms': round((time.monotonic() - start) * 1000)}
 
     def status(self):
@@ -679,6 +829,11 @@ class ClashManager:
                     'architecture': 'shared_listeners',
                     'subscription_saved': bool(self.config['subscription_url']),
                     'subscription_host': urlsplit(self.config['subscription_url']).hostname or '',
+                    'active_subscription_id': self.config.get('active_subscription_id', ''),
+                    'subscriptions': [{'id': item['id'], 'name': item['name'],
+                                       'host': urlsplit(item['url']).hostname or '',
+                                       'updated_at': item.get('updated_at'), 'node_count': item.get('node_count', 0)}
+                                      for item in self.config.get('subscriptions', [])],
                     'updated_at': self.config['updated_at'], 'selected': selected,
                     'proxy_url': self.proxy_url, 'testing': dict(self.testing), 'error': self.last_error,
                     'rotation': self.rotation(),

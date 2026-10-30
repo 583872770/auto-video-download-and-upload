@@ -14,6 +14,9 @@ let jobsCursor = null;
 let jobsSearchEpoch = 0;
 let jobsSearchTimer;
 let clashBusy = false;
+let subscriptionSelection = null;
+let subscriptionOptionsSignature = '';
+let subscriptionInstance;
 let downloadMethodBusy = false;
 let providerDraft = null;
 let settingsDirty = false;
@@ -177,7 +180,7 @@ function downloadProgress(task) {
   const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(measured) ? Math.max(0, Math.min(100, measured)) : null;
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待远端转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
-  const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : '—';
+  const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : data.stage === 'downloading' ? '计算中…' : '—';
   const provider = providerNames[data.download_method] || '';
   const stageSeconds = active && data.stage_started_at ? Math.max(0, Date.now() / 1000 - data.stage_started_at) : null;
   const slowest = Object.entries(data.stage_seconds || {}).filter(([stage]) => !active || stage !== data.stage).sort((a, b) => b[1] - a[1])[0];
@@ -312,9 +315,7 @@ function renderClash() {
   if (!data) return;
   const testing = data.testing.running;
   renderRotation(data);
-  $('#clash-subscription-badge').textContent = data.subscription_saved ? '订阅已保存' : '未配置';
-  $('#clash-subscription-url').placeholder = data.subscription_saved ? '已保存，留空更新原订阅；填写新链接可替换' : '粘贴 Clash / Mihomo 订阅链接';
-  $('#clash-subscription-info').textContent = data.subscription_saved ? `${data.subscription_host} · 更新于 ${formatDate(data.updated_at, true)}${data.notices?.length ? '\n' + data.notices.join(' · ') : ''}` : '导入订阅后即可选择节点。链接仅保存在本机，保存后不回显。';
+  renderSubscriptions(data);
   $('#clash-core-status').textContent = data.running ? '代理运行中' : data.installed ? '代理已停止' : '内核未安装';
   $('#proxy-mode-select').value = data.mode;
   $('#proxy-mode-select').disabled = clashBusy || (data.connection_edit_locked ?? data.locked);
@@ -331,10 +332,17 @@ function renderClash() {
   $('#clash-error').textContent = data.error || '';
   const subscriptionLocked = data.subscription_locked ?? data.locked;
   $('#clash-import').disabled = clashBusy || subscriptionLocked || testing;
+  $('#clash-subscription-select').disabled = clashBusy;
+  $('#clash-subscription-new').disabled = clashBusy;
+  $('#clash-subscription-name').disabled = clashBusy;
+  $('#clash-subscription-url').disabled = clashBusy;
+  $('#clash-subscription-switch').disabled = clashBusy || subscriptionLocked || testing || !subscriptionSelection || subscriptionSelection === data.active_subscription_id;
+  $('#clash-subscription-delete').disabled = clashBusy || subscriptionLocked || testing || !subscriptionSelection || subscriptionSelection === data.active_subscription_id;
   $('#clash-subscription-note').textContent = clashBusy ? '正在处理代理操作，请稍候…'
     : testing ? '节点正在测速，请等待测速完成后更新订阅。'
     : subscriptionLocked ? data.subscription_lock_reason || '请先停止全部下载并等待当前任务结束，再更新订阅。'
-    : '已有订阅时留空更新原订阅。更新失败会保留原有配置和节点。';
+    : subscriptionSelection ? '链接留空可更新所选订阅。切换使用已保存的节点；更新或切换失败时保留当前配置。'
+    : '首个订阅保存后自动启用；新增备用订阅后可手动切换。最多保存 20 个订阅。';
   $('#clash-start').disabled = clashBusy || data.locked || data.running || !data.nodes.length;
   $('#clash-stop').disabled = clashBusy || data.locked || testing || !data.running;
   $('#clash-test-youtube').disabled = clashBusy || !data.running || !data.selected;
@@ -354,6 +362,39 @@ function renderClash() {
     const delay = node.cooling_until > Date.now() / 1000 ? `线路冷却 ${Math.ceil(node.cooling_until - Date.now() / 1000)} 秒` : node.delay ? node.delay.ms === null ? '超时 / 不可用' : `${node.delay.ms} ms` : '未测速';
     return `<article class="clash-node${selected ? ' selected' : ''}"><div class="clash-node-heading"><strong title="${escapeHTML(node.name)}">${escapeHTML(node.name)}</strong>${selected ? '<span class="count-pill">当前节点</span>' : ''}</div><div class="clash-node-meta"><span>${escapeHTML(node.type.toUpperCase())}</span><span class="${node.delay?.ms ? 'delay-ok' : node.delay ? 'delay-failed' : ''}" title="${node.delay ? escapeHTML(formatDate(node.delay.checked_at, true)) : ''}">${delay}</span></div><div class="clash-node-actions"><button type="button" class="text-button" data-node-delay="${escapeHTML(node.name)}"${clashBusy || testing || !data.running ? ' disabled' : ''}>测试延迟</button><button type="button" class="button ${selected ? 'button-dark' : 'button-white'}" data-node-select="${escapeHTML(node.name)}"${clashBusy || data.locked || selected ? ' disabled' : ''}>${selected ? '使用中' : '使用此节点'}</button></div></article>`;
   }).join('')}</div>` : emptyState(data.nodes.length ? '没有匹配的节点' : '还没有订阅节点', data.nodes.length ? '试试其他名称或协议。' : '在上方粘贴订阅链接，保存后即可选择节点。');
+}
+function renderSubscriptions(data) {
+  const profiles = data.subscriptions || [];
+  if (subscriptionInstance !== state.instanceId) {
+    subscriptionInstance = state.instanceId;
+    subscriptionSelection = null;
+    subscriptionOptionsSignature = '';
+    $('#clash-subscription-url').value = '';
+  }
+  if (subscriptionSelection === null || (subscriptionSelection && !profiles.some(item => item.id === subscriptionSelection))) {
+    subscriptionSelection = data.active_subscription_id || '';
+    $('#clash-subscription-name').value = profiles.find(item => item.id === subscriptionSelection)?.name || '';
+    $('#clash-subscription-url').value = '';
+  }
+  const signature = JSON.stringify([profiles, data.active_subscription_id]);
+  if (signature !== subscriptionOptionsSignature) {
+    $('#clash-subscription-select').innerHTML = profiles.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}${item.id === data.active_subscription_id ? '（当前使用）' : ''}</option>`).join('') + '<option value="">＋ 新增订阅</option>';
+    subscriptionOptionsSignature = signature;
+  }
+  $('#clash-subscription-select').value = subscriptionSelection;
+  const selected = profiles.find(item => item.id === subscriptionSelection);
+  const active = profiles.find(item => item.id === data.active_subscription_id);
+  $('#clash-subscription-badge').textContent = profiles.length ? `已保存 ${profiles.length} 个` : '未配置';
+  $('#clash-subscription-url').required = !selected;
+  $('#clash-subscription-url').placeholder = selected ? '留空更新已保存链接；填写新链接可替换此订阅' : '粘贴 Clash / Mihomo 订阅链接';
+  $('#clash-import').lastChild.textContent = selected ? '保存并更新此订阅' : '保存新订阅';
+  $('#clash-subscription-info').textContent = (active ? `当前使用：${active.name}。` : '') + (selected ? `${selected.host} · ${selected.node_count} 个节点 · 更新于 ${formatDate(selected.updated_at, true)}` : '可保存多个订阅并手动切换。') + ' 链接仅保存在当前实例，保存后不回显。' + (selected?.id === data.active_subscription_id && data.notices?.length ? '\n' + data.notices.join(' · ') : '');
+}
+function chooseSubscription(identity) {
+  subscriptionSelection = identity;
+  $('#clash-subscription-name').value = state.clash?.subscriptions?.find(item => item.id === identity)?.name || '';
+  $('#clash-subscription-url').value = '';
+  renderClash();
 }
 function renderRotation(data) {
   const saved = data.rotation || { enabled: false, nodes: [], every: 1, count_failures: true };
@@ -386,11 +427,14 @@ function renderRotation(data) {
 async function clashAction(operation) {
   if (clashBusy) return;
   clashBusy = true;
+  const instanceSelector = $('#fleet-selection');
+  if (instanceSelector) instanceSelector.disabled = true;
   renderClash();
   try { await operation(); }
   catch (error) { toast(error.message || '代理操作失败，请稍后重试。', true); }
   finally {
     clashBusy = false;
+    if (instanceSelector) instanceSelector.disabled = false;
     try { await refresh(); } catch (error) { toast(error.message, true); }
     renderClash();
   }
@@ -1022,11 +1066,36 @@ $('#clash-rotation-form').addEventListener('submit', event => {
 });
 $('#clash-subscription-form').addEventListener('submit', event => {
   event.preventDefault();
+  const body = { action: 'save', id: subscriptionSelection || '', name: $('#clash-subscription-name').value.trim(), url: $('#clash-subscription-url').value.trim() };
   clashAction(async () => {
-    const result = await api('/api/clash/subscription', { method: 'POST', body: { url: $('#clash-subscription-url').value.trim() } });
+    const result = await api('/api/clash/subscription', { method: 'POST', body });
+    state.clash = result;
+    subscriptionSelection = result.saved_subscription_id;
     $('#clash-subscription-url').value = '';
     $('#clash-youtube-result').textContent = '';
     fillConfig((await api('/api/config')).config);
+    toast(result.message);
+  });
+});
+$('#clash-subscription-select').addEventListener('change', event => chooseSubscription(event.target.value));
+$('#clash-subscription-new').addEventListener('click', () => chooseSubscription(''));
+$('#clash-subscription-switch').addEventListener('click', () => {
+  const identity = subscriptionSelection;
+  clashAction(async () => {
+    const result = await api('/api/clash/subscription', { method: 'POST', body: { action: 'switch', id: identity } });
+    state.clash = result;
+    rotationDirty = false; rotationSavedSignature = '';
+    $('#clash-youtube-result').textContent = '';
+    fillConfig((await api('/api/config')).config);
+    toast(result.message);
+  });
+});
+$('#clash-subscription-delete').addEventListener('click', () => {
+  const identity = subscriptionSelection;
+  clashAction(async () => {
+    const result = await api('/api/clash/subscription', { method: 'POST', body: { action: 'delete', id: identity } });
+    state.clash = result;
+    subscriptionSelection = null;
     toast(result.message);
   });
 });
