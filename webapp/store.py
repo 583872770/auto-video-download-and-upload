@@ -686,7 +686,9 @@ class TaskStore:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             if self.fleet or self.single:
-                db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
+                # Use shared lock (read=True) to allow concurrent claims across instances.
+                # Write lock only needed when modifying fleet_budget in separate transactions.
+                db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update(read=True)).first()
             mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
             if self.fleet and mode != 'true':
                 return None
@@ -760,9 +762,13 @@ class TaskStore:
                 from webapp.downloads import initial_progress
                 values['progress'] = json.dumps(initial_progress(payload.get('config', {}),
                     payload.get('policy_version')), ensure_ascii=False)
-                row = {**row, 'payload': self._pack(db, payload), '_previous_download_method': previous_method}
+                # Generate snapshot BEFORE adding download_session_id
+                packed_without_session = self._pack(db, payload)
+                row = {**row, 'payload': packed_without_session, '_previous_download_method': previous_method}
                 identity = self.statistics.begin(db, row)
-                values['payload'] = json.dumps({**json.loads(row['payload']), 'download_session_id': identity}, ensure_ascii=False)
+                # Add download_session_id and create final snapshot
+                payload_with_session = {**payload, 'download_session_id': identity}
+                values['payload'] = self._pack(db, payload_with_session)
                 row.pop('_previous_download_method', None)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
             return self.decode({**row, **values}, private=True, db=db)
@@ -858,13 +864,25 @@ class TaskStore:
                     db.execute(reservations.delete().where(reservations.c.key == row['source_key'], reservations.c.task_id == task_id))
             return True
 
-    def recover(self, *, expired_only=False):
+    def recover(self, *, expired_only=True):
+        """Recover running tasks that are no longer being executed.
+
+        Args:
+            expired_only: If True (default), only recover tasks whose lease has expired.
+                         If False, recover ALL running tasks regardless of lease status.
+                         WARNING: expired_only=False will interrupt tasks from other instances
+                         in multi-instance deployments. Only use during single-instance recovery.
+        """
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             statement = select(tasks).where(tasks.c.status == 'running')
             if expired_only:
                 statement = statement.where(or_(tasks.c.lease_until < (self.fleet.clock(db) if self.fleet else time.time()), tasks.c.lease_until.is_(None)))
+            elif self.fleet:
+                # In fleet mode with expired_only=False, only recover tasks owned by this instance
+                # to avoid interrupting other instances' work during emergency recovery
+                statement = statement.where(tasks.c.instance_id == self.fleet.id)
             rows = db.execute(self._locked(statement.limit(1000), skip=True)).mappings().all()
             for row in rows:
                 retry = expired_only and row['action'] in ('download', 'import', 'index') and row['attempts'] < row['max_attempts']

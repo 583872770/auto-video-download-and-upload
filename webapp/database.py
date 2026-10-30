@@ -52,6 +52,7 @@ Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, task
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
 Index('ix_tasks_video_prefix', tasks.c.video_id)
+Index('ix_tasks_url_prefix', tasks.c.batch_id, tasks.c.url, mysql_length={'url': 128})
 Index('ix_tasks_id_prefix', tasks.c.id)
 Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)

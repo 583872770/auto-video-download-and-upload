@@ -40,8 +40,29 @@ def _task_center_indexes(engine):
         next(index for index in table.indexes if index.name == name).create(engine, checkfirst=True)
 
 
+def _add_url_prefix_index(engine):
+    """Add prefix index on tasks.url to avoid full table scan in batch deduplication.
+
+    Uses 128-char prefix (YouTube URLs are ~43 chars, sufficient for uniqueness).
+    MySQL TEXT columns require explicit length for indexes.
+    """
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    existing_indexes = {idx['name'] for idx in inspector.get_indexes('tasks')}
+
+    if 'ix_tasks_url_prefix' not in existing_indexes:
+        with engine.begin() as db:
+            # MySQL syntax for prefix index
+            if 'mysql' in engine.dialect.name:
+                db.exec_driver_sql('CREATE INDEX ix_tasks_url_prefix ON tasks (batch_id, url(128))')
+            # SQLite doesn't support prefix indexes, but url queries are less critical in local dev
+            else:
+                db.exec_driver_sql('CREATE INDEX ix_tasks_url_prefix ON tasks (batch_id, url)')
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
-         ('20261027_task_center_indexes', _task_center_indexes))
+         ('20261027_task_center_indexes', _task_center_indexes),
+         ('20261030_url_prefix_index', _add_url_prefix_index))
 
 
 def upgrade(engine):

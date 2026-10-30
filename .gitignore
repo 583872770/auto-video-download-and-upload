@@ -15,3 +15,4 @@ cookies.txt
 !.env.example
 !.env.remote-mysql.example
 docker-data/
+.idea/claudeCodeTabState.xml

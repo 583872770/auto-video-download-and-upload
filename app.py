@@ -530,6 +530,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/media/videos/<path:name>')
     def video(name):
+        # Block path traversal attempts
+        if '..' in name or name.startswith('/') or '\\' in name:
+            return jsonify(error='无效的文件路径'), 400
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
         target = (root / name).resolve()
@@ -543,6 +546,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/media/covers/<path:name>')
     def cover(name):
+        # Block path traversal attempts
+        if '..' in name or name.startswith('/') or '\\' in name:
+            return jsonify(error='无效的文件路径'), 400
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
         target = (root / name).resolve()

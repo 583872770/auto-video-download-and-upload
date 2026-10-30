@@ -442,6 +442,29 @@ class ClashManager:
             if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username
                     or parsed.password or len(url) > 8192 or any(ord(c) < 32 for c in url)):
                 raise ClashError('请输入有效的 HTTP / HTTPS 订阅链接。')
+
+            # Block SSRF: prevent requests to private/internal networks
+            try:
+                import ipaddress
+                addr = ipaddress.ip_address(parsed.hostname)
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    raise ClashError('订阅链接不能使用内网地址、回环地址或保留地址。')
+            except ValueError:
+                # Hostname is not an IP, check if it resolves to private IP
+                import socket
+                try:
+                    resolved = socket.getaddrinfo(parsed.hostname, None, family=socket.AF_INET)
+                    for family, socktype, proto, canonname, sockaddr in resolved:
+                        try:
+                            addr = ipaddress.ip_address(sockaddr[0])
+                            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                                raise ClashError('订阅域名解析到内网地址，可能存在 SSRF 风险。')
+                        except ValueError:
+                            pass
+                except (socket.gaierror, OSError):
+                    # DNS resolution failed, let the actual request fail with proper error
+                    pass
+
             try:
                 request = Request(url, headers={'User-Agent': 'clash.meta', 'Accept': 'application/yaml,text/yaml,*/*'})
                 with self.direct.open(request, timeout=25) as response:

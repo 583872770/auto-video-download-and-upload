@@ -20,24 +20,83 @@ _DUMMY_HASH = generate_password_hash('not-a-login-password')
 
 
 def local_request():
-    # Never trust an unconfigured X-Forwarded-For header.
+    """Check if the request originates from localhost.
+
+    In production behind a reverse proxy, set VIDEO_TRUSTED_PROXY=true and ensure
+    your proxy passes X-Forwarded-For correctly. Without this, external requests
+    forwarded by nginx/Docker will appear as 127.0.0.1 and bypass authentication.
+
+    For first-time setup security, local access is only allowed when:
+    1. Direct connection from loopback address, OR
+    2. Docker/development mode explicitly enabled via VIDEO_ALLOW_LOCAL_SETUP=true
+    """
+    # In Docker or when explicitly enabled, allow bootstrap setup from any source
+    if os.environ.get('VIDEO_ALLOW_LOCAL_SETUP') == 'true':
+        return True
+
+    # Check actual remote address
+    remote_addr = request.remote_addr or ''
+
+    # If behind a trusted proxy, check X-Forwarded-For
+    if os.environ.get('VIDEO_TRUSTED_PROXY') == 'true':
+        forwarded_for = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+        if forwarded_for:
+            remote_addr = forwarded_for
+
     try:
-        return ipaddress.ip_address(request.remote_addr or '').is_loopback
+        return ipaddress.ip_address(remote_addr).is_loopback
     except ValueError:
         return False
 
 
 def rpc_allowed():
+    """Check if a path is allowed for instance token authentication.
+
+    Instance tokens (fleet credentials) should only access:
+    - Read-only resources (media, status, health)
+    - Task submission (check action only)
+    - Task logs (read-only)
+
+    Configuration changes (YouTube cookies, Clash subscriptions, disk cleanup)
+    require management console authentication.
+    """
     path = request.path
-    if path == '/api/tasks' and request.method == 'POST':
+    method = request.method
+
+    # Allow check tasks submission
+    if path == '/api/tasks' and method == 'POST':
         data = request.get_json(silent=True)
         return isinstance(data, dict) and data.get('action') == 'check'
+
+    # Read-only task logs
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
-        return request.method in ('GET', 'HEAD')
+        return method in ('GET', 'HEAD')
+
+    # Read-only instance logs
     if path == '/api/disk/logs':
-        return request.method in ('GET', 'HEAD')
-    return (path in ('/health', '/api/config', '/api/status', '/api/fleet/preflight', '/api/downloads/connection', '/api/disk', '/api/disk/cleanup')
-            or path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube')))
+        return method in ('GET', 'HEAD')
+
+    # Read-only status and health
+    if path in ('/health', '/api/config', '/api/status', '/api/fleet/preflight', '/api/downloads/connection', '/api/disk'):
+        return method in ('GET', 'HEAD')
+
+    # Read-only media access
+    if path.startswith(('/api/media', '/media/')):
+        return method in ('GET', 'HEAD')
+
+    # Clash: only allow reading current config and node selection, block subscription management
+    if path.startswith('/api/clash'):
+        if path in ('/api/clash/config', '/api/clash/proxies'):
+            return method in ('GET', 'HEAD')
+        if re.fullmatch(r'/api/clash/proxies/[^/]+', path):
+            return method == 'PUT'  # Allow node switching
+        return False  # Block subscription CRUD
+
+    # YouTube: only allow reading login status, block cookie upload
+    if path.startswith('/api/youtube'):
+        return path == '/api/youtube/status' and method in ('GET', 'HEAD')
+
+    return False
 
 
 class ConsoleAuth:
