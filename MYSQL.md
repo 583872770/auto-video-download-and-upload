@@ -6,7 +6,7 @@
 ## Linux Docker 连接远程 MySQL
 
 使用独立的 `compose.remote-mysql.yaml`，它只启动应用，不创建本地 MySQL，也不需要 `MYSQL_ROOT_PASSWORD`。
-这是项目唯一的 Compose 编排文件；它只启动应用，不创建本地 MySQL。
+需要随应用一起启动 MySQL 容器时，使用 `compose.local-mysql.yaml`，步骤见 [应用与 MySQL 一起部署](DOCKER.md#应用与-mysql-一起部署)。
 
 全新部署先复制模板（已有 `.env` 时直接编辑，避免覆盖原配置）：
 
@@ -14,9 +14,9 @@
 cp .env.remote-mysql.example .env
 ```
 
-推荐启动后访问 `/setup`，输入启动日志中的部署设置访问码，直接填写远程数据库信息并测试连接。首次保存会启动业务服务；之后自动读取本机状态目录的 `deployment.json`，运行中修改需重启服务。管理后台与下载实例填写相同的数据库。
+数据库只从 `.env` 或启动环境读取，不能在 `/setup` 页面修改；所有协作实例在各自环境文件中填写同一个数据库。配置完整后自动启动，页面可测试当前连接、查看启动状态和修改实例设置。旧 `deployment.json` 中的数据库参数会被忽略，新保存的文件只含实例设置。
 
-也兼容在 `.env` 中填写远程数据库信息（页面保存的配置优先）：
+启动前在 `.env` 中填写远程数据库信息：
 
 ```dotenv
 MYSQL_HOST=你的数据库IP或域名
@@ -70,11 +70,11 @@ MySQL 5.7 使用 InnoDB、DYNAMIC 行格式，需启用 `innodb_large_prefix` �
 mysql+pymysql://video:密码@127.0.0.1:3306/video_downloads?charset=utf8mb4
 ```
 
-直接运行 `app.py`，推荐打开 `http://127.0.0.1:5000/setup` 配置 MySQL，密码填写原始值即可。PyCharm 无需额外参数。
+先在项目根目录 `.env` 中配置 MySQL，再直接运行 `app.py`。`http://127.0.0.1:5000/setup` 只提供连接测试、启动状态和实例设置。PyCharm 无需额外参数。
 
-若未保存页面配置，也会读取项目根目录 `.env`，支持 `--env-file 文件路径`；PyCharm 中将该参数填入“脚本参数”。密码使用原始值，建议用单引号包裹，无需手动 URL 编码。进程环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`。页面保存后以 `deployment.json` 为准，并把实际连接传给后台进程。不会自动迁移已有数据。
+默认读取项目根目录 `.env`，也支持 `--env-file 文件路径`；PyCharm 中将该参数填入“脚本参数”。密码使用原始值，建议用单引号包裹，无需手动 URL 编码。进程环境变量优先于文件；`VIDEO_DATABASE_URL` 优先于 `MYSQL_*`。页面保存的数据库参数不再生效，后台进程沿用启动配置。修改后重启本地服务；Docker 中执行 `up -d` 更新容器环境。不会自动迁移已有数据。
 
-旧的 `database.json` 仍供迁移工具和直接调用数据库接口使用；通过 `app.py` 启动时请在页面或环境变量中配置 MySQL。未配置时进入设置向导，不会新建业务 SQLite 数据库。不要把连接串写入 `config.yaml` 或提交到 Git。
+旧的 `database.json` 仍供迁移工具和直接调用数据库接口使用；通过 `app.py` 启动时请在 `.env` 或环境变量中配置 MySQL。未配置时设置页提示补齐启动配置，不会新建业务 SQLite 数据库。不要把连接串写入 `config.yaml` 或提交到 Git。
 
 对于全新部署，可设置环境变量再启动：
 

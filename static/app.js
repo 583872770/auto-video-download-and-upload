@@ -42,7 +42,7 @@ const pages = Object.fromEntries(['tasks', 'media'].map(name => [name, { cursor:
 state.overview = { recent_media: [], recent_tasks: [], media: { count: 0 } };
 state.batchTasks = [];
 
-const actionNames = { download: '下载视频', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
+const actionNames = { download: '下载视频', subtitles: '补下载字幕', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
@@ -136,10 +136,10 @@ function openMedia(name, instanceId) {
   if (item.playable) player.play().catch(() => {});
 }
 function taskRows(tasks) {
-  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import', 'subtitles'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
 }
 function taskPaused(task) {
-  if (task.action !== 'download' || task.status !== 'queued') return false;
+  if (!['download', 'subtitles'].includes(task.action) || task.status !== 'queued') return false;
   const item = state.fleet?.items.find(item => item.id === task.instance_id);
   return task.instance_id && task.instance_id !== state.instanceId ? !!item?.paused : !!state.workbench?.paused;
 }
@@ -153,6 +153,13 @@ function etaText(seconds) {
 }
 function progressLabel(task) {
   if (taskPaused(task)) return '实例已停止 · 等待启动';
+  if (task.action === 'subtitles') {
+    if (task.status === 'failed') return '字幕补下载失败 · 视频已保留';
+    if (task.status === 'succeeded') return task.result?.skipped ? '字幕任务已跳过' : '字幕任务已处理';
+    if (task.status === 'interrupted') return '字幕任务已中断 · 视频已保留';
+    if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '字幕等待退避重试' : '字幕排队中 · 独立限速';
+    return task.progress?.stage === 'disk_wait' ? '字幕等待临时空间' : '正在补下载字幕 · 视频已完成';
+  }
   if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待启动';
   if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '等待退避重试' : '排队中';
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
@@ -251,6 +258,7 @@ function renderTasks() {
 }
 function renderStatus() {
   if (!state.status) return;
+  renderConcurrency();
   const { tools } = state.status;
   if (!fleetEnabled) renderChannelPerformance(state.status.throughput);
   const methods = selectedProviders();
@@ -467,7 +475,25 @@ function fillConfig(config) {
   settingsChannelBaseline = channelSignature(config.download_channels || []);
   renderStorageSettings();
   renderDownloadMethod();
+  renderConcurrencyDraft();
 }
+function renderConcurrencyDraft() {
+  const form = $('#settings-form');
+  const number = name => Number(form.elements[name]?.value || 0);
+  const auto = form.elements.scheduler_mode?.value === 'auto';
+  const requested = number('worker_count'), channel = number('builtin_transfer_limit') || (auto ? 32 : 8);
+  const shared = number('builtin_connection_limit') || (auto ? 64 : 16);
+  const connection = number('download_connection_limit');
+  const fragments = Math.min(number('fragment_concurrency') || 4, shared, Math.max(1, Math.floor(connection / Math.max(1, requested))));
+  const methods = providerDraft || selectedProviders();
+  const manualNative = methods.includes('yt_dlp') && !auto && form.elements.throughput_mode.value !== 'auto';
+  const cap = Math.min(requested, channel, manualNative ? Math.floor(Math.min(connection, shared) / fragments) : requested);
+  const warning = requested > cap;
+  $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机 / 共享连接预算 ${connection} / ${shared}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
+  $('#concurrency-config-note').classList.toggle('capacity-draft-warning', warning);
+}
+$('#settings-form').addEventListener('input', renderConcurrencyDraft);
+$('#settings-form').addEventListener('change', renderConcurrencyDraft);
 const channelFields = [['id','渠道标识'],['label','名称'],['site_url','网站地址'],['api_url','API 地址'],['upstream_group','带宽组'],['resolver_group','解析组'],['quota_group','配额组'],['transfer_limit','同组传输上限'],['resolver_limit','同组解析上限'],['connection_limit','同组媒体连接上限'],['task_limit','此入口任务上限'],['weight','分配权重'],['verification','网站验证流程']];
 const channelNumbers = {transfer_limit:64,resolver_limit:16,connection_limit:128,task_limit:64,weight:10};
 function renderChannels(entries) {
@@ -561,6 +587,7 @@ function renderDownloadMethod() {
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
   notes.push('保存后仅影响当前实例后续领取的视频，无需暂停或重启；其他实例使用各自策略，正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
+  renderConcurrencyDraft();
 }
 function renderStrategySaveState() {
   const target = state.instanceId ? `实例 ${instanceName(state.instanceId)}` : '本机';
@@ -940,7 +967,8 @@ async function updateTaskDetail() {
   $('#task-error').textContent = task.error ? readableError(task.error) : '';
   $('#task-download-progress').innerHTML = task.action === 'clear_media' ? `<p class="micro-copy">已删除 ${Number(task.progress?.deleted_files || 0)} 个文件 · 释放 ${bytes(task.progress?.deleted_bytes || 0)}${task.progress?.failed_files ? ` · ${Number(task.progress.failed_files)} 个文件未能删除` : ''}</p>` : ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
   const result = task.result;
-  if (result?.message) { $('#task-result').innerHTML = `<div class="result-summary">${escapeHTML(result.message)}</div>`; }
+  $('#task-result').innerHTML = result?.message ? `<div class="result-summary">${escapeHTML(result.message)}</div>` : '';
+  if (task.subtitle_tasks?.length) $('#task-result').innerHTML += `<p class="micro-copy">字幕补下载（独立于视频计费和成功状态）：${task.subtitle_tasks.map(child => `<button type="button" class="text-button" data-task="${escapeHTML(child.id)}">${escapeHTML({queued:'待补下载',running:'正在补下载',succeeded:'已处理',failed:'补下载失败',interrupted:'已中断'}[child.status] || child.status)} ↗</button>`).join(' · ')}</p>`;
   if (logs.text) {
     const log = $('#task-log');
     const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 45;

@@ -119,7 +119,7 @@ def runtime_log(directory, slot='supervisor', config=None):
     from pathlib import Path
     from webapp.disk_budget import safe_path, MIB
     from webapp.maintenance import BoundedLog
-    if str(slot) not in {'supervisor', 'maintenance', *(str(number) for number in range(96))}:
+    if str(slot) not in {'supervisor', 'maintenance', 'subtitles', *(str(number) for number in range(96))}:
         raise ValueError('无效的日志进程编号')
     root = Path(directory).resolve()
     path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
@@ -152,7 +152,7 @@ def active_task_log(directory, slot, task_id):
     from pathlib import Path
     from webapp.disk_budget import safe_path, process_identity, file_lock
     root = Path(directory).resolve()
-    name = 'maintenance' if slot < 0 else str(slot)
+    name = 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else str(slot)
     path = safe_path(root / 'logs/instance' / f'active-{name}.json', root)
     published = False
     try:
@@ -179,7 +179,7 @@ def active_log_ids(directory):
     from webapp.disk_budget import safe_path, alive
     root = Path(directory).resolve()
     identities = set()
-    for name in ['maintenance', *range(96)]:
+    for name in ['maintenance', 'subtitles', *range(96)]:
         try:
             path = safe_path(root / 'logs/instance' / f'active-{name}.json', root)
             with path.open('rb') as stream:
@@ -198,7 +198,7 @@ def active_log_ids(directory):
 def process_diagnostics(directory, slot):
     global _sink
     previous = _sink
-    _sink = runtime_log(directory, 'maintenance' if slot < 0 else slot)
+    _sink = runtime_log(directory, 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else slot)
     try:
         yield
     finally:

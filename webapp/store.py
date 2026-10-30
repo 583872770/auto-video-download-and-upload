@@ -206,7 +206,11 @@ class TaskStore:
 
     def get(self, task_id, private=False):
         with self.connect() as db:
-            return self.decode(db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first(), private, db)
+            value = self.decode(db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first(), private, db)
+            if value and (value.get('result') or {}).get('subtitle_tasks'):
+                value['subtitle_tasks'] = [dict(row) for row in db.execute(select(tasks.c.id, tasks.c.status, tasks.c.error).where(
+                    tasks.c.id.in_(value['result']['subtitle_tasks']))).mappings()]
+            return value
 
     def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False):
         if not 1 <= limit <= 100:
@@ -341,11 +345,11 @@ class TaskStore:
         if self.fleet and self.fleet.can_download:
             with self.connect() as db:
                 running = db.execute(select(tasks.c.id).where(tasks.c.instance_id == self.fleet.id,
-                    tasks.c.status == 'running', tasks.c.action == 'download').limit(1)).first()
+                    tasks.c.status == 'running', tasks.c.action.in_(('download', 'subtitles'))).limit(1)).first()
                 return bool(running or (not self.fleet.row(db)['paused'] and not self.claims_paused(db)
                                         and self._released_queued_count(db)))
         with self.connect() as db:
-            downloads, checks = self._counts(db, ['action:download']), self._counts(db, ['action:check'])
+            downloads, checks = self._counts(db, ['action:download', 'action:subtitles']), self._counts(db, ['action:check'])
             return bool(downloads.get('running', 0) or checks.get('running', 0) or checks.get('queued', 0)
                         or (not self.downloads_paused(db) and self._released_queued_count(db)))
 
@@ -359,6 +363,8 @@ class TaskStore:
             roles = set()
             for scope in queued:
                 action = scope.removeprefix('action:')
+                if action == 'subtitles' and paused:
+                    continue
                 if action == 'download' and (paused or not self._released_queued_count(db)):
                     continue
                 due = db.execute(select(tasks.c.id).where(
@@ -366,7 +372,7 @@ class TaskStore:
                     tasks.c.available_at <= time.time(), self.released_condition()).limit(1)).first()
                 if due:
                     roles.update(('download', 'regular') if action == 'download' else
-                                 ('maintenance',) if action in ('import', 'index') else ('regular',))
+                                 ('maintenance',) if action in ('import', 'index') else ('subtitles',) if action == 'subtitles' else ('regular',))
             return roles
 
     def runnable_counts(self):
@@ -376,10 +382,12 @@ class TaskStore:
             counts = {}
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
-                                  ('regular', ('check',))):
+                                  ('subtitles', ('subtitles',)), ('regular', ('check',))):
                 if self.fleet and role == 'download' and not self.fleet.admission(db, lock=False):
                     continue
                 if not self._counts(db, ['action:' + action for action in actions]).get('queued', 0):
+                    continue
+                if role == 'subtitles' and paused:
                     continue
                 if role == 'download' and (paused or not self._released_queued_count(db)):
                     continue
@@ -505,7 +513,7 @@ class TaskStore:
                 if db.execute(select(instances.c.id).where(instances.c.paused == 0,
                         instances.c.role.in_(('worker', 'hybrid'))).limit(1)).first():
                     raise ValueError('请先暂停全部下载实例，再清空素材库。')
-            if (not self.fleet and not self.downloads_paused(db)) or self._counts(db, ['action:download']).get('running', 0):
+            if (not self.fleet and not self.downloads_paused(db)) or self._counts(db, ['action:download', 'action:subtitles']).get('running', 0):
                 raise ValueError('请先暂停全部下载，并等待所有实例的下载任务停止后再清空素材库。')
             if self.media_clear_busy(db):
                 raise ValueError('素材库正在清空，请勿重复提交。')
@@ -615,7 +623,7 @@ class TaskStore:
     def stop_running_downloads(self, terminate):
         """Stop only verified owners, then release their tasks under the same row lock."""
         with self.connect() as db:
-            statement = select(tasks.c.id, tasks.c.worker_id).where(tasks.c.status == 'running', tasks.c.action == 'download')
+            statement = select(tasks.c.id, tasks.c.worker_id).where(tasks.c.status == 'running', tasks.c.action.in_(('download', 'subtitles')))
             if self.fleet:
                 statement = statement.where(tasks.c.instance_id == self.fleet.id)
             owners = db.execute(statement.limit(64)).all()
@@ -698,19 +706,21 @@ class TaskStore:
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
-            if self.claims_paused(db, lock=True) or not self._released_queued_count(db):
+            if self.claims_paused(db, lock=True):
+                statement = statement.where(~tasks.c.action.in_(('download', 'subtitles')))
+            elif not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
             from webapp.disk_budget import resource_blocked
             if resource_blocked(self, db):
                 statement = statement.where(tasks.c.action != 'download')
             if self.media_clear_busy(db):
-                statement = statement.where(~tasks.c.action.in_(('download', 'index')))
+                statement = statement.where(~tasks.c.action.in_(('download', 'index', 'subtitles')))
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:
                 statement = statement.where(~tasks.c.action.in_(exclude))
             download_only = actions and set(actions) == {'download'}
-            regular_worker = actions is None and set(exclude or ()) == {'import', 'index'}
+            regular_worker = actions is None and set(exclude or ()) in ({'import', 'index'}, {'import', 'index', 'subtitles'})
             workbench_download = self.workbench_job(db) if self.fleet and (download_only or regular_worker) else None
             row = None
             if workbench_download and regular_worker:
@@ -842,6 +852,11 @@ class TaskStore:
             return db.execute(statement.values(**values)).rowcount > 0
 
     def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False, retry_after=None):
+        from webapp.db_retry import transaction_retry
+        return transaction_retry(lambda: self._finish(task_id, result=result, error=error, worker_id=worker_id,
+                                                     retryable=retryable, retry_after=retry_after))
+
+    def _finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False, retry_after=None):
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
@@ -853,6 +868,16 @@ class TaskStore:
             if self.fleet and worker_id and (not row['lease_until'] or row['lease_until'] <= self.fleet.clock(db)
                     or self.fleet.row(db)['boot_id'] != self.fleet.boot_id):
                 return False
+            if result:
+                result = dict(result)
+                subtitle_jobs = result.pop('_subtitle_jobs', [])
+                if row['action'] == 'download' and not error and subtitle_jobs:
+                    children = []
+                    for spec in subtitle_jobs:
+                        child = self._create(db, 'subtitles', {**spec, 'parent_task_id': task_id}, self.db.sequence(db, 'task'))
+                        children.append(child)
+                    result.update(subtitle_tasks=children)
+                    result['message'] = result.get('message', '') + ' 已创建独立字幕任务，处理结果见下方；字幕限流不影响视频成功。'
             retry = bool(error and retryable and row['attempts'] < row['max_attempts'])
             delay = min(300, 5 * 2 ** max(0, row['attempts'] - 1))
             delay = max(delay, min(86400, retry_after or 0)) + random.uniform(0, delay * .2)
@@ -909,7 +934,7 @@ class TaskStore:
                 statement = statement.where(tasks.c.instance_id == self.fleet.id)
             rows = db.execute(self._locked(statement.limit(1000), skip=True)).mappings().all()
             for row in rows:
-                retry = expired_only and row['action'] in ('download', 'import', 'index') and row['attempts'] < row['max_attempts']
+                retry = expired_only and row['action'] in ('download', 'import', 'index', 'subtitles') and row['attempts'] < row['max_attempts']
                 status = 'queued' if retry else 'interrupted'
                 self._transition(db, row, status)
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,

@@ -23,6 +23,8 @@ DEFAULTS = {
     'scheduler_mode': 'ordered_fallback', 'download_channels': [],
     'auto_channel_attempts': 3,
     'download_connection_limit': 32, 'shared_parser': True,
+    'subtitle_mode': 'optional', 'subtitle_languages': 'en,zh-Hans,zh-Hant',
+    'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4, 'builtin_connection_limit': 0,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -36,6 +38,7 @@ DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie'
 DOWNLOAD_FIELDS |= DISK_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
+DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
 INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
@@ -45,6 +48,7 @@ INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_
 INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
 INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
+INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))
 
 
 def urls_from(value):
@@ -81,6 +85,12 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
+    if config.get('subtitle_mode', 'optional') not in ('optional', 'required', 'off'):
+        raise ValueError('字幕请选择后台补下载、必须完整或关闭。')
+    languages = config.get('subtitle_languages', 'en,zh-Hans,zh-Hant')
+    if not isinstance(languages, str) or not 1 <= len(languages.split(',')) <= 8 or any(
+            not re.fullmatch(r'[A-Za-z0-9-]{1,32}', language.strip()) for language in languages.split(',')):
+        raise ValueError('字幕语言请填写最多 8 个语言代码，用逗号分隔，例如 en,zh-Hans。')
     from Utils.download_storage import storage_mode
     storage_mode(config)
     if config.get('throughput_mode', 'manual') not in ('manual', 'auto'):

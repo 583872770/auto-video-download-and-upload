@@ -3,6 +3,7 @@ import argparse
 from contextlib import contextmanager, nullcontext, ExitStack
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -24,6 +25,8 @@ def worker_lock(path):
 
 
 def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
+    if action == 'subtitles':
+        payload = {**payload, '_task_id': task_id}
     if store and action == 'download':
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
@@ -76,6 +79,12 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path), '_disk_state': str(state)}
         try:
             result = _execute(action, payload, report, rotation_completed, store, worker_slot)
+            if result.get('file_count'):
+                try:
+                    budget.record_video_size(result['file_bytes'] // result['file_count'],
+                        merged=result.get('download_method') == 'yt_dlp')
+                except Exception as error:
+                    event('disk_estimate_unavailable', error_type=type(error).__name__)
             lease.stop.set()
             if lease.monitor:
                 lease.monitor.join(timeout=20)
@@ -111,6 +120,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
     from webapp.media import VIDEO_SUFFIXES
     from webapp.environment import check_download_environment
     config, base = payload.get('config', {}), Path(payload['base'])
+    if action == 'subtitles':
+        from webapp.subtitles import run_subtitles
+        return run_subtitles(store, payload, report_progress or (lambda value: None))
     if action == 'import':
         from webapp.bulk import run_import
         return run_import(store, payload, report_progress or (lambda value: None))
@@ -274,6 +286,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.save(force=True)
         output_files, existing_files, current_video = {}, set(), {}
         billable_bytes = 0
+        subtitle_files = {}
         catalog = None
         if store and not test_mode:
             from webapp.catalog import MediaCatalog
@@ -333,6 +346,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     if not test_mode:
                         billable_bytes += size
             meter.verified(size)
+            if (progress.state.get('download_method') == 'yt_dlp' and not test_mode
+                    and config.get('subtitle_mode', 'optional') == 'optional'):
+                subtitle_files[str(path)] = current_video.get('id', '')
 
         print(f'开始下载，共 {len(urls)} 个地址。', flush=True)
         if config.get('scheduler_mode') == 'auto':
@@ -351,6 +367,10 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 return super().report_error(message, *args, **kwargs)
 
             def process_info(self, info_dict):
+                if (progress.state.get('download_method') == 'yt_dlp'
+                        and config.get('subtitle_mode', 'optional') == 'required'
+                        and not info_dict.get('requested_subtitles')):
+                    raise RuntimeError('此视频没有所选语言字幕；当前设置要求字幕完整。')
                 # yt-dlp removes requested_formats before individual stream hooks.
                 from Utils.paths import io_path
                 current_video.update(id=info_dict.get('id', ''), title=info_dict.get('title', ''))
@@ -431,7 +451,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                         transfer_seconds += time.monotonic() - started
 
         transfer_seconds = 0
-        def attempt(channel, addresses):
+        def attempt(channel, addresses, *, without_cookies=False):
             nonlocal failure, failure_phase, transfer_seconds
             # Each provider needs its own error collector and Cookie policy.
             failure = DownloadFailure()
@@ -439,8 +459,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             transfer_seconds = 0
             provider = channel.adapter
             provider_config = execution_config(config, channel)
-            meter.begin(channel)
+            if not without_cookies:
+                meter.begin(channel)
             options = build_ydl_options(provider_config, base)
+            if without_cookies:
+                options.pop('cookiefile', None)
             transfer_count = runtime_limits(config, store.directory if store else base / '.cache')['transfers']
             fragment_budget = min(int(config.get('fragment_concurrency', 4)), channel.connection_limit,
                                   max(1, int(config.get('download_connection_limit', 32)) // transfer_count))
@@ -478,6 +501,21 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 protocols = [item.get('protocol', '') for item in info.get('requested_formats') or [info]]
                 fragmented = any(any(word in protocol for word in ('m3u8', 'dash', 'ism')) for protocol in protocols)
                 return transmitting(channel, info, fragment_budget if fragmented else 1)
+
+            def retry_without_cookies(error=None):
+                # Some authenticated sessions get a misleading "Video unavailable"
+                # for public videos. Try once with a fresh anonymous cookie jar,
+                # before any media was received, on the same provider and proxy.
+                if (without_cookies or provider != 'yt_dlp' or not youtube or len(addresses) != 1
+                        or not options.get('cookiefile') or output_files or progress.streams
+                        or progress.state.get('downloaded_bytes') or failure.cookie_rejected
+                        or 'video unavailable' not in failure.message(error).lower()):
+                    return False
+                print('当前 Cookie 会话返回 Video unavailable；使用同一节点不带 Cookie 重试一次。已上传的 Cookie 保持不变。', flush=True)
+                event('youtube_cookie_fallback', provider=provider, reason='video_unavailable',
+                      node_changed=False, cookie_file_preserved=True)
+                return True
+
             try:
                 with download_cookie_session(options) as session_options:
                     with ReportingDownloader(session_options) as downloader:
@@ -526,7 +564,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                     with resolving():
                                         info = downloader.extract_info(address, download=False)
                                     if info is None:
-                                        raise RuntimeError(failure.message())
+                                        raise yt_dlp.utils.DownloadError(failure.message())
                                     with transfer(info):
                                         downloader.process_ie_result(info, download=True)
                                 failed = downloader._download_retcode
@@ -534,12 +572,16 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                 with transmitting(channel, {}, fragment_budget):
                                     failed = downloader.download(addresses)
             except yt_dlp.utils.DownloadError as error:
+                if retry_without_cookies(error):
+                    return attempt(channel, addresses, without_cookies=True)
                 if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
                     raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
                 raise RuntimeError(failure.message(error)) from error
             if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
                 raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
             if failed:
+                if retry_without_cookies():
+                    return attempt(channel, addresses, without_cookies=True)
                 raise RuntimeError(failure.message())
             return downloader.skipped
 
@@ -639,6 +681,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     assignment.close()
         skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
         return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
+                '_subtitle_jobs': [{'base': str(base), 'config': dict(config), 'video_file': path,
+                    'urls': ['https://www.youtube.com/watch?v=' + identity]} for path, identity in subtitle_files.items()
+                    if store and re.fullmatch(r'[A-Za-z0-9_-]{11}', identity)],
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
                 'billable_bytes': billable_bytes, 'download_method': progress.state['download_method'],
                 'channel_id': progress.state.get('channel_id'),
@@ -657,13 +702,13 @@ def drain(directory, slot=0, role='all'):
     # Mark this process as a worker for dynamic connection pool sizing
     os.environ['VIDEO_WORKER_PROCESS'] = 'true'
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
-    name = 'maintenance' if slot < 0 else str(slot)
+    name = 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
         if not acquired:
             return
         store.recover(expired_only=True)
-        actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
-        exclude = ('import', 'index') if role == 'regular' else None
+        actions = ('subtitles',) if role == 'subtitles' else ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
+        exclude = ('import', 'index', 'subtitles') if role == 'regular' else None
         while task := store.claim(store.owner, actions=actions, exclude=exclude):
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
@@ -846,7 +891,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--slot', type=int, default=0)
-    parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance'), default='all')
+    parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance', 'subtitles'), default='all')
     args = parser.parse_args()
     with process_diagnostics(args.state, args.slot):
         event('worker_boot', worker_slot=args.slot, role=args.role, pid=os.getpid())

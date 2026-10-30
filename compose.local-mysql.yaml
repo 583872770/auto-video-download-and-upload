@@ -1,0 +1,56 @@
+name: youtube-downloader-local
+
+# 应用 + MySQL 一起部署；与远程数据库方案使用独立的配置和状态卷。
+services:
+  app:
+    extends:
+      file: compose.remote-mysql.yaml
+      service: app
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
+      MYSQL_USER: ${MYSQL_USER:-video}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # MySQL 镜像要求此变量名；配置统一读取 MYSQL_PASSWORD。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
+      MYSQL_USER: ${MYSQL_USER:-video}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # 使用应用账号验证数据库；保留错误供 docker inspect 查看，不输出密码。
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --connect-timeout=3
+          --host=127.0.0.1 --user="$${MYSQL_USER}"
+          --database="$${MYSQL_DATABASE}" --execute='SELECT 1'
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_config:
+  app_state:
+  mysql_data:

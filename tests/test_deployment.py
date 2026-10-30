@@ -21,9 +21,9 @@ from pymysql.err import OperationalError as MySQLError
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
-from webapp.deployment import DeploymentGateway, test_mysql
+from webapp.deployment import DeploymentGateway, MYSQL_FIELDS, test_mysql
 from webapp.database import SchemaUpgradeInProgress
-from webapp.deployment_errors import explain_startup_error
+from webapp.deployment_errors import BrowserDesktopError, explain_startup_error
 from webapp.fleet import InstanceIdentityConflict
 
 
@@ -39,8 +39,9 @@ class DeploymentTests(unittest.TestCase):
         environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
+        os.environ.update({key.upper(): str(value) for key, value in self.values().items() if key in MYSQL_FIELDS})
         self.calls = []
-        self.gateway = self.make_gateway()
+        self.gateway = self.make_gateway(start=False)
         self.client = Client(self.gateway, Response)
         self.headers = self.unlock(self.client)
 
@@ -72,6 +73,9 @@ class DeploymentTests(unittest.TestCase):
                 'mysql_host': 'mysql.example.test', 'mysql_port': 3306, 'mysql_database': 'video_downloads',
                 'mysql_user': 'video', 'mysql_password': 'p@ss:$ ${literal}秘密', 'web_hosts': 'localhost,127.0.0.1', **extra}
 
+    def settings(self, **extra):
+        return {**{key: value for key, value in self.values().items() if key not in MYSQL_FIELDS}, **extra}
+
     def test_new_deployments_use_one_role_and_allow_local_only_operation(self):
         self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
         page = self.client.get('/setup').text
@@ -93,7 +97,7 @@ class DeploymentTests(unittest.TestCase):
 
     def save(self, **extra):
         with patch('webapp.deployment.test_mysql'):
-            response = self.client.post('/api/deployment/save', json=self.values(**extra), headers=self.headers)
+            response = self.client.post('/api/deployment/save', json=self.settings(**extra), headers=self.headers)
         self.wait_for_initialization(self.gateway)
         return response
 
@@ -106,15 +110,19 @@ class DeploymentTests(unittest.TestCase):
         return self.client.get('/api/deployment')
 
     def test_unconfigured_service_only_serves_setup_without_creating_local_database(self):
-        self.assertEqual(self.client.get('/').headers['Location'], '/setup')
-        self.assertEqual(self.client.get('/health').json['status'], 'setup')
+        with patch.dict(os.environ, {}, clear=True):
+            gateway = self.make_gateway()
+        client = Client(gateway, Response)
+        self.assertEqual(client.get('/').headers['Location'], '/setup')
+        self.assertEqual(client.get('/health').json['status'], 'setup')
+        self.assertIn('.env', client.get('/health').json['message'])
         self.assertEqual(self.calls, [])
         self.assertEqual(list(self.root.rglob('*.sqlite3')), [])
 
     def test_code_csrf_and_rate_limit_protect_deployment_details(self):
         client = Client(self.gateway, Response)
         self.assertEqual(client.get('/api/deployment').status_code, 403)
-        self.assertEqual(client.post('/api/deployment/save', json=self.values()).status_code, 403)
+        self.assertEqual(client.post('/api/deployment/save', json=self.settings()).status_code, 403)
         page = client.get('/setup')
         self.assertNotIn(self.gateway.access_code, page.text)
         csrf = re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]
@@ -140,25 +148,86 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(restarted.access_code, self.gateway.access_code)
         self.assertEqual(self.calls[0]['instance_id'], self.calls[-1]['instance_id'])
 
-    def test_saved_configuration_overrides_old_environment(self):
+    def test_environment_database_overrides_legacy_saved_connection(self):
         self.assertEqual(self.save().status_code, 202)
-        with patch.dict(os.environ, {'MYSQL_HOST': 'old.example.test', 'MYSQL_PASSWORD': 'old-password',
+        self.gateway.path.write_text(json.dumps(self.values(mysql_host='stale-db', mysql_password='stale-password')),
+                                     encoding='utf-8')
+        with patch.dict(os.environ, {'MYSQL_HOST': 'configured.example.test', 'MYSQL_PASSWORD': 'configured-password',
                                      'VIDEO_SERVICE_ROLE': 'all'}):
             restarted = self.make_gateway()
         self.assertEqual(restarted.profile['role'], 'hybrid')
-        self.assertEqual(restarted.profile['mysql_host'], 'mysql.example.test')
+        url = make_url(self.calls[-1]['database_url'])
+        self.assertEqual(url.host, 'configured.example.test')
+        self.assertEqual(url.password, 'configured-password')
+        saved = json.loads(restarted.path.read_text(encoding='utf-8'))
+        self.assertFalse(MYSQL_FIELDS.intersection(saved))
 
-    def test_password_never_returns_and_blank_retains_existing_value(self):
+    def test_database_fields_never_return_or_persist_when_instance_settings_change(self):
         self.save()
         result = self.client.get('/api/deployment')
-        self.assertTrue(result.json['password_saved'])
-        self.assertNotIn('mysql_password', result.json['config'])
+        self.assertTrue(result.json['database_configured'])
+        self.assertFalse(MYSQL_FIELDS.intersection(result.json['config']))
         self.assertNotIn(self.values()['mysql_password'], result.text)
-        response = self.save(mysql_password='', instance_name='Changed name')
+        response = self.save(instance_name='Changed name')
         self.assertEqual(response.status_code, 200, response.json)
         saved = json.loads(self.gateway.path.read_text(encoding='utf-8'))
-        self.assertEqual(saved['mysql_password'], self.values()['mysql_password'])
+        self.assertFalse(MYSQL_FIELDS.intersection(saved))
         self.assertEqual(saved['instance_name'], 'Changed name')
+
+    def test_database_edits_are_rejected_by_both_page_endpoints(self):
+        for endpoint in ('save', 'test'):
+            for key in MYSQL_FIELDS:
+                with self.subTest(endpoint=endpoint, key=key), patch('webapp.deployment.test_mysql') as probe:
+                    response = self.client.post(f'/api/deployment/{endpoint}',
+                        json=self.settings(**{key: self.values()[key]}), headers=self.headers)
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn('不能在页面修改', response.json['error'])
+                    probe.assert_not_called()
+        self.assertFalse(self.gateway.path.exists())
+        self.assertEqual(self.calls, [])
+
+    def test_legacy_saved_database_cannot_start_without_launch_credentials(self):
+        self.gateway.path.write_text(json.dumps(self.values()), encoding='utf-8')
+        with patch.dict(os.environ, {}, clear=True):
+            gateway = self.make_gateway()
+        self.assertIsNone(gateway.active)
+        self.assertEqual(gateway.profile['mysql_host'], '')
+        self.assertIn('.env', gateway.startup_error)
+        client = Client(gateway, Response)
+        with patch('webapp.deployment.test_mysql') as probe:
+            response = client.post('/api/deployment/save', json=self.settings(), headers=self.unlock(client))
+        self.assertEqual(response.status_code, 400)
+        probe.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_page_has_no_database_inputs(self):
+        page = self.client.get('/setup').text
+        for key in MYSQL_FIELDS:
+            self.assertNotIn(f'name="{key}"', page)
+        self.assertIn('页面不可修改', page)
+
+    def test_connection_test_uses_the_launch_configuration(self):
+        with patch('webapp.deployment.test_mysql') as probe:
+            response = self.client.post('/api/deployment/test', json=self.settings(), headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(probe.call_args.args[0]['mysql_host'], self.values()['mysql_host'])
+        self.assertEqual(probe.call_args.args[0]['mysql_password'], self.values()['mysql_password'])
+
+    def test_env_file_starts_with_configured_database_and_preserves_saved_identity(self):
+        self.gateway.path.write_text(json.dumps(self.values(instance_id='saved-node', mysql_host='stale-db')),
+                                     encoding='utf-8')
+        env_file = self.root / '.env'
+        env_file.write_text("MYSQL_HOST=file-db\nMYSQL_DATABASE=file_videos\nMYSQL_USER=file_user\n"
+                            "MYSQL_PASSWORD='file-password'\n", encoding='utf-8')
+        with patch.dict(os.environ, {}, clear=True):
+            gateway = DeploymentGateway(self.config, self.gateway.directory, env_file=env_file,
+                                        app_factory=self.factory)
+            gateway.start()
+            self.wait_for_initialization(gateway)
+        url = make_url(self.calls[-1]['database_url'])
+        self.assertEqual((url.host, url.database, url.username, url.password),
+                         ('file-db', 'file_videos', 'file_user', 'file-password'))
+        self.assertEqual(self.calls[-1]['instance_id'], 'saved-node')
 
     def test_live_changes_are_saved_for_restart_without_replacing_running_application(self):
         self.save()
@@ -176,7 +245,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_failed_database_test_keeps_previous_settings_and_does_not_activate(self):
         with patch('webapp.deployment.test_mysql', side_effect=ValueError('MySQL 连接失败')):
-            result = self.client.post('/api/deployment/save', json=self.values(), headers=self.headers)
+            result = self.client.post('/api/deployment/save', json=self.settings(), headers=self.headers)
         self.assertEqual(result.status_code, 400)
         self.assertFalse(self.gateway.path.exists())
         self.assertIsNone(self.gateway.active)
@@ -311,7 +380,7 @@ class DeploymentTests(unittest.TestCase):
             with patch.dict(os.environ, {'VIDEO_SERVICE_ROLE': role}):
                 self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
         with patch('webapp.deployment.test_mysql') as probe:
-            result = self.client.post('/api/deployment/save', json=self.values(role='invalid'), headers=self.headers)
+            result = self.client.post('/api/deployment/save', json=self.settings(role='invalid'), headers=self.headers)
         self.assertEqual(result.status_code, 400)
         probe.assert_not_called()
 
@@ -329,6 +398,13 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(diagnostic['summary'], '浏览器桌面环境启动失败。')
         self.assertIn('/tmp/xvfb.log', diagnostic['remedy'])
         self.assertNotIn('private-agent-token', json.dumps(diagnostic))
+
+    def test_controlled_desktop_failure_exposes_component_and_exit_code(self):
+        error = BrowserDesktopError('Xvfb', 'Virtual display startup failed; see /tmp/xvfb.log', exit_code=1)
+        diagnostic = explain_startup_error(error, '正在启动浏览器桌面环境…', self.values())
+        self.assertIn('Xvfb', diagnostic['detail'])
+        self.assertIn('exit code: 1', diagnostic['detail'])
+        self.assertIsNone(diagnostic['mysql_code'])
 
     def test_database_probe_sanitizes_driver_failures_and_disposes_engine(self):
         for failure in (RuntimeError, ValueError):
@@ -361,7 +437,7 @@ class DeploymentTests(unittest.TestCase):
                       {'instance_url': 'http://0.0.0.0:5000'},
                       {'mysql_host': 'mysql://invalid'}):
             with self.subTest(extra=extra), patch('webapp.deployment.test_mysql') as probe:
-                response = self.client.post('/api/deployment/test', json=self.values(**extra), headers=self.headers)
+                response = self.client.post('/api/deployment/test', json=self.settings(**extra), headers=self.headers)
                 self.assertEqual(response.status_code, 400)
                 probe.assert_not_called()
 
@@ -375,13 +451,13 @@ class DeploymentTests(unittest.TestCase):
             return self.factory(*args, **kwargs)
         self.gateway.app_factory = factory
         with patch('webapp.deployment.test_mysql'), ThreadPoolExecutor(1) as pool:
-            first = pool.submit(client.post, '/api/deployment/save', json=self.values(), headers=headers)
+            first = pool.submit(client.post, '/api/deployment/save', json=self.settings(), headers=headers)
             try:
                 self.assertTrue(entered.wait(3))
                 accepted = first.result(timeout=1)
                 self.assertEqual(accepted.status_code, 202)
                 self.assertTrue(self.client.get('/api/deployment').json['starting'])
-                second = self.client.post('/api/deployment/save', json=self.values(), headers=self.headers)
+                second = self.client.post('/api/deployment/save', json=self.settings(), headers=self.headers)
                 self.assertEqual(second.status_code, 409)
             finally:
                 release.set()
@@ -414,8 +490,8 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn('MySQL', status['stage'])
             self.assertFalse(status['running'])
             self.assertNotIn(self.values()['mysql_password'], json.dumps(status))
-            self.assertEqual(client.post('/api/deployment/save', json=self.values(), headers=headers).status_code, 409)
-            self.assertEqual(client.post('/api/deployment/test', json=self.values(), headers=headers).status_code, 409)
+            self.assertEqual(client.post('/api/deployment/save', json=self.settings(), headers=headers).status_code, 409)
+            self.assertEqual(client.post('/api/deployment/test', json=self.settings(), headers=headers).status_code, 409)
             gateway.start()
             self.assertEqual(self.calls, [])
         finally:
@@ -440,7 +516,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn('private-password', status.text)
         gateway.app_factory = self.factory
         with patch('webapp.deployment.test_mysql'):
-            response = client.post('/api/deployment/save', json=self.values(), headers=headers)
+            response = client.post('/api/deployment/save', json=self.settings(), headers=headers)
         self.assertEqual(response.status_code, 202, response.json)
         self.wait_for_initialization(gateway)
         self.assertIsNotNone(gateway.active)

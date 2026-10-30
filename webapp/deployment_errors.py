@@ -9,6 +9,15 @@ from webapp.fleet import InstanceIdentityConflict
 from webapp.modes import ModeTransitionError
 
 
+class BrowserDesktopError(OSError):
+    """A controlled desktop diagnosis, without arbitrary subprocess output."""
+    def __init__(self, component, reason, *, exit_code=None):
+        message = f'{component}: {reason}'
+        if exit_code is not None:
+            message += f' (exit code: {exit_code})'
+        super().__init__(message)
+
+
 def explain_startup_error(error, stage, profile):
     original = getattr(error, 'orig', None) or error
     code = original.args[0] if original.args and type(original.args[0]) is int else None
@@ -60,7 +69,8 @@ def explain_startup_error(error, stage, profile):
         summary = '浏览器桌面环境启动失败。'
         remedy = ('检查容器内 /tmp/xvfb.log、/tmp/x11vnc.log 和 /tmp/novnc.log；'
                   '确认镜像安装了 Chromium、Xvfb、x11vnc 和 websockify，再重试。')
-        detail = f'系统错误码：{error.errno}' if error.errno is not None else ''
+        detail = (str(error) if isinstance(error, BrowserDesktopError) else
+                  f'系统错误码：{error.errno}' if error.errno is not None else '')
     elif isinstance(error, PermissionError):
         summary = '本机文件或目录没有读写权限。'
         remedy = '确认启动账号可以读写配置目录、状态目录和素材目录，Docker 中需检查对应卷的权限。'

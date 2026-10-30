@@ -27,7 +27,7 @@ from webapp.store import TaskStore
 
 
 class TaskRunner:
-    """Supervise independent download slots and one import/index lane."""
+    """Supervise download slots, one import/index lane and one subtitle lane."""
     def __init__(self, store, settings=None):
         self.store = store
         self.settings = settings or (lambda: {})
@@ -180,8 +180,8 @@ class TaskRunner:
                         self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
                         self.parser.start()
                     download_starts = role_counts.get('download', 0)
-                    for slot in [-1, *range(count)]:
-                        role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
+                    for slot in [-2, -1, *range(count)]:
+                        role = 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
                         if role not in roles:
                             continue
                         if role == 'download' and download_starts <= 0:
@@ -200,7 +200,7 @@ class TaskRunner:
                         from webapp.database import schema_token
                         env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path
-                        temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{"maintenance" if slot < 0 else slot}', self.store.directory)
+                        temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{role if slot < 0 else slot}', self.store.directory)
                         temporary.mkdir(parents=True, exist_ok=True)
                         env.update(TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
                         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}

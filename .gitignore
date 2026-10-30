@@ -14,5 +14,6 @@ cookies.txt
 .env.*
 !.env.example
 !.env.remote-mysql.example
+!.env.local-mysql.example
 docker-data/
 .idea/claudeCodeTabState.xml

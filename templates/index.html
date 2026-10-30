@@ -12,6 +12,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='disk.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='concurrency.css') }}">
+  <script src="{{ url_for('static', filename='concurrency.js') }}" defer></script>
   <script src="{{ url_for('static', filename='fleet.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='disk.js') }}" defer></script>
@@ -77,6 +79,7 @@
         </div>
 
 
+        <section class="panel capacity-panel" data-concurrency-panel="overview" aria-label="当前实例并发与等待"><p class="capacity-empty">正在读取并发与渠道状态…</p></section>
         <p id="worker-status" class="clash-notice" hidden></p>
         <div class="workbench-grid"><section class="panel download-console" aria-labelledby="download-console-title">
           <div class="panel-heading"><div><h2 id="download-console-title">任务与下载控制</h2><p class="panel-subtitle">使用当前实例策略，操作仅影响当前实例。</p></div><span class="scope-badge">当前实例</span></div>

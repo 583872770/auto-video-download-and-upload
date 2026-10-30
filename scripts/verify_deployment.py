@@ -139,6 +139,8 @@ def main():
     # Keep OS paths needed by Chromium, but suppress all application credentials.
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
+    environment.update(MYSQL_HOST='fixture.example.test', MYSQL_PORT='3306', MYSQL_DATABASE='fixture',
+                       MYSQL_USER='fixture', MYSQL_PASSWORD='fixture-password')
     with tempfile.TemporaryDirectory(prefix='frameflow-setup-ui-') as temporary, \
             patch.dict(os.environ, environment, clear=True), patch('webapp.deployment.test_mysql'):
         root = Path(temporary)
@@ -168,9 +170,8 @@ def main():
                     page.locator('#access-code').fill(gateway.access_code)
                     page.locator('#unlock-form button').click()
                     expect(page.locator('#deployment-form')).to_be_visible()
-                    page.locator('[name=mysql_host]').fill('fixture.example.test')
-                    page.locator('[name=mysql_user]').fill('video')
-                    page.locator('[name=mysql_password]').fill('fixture-private-password')
+                    expect(page.locator('input[name^="mysql_"]')).to_have_count(0)
+                    expect(page.locator('#database-state')).to_contain_text('已读取数据库启动配置')
                     expect(page.locator('select[name=role]')).to_have_count(0)
                     expect(page.locator('#instance-url-field')).to_be_visible()
                     expect(page.locator('[name=instance_url]')).to_have_value('')
@@ -184,7 +185,7 @@ def main():
                     page.locator('#save-deployment').click()
                     expect(page.locator('#setup-success')).to_be_visible(timeout=10000)
                     expect(page.locator('#success-message')).to_contain_text('服务')
-                    expect(page.locator('#mysql-password')).to_have_value('')
+                    expect(page.locator('input[name^="mysql_"]')).to_have_count(0)
                     assert gateway.path.is_file()
                     assert len(apps) == 1
                     page.set_viewport_size({'width': 1440, 'height': 1080})
@@ -193,7 +194,7 @@ def main():
                     expect(page.locator('.nav-item[href="/setup"]')).to_be_visible()
                     page.locator('.nav-item[href="/setup"]').click()
                     expect(page.locator('#deployment-form')).to_be_visible()
-                    expect(page.locator('#mysql-password')).to_have_value('')
+                    expect(page.locator('input[name^="mysql_"]')).to_have_count(0)
                     expect(page.locator('#instance-url-field')).to_be_visible()
                     page.locator('[name=instance_url]').fill('http://10.0.0.12:5000')
                     page.locator('#save-deployment').click()

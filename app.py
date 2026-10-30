@@ -14,6 +14,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 from flask import Flask, g, has_request_context, jsonify, render_template, request, send_file, session
@@ -267,8 +268,29 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                    'auth': youtube_auth.status(), 'auth_block': youtube_auth.block_reason()}
         queue = store.download_queue()
         from webapp.throughput import runtime_limits
+        from webapp.concurrency_diagnostics import diagnose, read_context
+        from sqlalchemy import func, select
+        from webapp.database import tasks as diagnostic_tasks, settings as diagnostic_settings
+        rate = runtime_limits(config, store.directory)
+        with store.connect() as db:
+            identity = fleet.id if fleet else 'local'
+            stamp = fleet.clock(db) if fleet else time.time()
+            statement = select(diagnostic_tasks.c.progress).where(
+                diagnostic_tasks.c.status == 'running', diagnostic_tasks.c.action == 'download')
+            if fleet:
+                statement = statement.where(diagnostic_tasks.c.instance_id == identity)
+            progress = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
+            context = read_context(db, [(identity, config)], stamp)
+            budget = db.execute(select(diagnostic_settings.c.value).where(diagnostic_settings.c.key == 'fleet_budget')).scalar_one_or_none()
+            global_running = db.execute(select(func.count()).select_from(diagnostic_tasks).where(
+                diagnostic_tasks.c.status == 'running', diagnostic_tasks.c.action == 'download')).scalar_one() if int(budget or 0) else 0
+            concurrency = diagnose(config, identity, progress, rate, context, stamp,
+                global_limit=int(budget or 0), global_running=global_running,
+                paused=bool(fleet.row(db)['paused']) if fleet else queue.get('paused', False))
+            from webapp.subtitles import summary as subtitle_summary
+            concurrency['subtitles'] = subtitle_summary(db, stamp, identity)
         return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
-                       throughput=runtime_limits(config, store.directory),
+                       throughput=rate, concurrency=concurrency,
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=queue,
                        execution=app.extensions['execution_control'].status(queue),
@@ -489,14 +511,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                           .order_by(catalog_media.c.modified.desc()).limit(4)).mappings()]
             for item in recent:
                 item['instance_id'] = item['root'][1:].split('|', 1)[0]
-            return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
+            return jsonify(counts=store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
                 download_counts=store.counts(actions=('download',)), accounting=accounting,
                 media={'count': total}, recent_media=recent,
-                recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
-        return jsonify(counts=store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
+                recent_tasks=store.page(limit=5, actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
+        return jsonify(counts=store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
                        download_counts=store.counts(actions=('download',)), accounting=accounting,
                        media=catalog.root_status(root), recent_media=catalog.page(root, limit=4)['items'],
-                       recent_tasks=store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
+                       recent_tasks=store.page(limit=5, actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
 
     @app.get('/media/videos/<path:name>')
     def video(name):
@@ -572,7 +594,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/api/tasks')
     def tasks():
-        actions = ('download', 'check', 'import', 'index', 'clear_media') if request.args.get('scope') == 'download' else None
+        actions = ('download', 'subtitles', 'check', 'import', 'index', 'clear_media') if request.args.get('scope') == 'download' else None
         active = request.args.get('view') == 'active'
         if active:
             actions = ('download',)

@@ -25,13 +25,21 @@ from webapp.modes import single_state
 from webapp.service_role import normalize_role
 
 
+MYSQL_FIELDS = frozenset({'mysql_host', 'mysql_port', 'mysql_database', 'mysql_user', 'mysql_password'})
+
+
+def instance_settings(profile):
+    """Database settings belong exclusively to the launch configuration."""
+    return {key: value for key, value in profile.items() if key not in MYSQL_FIELDS}
+
+
 def mysql_url(profile):
     return URL.create('mysql+pymysql', host=profile['mysql_host'], port=profile['mysql_port'],
                       username=profile['mysql_user'], password=profile['mysql_password'],
                       database=profile['mysql_database'], query={'charset': 'utf8mb4'}).render_as_string(hide_password=False)
 
 
-def validate_profile(data, previous):
+def validate_profile(data, previous, *, require_database=True):
     if not isinstance(data, dict):
         raise ValueError('请提交有效的部署配置。')
     allowed = {'role', 'instance_id', 'instance_name', 'instance_url', 'mysql_host', 'mysql_port',
@@ -53,9 +61,8 @@ def validate_profile(data, previous):
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError('MySQL 端口必须在 1 到 65535 之间。')
     value['mysql_port'] = port
-    for key in ('mysql_host', 'mysql_database', 'mysql_user', 'mysql_password'):
-        if not value.get(key):
-            raise ValueError('请填写完整的 MySQL 地址、库名、用户名和密码。')
+    if require_database and any(not value.get(key) for key in MYSQL_FIELDS - {'mysql_port'}):
+        raise ValueError('MySQL 配置不完整，请在 .env 或启动环境中填写 MYSQL_HOST、MYSQL_DATABASE、MYSQL_USER、MYSQL_PASSWORD 后重启服务。')
     if any(char in value['mysql_host'] for char in '/?#@ \t\r\n'):
         raise ValueError('MySQL 地址只填写域名或 IP，不带协议和端口。')
     if value.get('instance_id') and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value['instance_id']):
@@ -81,6 +88,12 @@ def validate_profile(data, previous):
         if not host.strip() or any(char in host for char in '/?#@ \t\r\n') or len(host) > 253:
             raise ValueError('允许访问的主机只填写域名或 IP，多个用逗号分隔，不带协议或端口。')
     return {key: value.get(key, '') for key in allowed}
+
+
+def validate_page_profile(data, previous):
+    if isinstance(data, dict) and MYSQL_FIELDS.intersection(data):
+        raise ValueError('数据库连接由 .env 或启动环境配置，不能在页面修改。')
+    return validate_profile(data, previous)
 
 
 def test_mysql(profile):
@@ -141,24 +154,30 @@ class DeploymentGateway:
         except FileExistsError:
             pass
         self.access_code = key.read_text(encoding='utf-8').strip()
+        invalid_environment = False
         if load_environment:
             from webapp.bootstrap import configure_database_environment
             try:
                 configure_database_environment(env_file)
             except ValueError:
-                if env_file is not None or os.environ.get('MYSQL_HOST') or os.environ.get('MYSQL_PASSWORD'):
-                    self.startup_error = '原启动配置不完整，请在页面补齐后保存。'
+                invalid_environment = True
+                self.startup_error = '数据库启动配置无效，请检查 .env 或启动环境中的 MYSQL_* 参数后重启服务。'
         self.profile = self.environment_profile()
         invalid_saved = False
         if self.path.is_file():
             try:
                 saved = json.loads(self.path.read_text(encoding='utf-8'))
+                if not isinstance(saved, dict):
+                    raise ValueError('Invalid saved instance settings')
+                # Ignore credentials saved by older setup pages, even when the
+                # launch configuration is missing. Never reconnect to an old DB.
+                saved = instance_settings(saved)
                 # Older wizards could save 'all' over an existing fleet identity.
                 if isinstance(saved, dict) and saved.get('role') == 'all' and not instance_id and not single_state(self.directory):
                     state = self.cluster_state()
                     if state:
                         saved['instance_id'] = state['instance_id']
-                self.profile = validate_profile(saved, self.profile)
+                self.profile = validate_profile(saved, self.profile, require_database=False)
             except (ValueError, OSError):
                 self.startup_error = '已保存的部署配置无法读取，请重新配置。'
                 invalid_saved = True
@@ -166,7 +185,8 @@ class DeploymentGateway:
                            'instance_name': instance_name}.items():
             if value:
                 self.profile[key] = value
-        if not invalid_saved and all(self.profile.get(key) for key in ('mysql_host', 'mysql_database', 'mysql_user', 'mysql_password')):
+        database_configured = all(self.profile.get(key) for key in MYSQL_FIELDS - {'mysql_port'})
+        if not invalid_environment and not invalid_saved and database_configured:
             try:
                 self.profile = validate_profile(self.profile, self.profile)
                 self.resolve_identity(self.profile)
@@ -177,6 +197,8 @@ class DeploymentGateway:
             except Exception:
                 # Do not expose database credentials from exception messages.
                 self.startup_error = '服务启动未完成，请检查部署配置、数据库连接和实例 ID 是否重复。'
+        elif not self.startup_error:
+            self.startup_error = '数据库配置不完整，请在 .env 或启动环境中填写 MYSQL_HOST、MYSQL_DATABASE、MYSQL_USER、MYSQL_PASSWORD 后重启服务。'
         self.setup = self.create_setup_app()
 
     def report_startup(self, message):
@@ -293,7 +315,7 @@ class DeploymentGateway:
     def activate(self, profile):
         # Reject incompatible local identities before starting any processes or DDL.
         self.resolve_identity(profile)
-        write_profile(self.path, profile)
+        write_profile(self.path, instance_settings(profile))
         self.profile = profile
         if os.environ.get('YT5S_BROWSER_ENABLED') == '1' and not self.desktop_started:
             self.report_startup('正在启动浏览器桌面环境…')
@@ -376,8 +398,8 @@ class DeploymentGateway:
 
         @app.get('/api/deployment')
         def configuration():
-            public = {key: value for key, value in self.profile.items() if key != 'mysql_password'}
-            return jsonify(config=public, password_saved=bool(self.profile.get('mysql_password')),
+            return jsonify(config=instance_settings(self.profile),
+                           database_configured=all(self.profile.get(key) for key in MYSQL_FIELDS - {'mysql_port'}),
                            cluster_state=self.cluster_state(),
                            running=self.active is not None, running_role=self.running_role,
                            pending_restart=self.pending_restart, error=self.startup_error,
@@ -390,7 +412,7 @@ class DeploymentGateway:
             data = request.get_json(silent=True)
             if isinstance(data, dict):
                 data.pop('single_transition', None)
-            value = validate_profile(data, self.profile)
+            value = validate_page_profile(data, self.profile)
             test_mysql(value)
             return jsonify(message='MySQL 连接成功。')
 
@@ -405,13 +427,13 @@ class DeploymentGateway:
                     raise ValueError('请提交有效的部署配置。')
                 # Accept old clients, but never create a standalone conversion.
                 data.pop('single_transition', None)
-                value = validate_profile(data, self.profile)
+                value = validate_page_profile(data, self.profile)
                 self.resolve_identity(value)
                 test_mysql(value)
                 was_running = self.active is not None
                 # Persist before starting dispatch threads: a write failure must
-                # never leave a service running with unsaved credentials.
-                write_profile(self.path, value)
+                # never leave a service running with unsaved instance settings.
+                write_profile(self.path, instance_settings(value))
                 self.profile = value
                 if not was_running:
                     transferred = True
@@ -432,7 +454,7 @@ class DeploymentGateway:
         @app.get('/health')
         def health():
             return jsonify(status='starting' if self.starting else 'setup',
-                           message=self.startup_stage if self.starting else '等待页面配置')
+                           message=self.startup_stage if self.starting else self.startup_error or '等待服务启动')
 
         @app.route('/', defaults={'path': ''})
         @app.route('/<path:path>')

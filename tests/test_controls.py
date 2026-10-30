@@ -25,7 +25,11 @@ class ControlContract:
         task = self.store.create('download', {'config': {}, 'base': str(self.root),
                                              'urls': ['https://example.test/one.mp4']})
         url = {'url': 'https://example.test/subscription'}
-        with patch.object(manager, 'import_subscription', return_value=2) as update:
+        def imported_subscription(*args, **kwargs):
+            manager.config['subscriptions'] = [{'id': 'fixture', 'name': 'fixture', 'url': url['url']}]
+            manager.config['active_subscription_id'] = 'fixture'
+            return 2
+        with patch.object(manager, 'import_subscription', side_effect=imported_subscription) as update:
             self.assertTrue(self.client.get('/api/clash').json['subscription_locked'])
             self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 409)
             self.store.claim('simulated-owner')
@@ -40,7 +44,7 @@ class ControlContract:
             self.assertEqual(state['subscription_lock_reason'], '')
             response = self.client.post('/api/clash/subscription', json=url, headers=self.headers)
             self.assertEqual(response.status_code, 200, response.json)
-            update.assert_called_once_with(url['url'])
+            update.assert_called_once_with(url['url'], identity=None, name=None, activate=True)
             with patch.object(self.app.extensions['youtube_login'], 'status', return_value={'active': True}):
                 self.assertTrue(self.client.get('/api/clash').json['subscription_locked'])
                 self.assertEqual(self.client.post('/api/clash/subscription', json=url, headers=self.headers).status_code, 409)

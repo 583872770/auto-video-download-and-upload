@@ -1,6 +1,6 @@
 name: youtube-downloader
 
-# 唯一的 Docker Compose 编排：连接远程 MySQL，并包含 yt5s 浏览器环境。
+# 连接已有远程 MySQL，并包含 yt5s 浏览器环境；自带数据库见 compose.local-mysql.yaml。
 services:
   app:
     build:

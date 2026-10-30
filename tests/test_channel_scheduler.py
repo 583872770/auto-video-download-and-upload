@@ -164,6 +164,10 @@ class AdmissionTests(unittest.TestCase):
         first, second = self.scheduler(), self.scheduler(self.second)
         first.outcome(first.channels[0], success=False,
                       error=BergungError('rate limit', retryable=True, http_status=429, retry_after=30))
+        with first.store.connect() as db:
+            state = first._state(db, 'quota:' + first.channels[0].quota_group)
+            self.assertEqual(state['cooldown_status'], 429)
+            self.assertEqual(state['cooldown_kind'], 'resolve')
         with self.assertRaises(PipelineBusy):
             with second.permit(second.channels[1], 'resolve', timeout=0):
                 pass

@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import time
+import tempfile
 
 import psutil
 
@@ -24,7 +25,8 @@ def policy_key(config):
     return [config.get('throughput_mode', 'manual'), int(config.get('worker_count', 1)),
             int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0)),
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
-                'download_channels', 'scheduler_mode', 'download_connection_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
+                'builtin_resolver_limit', 'builtin_connection_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):
@@ -83,12 +85,19 @@ def resource_limits(cgroup='/sys/fs/cgroup'):
 
 def _atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + f'.{os.getpid()}.tmp')
+    descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    temporary = Path(name)
     try:
-        with temporary.open('w', encoding='utf-8') as stream:
-            os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
             json.dump(data, stream, ensure_ascii=False)
-        temporary.replace(path)
+        for attempt in range(5):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError as error:
+                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 4:
+                    raise
+                time.sleep(.01 * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
 

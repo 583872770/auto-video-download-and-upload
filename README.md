@@ -8,24 +8,28 @@
 
 工作台按下载实例恢复最后成功启动的任务。切换任务只停止当前实例的旧任务；不同实例可下载不同任务，也可共同处理同一任务。下载实例页集中展示各实例的任务、实时视频、进度和速度。
 
-支持“管理与下载一体 + 多实例共享 MySQL”：每台机器都可打开管理页面并参与下载，任务、统计和计费共享，目录、Cookie 和代理按实例独立。启动后在 `/setup` 页面配置 MySQL 和实例地址，服务固定为管理与下载一体，单台与多台使用同一套流程。旧角色配置升级时自动归一，完整部署和升级步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。
+支持“管理与下载一体 + 多实例共享 MySQL”：每台机器都可打开管理页面并参与下载，任务、统计和计费共享，目录、Cookie 和代理按实例独立。数据库在 `.env` 中配置，启动后在 `/setup` 页面配置实例地址和测试连接，服务固定为管理与下载一体，单台与多台使用同一套流程。旧角色配置升级时自动归一，完整部署和升级步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。
 
 本版统一了任务计费、编辑版本和控制范围，并增加管理账户。未设置账户时只允许本机直接访问；访问 `/login`，使用状态目录 `console-bootstrap.key` 中的初始设置码创建管理员。创建后所有管理页面均需登录，支持管理员、操作员和只读账户。升级说明见 [第一阶段改造说明](docs/redesign-phase-one.md)。
 
 长期运行可在“系统设置 → 磁盘容量管理”设置临时文件总预算（默认 20 GiB）和分类上限，自动清理测试文件、缓存和日志。空间不足时等待恢复，保留下载统计及账本；容量范围与部署说明见 [DISK_MANAGEMENT.md](DISK_MANAGEMENT.md)。
 
+工作台的“并发与等待”显示渠道上限、共享连接、限流冷却和空间等待。系统设置可调整内置渠道额度，保存前提示与实例并发不匹配的设置。yt-dlp 默认先交付视频，再通过独立低频队列补下载指定语言字幕；可选字幕失败不影响视频成功及计费，也可选择必须完整或关闭。测试模式不创建字幕补下载任务。配置语义和验证记录见 [并发与字幕优化说明](docs/concurrency-ui-and-optimization.md)。
+
 ## Docker 部署
 
-项目只有一个 Compose 编排文件，内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC，连接远程 MySQL：
+Compose 内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC。连接已有远程 MySQL 时使用：
 
 ```bash
 cp .env.remote-mysql.example .env
-# .env 只需按需调整宿主机端口和视频目录，数据库在页面填写
+# 在 .env 填写 MYSQL_* 连接参数，并按需调整宿主机端口和视频目录
 docker compose -f compose.remote-mysql.yaml config --quiet
 docker compose -f compose.remote-mysql.yaml up -d --build
 ```
 
 访问 `http://127.0.0.1:5000/setup`，输入启动日志中的“部署设置访问码”，在页面测试 MySQL 连接并保存。服务器部署时，可在 `.env` 设置 `WEB_BIND_IP`、`WEB_PORT` 和 `VIDEO_DOWNLOAD_DIR`。完整说明见 [DOCKER.md](DOCKER.md)、[MYSQL.md](MYSQL.md) 和 [YT5S_LINUX.md](YT5S_LINUX.md)。
+
+需要一并部署 MySQL 8.4 时，使用 `compose.local-mysql.yaml`，环境模板为 `.env.local-mysql.example`，应用自动连接其中的 MySQL 服务，步骤见 [应用与 MySQL 一起部署](DOCKER.md#应用与-mysql-一起部署)。
 
 ## 本地启动
 
@@ -36,13 +40,13 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 .\.venv\Scripts\python.exe app.py
 ```
 
-打开 `http://127.0.0.1:5000/setup`，输入终端打印的部署设置访问码，填写 MySQL 和实例名称。单台运行可不填实例地址，多台协作时填写彼此可达的本机 HTTP(S) 地址，ID 留空自动生成。PyCharm 直接运行 `app.py` 即可，无需填写角色和数据库启动参数。
+先在项目根目录 `.env` 中填写 MySQL 连接参数，PyCharm 直接运行 `app.py` 即可。打开 `http://127.0.0.1:5000/setup`，输入终端打印的部署设置访问码，配置实例名称并测试数据库连接。单台运行可不填实例地址，多台协作时填写彼此可达的本机 HTTP(S) 地址，ID 留空自动生成。数据库参数不能在页面修改。
 
-首次保存会启动服务，配置保存在本机状态目录的 `deployment.json`，以后用同一条命令启动。已运行服务修改部署配置后需重启，当前下载不会被保存操作中断；工作台侧栏可重新进入“部署设置”。访问码保存在同目录 `deployment.key`，每次启动都会打印。
+数据库配置完整时自动启动服务。实例设置保存在本机状态目录的 `deployment.json`，其中不保存数据库连接。已运行服务修改实例设置后需重启，当前下载不会被保存操作中断；工作台侧栏可重新进入“部署设置”。访问码保存在同目录 `deployment.key`，每次启动都会打印。
 
-启动时先提供设置页，再后台连接 MySQL、检查表结构及初始化实例。终端会打印当前阶段；数据库响应慢时仍可打开 `/setup` 查看阶段和等待时间，失败后可在页面修正配置并重试。
+启动时先提供设置页，再后台连接 MySQL、检查表结构及初始化实例。终端会打印当前阶段；数据库响应慢时仍可打开 `/setup` 查看阶段和等待时间。数据库参数错误时修改 `.env` 并重启；暂时性启动失败可在页面重试。
 
-已有 `.env` 配置仍可读取；也可用 `--env-file` 指定其他文件。页面保存配置优先于环境文件，显式 CLI 实例参数优先于页面。未配置数据库时只显示设置向导，不创建业务 SQLite 数据库；已有数据库不会自动迁移。服务监听地址/端口、Docker 宿主机端口和卷映射仍由启动命令或 Compose 设置。
+默认读取 `.env`，也可用 `--env-file` 指定其他文件。数据库只使用启动配置，旧页面保存的数据库参数不再生效；实例设置仍优先使用页面保存值，显式 CLI 实例参数优先于页面。未配置数据库时页面提示补齐配置文件，不创建业务 SQLite 数据库；已有数据库不会自动迁移。服务监听地址/端口、Docker 宿主机端口和卷映射仍由启动命令或 Compose 设置。
 
 ## 页面功能
 
@@ -114,6 +118,8 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 ```
 
 YouTube Cookie 可在页面上传 Netscape 格式文件，也可使用独立浏览器登录。登录说明见 [YOUTUBE_LOGIN.md](YOUTUBE_LOGIN.md)。
+
+当前 Cookie 会话对公开视频返回 `Video unavailable`，且尚未接收媒体数据时，yt-dlp 会在同一节点不带 Cookie 重试一次，保留已上传的 Cookie。明确的 Cookie 失效、登录验证或其他错误仍按原规则处理；匿名访问也失败时显示下载错误。
 
 下载期间的 YouTube 登录预检如遇网络超时或暂时无法确认，任务会延迟 30 秒自动重试，保留任务且不暂停实例；明确登录失败仍需重新登录或验证。故障定位与重试规则见 [登录预检恢复说明](docs/youtube-auth-preflight-recovery-20261030.md)。
 

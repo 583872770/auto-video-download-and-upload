@@ -16,11 +16,42 @@ PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 
 若 Mihomo 下载仍出现 `RemoteDisconnected` 或超时，可在 `.env` 添加 `MIHOMO_DOWNLOAD_BASE_URL=https://你的下载站/MetaCubeX/mihomo/releases/download`，作为优先来源。脚本会追加 `/v1.19.33/mihomo-linux-<架构>-v1.19.33.gz`；自定义来源也必须提供与固定校验值一致的官方压缩包。修改后重新执行远程 MySQL Compose 的 `up -d --build`，无需删除卷或使用 `--no-cache`。
 
-页面支持切换“方式一：yt-dlp”“方式二：yt5s（实验）”和“方式三：yt5s 优先，失败用 yt-dlp”。唯一的 `compose.remote-mysql.yaml` 已包含 Chromium、虚拟显示和网页远程桌面，直接使用它即可。部署说明见 [YT5S_LINUX.md](YT5S_LINUX.md)。
+页面支持切换“方式一：yt-dlp”“方式二：yt5s（实验）”和“方式三：yt5s 优先，失败用 yt-dlp”。两个 Compose 方案均包含 Chromium、虚拟显示和网页远程桌面。部署说明见 [YT5S_LINUX.md](YT5S_LINUX.md)。
+
+## 应用与 MySQL 一起部署
+
+使用 `compose.local-mysql.yaml`，其中应用复用远程方案的构建和运行设置，并通过 Docker 服务名 `mysql:3306` 连接 MySQL 8.4。先复制环境模板：
+
+```powershell
+cp .env.local-mysql.example .env.local-mysql
+```
+
+编辑 `.env.local-mysql`，替换 `MYSQL_PASSWORD`，并设置视频目录和网页端口。应用账号和 root 账号在首次初始化时统一使用这个密码，无需单独设置 `MYSQL_ROOT_PASSWORD`。也可直接在现有 `.env` 中填写相同的参数，执行命令时省略 `--env-file .env.local-mysql`。然后执行：
+
+```powershell
+docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml config --quiet
+docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml up -d --build
+docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml logs -f --tail=100 app mysql
+```
+
+MySQL 首次启动会自动创建数据库和应用账号；数据库健康检查通过后应用才启动，并自动读取连接信息。网页默认访问 <http://127.0.0.1:5000>，数据库仅供 Compose 网络内访问。后续操作也使用相同的 `--env-file` 和 `-f` 参数。
+
+此方案默认项目名为 `youtube-downloader-local`，配置、状态和 MySQL 数据分别保存到独立命名卷，视频保存在指定的宿主机目录。它与原远程库部署独立，不会自动迁移原任务或配置；两套同时运行时应设置不同的网页和桌面端口。通过 `-p` 复用旧项目及状态卷时，保留原实例设置，旧页面保存的数据库连接会被忽略，始终使用本方案的 `mysql:3306` 和环境文件中的数据库账号密码。
+
+数据库初始化后，修改环境文件中的库名或密码不会修改数据库中已有的库和账号，需在 MySQL 中同步修改。停止或重建容器保留命名卷；`down -v` 会删除其中的数据。
+
+如果启动提示 MySQL `unhealthy`，先在部署所用的 Docker 环境中查看服务日志和健康检查详情（项目名与启动时保持一致）：
+
+```powershell
+docker compose -f compose.local-mysql.yaml -p youtube-downloader-local logs --tail=100 mysql
+docker inspect youtube-downloader-local-mysql-1 --format '{{json .State.Health}}'
+```
+
+健康检查通过应用账号执行 `SELECT 1`，错误输出保留在健康检查详情中。`Access denied` 表示账号认证失败，常见于已有数据卷中的密码与当前环境文件不同；`Unknown database` 表示目标数据库不存在；连接错误需结合 MySQL 服务日志判断初始化进度或启动故障。修改健康检查后执行 `up -d mysql` 重建数据库容器生效，数据卷保留。不要用删除数据卷的方式排除尚未确认的故障。
 
 ## 启动
 
-**使用已有远程 MySQL：** 请按 [远程数据库部署步骤](MYSQL.md#linux-docker-连接远程-mysql) 使用唯一的 `compose.remote-mysql.yaml` 和 `.env.remote-mysql.example`。项目不创建本地 MySQL 容器。
+**使用已有远程 MySQL：** 请按 [远程数据库部署步骤](MYSQL.md#linux-docker-连接远程-mysql) 使用 `compose.remote-mysql.yaml` 和 `.env.remote-mysql.example`。此方案只启动应用。
 
 在项目根目录执行：
 
@@ -28,8 +59,8 @@ PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 cp .env.remote-mysql.example .env
 ```
 
-推荐在启动后的 `/setup` 页面填写远程 MySQL 和实例地址，数据库环境变量可以留空。
-已有 `.env` 的数据库设置仍兼容；页面保存后优先使用页面配置。若使用环境变量填密码，保留两侧单引号，避免 `$`、`#` 被 Compose 解释。
+启动前在 `.env` 中填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER` 和 `MYSQL_PASSWORD`，服务自动读取并连接。`/setup` 页面只配置实例设置，数据库参数不可在页面修改。
+密码保留两侧单引号，避免 `$`、`#` 被 Compose 解释。旧页面保存的数据库连接不再覆盖启动配置；修改 `.env` 后执行 `up -d` 重建应用容器生效。
 `VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
 含空格的目录用引号包围。默认保存到 Docker 引擎所在 Linux 服务器的 `/srv/youtube-videos`。
 
@@ -45,11 +76,16 @@ docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
 ```
 
 访问 <http://127.0.0.1:5000/setup>，输入日志中的“部署设置访问码”，测试 MySQL 连接并保存。服务统一提供管理与下载，单台与多台共用同一套部署流程，协作步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
-首次构建会安装依赖。未配置时容器正常提供设置页，健康检查也会通过；首次保存时才连接远程数据库创建表并启动业务服务。配置保存到持久化状态卷的 `deployment.json`；以后启动自动读取。运行中修改部署配置，保存后需执行 `docker compose -f compose.remote-mysql.yaml restart app` 生效。
+首次构建会安装依赖。数据库配置完整时，应用自动连接、检查表结构并启动；缺少数据库配置时设置页提示补齐环境文件。实例设置保存到持久化状态卷的 `deployment.json`，不再保存数据库地址或凭据。页面修改实例设置后需执行 `docker compose -f compose.remote-mysql.yaml restart app` 生效；修改 `.env` 则执行 `up -d` 更新容器环境。
 
 旧 `manager`、`worker`、`all` 角色配置会自动按管理与下载一体启动，保留原实例 ID、任务和账单。原管理端升级后暂停领取，原下载实例保留暂停状态。已完成旧单机转换的实例须使用原状态卷和数据库升级；通过身份与旧进程检查后恢复统一调度，下载保持暂停，原转换记录归档。无需再选择角色或执行单机转换。仅用于管理的机器保持暂停领取即可。
 
 浏览器桌面启动失败时，技术详情会提示查看容器内 `/tmp/xvfb.log`、`/tmp/x11vnc.log`、`/tmp/novnc.log`。
+容器重启会保留 `/tmp`，程序启动前会检查 `:99` 的套接字和锁持有进程，自动清理已失效的 `/tmp/.X99-lock`、`/tmp/.X11-unix/X99`（包括锁中 PID 已被其他进程复用的情况）。仍被使用或无法确认归属的显示服务会保留并报告错误。Xvfb、x11vnc 或 noVNC 启动退出时，技术详情会显示失败组件和退出码。更新此修复需重新构建镜像并创建容器：
+
+```powershell
+docker compose -f compose.remote-mysql.yaml up -d --build app
+```
 
 首次使用在页面上传 YouTube Netscape Cookie 文件，然后检测登录；需要代理时，在“代理与节点”中导入订阅，选择节点并设置自动轮换。
 原有 Cookie 校验、批量进度、停止/继续、并行下载和三种保存选项沿用现有功能，其中网盘仍为待开发。

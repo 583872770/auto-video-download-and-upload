@@ -36,7 +36,7 @@ function instanceLive(item) {
   const rate = item.throughput;
   const throughputDetails = rate ? `<p class="micro-copy">媒体接收速度 ${escapeHTML(rate.media_receive_mbps ?? '—')} Mbps · 成品产出速度 ${escapeHTML(rate.verified_mbps ?? '—')} Mbps（近期平均） · CPU ${escapeHTML(rate.cpu_percent)}% · 可用内存 ${escapeHTML(rate.memory_available_mb)} MB</p><p class="micro-copy">${Object.entries(rate.groups || {}).map(([group,value])=>`${escapeHTML(group)}：传输中视频 ${escapeHTML(value.active)} / ${escapeHTML(value.limit)}，${escapeHTML(value.receive_mbps)} Mbps`).join('；')}</p>` : '';
   if (item.id === state.instanceId && $('#channel-performance')) renderChannelPerformance(rate);
-  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.running}</b></span><span>传输中视频 <b>${item.transferring}</b></span><span>总传输速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'auto' ? '自动并发' : '手动并发'} · 传输并发上限 ${escapeHTML(item.throughput.transfers)} · 视频处理并发上限 ${escapeHTML(item.throughput.workers)} · 浏览器并发上限 ${escapeHTML(item.throughput.browsers)} · 网络接收速度 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
+  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.running}</b></span><span>传输中视频 <b>${item.transferring}</b></span><span>总传输速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'auto' ? '自动并发' : '手动并发'} · 传输并发上限 ${escapeHTML(item.throughput.transfers)} · 视频处理并发上限 ${escapeHTML(item.throughput.workers)} · 浏览器并发上限 ${escapeHTML(item.throughput.browsers)} · 网络接收速度 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${concurrencyHTML(item.concurrency, {compact:true, key:item.id})}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
 }
 function instanceState(item) {
   return !item.online ? '离线' : item.paused ? item.running ? item.stop_requested ? '正在停止' : '等待当前视频完成' : '已停止' : item.running ? '已启动 · 处理中' : '已启动 · 等待任务';
@@ -110,6 +110,7 @@ async function loadFleet() {
     if (error) { error.textContent=item.error || ''; error.hidden=!item.error; }
   }
   syncInstanceControls();
+  renderConcurrency();
 }
 async function initializeFleet() {
   if (!fleetEnabled) return;

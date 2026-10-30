@@ -6,7 +6,15 @@
       <label>自动策略每次最多尝试入口<input name="auto_channel_attempts" type="number" min="1" max="6" required><small>默认 3；避免一个视频遍历全部故障站点。资源等待不扣重试次数。</small></label>
       <label>复用解析浏览器<select name="shared_parser"><option value="true">开启（推荐）</option><option value="false">关闭，使用原解析流程</option></select><small>Bergung 解析与下载分开运行；浏览器最多空闲保留 30 秒，同一出口可继续复用。</small></label>
       <label>本机下载连接预算<input name="download_connection_limit" type="number" min="2" max="128" required><small>默认 32；文件及媒体分片共用此预算。网页和代理管理连接另计。</small></label>
+      <label>内置渠道传输上限<input name="builtin_transfer_limit" type="number" min="0" max="64" required><small>0 沿用策略默认：顺序 / 分流 8，自动 32。每个内置渠道分别生效；自定义入口遵守自己的上限，同组仍取较小值。</small></label>
+      <label>内置渠道解析上限<input name="builtin_resolver_limit" type="number" min="1" max="16" required><small>默认 4；手动 yt-dlp 的解析与传输共用名额，不单独使用这个额度。</small></label>
+      <label>内置渠道共享连接预算<input name="builtin_connection_limit" type="number" min="0" max="128" required><small>0 沿用策略默认：顺序 / 分流 16，自动 64。实例之间共用；提升任务数时也需要检查连接预算。</small></label>
+      <label>yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>后台补下载使用独立队列，共享上游同时最多 1 个任务，至少间隔 10 秒；字幕限流不暂停视频传输。测试模式不补下载字幕。</small></label>
+      <label>字幕语言代码<input name="subtitle_languages" maxlength="264" required placeholder="en,zh-Hans,zh-Hant"><small>最多 8 个，用逗号分隔；只请求指定语言，避免批量请求自动翻译字幕。必须完整模式要求至少存在一种所选语言，且所选可用字幕均写入成功。</small></label>
     </div>
+    <p id="concurrency-config-note" class="micro-copy" role="status"></p>
+    <div class="capacity-panel" data-concurrency-panel="settings" aria-label="已保存策略的运行状态"></div>
+    <p class="micro-copy">下方运行状态来自已保存策略；表单修改保存后，在后续任务及资源采样中体现。渠道上限与实例并发分别生效。</p>
     <p id="channel-performance" class="micro-copy" role="status"></p>
     <div id="channel-rates" class="micro-copy" role="status"></div>
     <div class="scale-fields"><label>添加已验证的 Cobalt 入口<select id="cobalt-catalog-choice">{% for entry in cobalt_catalog if entry.status == 'verified' and entry.channel.id != 'bergung' %}<option value="{{ entry.channel.id }}" data-channel="{{ entry.channel|tojson|forceescape }}">{{ entry.host }}</option>{% endfor %}</select><small>启用 Bergung / Cobalt 后参与调度；网站随时可能限流或失效，系统会持续检测。</small></label><div><button id="cobalt-catalog-add" type="button" class="button button-white">添加到当前实例</button></div></div>

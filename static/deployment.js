@@ -31,8 +31,6 @@ async function load() {
   const hosts = new Set(form.elements.web_hosts.value.split(',').map(host => host.trim()).filter(Boolean));
   hosts.add(location.hostname);
   form.elements.web_hosts.value = [...hosts].join(',');
-  $('#mysql-password').required = !current.password_saved;
-  if (current.password_saved) { $('#mysql-password').placeholder = '已保存，留空保持原密码'; $('#password-note').textContent = '已保存密码不会回显。留空保持原密码，填写新密码则替换。'; }
   renderClusterState();
   renderStatus();
   $('#unlock-panel').hidden = true; form.hidden = false;
@@ -48,6 +46,7 @@ function restoreInstance() {
   feedback('已恢复原实例 ID，请检查配置后点击保存启动。');
 }
 function renderStatus() {
+  $('#database-state').textContent = current.database_configured ? '已读取数据库启动配置，可测试连接。' : '数据库配置不完整，请补齐配置文件后重启服务。';
   renderDiagnostic(current.diagnostic);
   const statusMessage = current.starting ? `${current.stage || '正在初始化服务…'}（当前阶段 ${Math.floor(current.stage_elapsed)} 秒）` : current.pending_restart ? '已有新配置等待生效，请重启本机服务。' : current.diagnostic ? '' : current.error;
   $('#deployment-state').hidden = !statusMessage;
@@ -89,7 +88,6 @@ async function pollStartup() {
 }
 function values() {
   const data = Object.fromEntries(new FormData(form));
-  data.mysql_port = Number(data.mysql_port);
   data.role = 'hybrid';
   return data;
 }
@@ -99,7 +97,6 @@ $('#test-database').addEventListener('click', () => { if (form.reportValidity())
 form.addEventListener('submit', event => { event.preventDefault(); run(async () => {
   feedback('正在验证并保存配置…');
   const value = await api('/api/deployment/save', values());
-  $('#mysql-password').value = '';
   await load();
   const message = value.pending_restart ? value.message : current.running ? '配置已保存，服务已启动。' : current.error || value.message;
   $('#setup-success').hidden = Boolean(current.starting || current.error);

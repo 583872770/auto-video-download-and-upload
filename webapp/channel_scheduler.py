@@ -111,6 +111,13 @@ class ChannelScheduler:
             db.execute(select(resources.c.key).where(resources.c.key == key).with_for_update()).first()
             yield db, self.clock(db)
 
+    def transaction_call(self, operation):
+        from webapp.db_retry import transaction_retry
+        def run():
+            with self.transaction() as (db, stamp):
+                return operation(db, stamp)
+        return transaction_retry(run)
+
     def _state(self, db, scope):
         key = _key(scope)
         row = db.execute(select(resources.c.state).where(resources.c.key == key)).scalar_one_or_none()
@@ -167,8 +174,9 @@ class ChannelScheduler:
         return token, 0
 
     def _release(self, token):
-        with self.store.connect() as db:
+        def release(db, stamp):
             db.execute(permits.delete().where(permits.c.token == token, permits.c.owner == self.store.owner))
+        self.transaction_call(release)
 
     @contextmanager
     def assignment(self, candidates, *, allow_fallback=False):
@@ -180,7 +188,7 @@ class ChannelScheduler:
             with self.auto_assignment(candidates) as channel:
                 yield channel
             return
-        with self.transaction() as (db, stamp):
+        def assign(db, stamp):
             available = []
             for order, channel in enumerate(candidates):
                 if not allow_fallback and channel.adapter != candidates[0].adapter:
@@ -230,6 +238,8 @@ class ChannelScheduler:
             group.update(recent=recent + 1, time=stamp)
             self._save(db, scope, group)
             self._save(db, 'routing-count', {'count': count + 1})
+            return channel, token
+        channel, token = self.transaction_call(assign)
         try:
             yield channel
         finally:
@@ -258,7 +268,7 @@ class ChannelScheduler:
         """
         local = runtime_limits(self.config, self.store.directory)
         probe_scope = 'route-probe:' + self.instance
-        with self.transaction() as (db, stamp):
+        def assign(db, stamp):
             scopes = {probe_scope, 'routing-auto'}
             for channel in candidates:
                 scopes.update(('channel:' + channel.id, 'route:' + channel.id,
@@ -328,6 +338,8 @@ class ChannelScheduler:
             self._save(db, 'channel:' + channel.id, state)
             self._state(db, 'routing-auto')
             self._save(db, 'routing-auto', {'count': count + 1})
+            return channel, token
+        channel, token = self.transaction_call(assign)
         try:
             yield channel
         finally:
@@ -341,12 +353,12 @@ class ChannelScheduler:
         """
         if not self.enabled or self.config.get('scheduler_mode') != 'auto':
             return
-        with self.transaction() as (db, stamp):
+        def prepare(db, stamp):
             if self._owned(db, stamp):
                 db.execute(permits.delete().where(permits.c.task_id == self.task_id,
                     permits.c.owner == self.store.owner,
                     permits.c.resource == _key('route-probe:' + self.instance)))
-
+        self.transaction_call(prepare)
     @contextmanager
     def permit(self, channel, phase, *, info=None, streams=1, on_wait=None, timeout=90):
         if not self.enabled:
@@ -377,8 +389,7 @@ class ChannelScheduler:
             # Waiting owners must see a controller limit change immediately;
             # capturing the old limit until timeout caused needless re-parses.
             current = (transfer_requirements() if phase == 'transfer' else requirements) + backend
-            with self.transaction() as (db, stamp):
-                token, delay = self._admit(db, stamp, current)
+            token, delay = self.transaction_call(lambda db, stamp: self._admit(db, stamp, current))
             if token:
                 break
             if on_wait:
@@ -403,9 +414,13 @@ class ChannelScheduler:
         transient, video_error = error_traits(error)
         if not success and video_error and status != 429:
             return  # Content-specific failures must not poison shared health.
-        with self.transaction() as (db, stamp):
+        def record(db, stamp):
+            nonlocal transient
             key = 'channel:' + channel.id
             state = self._state(db, key)
+            throttle = {'last_throttle_status': status, 'last_throttle_at': stamp,
+                        'last_throttle_kind': 'subtitles' if 'subtitles' in str(error).lower() else phase} if status in (429, 503) else {}
+            state.update(throttle)
             if success:
                 state['failures'] = 0
                 state.pop('cooldown_until', None)
@@ -427,6 +442,8 @@ class ChannelScheduler:
                 if (status == 429 or (transient or self.config.get('scheduler_mode') == 'auto')
                         and (self.config.get('scheduler_mode') == 'auto' or state['failures'] >= 3)):
                     state['cooldown_until'] = stamp + (delay or min(300, 15 * 2 ** min(4, state['failures'] - 1))) + random.uniform(0, 3)
+                    state['cooldown_status'] = status
+                    state['cooldown_kind'] = throttle.get('last_throttle_kind')
             self._save(db, key, state)
             if status == 429 or status == 503 and delay:
                 scope = ('resolver:' + channel.resolver_group if phase == 'resolve' else 'upstream:' + (upstream_group or channel.upstream_group))
@@ -437,6 +454,10 @@ class ChannelScheduler:
                         scopes.append('backend-resolver:' + backend_key(channel))
                 for key in scopes:
                     shared = self._state(db, key)
+                    shared.update(throttle)
+                    shared['cooldown_status'] = status
+                    shared['cooldown_kind'] = throttle.get('last_throttle_kind')
                     shared['cooldown_until'] = max(shared.get('cooldown_until', 0), stamp + (delay or 30))
                     shared['recover_until'] = shared['cooldown_until'] + 60
                     self._save(db, key, shared)
+        self.transaction_call(record)

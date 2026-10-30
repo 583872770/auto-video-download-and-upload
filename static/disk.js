@@ -29,6 +29,10 @@ async function refreshDisk() {
     });
     if (disk.message) rows.push(disk.message);
     if (disk.log_warning) rows.push(disk.log_warning);
+    const estimate = disk.capacity_estimate;
+    if (estimate) rows.push(`容量估算（近 24 小时 ${estimate.sample_count} 个成功任务）：按近期较大视频及合并预留，每路约 ${diskBytes(estimate.peak_bytes)}；现有预算约可支持 ${estimate.suggested_slots} 路，当前可新增约 ${estimate.additional_slots} 路。设置 ${estimate.configured_slots} 路约需 ${diskBytes(estimate.budget_for_configured_bytes)} 测试预算。仅供规划，实际以任务预留为准，预算不会自动增大。`);
+    else if (state.config?.storage_mode === 'test') rows.push('积累至少 3 个成功视频后，将显示按近期视频大小与合并峰值估算的预算并发。');
+    rows.push(...Object.entries(disk.categories).filter(([, value]) => value.committed_bytes > value.used_bytes).map(([key, value]) => `${names[key] || key}已用加执行预留：${diskBytes(value.committed_bytes)} / ${diskBytes(value.budget_bytes)}`));
     rows.push(`当前下载执行 ${Number(disk.active.test || 0) + Number(disk.active.cache || 0)} 个 · ${disk.waiting_tasks || 0} 个视频有磁盘等待记录`);
     if (disk.last_cleanup?.pending_results) rows.push(`${disk.last_cleanup.pending_results} 个执行结果待核对，已保留文件`);
     if (disk.last_cleanup?.failed) rows.push(`${disk.last_cleanup.failed} 项清理失败，稍后自动重试`);

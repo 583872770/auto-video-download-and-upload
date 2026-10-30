@@ -314,6 +314,16 @@ class DiskBudget:
             self._set(db, 'low_space', waiting)
         return waiting, free
 
+    def record_video_size(self, size, *, merged=True):
+        """Small bounded local sample for estimates; never changes the configured budget."""
+        if size <= 0:
+            return
+        with self.connect() as db:
+            samples = self._get(db, 'video_sizes', [])
+            samples = [sample for sample in samples if sample['time'] > time.time() - 86400][-31:]
+            samples.append({'time': time.time(), 'size': int(size), 'peak': int(size * (2 if merged else 1))})
+            self._set(db, 'video_sizes', samples)
+
     def snapshot(self, *, force=False):
         self._refresh_usage(force)
         with self.connect(write=False) as db:
@@ -335,6 +345,19 @@ class DiskBudget:
                         active=dict((r['category'], r['n']) for r in rows),
                         waiting_tasks=waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
+            samples = [sample for sample in self._get(db, 'video_sizes', []) if sample['time'] > time.time() - 86400]
+            if self.config.get('storage_mode') == 'test' and len(samples) >= 3:
+                peaks = sorted(sample['peak'] for sample in samples)
+                peak = max(min(GIB, self.limits['test']), peaks[math.ceil(len(peaks) * .9) - 1])
+                other = sum(value for key, value in committed.items() if key != 'test')
+                capacity = max(0, min(self.limits['test'], int(self.config['disk_budget_gb']) * GIB - other,
+                                     free + usage['test'] - int(self.config['disk_min_free_gb']) * GIB))
+                result['capacity_estimate'] = dict(sample_count=len(samples), peak_bytes=peak,
+                    suggested_slots=capacity // peak, configured_slots=int(self.config.get('worker_count', 1)),
+                    budget_for_configured_bytes=peak * int(self.config.get('worker_count', 1)),
+                    additional_slots=max(0, min(self.limits['test']-committed['test'],
+                        int(self.config['disk_budget_gb']) * GIB - sum(committed.values()),
+                        free-int(self.config['disk_min_free_gb']) * GIB)) // peak)
         if watermark_changed:
             with self.connect() as db:
                 self._watermark(db)

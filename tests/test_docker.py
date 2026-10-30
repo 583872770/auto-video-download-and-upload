@@ -1,5 +1,6 @@
 ﻿"""Container bootstrap must preserve credentials and persistent user settings."""
 import importlib.util
+import errno
 import hashlib
 from http.client import RemoteDisconnected
 from io import BytesIO
@@ -11,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
@@ -34,6 +36,106 @@ desktop_spec.loader.exec_module(desktop)
 
 
 class BrowserDesktopTests(unittest.TestCase):
+    def setUp(self):
+        # This Linux-only service is also unit-tested on Windows Python.
+        unix = patch.object(desktop.socket, 'AF_UNIX', 1, create=True)
+        unix.start()
+        self.addCleanup(unix.stop)
+        environment = patch.dict(os.environ, {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_desktop_logs_are_visible_before_the_child_exits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'desktop.log'
+            child = desktop.start_logged([sys.executable, '-u', '-c',
+                "import time; print('desktop ready', flush=True); time.sleep(10)"], log)
+            try:
+                deadline = time.monotonic() + 3
+                while b'desktop ready' not in log.read_bytes() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertIn(b'desktop ready', log.read_bytes())
+                self.assertIsNone(child.poll())
+            finally:
+                child.terminate()
+                child.wait(timeout=3)
+
+    def test_restart_removes_stale_display_files_even_when_lock_pid_was_reused(self):
+        for owner in ('gone', 'reused', 'no-lock'):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                endpoint = directory / '.X11-unix' / 'X99'
+                endpoint.parent.mkdir()
+                endpoint.touch()
+                lock = directory / '.X99-lock'
+                if owner != 'no-lock':
+                    lock.write_text('       123\n', encoding='ascii')
+                process = MagicMock()
+                process.cmdline.return_value = ['/usr/local/bin/python', 'app.py']
+                with patch.object(desktop.socket, 'socket') as connect, \
+                        patch.object(desktop.psutil, 'Process', return_value=process) as lookup:
+                    connect.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError(
+                        errno.ECONNREFUSED, 'stale socket')
+                    if owner == 'gone':
+                        lookup.side_effect = desktop.psutil.NoSuchProcess(123)
+                    desktop.prepare_display(directory)
+                self.assertFalse(endpoint.exists())
+                self.assertFalse(lock.exists())
+
+    def test_active_socket_is_preserved_and_no_process_is_started(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            lock = directory / '.X99-lock'
+            lock.write_text('123', encoding='ascii')
+            with patch.object(desktop.socket, 'socket'), patch.object(desktop, 'start_logged') as launch, \
+                    patch.object(desktop, 'Path', return_value=directory):
+                with self.assertRaisesRegex(OSError, 'already in use'):
+                    desktop.start_desktop()
+            launch.assert_not_called()
+            self.assertEqual(lock.read_text(), '123')
+
+    def test_live_or_unverifiable_lock_owner_is_preserved(self):
+        for owner in ('xserver', 'unknown', 'denied', 'invalid'):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                lock = directory / '.X99-lock'
+                lock.write_text('invalid' if owner == 'invalid' else '123', encoding='ascii')
+                with patch.object(desktop.socket, 'socket') as connect, \
+                        patch.object(desktop.psutil, 'Process') as lookup:
+                    connect.return_value.__enter__.return_value.connect.side_effect = FileNotFoundError(
+                        errno.ENOENT, 'no socket')
+                    lookup.return_value.cmdline.return_value = ['/usr/bin/Xvfb', ':99'] if owner == 'xserver' else []
+                    if owner == 'denied':
+                        lookup.side_effect = desktop.psutil.AccessDenied(123)
+                    with self.assertRaises(desktop.BrowserDesktopError):
+                        desktop.prepare_display(directory)
+                self.assertTrue(lock.exists())
+
+    def test_unreachable_socket_is_not_removed_on_permission_error_or_timeout(self):
+        for error in (PermissionError(errno.EACCES, 'denied'), TimeoutError('timeout')):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                endpoint = directory / '.X11-unix' / 'X99'
+                endpoint.parent.mkdir()
+                endpoint.touch()
+                with patch.object(desktop.socket, 'socket') as connect:
+                    connect.return_value.__enter__.return_value.connect.side_effect = error
+                    with self.assertRaises(type(error)):
+                        desktop.prepare_display(directory)
+                self.assertTrue(endpoint.exists())
+
+    def test_virtual_display_exit_identifies_component_and_reaps_child(self):
+        display = MagicMock()
+        display.poll.return_value = 1
+        with patch.object(desktop, 'prepare_display'), \
+                patch.object(desktop, 'start_logged', return_value=display) as launch, \
+                patch.object(desktop.socket, 'socket') as connect, patch.dict(os.environ, {}, clear=True):
+            connect.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError()
+            with self.assertRaisesRegex(desktop.BrowserDesktopError, r'Xvfb:.*exit code: 1'):
+                desktop.start_desktop()
+        self.assertEqual(launch.call_count, 1)
+        display.wait.assert_called_once_with(timeout=3)
+
     def test_partial_startup_logs_xvfb_and_reaps_all_children_before_retry(self):
         display, vnc, novnc = MagicMock(), MagicMock(), MagicMock()
         for child in (display, vnc, novnc):
@@ -44,12 +146,13 @@ class BrowserDesktopTests(unittest.TestCase):
         display.wait.side_effect = [desktop.subprocess.TimeoutExpired('Xvfb', 3), 0]
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.dict(os.environ, {}, clear=True), \
+                patch.object(desktop, 'prepare_display'), \
                 patch.object(desktop, 'Path', return_value=Path(temporary)), \
                 patch.object(desktop.socket, 'AF_UNIX', 1, create=True), \
                 patch.object(desktop.socket, 'socket'), \
                 patch.object(desktop.time, 'sleep'), \
                 patch.object(desktop.subprocess, 'Popen', side_effect=[display, vnc, novnc]) as launch:
-            with self.assertRaisesRegex(OSError, 'Browser desktop startup failed'):
+            with self.assertRaisesRegex(OSError, r'x11vnc: Browser desktop startup failed.*exit code: 1'):
                 desktop.start_desktop()
             self.assertTrue((Path(temporary) / 'xvfb.log').is_file())
             self.assertIsNot(launch.call_args_list[0].kwargs['stderr'], desktop.subprocess.DEVNULL)

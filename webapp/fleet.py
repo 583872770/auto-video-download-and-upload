@@ -19,6 +19,7 @@ POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'down
                  'bergung_quality', 'bergung_timeout',
                  'fragment_concurrency', 'storage_mode'}
 POLICY_FIELDS |= {'scheduler_mode', 'download_channels', 'auto_channel_attempts'}
+POLICY_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
@@ -282,6 +283,18 @@ class Fleet:
                 result[-1]['current_tasks'] = current_tasks.get(row['id'], [])
                 result[-1]['selected_job'] = jobs.get(selections.get('workbench_job:' + row['id']))
             budget = int(db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget')).scalar_one())
+            from webapp.concurrency_diagnostics import diagnose, read_context
+            configurations = [(row['id'], {**json.loads(row['config']).get('config', {}), **self.resource_limits(row)})
+                              for row in rows if row['role'] in DOWNLOAD_ROLES]
+            context = read_context(db, configurations, stamp)
+            configs = dict(configurations)
+            for item in result:
+                if item['id'] in configs:
+                    item['concurrency'] = diagnose(configs[item['id']], item['id'], by_instance.get(item['id'], []),
+                        item['throughput'], context, stamp, global_limit=budget, global_running=sum(counts.values()),
+                        paused=item['paused'], online=item['online'])
+                    from webapp.subtitles import summary as subtitle_summary
+                    item['concurrency']['subtitles'] = subtitle_summary(db, stamp, item['id'])
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
     def control(self, identity, data):
