@@ -89,7 +89,8 @@ class ClashTests(unittest.TestCase):
                 parse_subscription(content)
 
     @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
-    def test_real_core_import_select_delay_route_restart_and_rollback(self):
+    @patch('webapp.clash.validate_subscription_url')  # Trusted loopback HTTP fixture only.
+    def test_real_core_import_select_delay_route_restart_and_rollback(self, validate_url):
         fixture = {'content': b'', 'proxy_requests': 0}
         video_bytes = b'local video transport through Mihomo\n' * 100
 

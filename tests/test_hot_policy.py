@@ -22,6 +22,37 @@ class FleetHotPolicyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.json)
         return response
 
+    def test_remote_strategy_persists_in_file_registry_and_after_restart(self):
+        import yaml
+        from app import create_app
+        from webapp.database import instances
+
+        values = {'download_methods': ['bergung', 'downmp3'], 'scheduler_mode': 'auto',
+                  'bergung_quality': '1080', 'downmp3_timeout': 240,
+                  'auto_channel_attempts': 4, 'shared_parser': False,
+                  'download_connection_limit': 24}
+        self.save(**values)
+        response = self.client.get('/api/config', headers={'X-Instance-ID': 'alpha'})
+        self.assertEqual(response.status_code, 200, response.json)
+        config_path = self.root / 'alpha/config.yaml'
+        saved = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+        for key, value in values.items():
+            self.assertEqual(response.json['config'][key], value)
+            self.assertEqual(saved[key], value)
+            self.assertEqual(self.a.fleet.local_settings()['config'][key], value)
+        self.assertEqual(response.json['config']['throughput_mode'], 'auto')
+        self.assertEqual(self.b.fleet.policy()['config']['scheduler_mode'], 'ordered_fallback')
+        with self.a.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=0))
+        restarted = create_app(config_path, self.a.directory, start_worker=False,
+                               role='hybrid', instance_id='alpha', database_url=self.url)
+        try:
+            restored = restarted.test_client().get('/api/config').json['config']
+            for key, value in values.items():
+                self.assertEqual(restored[key], value)
+        finally:
+            restarted.extensions['task_store'].db.engine.dispose()
+
     def test_selected_instance_save_and_cross_instance_retry(self):
         self.queue(3)
         self.activate()

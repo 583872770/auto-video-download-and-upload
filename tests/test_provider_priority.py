@@ -1,5 +1,5 @@
 """Ordered providers, excluded providers, preflight and retry-safe accounting."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from itertools import permutations
 from io import BytesIO
 from functools import partial
@@ -32,8 +32,11 @@ class ProviderPriorityTests(unittest.TestCase):
     def rows(self):
         return {row['method']: row for row in self.client.get('/api/statistics').json['methods']}
 
-    def run_chain(self, methods, winner=None):
+    def run_chain(self, methods, winner=None, *, automatic=False):
         self.save(methods)
+        if automatic:
+            response = self.client.put('/api/config', json={'scheduler_mode': 'auto'}, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.json)
         job = self.job()
         events, values = [], []
 
@@ -53,6 +56,11 @@ class ProviderPriorityTests(unittest.TestCase):
             return 0
 
         with ExitStack() as stack:
+            if automatic:
+                @contextmanager
+                def choose_last(scheduler, pending, **kwargs):
+                    yield pending[-1]
+                stack.enter_context(patch('webapp.channel_scheduler.ChannelScheduler.assignment', choose_last))
             stack.enter_context(patch('webapp.youtube_auth.YouTubeAuth.require'))
             stack.enter_context(patch('webapp.downmp3.resolve', side_effect=resolver('downmp3')))
             stack.enter_context(patch('webapp.yt5s.resolve', side_effect=resolver('yt5s')))
@@ -69,6 +77,13 @@ class ProviderPriorityTests(unittest.TestCase):
                     execute('download', job['payload'], values.append, store=self.store, task_id=job['id'])
                 self.store.finish(job['id'], error='all failed', worker_id=self.store.owner)
         return events, values
+
+    def test_automatic_worker_accounts_for_first_actual_assignment(self):
+        events, _ = self.run_chain(['downmp3', 'yt5s'], winner='yt5s', automatic=True)
+        self.assertEqual(events, ['yt5s'])
+        rows = self.rows()
+        self.assertEqual((rows['yt5s']['attempted'], rows['yt5s']['succeeded'], rows['yt5s']['fallback_tasks']), (1, 1, 0))
+        self.assertEqual((rows['downmp3']['attempted'], rows['downmp3']['failed']), (0, 0))
 
     def test_all_orders_stop_after_success_and_exclude_unselected_providers(self):
         for length in (1, 2, 3):

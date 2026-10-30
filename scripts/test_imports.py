@@ -22,9 +22,9 @@ if __name__ == '__main__':
         'web_worker',
 
         # Extensions
-        'app.extensions',
-        'app.helpers',
-        'app.routes',
+        'webapp.extensions',
+        'webapp.helpers',
+        'webapp.routes',
 
         # Store
         'webapp.store',

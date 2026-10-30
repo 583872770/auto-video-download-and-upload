@@ -156,6 +156,9 @@ class FleetTests(unittest.TestCase):
             db.execute(tasks.update().where(tasks.c.id == old['id']).values(lease_until=time.time() - 1))
         self.assertFalse(self.a.update_progress(old['id'], {'stage': 'downloading'}, self.a.owner))
         self.assertFalse(self.a.heartbeat(old['id'], self.a.owner))
+        from webapp.downloads import DownloadLeaseLost
+        with self.assertRaises(DownloadLeaseLost):
+            self.a.statistics.methods.fallback(old['id'], 'downmp3')
         self.manager.recover(expired_only=True)
         with self.manager.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == old['id']).values(available_at=0))

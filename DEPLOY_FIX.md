@@ -1,150 +1,48 @@
-# 部署修复说明
+# Docker 启动模块导入失败修复
 
-**更新时间**: 2026-10-30 10:30  
-**问题**: Docker 容器启动失败 `ModuleNotFoundError`  
-**影响**: 代码重构后首次部署
+更新日期：2026-10-30
 
----
+日志在 `app.py:81` 报 `ModuleNotFoundError` 时，数据库已经就绪，失败发生在应用扩展初始化阶段。
 
-## ❌ 问题原因
+## 原因
 
-在代码重构中创建了 `app/` 目录，但 `.dockerignore` 使用白名单模式，新目录未被包含到 Docker 构建上下文中。
+此前重构增加了与入口 `app.py` 同名的 `app/` 包，但 Dockerfile 没有复制该目录。仅把目录加入 `.dockerignore` 白名单不能解决问题：构建上下文中的文件仍需由 Dockerfile 复制进镜像。直接补复制还会导致 Python 优先导入 `app/__init__.py`，使 `from app import create_app` 失败。
 
-### 错误信息
-```
-[服务启动] 服务初始化失败。
-{"type": "ModuleNotFoundError", "location": ["deployment.py:214", "app.py:81"]}
-```
+## 修复
 
-### 缺失的模块
-- `app/__init__.py`
-- `app/extensions.py`
-- `app/helpers.py`
-- `app/routes/__init__.py`
-- `app/routes/health.py`
-- `app/routes/disk.py`
+- 将扩展、辅助函数和蓝图移入已有的 `webapp/` 包，由现有 Dockerfile 的 COPY 指令完整打包，消除同名冲突。
+- 恢复素材库和下载启动控制器的局部绑定、请求参数函数名称、嵌入式应用的实例注册条件，以及初始化和后台回调所需的 Flask 应用上下文。
+- 保留 `/api/disk` 路径，并让健康检查返回正确的服务角色。
+- 补回任务存储中使用的 `hashlib` 导入。
+- 在镜像构建阶段执行 `docker/check_startup.py`，使用临时 SQLite 和配置完成真实应用初始化及关键接口检查，不需要 MySQL，也不启动下载进程。
+- 启动诊断增加缺失模块名与重建镜像提示。
 
----
+## 重新部署
 
-## ✅ 修复方式
-
-已在 `.dockerignore` 添加白名单：
-
-```diff
-!web_worker.py
-+!app/
-+!app/**
-!Utils/
-```
-
-**提交**: c4d6701
-
----
-
-## 🚀 重新部署步骤
-
-### 方式 1: 完整重建（推荐）
+在部署服务器更新到包含本次修复的源码后执行：
 
 ```bash
-# 停止容器
-docker compose -f compose.remote-mysql.yaml down
-
-# 重新构建镜像（包含新的 app/ 目录）
-docker compose -f compose.remote-mysql.yaml build
-
-# 启动容器
-docker compose -f compose.remote-mysql.yaml up -d
-
-# 查看日志确认启动成功
-docker compose -f compose.remote-mysql.yaml logs -f
+docker compose -f compose.remote-mysql.yaml up -d --build app
+docker compose -f compose.remote-mysql.yaml logs -f app
 ```
 
-### 方式 2: 一步完成
+必须重建镜像并重建容器，仅重启旧容器不会更新程序。此操作沿用现有配置卷、状态卷和数据库，不需要删除卷或修改密码、实例 ID。
+
+构建日志应包含 `Packaged application startup verified.`；运行日志应最终显示 `初始化完成，服务已就绪。`。
+
+## 本地验证
 
 ```bash
-docker compose -f compose.remote-mysql.yaml up -d --build
+python scripts/test_imports.py
+python docker/check_startup.py
+python -m unittest tests.test_docker tests.test_deployment tests.test_web tests.test_disk_budget tests.test_fleet -q
 ```
 
----
+`tests.test_docker` 会按 Dockerfile 的 COPY 指令在临时目录中复制应用，验证脱离宿主源码目录后仍可启动。
 
-## ✅ 验证成功
+## 本次验证结果
 
-启动日志应该显示：
-
-```
-[服务启动] 正在加载视频工作台…
-[服务启动] 正在启动浏览器桌面环境…
-[服务启动] 正在连接 MySQL 并检查表结构…
-[服务启动] 数据库已就绪，正在初始化素材库与实例配置…
-[服务启动] 初始化完成，服务已就绪。  ← 看到这行表示成功
-```
-
----
-
-## 📝 相关提交
-
-| 提交 | 说明 |
-|------|------|
-| ac41232 | refactor: 代码结构整理和模块化（创建 app/ 目录）|
-| c4d6701 | fix: 添加 app/ 目录到 Docker 构建上下文 |
-
----
-
-## 🔍 本地测试（可选）
-
-如果想在本地验证修复：
-
-```bash
-# 检查 Docker 构建上下文是否包含 app/ 目录
-docker build -t test-context . --no-cache --progress=plain 2>&1 | grep -E "(app/|COPY)"
-
-# 或者构建后检查容器内是否有文件
-docker build -t test-image .
-docker run --rm test-image ls -la /app/app/
-```
-
-应该看到：
-```
-drwxr-xr-x  app/
--rw-r--r--  app/__init__.py
--rw-r--r--  app/extensions.py
--rw-r--r--  app/helpers.py
-drwxr-xr-x  app/routes/
-```
-
----
-
-## ⚠️ 注意事项
-
-1. **必须重新构建镜像**，仅重启容器无效
-2. `.dockerignore` 改动后，Docker 不会自动检测，必须显式 `--build`
-3. 如果用 CI/CD，确保拉取最新代码（包含 c4d6701）
-
----
-
-## 🎯 后续优化（可选）
-
-为避免类似问题，可以考虑：
-
-1. **改进 .dockerignore**:
-   ```
-   # 改为黑名单模式（更简单）
-   node_modules/
-   .git/
-   __pycache__/
-   *.pyc
-   *.log
-   config.yaml
-   cookies/
-   subscriptions/
-   database/
-   media/
-   ```
-
-2. **添加构建测试**:
-   - CI/CD 中测试 Docker 镜像能否正常导入所有模块
-   - 本地提交前运行 `docker build --target test`
-
----
-
-**修复完成，重新构建即可部署！** 🚀
+- 模块导入检查：24/24 通过。
+- 启动和部署测试：46 项全部通过，包括独立打包目录中的应用初始化、素材库、状态、磁盘、下载启动状态和配置保存接口。
+- 扩展回归：123 项中 111 项通过、2 项跳过、9 项失败、1 项错误。未通过项涉及路径状态码、任务恢复、统计登记和跨实例鉴权，尚未解决；启动修复的验证不代表完整业务回归通过。详细日志见本地 `.cache/startup-regression.log`。
+- 本机 Docker 引擎未运行，未执行真实镜像构建或服务器部署；已通过按 Dockerfile COPY 规则生成的独立目录验证。

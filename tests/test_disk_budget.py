@@ -515,6 +515,15 @@ class DiskWebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
 
     def test_completed_file_is_recovered_before_any_new_download(self):
+        self.check_completed_file_recovery()
+
+    def test_automatic_completed_receipt_recovery_uses_actual_adapter(self):
+        response = self.client.put('/api/config', json={'scheduler_mode': 'auto',
+            'download_methods': ['yt_dlp', 'downmp3']}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.check_completed_file_recovery()
+
+    def check_completed_file_recovery(self):
         from web_worker import execute
         self.assertEqual(self.client.put('/api/config', json={'storage_mode':'test','disk_min_free_gb':0,
             'disk_resume_free_gb':0}, headers=self.headers).status_code, 200)
@@ -526,7 +535,7 @@ class DiskWebTests(unittest.TestCase):
             video = lease.path / 'complete.mp4'
             video.write_bytes(b'completed fixture')
             (lease.path / '.completed-files.json').write_text(json.dumps([{'path':str(video.resolve()),
-                'size':video.stat().st_size,'complete':True,'method':'yt_dlp','video_id':'npNnbj46_ik','title':'Fixture'}]))
+                'size':video.stat().st_size,'complete':True,'method':'downmp3','video_id':'npNnbj46_ik','title':'Fixture'}]))
             lease.preserve = True
         self.store.release(task['id'], self.store.owner, 'simulated restart', delay=0)
         self.store.claim(self.store.owner)
@@ -542,6 +551,9 @@ class DiskWebTests(unittest.TestCase):
         before = self.client.get('/api/statistics').json['summary']
         self.assertEqual(before['test_file_count'], 1)
         self.assertEqual(before['test_file_bytes'], len(b'completed fixture'))
+        methods = {row['method']: row for row in self.client.get('/api/statistics').json['methods']}
+        self.assertEqual(methods['downmp3']['test_file_bytes'], len(b'completed fixture'))
+        self.assertEqual(methods['yt_dlp']['test_file_bytes'], 0)
         budget.cleanup(self.store, grace=0)
         self.assertEqual(self.client.get('/api/statistics').json['summary'], before)
 

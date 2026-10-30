@@ -220,6 +220,17 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('权限不足', response.json['error'])
         self.assertIn('CREATE、ALTER、INDEX', response.json['diagnostic']['remedy'])
 
+    def test_missing_module_reports_import_name_and_rebuild_guidance_without_raw_message(self):
+        failure = ModuleNotFoundError('private-password', name='webapp.extensions')
+        self.gateway.app_factory = lambda *args, **kwargs: (_ for _ in ()).throw(failure)
+        self.save()
+        response = self.diagnostic()
+        diagnostic = response.json['diagnostic']
+        self.assertIn('模块缺失', diagnostic['summary'])
+        self.assertIn('重新构建镜像', diagnostic['remedy'])
+        self.assertEqual(diagnostic['detail'], '缺失模块：webapp.extensions')
+        self.assertNotIn('private-password', response.text)
+
     def test_unwritable_profile_never_starts_service(self):
         with patch('webapp.deployment.write_profile', side_effect=OSError('fixture')):
             response = self.save()

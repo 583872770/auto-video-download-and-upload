@@ -118,12 +118,18 @@ class DownloadStatistics:
         elif old['status'] in OUTCOMES and old['status'] != 'running':
             changes[old['status']] = sessions.c[old['status']] - 1
         db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
-        self.methods.change(db, row, identity, 'running')
+        # Automatic routing may choose a different adapter than the first
+        # configured candidate. Account for that adapter when it is assigned.
+        config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
+        if config.get('scheduler_mode') != 'auto':
+            self.methods.change(db, row, identity, 'running')
         return identity
 
     def transition(self, db, row, status, error=None, *, fallback_used=False):
-        identity = json.loads(row['payload']).get('download_session_id')
-        if row['action'] != 'download' or not identity:
+        if row['action'] != 'download':
+            return
+        identity = self.store.decode(row, private=True, db=db)['payload'].get('download_session_id')
+        if not identity:
             return
         self._active(db)  # Use one lock order across completion, pause and file registration.
         old = db.execute(select(session_tasks).where(session_tasks.c.session_id == identity,
@@ -176,7 +182,7 @@ class DownloadStatistics:
                     or self.store.fleet.row(db)['boot_id'] != self.store.fleet.boot_id):
                 from webapp.downloads import DownloadLeaseLost
                 raise DownloadLeaseLost('任务租约已过期，无法登记下载文件。')
-            session_id = json.loads(task['payload']).get('download_session_id')
+            session_id = self.store.decode(task, private=True, db=db)['payload'].get('download_session_id')
             if not session_id:
                 return False  # Jobs already executing during an upgrade have no reliable session.
             logical = (task_id + ('\0test' if test_mode else '\0delivery')) if (

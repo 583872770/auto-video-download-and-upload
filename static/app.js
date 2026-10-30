@@ -18,6 +18,7 @@ let downloadMethodBusy = false;
 let providerDraft = null;
 let settingsDirty = false;
 let settingsBaseline = {};
+let settingsChannelBaseline = '';
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
@@ -78,7 +79,7 @@ function toast(message, error = false) {
 }
 async function api(path, options = {}) {
   const headers = { 'X-CSRF-Token': csrf, ...options.headers };
-  if (state.instanceId) headers['X-Instance-ID'] = state.instanceId;
+  if (state.instanceId && !Object.hasOwn(headers, 'X-Instance-ID')) headers['X-Instance-ID'] = state.instanceId;
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(options.body);
@@ -405,6 +406,7 @@ function fillConfig(config) {
     settingsBaseline[element.name] = element.value;
   }
   renderChannels(config.download_channels || []);
+  settingsChannelBaseline = channelSignature(config.download_channels || []);
   renderStorageSettings();
   renderDownloadMethod();
 }
@@ -420,7 +422,18 @@ function readChannels() {
   })]));
 }
 function channelSignature(entries) {
-  return JSON.stringify(entries.map(item => channelFields.map(([key]) => item[key] ?? (key==='task_limit'?8:key==='verification'?'required':''))));
+  return JSON.stringify(entries.map(item => channelFields.map(([key]) => {
+    const value = item[key] ?? (key==='task_limit'?8:key==='verification'?'required':'');
+    return ['site_url','api_url'].includes(key) && value ? String(value).replace(/\/+$/, '') + '/' : value;
+  })));
+}
+function settingsValue(key, value) {
+  if (key === 'download_channels') return channelSignature(value || []);
+  if ($(`#settings-form [name="${key}"]`)?.type === 'number') return String(Number(value));
+  return Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
+}
+function unconfirmedSettings(data, config) {
+  return Object.keys(data).filter(key => settingsValue(key, data[key]) !== settingsValue(key, config[key]));
 }
 function renderChannelPerformance(rate) {
   $('#channel-performance').textContent = rate ? `媒体接收 ${rate.media_receive_mbps ?? '—'} Mbps · 校验成品 ${rate.verified_mbps ?? '—'} Mbps（滚动窗口） · ${rate.reason || '等待采样'}` : '等待实例资源采样。';
@@ -473,10 +486,9 @@ function readProviderChoices(container) {
   return $$('.provider-choice', container).filter(row => $('input', row).checked).map(row => row.dataset.provider);
 }
 function renderDownloadMethod() {
-  const methods = selectedProviders();
-  const target = state.instanceId ? `实例 ${instanceName(state.instanceId)}` : '本机';
-  renderProviderChoices($('#download-method'), providerDraft || methods, downloadMethodBusy || !state.config);
-  $('#strategy-save-state').textContent = providerDraft ? `${target}有未保存修改，请点击下方“保存设置”` : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
+  const methods = providerDraft || selectedProviders();
+  renderStrategySaveState();
+  renderProviderChoices($('#download-method'), methods, downloadMethodBusy || !state.config);
   const tools = state.status?.tools;
   const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
   const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。服务器负载或限流升高时自动收敛并发。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
@@ -491,6 +503,12 @@ function renderDownloadMethod() {
   notes.push(methods.includes('yt_dlp') ? '开始前检查 YouTube Cookie；yt-dlp 默认选择最高分辨率和帧率，不限制编码。' : '当前选择无需 YouTube Cookie。');
   notes.push('保存后仅影响当前实例后续领取的视频，无需暂停或重启；其他实例使用各自策略，正在执行的视频保持本次配置。');
   $('#download-method-note').textContent = notes.join(' ');
+}
+function renderStrategySaveState() {
+  const target = state.instanceId ? `实例 ${instanceName(state.instanceId)}` : '本机';
+  $('#strategy-save-state').textContent = downloadMethodBusy ? `正在保存并核对 · ${target}`
+    : settingsDirty || providerDraft ? `${target}有未保存修改，请点击下方“保存设置”`
+    : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
 }
 $('#settings-form [name="scheduler_mode"]').addEventListener('change', renderDownloadMethod);
 for (const id of ['download-method']) {
@@ -1054,8 +1072,13 @@ $('#copy-logs').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(state.logs); toast('日志已复制。'); }
   catch { toast('复制失败，请手动选择并复制日志。', true); }
 });
-$('#settings-form').addEventListener('input', () => { settingsDirty = true; $('#settings-save-state').textContent = '有未保存的设置，保存后生效'; renderDownloadControl(); });
-$('#settings-form').addEventListener('change', () => { settingsDirty = true; $('#settings-save-state').textContent = '有未保存的设置，保存后生效'; renderDownloadControl(); });
+function markSettingsDirty() {
+  settingsDirty = true;
+  $('#settings-save-state').textContent = '有未保存的设置，保存后生效';
+  renderStrategySaveState(); renderDownloadControl();
+}
+$('#settings-form').addEventListener('input', markSettingsDirty);
+$('#settings-form').addEventListener('change', markSettingsDirty);
 $('#settings-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
@@ -1063,16 +1086,42 @@ $('#settings-form').addEventListener('submit', event => {
     downloadMethodBusy = true; renderDownloadMethod();
     const data = Object.fromEntries([...new FormData(event.target)].filter(([key,value]) => value !== settingsBaseline[key]));
     const channels = readChannels();
-    if (channelSignature(channels) !== channelSignature(state.config?.download_channels || [])) data.download_channels = channels;
+    if (channelSignature(channels) !== settingsChannelBaseline) data.download_channels = channels;
     if (providerDraft) data.download_methods = [...providerDraft];
+    const instance = state.instanceId;
+    const headers = { 'X-Instance-ID': instance || '' };
+    const form = event.target;
+    form.inert = true;
+    form.setAttribute('aria-busy', 'true');
+    $('#settings-save-state').textContent = '正在保存设置并核对服务器中的实际值…';
     try {
-      await api('/api/config', { method:'PUT', body:data });
+      await api('/api/config', { method:'PUT', body:data, headers });
+      const saved = (await api('/api/config', { headers, cache:'no-store' })).config;
+      const mismatches = unconfirmedSettings(data, saved);
+      if (mismatches.length) {
+        const labels = mismatches.map(key => key === 'download_methods' ? '下载方式'
+          : key === 'download_channels' ? '多渠道配置'
+          : $(`[name="${key}"]`, form)?.closest('label')?.firstChild.textContent.trim() || key);
+        const providers = value => Array.isArray(value) ? value.map(method => providerNames[method] || method).join('、') : '未返回有效列表';
+        const detail = mismatches.includes('download_methods')
+          ? `（提交：${providers(data.download_methods)}；读回：${providers(saved.download_methods)}）` : '';
+        throw new Error(`保存结果未确认：${labels.join('、')}与提交值不一致${detail}，修改已保留，请重试；持续出现时将此提示提供给维护人员`);
+      }
+      if (instance !== state.instanceId) throw new Error('核对期间所选实例发生变化，请返回原实例确认设置');
       settingsDirty = false; providerDraft = null;
-      fillConfig((await api('/api/config')).config);
+      fillConfig(saved);
       $('#settings-save-state').textContent = '当前实例设置已保存，后续领取的视频使用新策略；正在执行的视频保持本次配置。';
       toast('设置已保存。');
       await refresh();
-    } finally { downloadMethodBusy = false; renderDownloadMethod(); }
+    } catch (error) {
+      $('#settings-save-state').textContent = settingsDirty || providerDraft
+        ? `保存失败：${error.message || '请求失败，请稍后重试。'}；修改已保留，请重试保存。`
+        : `设置已提交，重新读取时发生错误：${error.message || '请求失败，请刷新页面确认。'}`;
+      throw error;
+    } finally {
+      form.inert = false; form.removeAttribute('aria-busy');
+      downloadMethodBusy = false; renderDownloadMethod();
+    }
   });
 });
 

@@ -176,6 +176,11 @@ class WebTests(unittest.TestCase):
             self.assertEqual(response.headers['Content-Length'], '19')
         for target in ('..%5cconfig.yaml', '我的世界.v2.png', 'missing.mp4', '..%5coutside.mp4'):
             self.assertEqual(self.client.get('/media/videos/' + target).status_code, 404)
+        for kind, suffix in (('videos', '.mp4'), ('covers', '.png')):
+            (self.root / 'videos' / ('part..final' + suffix)).write_bytes(b'valid-file')
+            with self.client.get('/media/' + kind + '/part..final' + suffix) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data, b'valid-file')
 
     def test_youtube_merge_requires_ffmpeg_but_direct_file_download_does_not(self):
         from webapp.downloader import build_ydl_options, require_download_tools
@@ -263,7 +268,7 @@ class WebTests(unittest.TestCase):
         task = self.post_task('check').json
         self.store.claim()
         self.assertEqual(TaskStore(self.root / 'state').get(task['id'])['status'], 'running')
-        self.store.recover()
+        self.store.recover(expired_only=False)
         self.assertEqual(self.store.get(task['id'])['status'], 'interrupted')
         self.store.log_path(task['id']).write_bytes(('中文日志\n' * 20000).encode('utf-8'))
         cursor, output = 0, ''

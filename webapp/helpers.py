@@ -7,7 +7,7 @@ from webapp.settings import DEFAULTS
 
 
 def get_settings():
-    """Get current merged settings (cached via closure in app.py)."""
+    """Read current merged settings through the app's settings closure."""
     settings_func = current_app.extensions.get('settings_func')
     if settings_func:
         return settings_func()
@@ -21,8 +21,7 @@ def get_settings():
 
     fleet = current_app.extensions.get('fleet')
     if fleet and fleet.can_download:
-        import json
-        config.update(json.loads(fleet.row()['limits']))
+        config.update(fleet.resource_limits())
 
     return config, base
 

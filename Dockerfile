@@ -44,6 +44,7 @@ COPY static/ ./static/
 COPY scripts/login_youtube.py ./scripts/login_youtube.py
 COPY scripts/migrate_mysql.py ./scripts/migrate_mysql.py
 COPY docker/ ./docker/
+RUN python docker/check_startup.py
 RUN mkdir -p /data/config /data/videos /app/.cache/web
 
 EXPOSE 5000

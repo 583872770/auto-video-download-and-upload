@@ -26,6 +26,42 @@ class MethodStatisticsContract:
         self.assertEqual(response.status_code, 200, response.json)
         return {row['method']: row for row in response.json['methods']}
 
+    def test_automatic_first_assignment_and_retry_use_actual_adapter(self):
+        self.job(download_methods=['yt_dlp', 'downmp3'], scheduler_mode='auto')
+        job = self.claim()
+        identity = job['payload']['download_session_id']
+        self.assertEqual(self.methods(identity)['yt_dlp']['attempted'], 0)
+        self.store.statistics.methods.select_provider(job['id'], 'downmp3')
+        self.store.statistics.record_file(job['id'], self.final_file(size=123))
+        self.store.release(job['id'], self.store.owner, 'retry', delay=0)
+        again = self.claim()
+        self.assertEqual(again['payload']['download_session_id'], identity)
+        self.store.statistics.methods.select_provider(job['id'], 'yt_dlp')
+        self.store.statistics.methods.fallback(job['id'], 'downmp3')
+        self.store.statistics.record_file(job['id'], self.final_file('next.mp4', size=456))
+        self.store.finish(job['id'], result={}, worker_id=self.store.owner)
+        rows = self.methods(identity)
+        self.assertEqual((rows['yt_dlp']['attempted'], rows['yt_dlp']['failed'], rows['yt_dlp']['file_bytes']), (1, 1, 0))
+        self.assertEqual((rows['downmp3']['attempted'], rows['downmp3']['succeeded'], rows['downmp3']['failed'],
+                          rows['downmp3']['file_bytes'], rows['downmp3']['fallback_tasks']), (1, 1, 0, 579, 1))
+
+    def test_automatic_preflight_release_does_not_invent_a_provider_attempt(self):
+        self.job(download_methods=['yt_dlp', 'downmp3'], scheduler_mode='auto')
+        job = self.claim()
+        self.store.release(job['id'], self.store.owner, 'no available route', delay=0)
+        self.assertTrue(all(row['attempted'] == 0 for row in self.methods().values()
+                            if row['method'] != 'unknown'))
+
+    def test_automatic_retry_preflight_failure_preserves_previous_provider_history(self):
+        self.job(download_methods=['yt_dlp', 'downmp3'], scheduler_mode='auto')
+        job = self.claim()
+        self.store.statistics.methods.select_provider(job['id'], 'downmp3')
+        self.store.release(job['id'], self.store.owner, 'retry', delay=0)
+        before = self.methods()['downmp3']
+        self.claim()
+        self.store.finish(job['id'], error='preflight failed', worker_id=self.store.owner)
+        self.assertEqual(self.methods()['downmp3'], before)
+
     def test_start_configuration_groups_three_modes_and_test_sizes_without_double_counting(self):
         for index, method in enumerate(('yt_dlp', 'yt5s', 'yt5s_fallback')):
             self.job(f'{index:011d}', download_method=method, storage_mode='test' if index == 2 else 'local')

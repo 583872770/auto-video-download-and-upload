@@ -16,7 +16,13 @@ def explain_startup_error(error, stage, profile):
     summary = '服务初始化失败。'
     remedy = '展开下方技术详情查看失败阶段和代码位置，将详情提供给维护人员；无需反复修改数据库密码或实例 ID。'
     detail = ''
-    if isinstance(error, InstanceIdentityConflict):
+    if isinstance(error, ModuleNotFoundError):
+        summary = '服务所需的 Python 模块缺失或导入路径冲突。'
+        remedy = ('确认使用完整的最新源码重新构建镜像并重建容器；仅重启旧容器不会更新程序。'
+                  '检查技术详情中的模块名和代码位置，无需修改数据库密码或实例 ID。')
+        if error.name and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]*', error.name):
+            detail = f'缺失模块：{error.name}'
+    elif isinstance(error, InstanceIdentityConflict):
         summary = f'实例 ID {error.identity} 已被登记主机 {error.host} 的在线服务使用。'
         remedy = ('若为原容器重启，确认旧服务已停止后，等待 45 秒，再在部署页点击“保存并启动服务”。'
                   '若为新增实例，请同时使用独立实例 ID 和独立状态卷，并检查已保存的部署配置。不要删除原状态卷。')

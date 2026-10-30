@@ -12,7 +12,7 @@
 
 本版统一了任务计费、编辑版本和控制范围，并增加管理账户。未设置账户时只允许本机直接访问；访问 `/login`，使用状态目录 `console-bootstrap.key` 中的初始设置码创建管理员。创建后所有管理页面均需登录，支持管理员、操作员和只读账户。升级说明见 [第一阶段改造说明](docs/redesign-phase-one.md)。
 
-长期运行可在“实例与环境 → 磁盘容量管理”设置临时文件总预算（默认 20 GiB）和分类上限，自动清理测试文件、缓存和日志。空间不足时等待恢复，保留下载统计及账本；容量范围与部署说明见 [DISK_MANAGEMENT.md](DISK_MANAGEMENT.md)。
+长期运行可在“系统设置 → 磁盘容量管理”设置临时文件总预算（默认 20 GiB）和分类上限，自动清理测试文件、缓存和日志。空间不足时等待恢复，保留下载统计及账本；容量范围与部署说明见 [DISK_MANAGEMENT.md](DISK_MANAGEMENT.md)。
 
 ## Docker 部署
 
@@ -71,7 +71,7 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 
 ## downmp3 API
 
-在首页勾选 downmp3，调整优先级并保存下载策略。例如只勾选 downmp3、yt5s，顺序设为 downmp3 → yt5s，失败后就自动尝试 yt5s，无需 Cookie；勾选 yt-dlp 后，开始前还会检查 YouTube Cookie。下载设置默认“尽可能最高画质”（当前请求 1080p），也可指定 360p、480p、720p、1080p；转换等待上限默认 300 秒，可设为 30–1800 秒。支持视频 ID 清单和 TXT / CSV 批量导入，暂不支持播放列表。
+在系统设置选择实例后勾选 downmp3，调整优先级并保存下载策略。例如只勾选 downmp3、yt5s，顺序设为 downmp3 → yt5s，失败后就自动尝试 yt5s，无需 Cookie；勾选 yt-dlp 后，开始前还会检查 YouTube Cookie。下载设置默认“尽可能最高画质”（当前请求 1080p），也可指定 360p、480p、720p、1080p；转换等待上限默认 300 秒，可设为 30–1800 秒。支持视频 ID 清单和 TXT / CSV 批量导入，暂不支持播放列表。
 
 根据 [downmp3 接入文档](https://downmp3.yt/api-documentation) 中嵌入组件的实际调用流程，后端请求 `p.savenow.to/api/v2/download` 创建转换任务，轮询 `/api/progress` 获取 MP4 链接，再使用现有传输模块保存文件、封面和元数据。转换阶段单独显示进度；下载阶段显示实际下载字节数、速度和剩余时间。所有请求使用任务当前代理节点，不向第三方发送 YouTube Cookie；不占用 yt5s 浏览器并发名额。
 

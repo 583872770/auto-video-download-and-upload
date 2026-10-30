@@ -28,6 +28,7 @@ LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
 ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')
+RESOURCE_LIMITS = {'worker_count': (1, 64), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}
 
 
 class InstanceIdentityConflict(ValueError):
@@ -105,6 +106,8 @@ class Fleet:
             updates = {key: values[key] for key in values if key not in ('id', 'limits', 'paused', 'stop_requested', 'name')}
             if previous and previous['role'] not in DOWNLOAD_ROLES and self.can_download:
                 updates.update(paused=1, stop_requested=0)
+            if previous:
+                updates['limits'] = json.dumps(self.resource_limits(previous))
             if upgraded:
                 updates.update(limits='{}', paused=1, stop_requested=0)
             db.execute(self.store.db.upsert(instances, values, ['id'], updates))
@@ -136,10 +139,19 @@ class Fleet:
             db.execute(instances.update().where(instances.c.id == self.id, instances.c.boot_id == self.boot_id)
                        .values(config=json.dumps(self.local, ensure_ascii=False)))
 
+    def resource_limits(self, row=None):
+        """Only resource controls may override the node's saved configuration.
+
+        Older registry rows can contain strategy fields in this object. Merging
+        them blindly makes every successful YAML save read back the old policy.
+        """
+        values = json.loads((self.row() if row is None else row)['limits'])
+        return {key: values[key] for key in RESOURCE_LIMITS if key in values}
+
     def local_settings(self, db=None):
         row = self.row(db)
         local = json.loads(row['config'])
-        local['config'].update(json.loads(row['limits']))
+        local['config'].update(self.resource_limits(row))
         return local
 
     def policy(self, *, active=False, db=None):
@@ -255,7 +267,7 @@ class Fleet:
                     download_lists.c.id.in_(list(selections.values())))).mappings()}
             for row in rows:
                 local = json.loads(row['config'])
-                config = {**local.get('config', {}), **json.loads(row['limits'])}
+                config = {**local.get('config', {}), **self.resource_limits(row)}
                 progress = by_instance.get(row['id'], [])
                 result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
                     'online': row['heartbeat'] > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
@@ -283,8 +295,8 @@ class Fleet:
                 if not isinstance(data['name'], str) or not data['name'].strip() or len(data['name']) > 100:
                     raise ValueError('实例名称需要 1 到 100 个字符。')
                 values['name'] = data['name'].strip()
-            limits = json.loads(row['limits'])
-            for key, bounds in {'worker_count': (1, 64), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}.items():
+            limits = self.resource_limits(row)
+            for key, bounds in RESOURCE_LIMITS.items():
                 if key in data:
                     value = data[key]
                     if type(value) is not int or not bounds[0] <= value <= bounds[1]:

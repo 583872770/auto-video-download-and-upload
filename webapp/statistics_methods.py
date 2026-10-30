@@ -1,5 +1,4 @@
 ﻿"""Incremental accounting by the provider selected when execution starts."""
-import json
 
 from sqlalchemy import func, select
 
@@ -13,7 +12,7 @@ METHODS = {
     'downmp3': 'downmp3',
     'yt1d': 'yt1d',
     'bergung': 'Bergung',
-    'unknown': '历史未分类',
+    'unknown': '未分类',
 }
 FIELDS = (*COUNTERS, 'test_file_count', 'test_file_bytes', 'fallback_tasks')
 
@@ -37,13 +36,15 @@ class MethodStatistics:
             method_totals.c.method == method).values({key: method_totals.c[key] + value
                                                      for key, value in changes.items() if value}))
 
-    def ensure(self, db, row, identity, status='running'):
+    def ensure(self, db, row, identity, status='running', *, provider=None):
         current = db.execute(select(method_tasks).where(method_tasks.c.session_id == identity,
             method_tasks.c.task_id == row['id'])).mappings().first()
         if current and row.get('_previous_download_method') is None:
             return current
         config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
-        method = download_methods(config)[0]
+        if not current and provider is None and config.get('scheduler_mode') == 'auto':
+            return None  # No adapter has actually been selected yet.
+        method = provider or download_methods(config)[0]
         if current:
             if row.get('_previous_download_method') is not None and current['method'] != method:
                 self.remember(db, current)
@@ -89,6 +90,11 @@ class MethodStatistics:
 
     def change(self, db, row, identity, status, *, fallback_used=False):
         current = self.ensure(db, row, identity)
+        if current is None:
+            return
+        config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
+        if config.get('scheduler_mode') == 'auto' and current['status'] != 'running' and status != 'running':
+            return  # A retry that has not selected an adapter cannot fail the old one.
         changes = {}
         if current['status'] != status:
             if current['status'] in OUTCOMES:
@@ -107,11 +113,17 @@ class MethodStatistics:
 
     def record_file(self, db, row, identity, size, test_mode):
         current = self.ensure(db, row, identity)
+        if current is None:
+            raise RuntimeError('自动调度尚未选择下载方式，无法登记下载文件。')
         self.add(db, identity, current['method'],
                  {'test_file_count': 1, 'test_file_bytes': size} if test_mode else {'file_count': 1, 'file_bytes': size})
 
     def fallback(self, task_id, provider='yt_dlp'):
         """Count a task once, including switches followed by failure or a pause."""
+        self.select_provider(task_id, provider, fallback=True)
+
+    def select_provider(self, task_id, provider, *, fallback=False):
+        """Bind automatic routing to the actual adapter without a fake failure."""
         with self.store.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
@@ -119,13 +131,20 @@ class MethodStatistics:
             if not row or row['status'] != 'running' or row['worker_id'] != self.store.owner:
                 from webapp.downloads import DownloadLeaseLost
                 raise DownloadLeaseLost('任务租约已失效，无法登记下载方式切换。')
-            identity = json.loads(row['payload']).get('download_session_id')
+            if self.store.fleet and (not row['lease_until'] or row['lease_until'] <= self.store.fleet.clock(db)
+                    or self.store.fleet.row(db)['boot_id'] != self.store.fleet.boot_id):
+                from webapp.downloads import DownloadLeaseLost
+                raise DownloadLeaseLost('任务租约已过期，无法登记下载方式切换。')
+            identity = self.store.decode(row, private=True, db=db)['payload'].get('download_session_id')
             if identity:
                 self.store.statistics._active(db)
-                current = self.ensure(db, row, identity)
+                current = self.ensure(db, row, identity, provider=provider)
                 if current['method'] != provider:
-                    self.change(db, row, identity, 'failed')
-                    self.activate(db, row, identity, provider, 'running', fallback=True)
+                    if current['status'] == 'running':
+                        self.change(db, row, identity, 'failed' if fallback else 'pending')
+                    self.activate(db, row, identity, provider, 'running', fallback=fallback)
+                elif current['status'] != 'running':
+                    self.activate(db, row, identity, provider, 'running', fallback=fallback)
 
     def summary(self, db, totals, *, identity=None, query=''):
         statement = select(method_totals.c.method, *(func.sum(method_totals.c[key]).label(key) for key in FIELDS))

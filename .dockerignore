@@ -6,8 +6,6 @@
 !requirements.lock.txt
 !app.py
 !web_worker.py
-!app/
-!app/**
 !Utils/
 !Utils/**
 !webapp/

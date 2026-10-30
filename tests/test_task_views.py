@@ -20,7 +20,7 @@ class TaskViewContract:
             completed.append(task)
         interrupted = self.create('check')
         self.store.claim('exited-worker')
-        self.store.recover()
+        self.store.recover(expired_only=False)
         completed.append(interrupted)
         # Newer queued rows must not hide older finished records.
         self.store.create_batch([{'config': {}, 'base': str(self.root),

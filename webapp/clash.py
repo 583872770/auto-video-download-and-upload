@@ -5,6 +5,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 import json
+import ipaddress
 import os
 from pathlib import Path
 import secrets
@@ -15,7 +16,7 @@ import threading
 import time
 from urllib.error import URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 import psutil
 import yaml
@@ -40,6 +41,35 @@ def is_notice(name):
 
 class ClashError(Exception):
     """Only messages safe to show in the UI may be raised here."""
+
+
+def validate_subscription_url(url):
+    """Check both IP families, including every redirected subscription URL."""
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username
+                or parsed.password or not parsed.port and parsed.netloc.endswith(':')
+                or len(url) > 8192 or any(ord(c) < 32 for c in url)):
+            raise ValueError()
+    except ValueError:
+        raise ClashError('请输入有效的 HTTP / HTTPS 订阅链接。') from None
+    try:
+        addresses = [ipaddress.ip_address(parsed.hostname)]
+    except ValueError:
+        try:
+            addresses = [ipaddress.ip_address(item[4][0]) for item in
+                         socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == 'https' else 80),
+                                            type=socket.SOCK_STREAM)]
+        except (OSError, ValueError):
+            raise ClashError('订阅域名解析失败，请检查链接或网络连接；原订阅保持不变。') from None
+    if not addresses or any(not address.is_global or address.is_multicast for address in addresses):
+        raise ClashError('订阅链接不能使用内网地址、回环地址或保留地址。')
+
+
+class SubscriptionRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_subscription_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def atomic_text(path, content):
@@ -438,36 +468,11 @@ class ClashManager:
             if not isinstance(url, str):
                 raise ClashError('订阅链接格式不正确。')
             url = url.strip() or self.config['subscription_url']
-            parsed = urlsplit(url)
-            if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username
-                    or parsed.password or len(url) > 8192 or any(ord(c) < 32 for c in url)):
-                raise ClashError('请输入有效的 HTTP / HTTPS 订阅链接。')
-
-            # Block SSRF: prevent requests to private/internal networks
-            try:
-                import ipaddress
-                addr = ipaddress.ip_address(parsed.hostname)
-                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                    raise ClashError('订阅链接不能使用内网地址、回环地址或保留地址。')
-            except ValueError:
-                # Hostname is not an IP, check if it resolves to private IP
-                import socket
-                try:
-                    resolved = socket.getaddrinfo(parsed.hostname, None, family=socket.AF_INET)
-                    for family, socktype, proto, canonname, sockaddr in resolved:
-                        try:
-                            addr = ipaddress.ip_address(sockaddr[0])
-                            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                                raise ClashError('订阅域名解析到内网地址，可能存在 SSRF 风险。')
-                        except ValueError:
-                            pass
-                except (socket.gaierror, OSError):
-                    # DNS resolution failed, let the actual request fail with proper error
-                    pass
-
+            validate_subscription_url(url)
             try:
                 request = Request(url, headers={'User-Agent': 'clash.meta', 'Accept': 'application/yaml,text/yaml,*/*'})
-                with self.direct.open(request, timeout=25) as response:
+                subscription = build_opener(ProxyHandler({}), SubscriptionRedirectHandler())
+                with subscription.open(request, timeout=25) as response:
                     content = response.read(MAX_SUBSCRIPTION + 1)
             except (OSError, URLError, ValueError):
                 raise ClashError('订阅获取失败，请检查链接有效性或网络连接；原订阅保持不变。') from None

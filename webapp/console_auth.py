@@ -18,6 +18,34 @@ from webapp.database import console_users, settings
 ROLES = {'admin': '管理员', 'operator': '操作员', 'viewer': '只读'}
 _DUMMY_HASH = generate_password_hash('not-a-login-password')
 
+# This protocol covers the selected node's local resources. The sending
+# management endpoint checks the person's session, role and CSRF token first.
+LOCAL_RPC_METHODS = {
+    '/health': {'GET', 'HEAD'},
+    '/api/config': {'GET', 'HEAD', 'PUT'},
+    '/api/status': {'GET', 'HEAD'},
+    '/api/fleet/preflight': {'POST'},
+    '/api/downloads/connection': {'POST'},
+    '/api/disk': {'GET', 'HEAD'},
+    '/api/disk/logs': {'GET', 'HEAD'},
+    '/api/disk/cleanup': {'POST'},
+    '/api/media': {'GET', 'HEAD', 'POST'},
+    '/api/media/reindex': {'POST'},
+    '/api/media/clear': {'POST'},
+    '/api/clash': {'GET', 'HEAD'},
+    '/api/clash/subscription': {'POST'},
+    '/api/clash/start': {'POST'},
+    '/api/clash/stop': {'POST'},
+    '/api/clash/select': {'POST'},
+    '/api/clash/rotation': {'POST'},
+    '/api/clash/delay': {'POST'},
+    '/api/clash/test': {'POST'},
+    '/api/youtube/login': {'GET', 'HEAD', 'POST'},
+    '/api/youtube/login/cancel': {'POST'},
+    '/api/youtube/cookie': {'POST'},
+    '/api/youtube/auth/check': {'POST'},
+}
+
 
 def local_request():
     """Check if the request originates from localhost.
@@ -50,18 +78,11 @@ def local_request():
 
 
 def rpc_allowed():
-    """Check if a path is allowed for instance token authentication.
-
-    Instance tokens (fleet credentials) should only access:
-    - Read-only resources (media, status, health)
-    - Task submission (check action only)
-    - Task logs (read-only)
-
-    Configuration changes (YouTube cookies, Clash subscriptions, disk cleanup)
-    require management console authentication.
-    """
+    """Allow executor-local RPCs, never shared jobs, billing or accounts."""
     path = request.path
     method = request.method
+    if path in LOCAL_RPC_METHODS:
+        return method in LOCAL_RPC_METHODS[path]
 
     # Allow check tasks submission
     if path == '/api/tasks' and method == 'POST':
@@ -72,30 +93,8 @@ def rpc_allowed():
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
         return method in ('GET', 'HEAD')
 
-    # Read-only instance logs
-    if path == '/api/disk/logs':
+    if path.startswith(('/media/videos/', '/media/covers/')):
         return method in ('GET', 'HEAD')
-
-    # Read-only status and health
-    if path in ('/health', '/api/config', '/api/status', '/api/fleet/preflight', '/api/downloads/connection', '/api/disk'):
-        return method in ('GET', 'HEAD')
-
-    # Read-only media access
-    if path.startswith(('/api/media', '/media/')):
-        return method in ('GET', 'HEAD')
-
-    # Clash: only allow reading current config and node selection, block subscription management
-    if path.startswith('/api/clash'):
-        if path in ('/api/clash/config', '/api/clash/proxies'):
-            return method in ('GET', 'HEAD')
-        if re.fullmatch(r'/api/clash/proxies/[^/]+', path):
-            return method == 'PUT'  # Allow node switching
-        return False  # Block subscription CRUD
-
-    # YouTube: only allow reading login status, block cookie upload
-    if path.startswith('/api/youtube'):
-        return path == '/api/youtube/status' and method in ('GET', 'HEAD')
-
     return False
 
 

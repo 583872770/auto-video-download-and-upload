@@ -1,6 +1,7 @@
 ﻿"""Indexed, paginated task store with transactional counters and leased claims."""
 import base64
 import codecs
+import hashlib
 from collections import Counter
 import json
 import os
@@ -37,11 +38,6 @@ class TaskStore:
         self.statistics = DownloadStatistics(self)
         from webapp.lists import DownloadLists
         self.lists = DownloadLists(self)
-        # Cache for hot-path queries
-        import threading
-        self._pause_cache = None
-        self._pause_cache_time = 0
-        self._pause_cache_lock = threading.Lock()
 
     def connect(self):
         return self.db.engine.begin()
@@ -403,37 +399,20 @@ class TaskStore:
                     counts[role] = count
             return counts
 
-    def downloads_paused(self, db=None, *, lock=False, use_cache=True):
-        """检查下载是否暂停。
+    def downloads_paused(self, db=None, *, lock=False):
+        """Read shared execution permission in the caller's transaction.
 
-        Args:
-            use_cache: 是否使用进程内缓存（减少数据库查询）。
-                      仅在非锁定读取时生效，缓存 5 秒。
+        Web processes and workers can all change this flag; a process-local
+        cache cannot be invalidated reliably across those writers.
         """
-        # 只有非锁定读取才使用缓存
-        if use_cache and not lock:
-            now = time.time()
-            with self._pause_cache_lock:
-                if self._pause_cache is not None and (now - self._pause_cache_time) < 5.0:
-                    return self._pause_cache
-
-        # 从数据库读取
         if db is None:
             with self.connect() as connection:
-                result = self.downloads_paused(connection, lock=lock, use_cache=False)
+                return self.downloads_paused(connection, lock=lock)
         else:
             statement = select(settings.c.value).where(settings.c.key == 'downloads_paused')
             if lock and not self.db.sqlite:
                 statement = statement.with_for_update(read=True)
-            result = db.execute(statement).scalar_one() == 'true'
-
-        # 更新缓存
-        if use_cache and not lock:
-            with self._pause_cache_lock:
-                self._pause_cache = result
-                self._pause_cache_time = time.time()
-
-        return result
+            return db.execute(statement).scalar_one() == 'true'
 
     def workbench_job(self, db):
         if not self.fleet:
@@ -495,9 +474,6 @@ class TaskStore:
                     db.execute(instances.update().where(instances.c.role.in_(('worker', 'hybrid')))
                                .values(paused=1, stop_requested=1))
                 self.statistics.settle(db, stop=True)
-        # 清除缓存，确保立即生效
-        with self._pause_cache_lock:
-            self._pause_cache = None
 
     def activate_download_lists(self, expected_policy_version=None):
         with self.connect() as db:
@@ -698,9 +674,10 @@ class TaskStore:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             if self.fleet or self.single:
-                # Use shared lock (read=True) to allow concurrent claims across instances.
-                # Write lock only needed when modifying fleet_budget in separate transactions.
-                db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update(read=True)).first()
+                # Admission allocates slots under this exclusive lock. Taking a
+                # shared lock first makes concurrent MySQL claims deadlock when
+                # they both upgrade to the exclusive admission lock below.
+                db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
             if self.fleet and mode != 'true':
                 return None
@@ -814,16 +791,16 @@ class TaskStore:
 
             stamp = self.fleet.clock(db) if self.fleet else time.time()
 
-            # 构建 CASE WHEN 批量更新
             from sqlalchemy import case
-            task_ids = [task_id for task_id, _, _ in updates]
-            whens = {task_id: stamp + lease_seconds for task_id, _, lease_seconds in updates}
-
+            leases = {(task_id, worker_id): stamp + lease_seconds
+                      for task_id, worker_id, lease_seconds in updates}
+            whens = [(and_(tasks.c.id == task_id, tasks.c.worker_id == worker_id), expiry)
+                     for (task_id, worker_id), expiry in leases.items()]
             statement = tasks.update().where(
-                tasks.c.id.in_(task_ids),
+                or_(*(condition for condition, _ in whens)),
                 tasks.c.status == 'running'
             ).values(
-                lease_until=case(whens, value=tasks.c.id)
+                lease_until=case(*whens, else_=tasks.c.lease_until)
             )
 
             if self.fleet:

@@ -5,7 +5,11 @@ from http.client import RemoteDisconnected
 from io import BytesIO
 import os
 from pathlib import Path
+import shlex
+import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -96,6 +100,37 @@ class MihomoDownloadTests(unittest.TestCase):
 
 
 class DockerBootstrapTests(unittest.TestCase):
+    def test_packaged_sources_initialize_without_host_checkout_or_database(self):
+        """Exercise only the files shipped by Dockerfile COPY instructions."""
+        with tempfile.TemporaryDirectory() as temporary:
+            staging = Path(temporary)
+            for line in (ROOT / 'Dockerfile').read_text(encoding='utf-8').splitlines():
+                if not line.startswith('COPY ') or line.startswith('COPY --from='):
+                    continue
+                *sources, destination = shlex.split(line)[1:]
+                # Only application copies relative to WORKDIR enter this check.
+                if destination.startswith('/'):
+                    continue
+                for source in sources:
+                    path = ROOT / source
+                    target = staging / destination
+                    if path.is_dir():
+                        shutil.copytree(path, target, dirs_exist_ok=True,
+                                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.log'))
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if destination.endswith('/'):
+                            target.mkdir(parents=True, exist_ok=True)
+                            target /= path.name
+                        shutil.copy2(path, target)
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_', 'PYTHONPATH'))}
+            result = subprocess.run([sys.executable, str(staging / 'docker/check_startup.py')],
+                                    cwd=staging, env=environment, capture_output=True,
+                                    text=True, encoding='utf-8', timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('Packaged application startup verified.', result.stdout)
+
     def test_empty_database_config_enters_setup_without_starting_browser(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(entrypoint, 'initialize_config') as initialize, \
                 patch.object(entrypoint.os, 'umask'), patch.object(entrypoint.os, 'chdir'), \

@@ -540,8 +540,6 @@ class DiskBudget:
 
     def recover_test_result(self, store, task_id):
         """A newly claimed owner can finish a complete file left before DB commit."""
-        from sqlalchemy import select
-        from webapp.database import tasks
         with self.connect(write=False) as db:
             rows = db.execute("SELECT * FROM leases WHERE category='test' AND task=? ORDER BY created", (task_id,)).fetchall()
         for row in rows:
@@ -566,16 +564,8 @@ class DiskBudget:
                     continue
                 if not store.heartbeat(task_id, store.owner):
                     return None
-                with store.connect() as db:
-                    current = db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().one()
-                    payload = json.loads(current['payload'])
-                    session_id = payload.get('download_session_id')
-                    if session_id and item.get('method'):
-                        stats = store.statistics.methods
-                        provider = stats.ensure(db, current, session_id)
-                        if provider['method'] != item['method']:
-                            stats.change(db, current, session_id, 'paused')
-                            stats.activate(db, current, session_id, item['method'], 'running')
+                if item.get('method'):
+                    store.statistics.methods.select_provider(task_id, item['method'])
                 store.statistics.record_file(task_id, path, item.get('video_id', ''), item.get('title', ''), test_mode=True)
                 if not self.receipts_recorded(store, task_id, receipt_path):
                     raise DiskPressure('完整测试文件与统计登记尚未核对一致，已保留文件，等待核对。')

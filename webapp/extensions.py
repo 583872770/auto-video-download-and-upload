@@ -13,7 +13,7 @@ from webapp.execution import ExecutionControlService
 from webapp.settings import DEFAULTS
 
 
-def init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name):
+def init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name, *, registered):
     """Initialize and register all extensions."""
     catalog = MediaCatalog(store)
     app.extensions['media_catalog'] = catalog
@@ -27,7 +27,6 @@ def init_extensions(app, store, config_path, service_role, instance_id, instance
     app.extensions['clash'] = clash
 
     fleet = None
-    registered = bool(service_role or instance_id or store.fleet or store.single or store.db.mysql)
     if registered:
         from webapp.fleet import Fleet
         fleet = Fleet(store, service_role, identity=instance_id, url=instance_url, name=instance_name)

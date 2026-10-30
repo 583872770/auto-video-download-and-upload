@@ -74,6 +74,49 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], 'best')
         self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], '1080')
 
+    def test_node_settings_rpc_is_local_and_cannot_manage_accounts_or_jobs(self):
+        client = self.clients['alpha']
+        headers = {'Authorization': 'Bearer ' + self.a.fleet.token, 'X-Instance-ID': 'beta'}
+        response = client.put('/api/config', json={'downmp3_quality': '720'}, headers=headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '720')
+        self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], 'best')
+        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '480'}).status_code, 403)
+        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '480'},
+                                    headers={'Authorization': 'Bearer wrong'}).status_code, 403)
+        for path in ('/api/jobs', '/api/auth/users'):
+            self.assertEqual(client.post(path, json={}, headers=headers).status_code, 403)
+
+    def test_remote_settings_still_require_admin_session_and_csrf(self):
+        client = self.clients['alpha']
+        setup = client.post('/api/auth/setup', headers=self.headers['alpha'], json={
+            'username': 'admin', 'password': 'fixture-admin-password',
+            'bootstrap_key': self.apps['alpha'].extensions['console_auth'].bootstrap_key})
+        self.assertEqual(setup.status_code, 201, setup.json)
+        page = client.get('/login')
+        headers = {'X-CSRF-Token': re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]}
+        for name, role in (('reader', 'viewer'), ('operator', 'operator')):
+            result = client.post('/api/auth/users', headers=headers, json={
+                'username': name, 'role': role, 'password': 'fixture-user-password'})
+            self.assertEqual(result.status_code, 201, result.json)
+            limited = self.apps['alpha'].test_client()
+            page = limited.get('/login')
+            token = re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]
+            result = limited.post('/api/auth/login', headers={'X-CSRF-Token': token}, json={
+                'username': name, 'password': 'fixture-user-password'})
+            self.assertEqual(result.status_code, 200, result.json)
+            page = limited.get('/login')
+            token = re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]
+            result = limited.put('/api/config', json={'downmp3_quality': '720'},
+                                 headers={'X-CSRF-Token': token, 'X-Instance-ID': 'beta'})
+            self.assertEqual(result.status_code, 403, result.json)
+        target = {**headers, 'X-Instance-ID': 'beta'}
+        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '720'},
+                                    headers={'X-Instance-ID': 'beta'}).status_code, 403)
+        result = client.put('/api/config', json={'downmp3_quality': '720'}, headers=target)
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], '720')
+
     def test_cookie_and_media_can_be_accessed_from_either_management_page(self):
         cookie = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfixture\n'
         response = self.clients['alpha'].post('/api/youtube/cookie',
@@ -94,6 +137,42 @@ class HybridTests(unittest.TestCase):
                 self.assertEqual(result.data, target.encode()[:4])
         result = self.clients['alpha'].get('/api/overview')
         self.assertEqual(result.status_code, 200, result.json)
+
+    def test_local_rpc_protocol_matches_real_routes_and_excludes_shared_management(self):
+        from webapp.console_auth import LOCAL_RPC_METHODS, rpc_allowed
+        app = self.apps['beta']
+        routes = app.url_map.bind('localhost')
+        for path, methods in LOCAL_RPC_METHODS.items():
+            for method in methods:
+                with self.subTest(path=path, method=method):
+                    routes.match(path, method=method)
+                    with app.test_request_context(path, method=method):
+                        self.assertTrue(rpc_allowed())
+        for path, method in [('/api/jobs', 'POST'), ('/api/auth/users', 'GET'),
+                             ('/api/statistics', 'GET'), ('/api/downloads/stop', 'POST'),
+                             ('/api/clash/proxies/node', 'PUT'), ('/api/youtube/status', 'GET')]:
+            with app.test_request_context(path, method=method):
+                self.assertFalse(rpc_allowed(), (path, method))
+
+    def test_remote_proxy_and_disk_operations_use_selected_nodes_resources(self):
+        headers = {**self.headers['alpha'], 'X-Instance-ID': 'beta'}
+        client = self.clients['alpha']
+        clash = self.apps['beta'].extensions['clash']
+        self.assertEqual(client.get('/api/clash', headers=headers).status_code, 200)
+        self.assertEqual(client.get('/api/youtube/login', headers=headers).status_code, 200)
+        for action, value in [('start', {}), ('stop', {}), ('select', {'name': 'Fixture'}),
+                              ('delay', {}), ('test', {})]:
+            method = {'delay': 'test_delays', 'test': 'test_youtube'}.get(action, action)
+            with self.subTest(action=action), patch.object(clash, method, return_value={}) as called:
+                response = client.post('/api/clash/' + action, json=value, headers=headers)
+                self.assertIn(response.status_code, (200, 202), response.json)
+                called.assert_called_once()
+        with patch('webapp.disk_budget.DiskBudget.cleanup', return_value={'cleaned': 0}) as cleanup:
+            response = client.post('/api/disk/cleanup', headers=headers)
+            self.assertEqual(response.status_code, 200, response.json)
+            self.assertIs(cleanup.call_args.args[0], self.b)
+        self.assertEqual(client.get('/api/auth/users', headers={
+            'Authorization': 'Bearer ' + self.a.fleet.token}).status_code, 403)
 
     def test_both_nodes_claim_once_under_shared_limit_and_pause_is_local(self):
         for store in (self.a, self.b):

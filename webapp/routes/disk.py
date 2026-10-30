@@ -4,7 +4,7 @@ from flask import Blueprint, current_app, jsonify
 bp = Blueprint('disk', __name__, url_prefix='/api/disk')
 
 
-@bp.get('/')
+@bp.get('')
 def disk_status():
     """Get disk budget status."""
     from webapp.disk_budget import DiskBudget

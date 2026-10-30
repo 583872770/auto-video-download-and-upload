@@ -14,6 +14,7 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_jobs import QuietHandler
+from scripts.settings_roundtrip_checks import check_settings_roundtrip
 from webapp.browser import browser_options
 from webapp.database import instances
 
@@ -63,6 +64,7 @@ def main(hybrid=False):
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
                 form = page.locator('#settings-form')
                 expect(form.locator('[name=storage_mode]')).to_have_value('local')
+                expect(form.locator('[name=downmp3_timeout]')).to_have_value('300')
                 # Another page changes defaults after this form has loaded.
                 response = client.put('/api/config', json={'storage_mode':'test'}, headers=headers)
                 assert response.status_code == 200, response.json
@@ -88,6 +90,7 @@ def main(hybrid=False):
                 expect(form.locator('button[type=submit]')).to_be_enabled()
                 page.locator('[data-provider=yt5s] [data-provider-toggle]').check()
                 form.locator('button[type=submit]').click()
+                expect(form.locator('button[type=submit]')).to_be_enabled()
                 expect(page.locator('#strategy-save-state')).not_to_contain_text('有未保存')
                 assert submitted[-1] == {'download_methods':['downmp3','yt5s']}, submitted[-1]
                 # An unchecked box with an unsaved draft must not start a job
@@ -95,6 +98,7 @@ def main(hybrid=False):
                 expect(form.locator('button[type=submit]')).to_be_enabled()
                 page.locator('[data-provider=yt1d] [data-provider-toggle]').check()
                 form.locator('button[type=submit]').click()
+                expect(form.locator('button[type=submit]')).to_be_enabled()
                 expect(page.locator('#strategy-save-state')).not_to_contain_text('有未保存')
                 page.locator('[data-provider=yt1d] [data-provider-toggle]').uncheck()
                 page.locator('[data-view=overview].nav-item').click()
@@ -105,12 +109,32 @@ def main(hybrid=False):
                 expect(page.locator('#toasts')).to_contain_text('下载方式尚未保存完成')
                 assert not client.get('/api/jobs/' + second.json['id']).json['released']
                 form.locator('button[type=submit]').click()
+                expect(form.locator('button[type=submit]')).to_be_enabled()
                 expect(page.locator('#strategy-save-state')).not_to_contain_text('有未保存')
                 store.release(running['id'], store.owner, 'fixture next attempt', delay=0)
                 next_task = store.claim('next-fixture-worker')
                 assert next_task['progress']['selected_download_methods'] == ['downmp3','yt5s']
                 assert next_task['progress']['download_method'] == 'downmp3'
                 assert not store.downloads_paused()
+                # A rejected save keeps the draft and shows the reason beside Save.
+                form.locator('[name=downmp3_quality]').select_option('480')
+                def reject_save(route):
+                    if route.request.method == 'PUT':
+                        route.fulfill(status=503, json={'error':'模拟保存失败，请重试'})
+                    else:
+                        route.continue_()
+                page.route('**/api/config', reject_save)
+                form.locator('button[type=submit]').click()
+                expect(page.locator('#settings-save-state')).to_contain_text('模拟保存失败，请重试')
+                expect(form.locator('[name=downmp3_quality]')).to_have_value('480')
+                expect(form.locator('button[type=submit]')).to_be_enabled()
+                page.unroute('**/api/config', reject_save)
+                form.locator('button[type=submit]').click()
+                expect(page.locator('#settings-save-state')).to_contain_text('后续领取')
+                expect(form.locator('button[type=submit]')).to_be_enabled()
+                page.reload()
+                expect(form.locator('[name=downmp3_quality]')).to_have_value('480')
+                check_settings_roundtrip(page, app, config)
                 assert not errors, errors
                 browser.close()
         finally:

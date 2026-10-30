@@ -325,7 +325,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             meter.verified(size)
 
         print(f'开始下载，共 {len(urls)} 个地址。', flush=True)
-        if automatic:
+        if config.get('scheduler_mode') == 'auto':
+            print('自动调度将根据可用渠道的负载和健康状态选择下载方式。', flush=True)
+        elif automatic:
             print(f'按优先级尝试：{method_label}；成功后不再尝试后续下载器。', flush=True)
         class ReportingDownloader(yt_dlp.YoutubeDL):
             skipped = False
@@ -563,8 +565,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                       upstream_group=channel.upstream_group, provider_attempt=index + 1,
                       proxy_node=config.get('_resolved_clash_node', ''))
                 try:
-                    if index and store and payload.get('_task_id'):
-                        store.statistics.methods.fallback(payload['_task_id'], provider)
+                    if store and payload.get('_task_id'):
+                        if config.get('scheduler_mode') == 'auto':
+                            store.statistics.methods.select_provider(payload['_task_id'], provider, fallback=bool(index))
+                        elif index:
+                            store.statistics.methods.fallback(payload['_task_id'], provider)
                     if index and provider == 'yt_dlp' and store and youtube:
                         # Website conversion may have taken several minutes.
                         YouTubeAuth(store).require(config, base, **(

@@ -1,440 +1,60 @@
-# 代码结构说明
-
-## 📁 项目结构
-
-```
-auto-video-download-and-upload/
-├── app.py                      # Flask 主入口（855 行）
-├── web_worker.py               # 下载 Worker 进程（834 行）
-│
-├── app/                        # 应用核心模块
-│   ├── __init__.py
-│   ├── extensions.py           # 扩展初始化（MediaCatalog, Clash, Fleet 等）
-│   ├── helpers.py              # 公共辅助函数（get_settings, sync_runtime 等）
-│   └── routes/                 # Blueprint 路由（76 行）
-│       ├── __init__.py         # 注册所有 blueprints
-│       ├── health.py           # 健康检查路由
-│       └── disk.py             # 磁盘管理和诊断路由
-│
-├── webapp/                     # Web 应用核心逻辑
-│   ├── store.py                # 任务存储（TaskStore）
-│   ├── store_utils.py          # 工具函数（now, source_identity）
-│   ├── database.py             # 数据库表定义和连接池
-│   ├── tasks.py                # 任务运行器（TaskRunner）
-│   ├── catalog.py              # 素材目录（MediaCatalog）
-│   │
-│   ├── clash.py                # Clash 代理管理
-│   ├── clash_routes.py         # Clash API 路由
-│   ├── fleet.py                # 多实例管理（Fleet）
-│   ├── fleet_routes.py         # Fleet API 路由
-│   ├── statistics_routes.py    # 统计和客户管理路由
-│   │
-│   ├── console_auth.py         # Web 控制台认证
-│   ├── youtube_auth.py         # YouTube 登录管理
-│   ├── execution.py            # 执行控制（暂停/恢复）
-│   ├── startup.py              # 下载启动检查
-│   │
-│   ├── settings.py             # 配置管理
-│   ├── media.py                # 素材处理
-│   ├── disk_budget.py          # 磁盘预算管理
-│   ├── diagnostics.py          # 诊断工具
-│   ├── proxy_health.py         # 代理健康检查
-│   └── migrations.py           # 数据库迁移
-│
-├── Utils/                      # 核心工具库
-│   ├── config.py               # 配置加载
-│   ├── runtime.py              # 运行时环境
-│   ├── paths.py                # 路径处理
-│   └── youtube_login.py        # YouTube Cookie 解析
-│
-├── scripts/                    # 工具脚本
-│   ├── test_imports.py         # 模块导入测试
-│   ├── verify_p0_fixes.py      # 安全修复验证
-│   └── ...
-│
-└── docs/                       # 文档
-    ├── code-structure.md       # 本文档
-    ├── p0-p1-fixes-20261030.md
-    ├── performance-optimization-plan.md
-    └── ...
-```
-
----
-
-## 🎯 核心模块职责
-
-### 1. **app.py** - Flask 主应用
-
-**职责**:
-- Flask 应用工厂
-- 中间件（CSRF、认证）
-- 剩余核心路由（任务、素材、配置）
-
-**依赖**:
-- `app.extensions` - 初始化所有扩展
-- `app.helpers` - 辅助函数
-- `app.routes` - 注册 blueprints
-
-**关键函数**:
-- `create_app()` - 应用工厂（未来可提取）
-- `csrf_protection()` - CSRF 中间件
-- `settings()` - 配置闭包（缓存）
-
----
-
-### 2. **web_worker.py** - 下载 Worker
-
-**职责**:
-- 任务领取（claim）
-- 下载执行（多方式自动切换）
-- 代理轮换和健康检查
-- 心跳维护
-
-**关键函数**:
-- `main(concurrent)` - Worker 主循环
-- `attempt()` - 执行单个任务
-- `download()` - 下载核心逻辑
-
-**不建议改动**: 逻辑复杂，改动风险高
-
----
-
-### 3. **webapp/store.py** - 任务存储
+# 代码结构与功能调用链
 
-**职责**:
-- 任务 CRUD
-- 租约管理（claim, heartbeat, recover）
-- 批量操作（batch_heartbeat, batch_update）
-- 统计查询
-
-**优化亮点**:
-- `batch_heartbeat()` - 批量心跳（-94% 延迟）
-- `downloads_paused()` - 缓存 5 秒（-20ms claim）
-- 连接池优化（pool_size 动态分配）
-
-**依赖**:
-- `webapp.database` - 表定义
-- `webapp.store_utils` - now(), source_identity()
-
----
-
-### 4. **webapp/database.py** - 数据库层
-
-**职责**:
-- 表定义（tasks, batches, workers, etc.）
-- 索引定义（已优化，删除 3 个冗余）
-- 连接池配置（动态分配）
-
-**关键表**:
-- `tasks` - 下载任务
-- `batches` - 批次
-- `workers` - Worker 实例
-- `settings` - 配置持久化
-- `download_lists` - 客户任务清单
-
-**优化亮点**:
-- 主进程: pool_size=9, max_overflow=7
-- Worker: pool_size=2, max_overflow=0
-- 总预算: 48 连接（可配置）
-
----
-
-### 5. **app/extensions.py** - 扩展初始化
-
-**职责**:
-- 初始化 MediaCatalog
-- 初始化 ClashManager
-- 初始化 Fleet（可选）
-- 初始化 YouTubeAuth
-- 初始化 ConsoleAuth
-
-**为什么提取**:
-- app.py 太大（887 行 → 855 行）
-- 扩展初始化可独立测试
-- 为未来模块化打基础
-
----
-
-### 6. **app/helpers.py** - 公共辅助函数
-
-**职责**:
-- `get_settings()` - 获取当前配置
-- `get_body()` - 获取并验证 JSON 请求体
-- `sync_runtime()` - 同步配置到 store/fleet
-
-**为什么提取**:
-- 避免在多个路由中重复代码
-- 统一配置访问接口
-- 便于单元测试
-
----
-
-### 7. **app/routes/** - Blueprint 路由
-
-**职责**:
-- `health.py` - `/health` 健康检查
-- `disk.py` - `/api/disk` 磁盘管理和诊断
-
-**为什么提取**:
-- 减少 app.py 行数
-- 路由逻辑独立
-- 便于后续拆分更多模块
-
-**未来可提取**:
-- 任务路由（/api/tasks/*）
-- 素材路由（/api/media/*）
-- 配置路由（/api/config/*）
-
----
-
-## 🔄 数据流
-
-### 任务下载流程
-
-```
-用户提交批次
-    ↓
-app.py POST /api/batches
-    ↓
-store.add_batch()
-    ↓
-store.add_tasks()
-    ↓
-[任务进入队列]
-    ↓
-web_worker.py claim_task()
-    ↓
-web_worker.attempt()
-    ↓
-download() [yt-dlp/yt5s/yt1d/...]
-    ↓
-store.succeed() / store.fail()
-    ↓
-catalog.add() [素材入库]
-```
+更新：2026-10-30。以实际调用关系说明当前实现；性能建议另见规划文档，不视为已测结论。
 
-### 配置同步流程
+## 模块职责
 
-```
-用户修改配置
-    ↓
-app.py PUT /api/config
-    ↓
-validate_settings()
-    ↓
-save_settings()
-    ↓
-app.helpers.sync_runtime()
-    ├─ fleet.save_local() [多实例]
-    └─ store.set_runtime() [单实例]
-        ↓
-    web_worker 读取新配置
-```
+| 入口 / 模块 | 当前职责 |
+| --- | --- |
+| `app.py` | Flask 应用工厂、配置读写、素材及任务接口、注册各组路由 |
+| `webapp/extensions.py` | 初始化素材索引、代理、实例、认证与执行控制服务 |
+| `webapp/helpers.py`、`webapp/routes/` | 共享请求辅助函数、磁盘及健康检查 Blueprint |
+| `webapp/deployment.py`、`deployment_errors.py`、`migrations.py` | 部署设置、分阶段启动诊断、数据库升级 |
+| `webapp/console_auth.py` | 人员登录、角色权限、实例本地 RPC 接口范围 |
+| `webapp/fleet.py`、`fleet_routes.py` | 实例注册与心跳、领取准入、所选实例请求转发 |
+| `webapp/jobs.py`、`workbench.py`、`execution.py` | 客户任务、所选任务启停、系统停止/恢复 |
+| `webapp/store.py`、`database.py`、`tasks.py` | 事务化队列、表结构、计数器、租约、任务运行器 |
+| `web_worker.py` | 单任务执行入口、下载器切换、下载与清理；命令行工作进程 |
+| `webapp/channels.py`、`channel_scheduler.py`、`throughput.py` | 渠道注册、共享准入与退避、解析/传输容量控制 |
+| `webapp/downloader.py`、`yt5s.py`、`downmp3.py`、`yt1d.py`、`bergung.py` | 下载选项与各渠道解析适配 |
+| `webapp/clash.py`、`youtube_auth.py`、`youtube_login.py` | 代理进程及订阅、Cookie 验证、浏览器登录 |
+| `webapp/statistics.py`、`statistics_methods.py` | 执行会话、交付文件登记、实际下载方式统计 |
+| `webapp/catalog.py`、`disk_budget.py`、`Utils/download_storage.py` | 素材索引、容量预算与清理、测试下载工作区 |
+| `templates/`、`static/` | 页面、草稿与配置回显、任务和实例实时状态 |
 
-### 心跳流程（优化后）
-
-```
-Worker 每 10 秒
-    ↓
-store.batch_heartbeat([task1, task2, ...])
-    ↓
-SQL: UPDATE tasks SET lease_until = CASE
-    WHEN id=1 THEN '2026-10-30 10:01:00'
-    WHEN id=2 THEN '2026-10-30 10:01:00'
-    ...
-    END
-    WHERE id IN (1,2,...)
-    ↓
-1 次 UPDATE 完成 16 个任务
-```
-
----
-
-## 🧪 测试和验证
-
-### 导入测试
+应用内部模块统一位于 `webapp/`。不要新建与 `app.py` 同名的 `app/` 包，否则 `from app import create_app` 可能导入错误对象，造成启动失败。
 
-```bash
-python scripts/test_imports.py
-```
+## 配置保存与生效
 
-检查所有模块是否可正常导入，没有循环依赖。
+1. `static/app.js` 收集所选实例的表单草稿，冻结保存中的表单。
+2. `PUT /api/config` 使用固定的 `X-Instance-ID`；远端实例经 `fleet_routes` 转发。
+3. 服务端校验、保存文件或实例配置，更新运行时策略版本。
+4. 浏览器以同一实例重新 `GET /api/config`，比对提交字段后才显示保存成功；读回失败或不一致时保留草稿。
+5. 待领取任务在 `TaskStore._claim()` 读取最新有效策略并生成不可变执行快照；正在执行的视频继续使用已领取配置。
 
-### 连接池验证
+配置闭包每次读取当前配置，并只合并实例的传输并发、浏览器并发和磁盘预留三项资源限制；历史限制 JSON 中的策略字段不会覆盖新设置，也不是全局 YAML 缓存。下载暂停标志直接读取数据库，不使用各进程互不一致的五秒缓存。
 
-```bash
-python webapp/db_pool_calculator.py
-```
+## 创建、启动与完成
 
-检查当前连接池配置是否在预算内。
+任务中心创建客户任务并导入视频，创建不等于启动。下载工作台选择任务和实例后，经预检启动；实例暂停停止后续领取，停止还请求终止当前执行。系统恢复与实例/任务启动有不同范围，`execution.py` 与 `jobs.py` 负责检查。
 
-### 安全修复验证
+领取事务检查系统、任务及实例权限、磁盘、共享并发预算，再绑定执行配置、会话和租约。MySQL 预算行从一开始使用独占锁，因为准入需要修改共享额度；不能先取共享锁再升级。失败时整个领取事务回滚，死锁按有限次数重试。
 
-```bash
-python scripts/verify_p0_fixes.py
-```
+运行器使用单任务 `heartbeat()` 续期。`batch_heartbeat()` 是可用接口，目前没有接入运行器；两者均需匹配任务和执行者。不能把批量接口存在当作已获得实际延迟收益。
 
-检查 P0/P1 安全问题是否已修复。
+自动策略在实际分配适配器时登记方式统计，顺序策略按配置顺序登记并在失败切换时更新。交付大小在最终文件校验后登记，测试文件与计费文件分开，重复回调不重复计数。客户费用归属于客户任务，执行会话不生成另一份账单。
 
----
+## 跨实例操作
 
-## 📝 开发指南
+管理页面先检查人员会话、角色和 CSRF，再使用目标实例凭据转发本地资源接口。`LOCAL_RPC_METHODS` 必须与真实路由的方法对应；更新接口时应同步运行协议契约测试。实例凭据不允许管理共享客户任务、账户、账单或执行全局停止。
 
-### 添加新路由
+素材播放既检查路径分量，也检查 `resolve()` 后的路径是否仍在素材根目录内。文件名中间合法的两个点不等于父目录。清空素材库要求全部下载暂停且没有在途下载，仅清理接受该操作的实例本地素材。
 
-**方式 1: 在 app.py 中添加（快速原型）**
+## 验证入口与边界
 
-```python
-@app.get('/api/my-feature')
-def my_feature():
-    return jsonify(status='ok')
-```
+- `python -m unittest discover -s tests -v`：后端完整回归；MySQL 测试需独立测试库配置。
+- `python scripts/test_imports.py`、`python docker/check_startup.py`：导入及打包启动检查。
+- `.github/workflows/tests.yml`：当前持续集成的浏览器检查清单。
+- `python scripts/verify_p0_fixes.py`：有真实断言和失败退出码的定向回归入口。
 
-**方式 2: 创建新 Blueprint（推荐）**
-
-1. 创建 `app/routes/my_feature.py`:
-
-```python
-from flask import Blueprint, jsonify
-
-bp = Blueprint('my_feature', __name__, url_prefix='/api/my-feature')
-
-@bp.get('/')
-def list_items():
-    return jsonify([])
-
-@bp.post('/')
-def create_item():
-    from app.helpers import get_body
-    data = get_body()
-    return jsonify(data)
-```
-
-2. 在 `app/routes/__init__.py` 中注册:
-
-```python
-def register_blueprints(app: Flask):
-    from . import health, disk, my_feature
-    
-    app.register_blueprint(health.bp)
-    app.register_blueprint(disk.bp)
-    app.register_blueprint(my_feature.bp)
-```
-
----
-
-### 添加新的扩展
-
-在 `app/extensions.py` 中添加初始化逻辑:
-
-```python
-def init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name):
-    # ... 现有代码 ...
-    
-    # 新扩展
-    my_service = MyService(store)
-    app.extensions['my_service'] = my_service
-    
-    return {
-        # ... 现有返回 ...
-        'my_service': my_service,
-    }
-```
-
-在路由中使用:
-
-```python
-from flask import current_app
-
-my_service = current_app.extensions['my_service']
-```
-
----
-
-### 添加工具函数
-
-**纯工具函数** → `webapp/store_utils.py` 或新建工具模块
-
-**路由辅助函数** → `app/helpers.py`
-
-**下载相关函数** → `web_worker.py` 或新建下载工具模块
-
----
-
-## ⚠️ 注意事项
-
-### 不要改动的模块
-
-1. **web_worker.py** - 逻辑复杂，改动风险高
-   - 除非修复明确的 bug
-   - 改动后必须完整测试下载流程
-
-2. **webapp/database.py** - 数据库表定义
-   - 改动后需要写迁移脚本
-   - 索引改动需要评估性能影响
-
-3. **Utils/** - 核心工具库
-   - 被多个模块依赖
-   - 改动影响范围大
-
----
-
-### 可以安全改动的模块
-
-1. **app/routes/** - 路由模块
-   - 独立性强
-   - 易于测试
-
-2. **app/helpers.py** - 辅助函数
-   - 纯函数为主
-   - 改动影响局部
-
-3. **webapp/*_routes.py** - 各种路由
-   - 可以随意重构
-   - 改动后测试对应 API
-
----
-
-## 📊 代码质量指标
-
-| 文件 | 行数 | 复杂度 | 可维护性 |
-|------|------|--------|---------|
-| app.py | 855 | 中 | 良好 ✓ |
-| web_worker.py | 834 | 高 | 谨慎改动 ⚠️ |
-| webapp/store.py | ~600 | 中 | 良好 ✓ |
-| webapp/database.py | ~350 | 低 | 优秀 ✓ |
-| app/extensions.py | ~100 | 低 | 优秀 ✓ |
-| app/helpers.py | ~50 | 低 | 优秀 ✓ |
-
----
-
-## 🚀 未来优化方向
-
-### 短期（已完成）
-
-✅ 数据库连接池优化  
-✅ 索引优化  
-✅ 热点查询缓存  
-✅ 批量心跳  
-✅ 代码精简  
-✅ 架构模块化  
-
-### 中期（可选）
-
-- [ ] 提取更多 Blueprint（任务、素材、配置）
-- [ ] 提取下载执行器（从 web_worker.py）
-- [ ] 添加单元测试覆盖核心逻辑
-- [ ] 添加集成测试（API 测试）
-
-### 长期（需评估）
-
-- [ ] 微服务拆分（下载服务独立）
-- [ ] 异步任务队列（Celery/RQ）
-- [ ] 实时通知（WebSocket）
-- [ ] 多租户支持
-
----
-
-**文档维护**: 本文档应随代码结构变化及时更新  
-**最后更新**: 2026-10-30  
-**维护人**: Claude Opus 5.5
+本地 SQLite、模拟第三方网站及浏览器检查不能替代线上 MySQL、真实代理内核与第三方服务可用性测试。具体检查范围及结果见 [全项目检查报告](full-project-audit-20261030.md)。

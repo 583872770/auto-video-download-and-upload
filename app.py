@@ -71,6 +71,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     except FileExistsError:
         pass
     app.config.update(
+        SERVICE_ROLE=service_role,
         SECRET_KEY=secret_file.read_bytes(), MAX_CONTENT_LENGTH=8 * 1024 ** 3,
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
         TRUSTED_HOSTS=os.environ.get('VIDEO_WEB_HOSTS', f'localhost,127.0.0.1,[::1],{socket.gethostname()}').split(','),
@@ -78,8 +79,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     app.extensions['task_store'] = store
 
     # Initialize extensions
-    from app.extensions import init_extensions
-    exts = init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name)
+    from webapp.extensions import init_extensions
+    exts = init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name,
+                           registered=registered)
+    catalog = exts['catalog']
+    startup = exts['startup']
     settings_lock = exts['settings_lock']
     media_lock = exts['media_lock']
     clash = exts['clash']
@@ -98,7 +102,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             config, base = load_config(config_path)
             if fleet:
                 if fleet.can_download:
-                    config.update(json.loads(fleet.row()['limits']))
+                    config.update(fleet.resource_limits())
             return config, base
 
     # Store settings getter and helpers in extensions
@@ -106,10 +110,14 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     app.extensions['disk_config'] = lambda: {**DEFAULTS, **settings()[0]}
 
     # Register helper functions
-    from app.helpers import get_body, sync_runtime
+    from webapp.helpers import get_body as body, sync_runtime as sync_request_runtime
+
+    def sync_runtime(config, base):
+        with app.app_context():
+            sync_request_runtime(config, base)
 
     # Register blueprints
-    from app.routes import register_blueprints
+    from webapp.routes import register_blueprints
     register_blueprints(app)
 
     from webapp.disk_budget import DiskPressure
@@ -493,8 +501,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/media/videos/<path:name>')
     def video(name):
         # Block path traversal attempts
-        if '..' in name or name.startswith('/') or '\\' in name:
-            return jsonify(error='无效的文件路径'), 400
+        if '..' in name.split('/') or name.startswith('/') or '\\' in name:
+            return jsonify(error='视频不存在'), 404
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
         target = (root / name).resolve()
@@ -509,8 +517,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/media/covers/<path:name>')
     def cover(name):
         # Block path traversal attempts
-        if '..' in name or name.startswith('/') or '\\' in name:
-            return jsonify(error='无效的文件路径'), 400
+        if '..' in name.split('/') or name.startswith('/') or '\\' in name:
+            return jsonify(error='封面不存在'), 404
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
         target = (root / name).resolve()
