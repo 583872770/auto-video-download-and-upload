@@ -71,6 +71,29 @@ def verify_instance_controls(page, apps, output):
     assert '102.0 MB' in rendered and '1.0 MB/s' in rendered, rendered
     page.screenshot(path=str(output / 'speed-and-started-controls.png'), full_page=True)
 
+    page.locator('.nav-item[data-view=overview]').click()
+    expect(page.locator('#stat-speed')).to_have_text('1.0')
+    expect(page.locator('#stat-speed-unit')).to_have_text('MB/s')
+    expect(page.locator('#speed-caption')).to_have_text('传输中视频 1 个')
+    page.screenshot(path=str(output / 'workbench-speed-desktop.png'), full_page=True)
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('() => document.documentElement.scrollWidth <= window.innerWidth'), 'workbench mobile overflow'
+    page.screenshot(path=str(output / 'workbench-speed-mobile.png'), full_page=True)
+    page.set_viewport_size({'width': 1440, 'height': 1080})
+    page.locator('#fleet-selection').select_option('beta')
+    expect(page.locator('#stat-speed')).to_have_text('0.0')
+    expect(page.locator('#stat-speed-unit')).to_have_text('KB/s')
+    page.locator('#fleet-selection').select_option('alpha')
+    expect(page.locator('#stat-speed')).to_have_text('1.0')
+    # A retained speed from the transfer must not count during conversion.
+    progress = store.get(task['id'])['progress']
+    store.update_progress(task['id'], {**progress, 'stage': 'processing'}, store.owner)
+    expect(page.locator('#stat-speed')).to_have_text('0.0')
+    expect(page.locator('#speed-caption')).to_have_text('当前没有视频传输')
+    store.update_progress(task['id'], progress, store.owner)
+    expect(page.locator('#stat-speed')).to_have_text('1.0')
+    page.locator('.nav-item[data-view=instances]').click()
+
     # Polling must update controls without replacing unsaved instance edits.
     alpha.locator('.instance-options summary').click()
     alpha.locator('[name=name]').fill('Unsaved fixture name')
@@ -152,7 +175,7 @@ def main(hybrid=False):
                     page.locator('#fleet-selection').select_option('alpha')
                     expect(page.locator('#settings-form [name=path]')).to_have_value('videos-alpha', timeout=10000)
                     expect(page.locator('[data-instance-form]')).to_have_count(3)
-                    expect(page.locator('[data-instance-form="alpha"]')).to_contain_text('累计成功')
+                    expect(page.locator('[data-instance-form="alpha"]')).to_contain_text('累计处理成功')
                     expect(page.locator('#fleet-selection')).to_have_value('alpha')
                     verify_instance_controls(page, apps, output)
                     alpha = page.locator('[data-instance-form="alpha"]')

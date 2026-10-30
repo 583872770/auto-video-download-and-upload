@@ -77,7 +77,7 @@ def main():
                 page.locator('#download-jobs-more').click()
                 expect(page.locator('#download-job option')).to_have_count(25)
                 page.locator('#download-job').select_option(a)
-                expect(page.locator('#download-job-summary')).to_contain_text('当前实例 · 下载顺序：downmp3')
+                expect(page.locator('#download-job-summary')).to_contain_text('当前实例 · 下载方式尝试顺序：downmp3')
                 for path, selector, note in [(f'/?job={a}', '#download-queue-start', '#download-execution-status'),
                                               (f'/?job={b}', '#download-queue-start', '#download-execution-status')]:
                     store.set_downloads_paused(True)
@@ -148,7 +148,7 @@ def main():
                 release.set()
                 page.screenshot(path=str(output / 'timeout-feedback.png'))
                 delay_control[0] = False
-                expect(page.locator('#download-queue-start')).to_have_text('任务已开始')
+                expect(page.locator('#download-queue-start')).to_have_text('已启动')
                 # Search results retain an explicitly chosen task, and loading via
                 # task-center link keeps that choice through homepage navigation.
                 page.locator('#download-job-search').fill('Order B')

@@ -122,7 +122,7 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .fleet-current-tasks{padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .fleet-current-tasks h3{font-size:13px}
 .fleet-current-tasks .micro-copy{font-size:11px}
-.download-dashboard{grid-template-columns:repeat(3,minmax(0,1fr))}
+.download-dashboard{grid-template-columns:repeat(4,minmax(0,1fr))}
 .download-console{margin-top:20px;padding-bottom:6px}
 .download-console .download-job-picker{margin:0 23px 18px}
 .selected-job-summary{margin:0 23px;padding:16px 0;border-top:1px solid var(--line)}

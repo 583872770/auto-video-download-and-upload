@@ -46,8 +46,8 @@ const actionNames = { download: '下载视频', check: '下载环境检查', imp
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
-  instances: ['下载实例', '下载实例', '集中查看各实例的任务、速度与异常；每个实例独立控制。'],
-  overview: ['下载工作台', '下载工作台', '选择已有任务，开始下载并查看运行状态。'],
+  instances: ['下载实例', '下载实例', '汇总全部实例的处理进度、传输速度与异常；每个实例可单独启动和停止。'],
+  overview: ['下载工作台', '下载工作台', '选择实例与任务，启动下载并查看视频处理进度。'],
   media: ['素材库', '素材库', '查看当前实例的成品、封面和文件大小。'],
   tasks: ['执行日志', '执行日志', '排查单个视频或后台操作的执行结果；客户任务在任务中心管理。'],
   statistics: ['交付与账单', '交付与账单', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
@@ -144,7 +144,7 @@ function taskPaused(task) {
   return task.instance_id && task.instance_id !== state.instanceId ? !!item?.paused : !!state.workbench?.paused;
 }
 function taskStatus(task) {
-  return taskPaused(task) ? '已暂停' : statusNames[task.status] || task.status;
+  return taskPaused(task) ? '等待启动' : statusNames[task.status] || task.status;
 }
 function etaText(seconds) {
   if (!Number.isFinite(seconds)) return '—';
@@ -152,8 +152,8 @@ function etaText(seconds) {
   return value >= 3600 ? `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分` : value >= 60 ? `${Math.floor(value / 60)}分${value % 60}秒` : `${value}秒`;
 }
 function progressLabel(task) {
-  if (taskPaused(task)) return '已暂停 · 等待继续';
-  if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待继续下载';
+  if (taskPaused(task)) return '实例已停止 · 等待启动';
+  if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待启动';
   if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '等待退避重试' : '排队中';
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
   if (task.status === 'failed') return '下载失败';
@@ -164,11 +164,11 @@ function progressLabel(task) {
   if (stage === 'disk_wait') return '等待磁盘空间或临时文件预算';
   if (stage === 'preparing_proxy') return '准备代理节点';
   if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
-  if (stage === 'waiting_api_conversion') return 'downmp3 · 远端转换中（尚未下载）';
+  if (stage === 'waiting_api_conversion') return 'downmp3 · 网站正在转换（尚未传输）';
   if (stage === 'switching_provider') return `正在切换到 ${providerNames[task.progress?.download_method] || '下一个下载器'}`;
   const browserStages = { waiting_browser: '等待浏览器名额', starting_browser: '启动浏览器', connecting_browser: '连接浏览器', opening_site: '打开网页', waiting_site_form: '等待网页输入框', submitting_site: '提交视频链接', waiting_verification: '等待网站验证', converting: '网站正在转换' };
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
-  return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输名额', downloading: '正在下载', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -178,7 +178,7 @@ function downloadProgress(task) {
   const converting = active && data.stage === 'waiting_api_conversion';
   const measured = converting ? data.provider_percent : data.percent;
   const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(measured) ? Math.max(0, Math.min(100, measured)) : null;
-  const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待远端转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
+  const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待网站转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
   const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : data.stage === 'downloading' ? '计算中…' : '—';
   const provider = providerNames[data.download_method] || '';
@@ -187,21 +187,21 @@ function downloadProgress(task) {
   const stageName = stage => progressLabel({ action: 'download', status: 'running', progress: { stage } });
   const timing = stageSeconds !== null || slowest ? `<p class="micro-copy stage-timing">${stageSeconds !== null ? `本阶段已用 ${etaText(stageSeconds)}` : `${queued ? '上次' : '本次'}执行已记录用时 ${etaText(data.elapsed || 0)}`}${slowest ? ` · ${active ? '已结束阶段中最久' : '耗时最长阶段'}：${escapeHTML(stageName(slowest[0]))} ${etaText(slowest[1])}` : ''}</p>` : '';
   const methods = data.selected_download_methods;
-  const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}执行顺序：${escapeHTML(methods.map(method => providerNames[method] || method).join(' → '))}${queued ? '；重新领取时读取执行实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">配置执行实例：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
+  const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}下载方式：${escapeHTML(methods.map(method => providerNames[method] || method).join('、'))}${queued ? '；下次启动处理时使用该实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">实例设置：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
   if (!selectedJobId) {
     $('#batch-count').textContent = '0';
-    $('#batch-summary').textContent = '此处显示所选任务的实时执行情况。';
+    $('#batch-summary').textContent = '查看所选任务在当前实例的处理进度。';
     $('#batch-progress').innerHTML = emptyState('请选择下载任务', '任务视频在任务中心准备；选择任务后可以开始下载。');
     return;
   }
   const queue = state.workbench || {};
   $('#batch-count').textContent = tasks.length;
-  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 正在下载 ${tasks.length} 个 · 待下载 ${selectedJob?.queued || 0} 个`;
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前没有正在下载的视频', state.workbench?.paused ? '选择任务并开始后，这里会显示实时进度。' : '此任务执行时在这里显示进度；视频结果在任务详情查看。');
+  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例处理中视频 ${tasks.length} 个 · 任务待下载视频 ${selectedJob?.queued || 0} 个`;
+  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
   renderPagination();
 }
 function renderPagination() {
@@ -225,13 +225,27 @@ function decimalGB(value) {
   const amount = Number(value || 0);
   return amount > 0 && amount < 1000 ? '< 0.000001 GB' : `${(amount / 1e9).toLocaleString('zh-CN', { maximumFractionDigits: 6 })} GB`;
 }
+function renderWorkbenchSpeed() {
+  const workbench = state.workbench;
+  const transfers = (workbench?.active_tasks || []).filter(task => task.status === 'running' && task.progress?.stage === 'downloading');
+  const measured = transfers.filter(task => Number.isFinite(task.progress.speed) && task.progress.speed >= 0);
+  const available = workbench && workbench.online !== false;
+  const rate = measured.reduce((sum, task) => sum + task.progress.speed, 0);
+  const known = available && (!transfers.length || measured.length);
+  const [value, unit] = known ? bytes(rate).split(' ') : ['—', ''];
+  $('#stat-speed').textContent = value;
+  $('#stat-speed-unit').textContent = unit ? `${unit}/s` : '';
+  $('#speed-caption').textContent = !workbench ? '等待实例状态' : !available ? '当前实例离线' : !transfers.length ? '当前没有视频传输' :
+    `传输中视频 ${transfers.length} 个${measured.length < transfers.length ? ' · 速度计算中' : ''}`;
+}
 function renderTasks() {
   const counts = state.overview.download_counts || {};
   $('#stat-active').textContent = selectedJob?.queued || 0;
   $('#stat-running').textContent = state.workbench?.running || 0;
+  renderWorkbenchSpeed();
   $('#stat-complete').textContent = selectedJob?.file_count || 0;
   $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
-  $('#active-caption').textContent = state.workbench?.paused ? '当前实例已停止领取' : '选择任务后开始下载';
+  $('#active-caption').textContent = selectedJob ? '本任务在全部实例间共享的待下载视频' : '选择任务后查看待下载视频';
   $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
   renderBatches();
 }
@@ -669,7 +683,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
 });
 
-const startupNames = { checking_instances: '检查下载实例及其环境', checking_database: '连接数据库', reading_queue: '读取待处理清单', preparing_proxy: '准备代理节点', checking_environment: '检查下载工具', checking_login: '验证 YouTube Cookie', releasing_queue: '放行队列并启动进程' };
+const startupNames = { checking_instances: '检查下载实例及其环境', checking_database: '连接数据库', reading_queue: '读取待处理清单', preparing_proxy: '准备代理节点', checking_environment: '检查下载工具', checking_login: '验证 YouTube Cookie', releasing_queue: '启动下载' };
 function renderStartup() {
   const value = state.startup;
   $('#download-startup').hidden = !value || value.state === 'idle';
@@ -677,7 +691,7 @@ function renderStartup() {
   const labels = { running: '启动检查中', succeeded: '启动检查已完成', failed: '启动未完成', cancelled: '启动已取消' };
   $('#startup-title').textContent = `${value.state === 'running' && value.cancel_requested ? '正在取消启动' : labels[value.state] || value.state} · ${value.elapsed || 0} 秒`;
   $('#startup-steps').innerHTML = (value.steps || []).map((step, index) => `<li class="${value.state === 'running' && index === value.steps.length - 1 ? 'is-current' : ''}"><span>${escapeHTML(startupNames[step.stage] || step.stage.replace(/^instance_ready:/, '实例就绪：'))}</span><b>${Number(step.elapsed) || 0} 秒</b></li>`).join('');
-  $('#startup-message').textContent = (value.message || '检查通过后自动执行；可点击暂停取消启动。') + (value.slowest ? ` 当前耗时最长：${startupNames[value.slowest] || value.slowest}。` : '');
+  $('#startup-message').textContent = (value.message || '检查通过后自动启动下载。') + (value.slowest ? ` 当前耗时最长：${startupNames[value.slowest] || value.slowest}。` : '');
   $('#download-startup').classList.toggle('startup-failed', value.state === 'failed');
 }
 function renderJobOptions() {
@@ -797,19 +811,19 @@ function renderDownloadControl() {
   $('#download-job-detail').href = job ? `/jobs#${job.id}` : '/jobs';
   const summary = $('#download-job-summary'); summary.hidden = !job;
   if (job) {
-    summary.innerHTML = `<div class="selected-job-counts">${[['待下载',job.queued],['当前实例下载中',job.running],['任务处理成功',job.succeeded],['任务失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
+    summary.innerHTML = `<div class="selected-job-counts">${[['任务待下载视频',job.queued],['当前实例处理中视频',job.running],['任务处理成功',job.succeeded],['任务处理失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
   }
   const alreadyStarted = !!job?.released && !queue?.paused && queue?.selected_job_id===job.id;
-  $('#download-queue-start').textContent = queueResuming ? '正在启动…' : alreadyStarted ? '任务已开始' : '开始下载';
+  $('#download-queue-start').textContent = queueResuming ? '正在启动…' : alreadyStarted ? '已启动' : '启动';
   $('#download-queue-start').setAttribute('aria-busy', String(queueResuming));
   $('#download-queue-start').disabled = viewer || queueControlBusy || starting || !state.config || !queue || !queue.online || !job || job.archived || (!job.queued && !job.running && !job.importing) || alreadyStarted || (queue.stop_requested && !!queue.running);
   $('#download-job-pause').disabled = viewer || queueControlBusy || !queue || queue.paused;
   $('#download-job-stop').disabled = viewer || queueControlBusy || !queue || (queue.paused && !queue.running);
-  $('#download-queue-toggle').textContent = '停止当前实例';
+  $('#download-queue-toggle').textContent = '立即停止';
   $('#download-queue-toggle').disabled = viewer || queueControlBusy || (!starting && (!queue || (queue.paused && !queue.running) || (!queue.running && !queue.queued)));
   const differentJob = queue?.selected_job_id && queue.selected_job_id !== selectedJobId;
-  $('#download-selection-status').textContent = differentJob ? '点击开始后，当前实例切换到所选任务。' : !job ? '' : job.waiting_reason || (job.running ? (queue?.paused ? '当前实例将在当前视频完成后暂停。' : '此任务正在下载。') : job.released && job.importing ? '等待文件导入，随后自动下载。' : !job.queued && !job.importing ? '没有待下载视频。请到该任务中添加视频或重试失败条目。' : job.released ? '此任务正在排队。' : '此任务已准备好，可以开始下载。');
-  $('#download-queue-status').textContent = queue ? `当前实例：执行中 ${queue.running}。${queue.paused ? queue.running ? '完成当前视频后暂停。' : '已停止领取。' : '正在领取所选任务的视频。'}` : '正在读取当前实例状态…';
+  $('#download-selection-status').textContent = differentJob ? '点击“启动”后，当前实例切换到所选任务。' : !job ? '' : job.waiting_reason || (job.running ? (queue?.paused ? '当前实例将在正在处理的视频全部完成后停止。' : '当前实例正在处理所选任务的视频。') : job.released && job.importing ? '等待文件导入，随后自动下载。' : !job.queued && !job.importing ? '没有待下载视频。请到该任务中添加视频或重试失败条目。' : job.released ? '已启动，等待处理所选任务的待下载视频。' : '任务已就绪，点击“启动”开始处理。');
+  $('#download-queue-status').textContent = queue ? `当前实例：${instanceState(queue)} · 处理中视频 ${queue.running} 个。` : '正在读取当前实例状态…';
   const execution = $('#download-execution-status'); execution.replaceChildren();
   if (queueResuming) execution.append(document.createTextNode('正在检查当前实例的下载环境，请稍候。'));
   if (queueResumeError) execution.append(document.createTextNode(queueResumeError));
@@ -817,10 +831,11 @@ function renderDownloadControl() {
   renderStartup();
 }
 function instancePolicyText(policy) {
-  const methods = (policy.download_methods || (policy.download_method==='yt5s_fallback'?['yt5s','yt_dlp']:[policy.download_method || 'yt_dlp'])).map(method => providerNames[method] || method).join(' → ');
+  const auto = policy.scheduler_mode === 'auto';
+  const methods = (policy.download_methods || (policy.download_method==='yt5s_fallback'?['yt5s','yt_dlp']:[policy.download_method || 'yt_dlp'])).map(method => providerNames[method] || method).join(auto ? '、' : ' → ');
   const qualities = {yt5s:policy.yt5s_quality, downmp3:policy.downmp3_quality, yt1d:policy.yt1d_quality, bergung:policy.bergung_quality};
   const quality = Object.entries(qualities).filter(([method]) => (policy.download_methods || [policy.download_method]).includes(method)).map(([method,value]) => `${method} ${!value || value==='best'?'最高画质':value+'p'}`).join(' / ');
-  return `下载顺序：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':'保存成品'}`;
+  return `${auto ? '自动调度下载方式' : '下载方式尝试顺序'}：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':'保存成品'}`;
 }
 function downloadPolicyText() {
   if (!state.config) return '正在读取当前实例策略…';
@@ -844,7 +859,7 @@ setInterval(() => { if (state.startup?.state === 'running' || location.hash === 
 $('#download-queue-start').addEventListener('click', async () => {
   if (queueControlBusy || document.body.dataset.consoleRole === 'viewer') return;
   if (providerDraft || downloadMethodBusy) {
-    toast('下载方式尚未保存完成，请先在系统设置点击“保存设置”，再开始下载。', true);
+    toast('下载方式尚未保存完成，请先在系统设置点击“保存设置”，再启动下载。', true);
     setView('settings');
     return;
   }
@@ -857,7 +872,7 @@ $('#download-queue-start').addEventListener('click', async () => {
     const result = await api('/api/jobs/workbench', { method: 'POST', body: { action: 'start', job_id: id }, signal: AbortSignal.timeout(90000) });
     ++workbenchEpoch; applyWorkbench(result);
     lastStartedJobId = result.job.id; clearJobLink();
-    toast(result.warnings?.length ? result.warnings.join('；') : `已开始下载：${result.job.customer} / ${result.job.name}`);
+    toast(result.warnings?.length ? result.warnings.join('；') : `已启动：${result.job.customer} / ${result.job.name}`);
   } catch (error) {
     queueResumeError = error.name === 'TimeoutError' ? '启动请求等待超过 90 秒，结果尚未确认，请刷新查看最新状态。' : error.message;
     toast(queueResumeError, true);
@@ -873,7 +888,7 @@ for (const [selector, action] of [['#download-job-pause','pause'],['#download-jo
     try {
       const result = await api('/api/jobs/workbench',{method:'POST',body:{action}});
       ++workbenchEpoch; applyWorkbench(result);
-      toast(action==='pause'?'当前实例将在当前视频完成后暂停。':'已停止当前实例，执行进程将在下次心跳退出。');
+      toast(action==='pause'?'当前实例将在正在处理的视频全部完成后停止。':'已发送立即停止指令，正在停止当前实例的下载。');
       await refresh();
     } catch (error) { queueResumeError = error.message; toast(error.message,true); }
     finally { queueControlBusy = false; renderDownloadControl(); }
@@ -887,7 +902,7 @@ $('#download-queue-toggle').addEventListener('click', async () => {
   try {
     const result = await api('/api/jobs/workbench', { method: 'POST', body: {action:'stop'} });
     ++workbenchEpoch; applyWorkbench(result);
-    toast('已停止当前实例。');
+    toast('已发送立即停止指令，正在停止当前实例的下载。');
     await pollStartup();
     await refresh();
   } catch (error) { toast(error.message, true); }

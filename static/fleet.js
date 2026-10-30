@@ -3,6 +3,9 @@
 function renderInstanceScope() {
   const local = ['overview','media','settings','clash','instances',''].includes(location.hash.slice(1));
   $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
+  if (state.fleet?.items.some(item => ['worker', 'hybrid'].includes(item.role))) {
+    $('#fleet-selection-note').textContent = location.hash === '#instances' ? '下方汇总和列表展示全部实例；工作台、系统设置和素材库跟随所选实例。' : '任务选择、下载控制、系统设置和素材库仅影响当前实例。';
+  }
 }
 
 function instanceName(identity) {
@@ -14,29 +17,29 @@ function mediaAddress(kind, name, identity) {
 }
 function instanceStatistics(item) {
   const totals = item.statistics || {};
-  return `<div class="fleet-metrics"><span>累计成功 <b>${Number(totals.succeeded || 0) + Number(totals.test_succeeded || 0)}</b></span><span>累计失败 <b>${Number(totals.failed || 0)}</b></span><span>交付文件 <b>${Number(totals.file_count || 0)} 个 / ${bytes(totals.file_bytes || 0)}</b></span><span>测试文件 <b>${Number(totals.test_file_count || 0)} 个 / ${bytes(totals.test_file_bytes || 0)}</b></span></div>`;
+  return `<div class="fleet-metrics"><span>累计处理成功 <b>${Number(totals.succeeded || 0) + Number(totals.test_succeeded || 0)}</b></span><span>累计处理失败 <b>${Number(totals.failed || 0)}</b></span><span>已交付文件 <b>${Number(totals.file_count || 0)} 个 / ${bytes(totals.file_bytes || 0)}</b></span><span>测试文件 <b>${Number(totals.test_file_count || 0)} 个 / ${bytes(totals.test_file_bytes || 0)}</b></span></div>`;
 }
 function renderFleetJob() {
   const item = state.fleet?.items.find(item => item.id === state.instanceId);
   const job = item?.selected_job;
-  $('#fleet-job-context').innerHTML = job ? `<h2>当前实例：${escapeHTML(item.name)} · ${escapeHTML(job.customer)} / ${escapeHTML(job.name)}</h2><p class="micro-copy">${item.paused ? item.running ? '完成当前视频后暂停' : '已停止领取' : '仅领取此任务的视频'} · 下载中 ${item.running}</p><a class="text-button" href="/?instance_id=${encodeURIComponent(item.id)}#overview">返回此实例的下载工作台 ↗</a>` : '<h2>当前实例尚未选择下载任务</h2><p class="micro-copy">在下载工作台选择任务并开始，开关和任务选择只作用于当前实例。</p><a class="text-button" href="/#overview">前往下载工作台 ↗</a>';
+  $('#fleet-job-context').innerHTML = job ? `<h2>当前实例：${escapeHTML(item.name)} · ${escapeHTML(job.customer)} / ${escapeHTML(job.name)}</h2><p class="micro-copy">${escapeHTML(instanceState(item))} · 处理中视频 ${item.running} 个</p><a class="text-button" href="/?instance_id=${encodeURIComponent(item.id)}#overview">返回此实例的下载工作台 ↗</a>` : '<h2>当前实例尚未选择下载任务</h2><p class="micro-copy">请在下载工作台选择任务并点击“启动”，操作仅影响当前实例。</p><a class="text-button" href="/#overview">前往下载工作台 ↗</a>';
 }
 function instanceCurrentTasks(item) {
   const videos = item.current_tasks || [];
-  return `<div class="fleet-current-tasks"><h3>当前执行视频</h3>${videos.length ? videos.map(video => {
+  return `<div class="fleet-current-tasks"><h3>视频处理进度</h3>${videos.length ? videos.map(video => {
     const progress = video.progress || {};
     return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${Number.isFinite(progress.speed) ? ' · '+bytes(progress.speed)+'/s' : ''}</p>`;
-  }).join('') : '<p class="micro-copy">当前没有正在执行的视频。</p>'}</div>`;
+  }).join('') : '<p class="micro-copy">当前没有正在处理的视频。</p>'}</div>`;
 }
 function instanceLive(item) {
   const job = item.selected_job;
   const rate = item.throughput;
-  const throughputDetails = rate ? `<p class="micro-copy">媒体接收 ${escapeHTML(rate.media_receive_mbps ?? '—')} Mbps · 校验成品 ${escapeHTML(rate.verified_mbps ?? '—')} Mbps（滚动窗口） · CPU ${escapeHTML(rate.cpu_percent)}% · 可用内存 ${escapeHTML(rate.memory_available_mb)} MB</p><p class="micro-copy">${Object.entries(rate.groups || {}).map(([group,value])=>`${escapeHTML(group)}：传输 ${escapeHTML(value.active)} / ${escapeHTML(value.limit)}，${escapeHTML(value.receive_mbps)} Mbps`).join('；')}</p>` : '';
+  const throughputDetails = rate ? `<p class="micro-copy">媒体接收速度 ${escapeHTML(rate.media_receive_mbps ?? '—')} Mbps · 成品产出速度 ${escapeHTML(rate.verified_mbps ?? '—')} Mbps（近期平均） · CPU ${escapeHTML(rate.cpu_percent)}% · 可用内存 ${escapeHTML(rate.memory_available_mb)} MB</p><p class="micro-copy">${Object.entries(rate.groups || {}).map(([group,value])=>`${escapeHTML(group)}：传输中视频 ${escapeHTML(value.active)} / ${escapeHTML(value.limit)}，${escapeHTML(value.receive_mbps)} Mbps`).join('；')}</p>` : '';
   if (item.id === state.instanceId && $('#channel-performance')) renderChannelPerformance(rate);
-  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>执行中 <b>${item.running}</b></span><span>传输中 <b>${item.transferring}</b></span><span>总速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'auto' ? '自动吞吐' : '手动并发'} · 传输额度 ${escapeHTML(item.throughput.transfers)} · 准备与传输总额度 ${escapeHTML(item.throughput.workers)} · 浏览器 ${escapeHTML(item.throughput.browsers)} · 接收 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
+  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.running}</b></span><span>传输中视频 <b>${item.transferring}</b></span><span>总传输速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'auto' ? '自动并发' : '手动并发'} · 传输并发上限 ${escapeHTML(item.throughput.transfers)} · 视频处理并发上限 ${escapeHTML(item.throughput.workers)} · 浏览器并发上限 ${escapeHTML(item.throughput.browsers)} · 网络接收速度 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
 }
 function instanceState(item) {
-  return !item.online ? '离线' : item.paused ? item.running ? item.stop_requested ? '正在停止' : '完成当前后暂停' : '已停止' : item.running ? '在线 · 下载中' : '已启动 · 等待任务';
+  return !item.online ? '离线' : item.paused ? item.running ? item.stop_requested ? '正在停止' : '等待当前视频完成' : '已停止' : item.running ? '已启动 · 处理中' : '已启动 · 等待任务';
 }
 function instanceActionDisabled(item, action) {
   if (!item || state.fleetControlBusy) return true;
@@ -59,8 +62,8 @@ function instanceCard(item, expanded) {
     <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
     <div data-instance-live="${id}">${instanceLive(item)}</div>
     <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">打开下载工作台 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">下载策略与磁盘 ↗</a></div>
-    <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后暂停</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
-    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>下载并发<input name="worker_count" type="number" min="1" max="64" value="${item.worker_count}" required></label><label>浏览器并发<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>磁盘预留 GB<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">降低并发时让当前视频先完成；离线实例的停止指令在恢复连接后处理。</p></details>
+    <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后停止</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
+    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>${item.throughput?.mode === 'auto' ? '传输并发上限' : '视频处理并发上限'}<input name="worker_count" type="number" min="1" max="64" value="${item.worker_count}" required></label><label>浏览器并发上限<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>最低剩余磁盘空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">并发上限不等于当前处理数量。降低并发后，正在处理的视频会继续完成；离线实例重新连接后才会处理停止指令。</p></details>
   </form></article>`;
 }
 async function loadFleet() {
@@ -85,11 +88,12 @@ async function loadFleet() {
     fillConfig(config.config); renderDownloadControl();
   }
   const selector = $('#fleet-selection');
-  const options = workers.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}${item.id === data.instance_id ? '（本机）' : ''} · ${item.online ? item.paused ? '已暂停领取' : '在线' : '离线'}</option>`).join('');
+  const options = workers.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}${item.id === data.instance_id ? '（本机）' : ''} · ${instanceState(item)}</option>`).join('');
   if (selector.innerHTML !== options) selector.innerHTML = options;
   selector.value = state.instanceId || '';
-  $('#fleet-selection-note').textContent = workers.length ? '任务选择、下载控制、策略与素材均按实例独立。' : '还没有下载实例，请启动服务并检查数据库连接。';
-  const monitor=[['在线实例',`${workers.filter(item=>item.online).length} / ${workers.length}`],['执行中视频',workers.reduce((sum,item)=>sum+Number(item.running||0),0)],['总传输速度',bytes(workers.reduce((sum,item)=>sum+Number(item.online?item.speed||0:0),0))+'/s'],['异常实例',workers.filter(item=>!item.online||item.error).length]];
+  if (workers.length) renderInstanceScope();
+  else $('#fleet-selection-note').textContent = '还没有下载实例，请启动服务并检查数据库连接。';
+  const monitor=[['在线实例',`${workers.filter(item=>item.online).length} / ${workers.length}`],['处理中视频',workers.reduce((sum,item)=>sum+Number(item.running||0),0)],['总传输速度',bytes(workers.reduce((sum,item)=>sum+Number(item.online?item.speed||0:0),0))+'/s'],['异常实例',workers.filter(item=>!item.online||item.error).length]];
   $('#fleet-monitor-summary').innerHTML=monitor.map(([label,value])=>`<div class="monitor-metric"><span>${label}</span><strong>${escapeHTML(value)}</strong></div>`).join('');
   if (!state.fleetControlBusy && !state.fleetFormDirty && !document.activeElement?.matches('#instances-view input')) {
     $('#fleet-global-limit').value = data.global_limit;

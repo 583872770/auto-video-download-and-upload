@@ -60,7 +60,7 @@ def main():
                 page.locator('#detail-heading a.primary').click()
                 expect(page.locator('#download-job')).to_have_value(a)
                 page.locator('#download-queue-start').click()
-                expect(page.locator('#download-queue-start')).to_have_text('任务已开始')
+                expect(page.locator('#download-queue-start')).to_have_text('已启动')
                 task = store.claim(store.owner)
                 fixture = root / 'fixture.mp4'
                 fixture.write_bytes(b'x' * 1000)

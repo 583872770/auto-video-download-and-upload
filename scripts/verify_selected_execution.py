@@ -82,7 +82,7 @@ def main():
                 expect(page.locator('#download-job')).to_have_value('')
                 page.locator('#download-job').select_option(a)
                 page.locator('#download-queue-start').click()
-                expect(page.locator('#download-queue-start')).to_have_text('任务已开始')
+                expect(page.locator('#download-queue-start')).to_have_text('已启动')
                 response = client.post('/api/jobs/workbench', json={'action':'start', 'job_id':b},
                     headers={**headers, 'X-Instance-ID':'beta'})
                 assert response.status_code == 200, response.json
@@ -105,15 +105,15 @@ def main():
                     first.append(task)
                 expect(page.locator('#batch-progress')).to_contain_text('npNnbj46_ik')
                 expect(page.locator('#batch-progress')).not_to_contain_text('WMu6ANTg8mk')
-                expect(page.locator('#download-selection-status')).to_contain_text('此任务正在下载', timeout=4000)
-                expect(page.locator('#batch-progress')).to_contain_text('本次执行顺序：downmp3')
-                expect(page.locator('#batch-progress a[href*="instance_id=alpha"]')).to_contain_text('配置执行实例：')
+                expect(page.locator('#download-selection-status')).to_contain_text('当前实例正在处理所选任务的视频', timeout=4000)
+                expect(page.locator('#batch-progress')).to_contain_text('本次下载方式：downmp3')
+                expect(page.locator('#batch-progress a[href*="instance_id=alpha"]')).to_contain_text('实例设置：')
                 expect(page.locator('#batch-progress a[href*="instance_id=beta"]')).to_have_count(0)
                 assert not status_gate.is_set(), 'progress waited for the slow status response'
                 status_gate.set()
                 page.locator('[data-view=instances].nav-item').click()
                 expect(page.locator('#fleet-job-context')).to_contain_text('Order A')
-                expect(page.locator('#fleet-job-context')).to_contain_text('下载中 1')
+                expect(page.locator('#fleet-job-context')).to_contain_text('处理中视频 1 个')
                 expect(page.locator('[data-instance-live=alpha]')).to_contain_text('npNnbj46_ik')
                 expect(page.locator('[data-instance-live=beta]')).to_contain_text('WMu6ANTg8mk')
                 expect(page.locator('[data-instance-live=beta]')).to_contain_text('Order B')
@@ -124,9 +124,9 @@ def main():
                 expect(page.locator('[data-instance-live=alpha]')).to_contain_text('55%')
                 expect(page.locator('[data-instance-form=alpha] [name=name]')).to_have_value('Unsaved name')
                 stores[0].fleet.control('alpha', {'action':'drain'})
-                expect(page.locator('[data-instance-state=alpha]')).to_contain_text('完成当前后暂停')
+                expect(page.locator('[data-instance-state=alpha]')).to_contain_text('等待当前视频完成')
                 stores[0].fleet.control('alpha', {'action':'resume'})
-                expect(page.locator('[data-instance-state=alpha]')).to_contain_text('在线 · 下载中')
+                expect(page.locator('[data-instance-state=alpha]')).to_contain_text('已启动 · 处理中')
                 page.screenshot(path=str(output / 'instances-desktop.png'), full_page=True)
                 page.set_viewport_size({'width':390,'height':844})
                 expect(page.locator('#sidebar')).not_to_be_in_viewport()
@@ -171,7 +171,7 @@ def main():
                 other.locator('#download-job').select_option(b)
                 expect(other.locator('#download-selection-status')).to_contain_text('当前实例切换到所选任务')
                 other.locator('#download-queue-start').click()
-                expect(other.locator('#download-queue-start')).to_have_text('任务已开始')
+                expect(other.locator('#download-queue-start')).to_have_text('已启动')
                 assert not stores[0].heartbeat(first[0]['id'], stores[0].owner)
                 assert stores[1].heartbeat(first[1]['id'], stores[1].owner), 'switch affected peer lease'
                 switched = stores[0].claim(stores[0].owner)
@@ -179,7 +179,7 @@ def main():
                 assert switched['video_id'] == 'aaaaaaaaaaa'
                 assert stores[0].claim('extra-owner') is None
                 expect(page.locator('#fleet-job-context')).to_contain_text('Order B')
-                expect(page.locator('#fleet-job-context')).to_contain_text('下载中 1')
+                expect(page.locator('#fleet-job-context')).to_contain_text('处理中视频 1 个')
                 expect(page.locator('[data-instance-live=alpha]')).not_to_contain_text('npNnbj46_ik')
                 expect(page.locator('[data-instance-live=beta]')).to_contain_text('WMu6ANTg8mk')
                 page.locator('[data-view=overview].nav-item').click()
@@ -189,7 +189,7 @@ def main():
                 expect(page.locator('#batch-progress')).not_to_contain_text('npNnbj46_ik')
                 page.screenshot(path=str(output / 'workbench-switched.png'), full_page=True)
                 page.locator('#download-job-stop').click()
-                expect(page.locator('#toasts')).to_contain_text('已停止当前实例')
+                expect(page.locator('#toasts')).to_contain_text('已发送立即停止指令')
                 assert stores[1].heartbeat(first[1]['id'], stores[1].owner), 'stop affected peer lease'
                 page.goto(base)
                 expect(page.locator('#download-job')).to_have_value(b)
@@ -197,10 +197,10 @@ def main():
                 expect(page.locator('#fleet-selection-bar')).to_be_visible()
                 page.locator('#fleet-selection').select_option('beta')
                 expect(page.locator('#download-job')).to_have_value(b)
-                expect(page.locator('#download-queue-start')).to_have_text('任务已开始')
+                expect(page.locator('#download-queue-start')).to_have_text('已启动')
                 expect(page.locator('#batch-progress')).to_contain_text('WMu6ANTg8mk')
                 page.locator('#download-job-pause').click()
-                expect(page.locator('#toasts')).to_contain_text('当前实例将在当前视频完成后暂停')
+                expect(page.locator('#toasts')).to_contain_text('当前实例将在正在处理的视频全部完成后停止')
                 assert stores[1].heartbeat(first[1]['id'], stores[1].owner), 'pause revoked current lease'
                 assert stores[1].claim('extra-owner') is None
                 page.reload()

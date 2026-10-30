@@ -175,7 +175,7 @@ def register_fleet(app, fleet):
         if data.get('action') == 'resume':
             rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
         fleet.control(identity, data)
-        messages = {'resume': '实例已启动。', 'drain': '实例将在完成当前视频后暂停。',
+        messages = {'resume': '实例已启动。', 'drain': '实例将在正在处理的视频全部完成后停止。',
                     'stop': '已发送立即停止指令，正在停止当前实例的下载。'}
         return jsonify(message=messages.get(data.get('action'), '实例配置已保存。'))
 

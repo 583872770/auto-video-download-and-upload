@@ -67,9 +67,10 @@
       <div id="fleet-selection-bar" class="panel fleet-selection" hidden><label><span class="scope-badge">当前实例</span><select id="fleet-selection" aria-label="当前下载实例"></select></label><p id="fleet-selection-note" class="micro-copy"></p></div>
       <section id="overview-view" class="view">
         <div class="stats-grid download-dashboard">
-          <article class="stat-card"><div class="stat-label">所选任务 · 待下载</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">选择任务后开始下载</div></article>
-          <article class="stat-card"><div class="stat-label">当前实例 · 下载中</div><div class="stat-number"><span id="stat-running">0</span><small>个</small></div><div class="stat-foot">包含解析、转换与传输阶段</div></article>
-          <article class="stat-card"><div class="stat-label">所选任务 · 已交付</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">当前任务的计费成品文件</div></article>
+          <article class="stat-card"><div class="stat-label">所选任务 · 待下载视频</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">选择任务后查看待下载视频</div></article>
+          <article class="stat-card"><div class="stat-label">当前实例 · 处理中视频</div><div class="stat-number"><span id="stat-running">0</span><small>个</small></div><div class="stat-foot">包含解析、转换与传输阶段</div></article>
+          <article class="stat-card"><div class="stat-label">当前实例 · 总传输速度</div><div class="stat-number"><span id="stat-speed">—</span><small id="stat-speed-unit"></small></div><div class="stat-foot" id="speed-caption">等待实例状态</div></article>
+          <article class="stat-card"><div class="stat-label">所选任务 · 已交付文件</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">本任务在全部实例的计费成品</div></article>
 
 
 
@@ -87,20 +88,20 @@
           </div>
           <div id="download-job-summary" class="selected-job-summary" hidden></div>
           <div class="download-queue-controls">
-            <button id="download-queue-start" type="button" class="button button-dark" disabled>开始下载</button>
-            <button id="download-job-pause" type="button" class="button button-white" disabled>完成当前后暂停</button>
-            <button id="download-job-stop" type="button" class="button button-white" disabled>停止当前实例</button>
+            <button id="download-queue-start" type="button" class="button button-dark" disabled>启动</button>
+            <button id="download-job-pause" type="button" class="button button-white" disabled>完成当前后停止</button>
+            <button id="download-job-stop" type="button" class="button button-white" disabled>立即停止</button>
             <a id="download-job-detail" class="text-button" href="/jobs">管理任务视频 ↗</a>
             <p id="download-selection-status" class="micro-copy" role="status"></p>
             <p id="download-execution-status" class="micro-copy" role="status"></p>
           </div>
           <div id="download-startup" class="startup-panel" hidden role="status"><strong id="startup-title"></strong><ol id="startup-steps"></ol><p id="startup-message" class="micro-copy"></p></div>
         </section>
-        <section class="panel library-panel" id="batch-progress-panel"><div class="panel-heading"><div><h2>实时下载 <span class="count-pill" id="batch-count">0</span></h2><p class="panel-subtitle" id="batch-summary">选择任务后查看实时进度。</p></div><span class="live-label"><span class="online-dot"></span>实时更新</span></div><div id="batch-progress"></div></section></div>
-        <details class="panel system-download-control"><summary>当前实例运行情况与停止操作</summary><p id="download-queue-status" class="micro-copy" role="status"></p><button id="download-queue-toggle" type="button" class="button button-danger" disabled>停止当前实例</button><p class="micro-copy">只控制当前实例。停止后再次开始，仅领取该实例所选任务的视频。</p></details>
+        <section class="panel library-panel" id="batch-progress-panel"><div class="panel-heading"><div><h2>视频处理进度 <span class="count-pill" id="batch-count">0</span></h2><p class="panel-subtitle" id="batch-summary">查看所选任务在当前实例的处理进度。</p></div><span class="live-label"><span class="online-dot"></span>实时更新</span></div><div id="batch-progress"></div></section></div>
+        <details class="panel system-download-control"><summary>当前实例状态与停止操作</summary><p id="download-queue-status" class="micro-copy" role="status"></p><button id="download-queue-toggle" type="button" class="button button-danger" disabled>立即停止</button><p class="micro-copy">停止操作仅影响当前实例。再次启动后，继续处理该实例所选任务的待下载视频。</p></details>
       </section>
 
-      <section id="instances-view" class="view" hidden><div id="fleet-monitor-summary" class="fleet-monitor-summary" aria-label="全部下载实例运行汇总"></div><details class="fleet-monitor-options"><summary>全局运行设置<span>并发上限 · 当前所选实例</span></summary><div class="fleet-control-strip"><div id="fleet-job-context" class="panel fleet-budget" role="status"></div><div class="panel fleet-budget"><h2>集群并发上限</h2><form id="fleet-global-form" class="media-library-actions"><label>全局最多执行任务数 <input id="fleet-global-limit" type="number" min="0" max="10000" value="0" required></label><button type="submit" class="button button-dark">保存全局上限</button></form><p class="micro-copy">0 表示按每台实例的资源额度执行；正数额外限制集群在途任务总量。自动模式包含有限的解析准备名额。</p></div></div></details><div id="fleet-instances"></div></section>
+      <section id="instances-view" class="view" hidden><div id="fleet-monitor-summary" class="fleet-monitor-summary" aria-label="全部下载实例运行汇总"></div><details class="fleet-monitor-options"><summary>运行设置<span>全部实例并发上限 · 所选实例任务</span></summary><div class="fleet-control-strip"><div id="fleet-job-context" class="panel fleet-budget" role="status"></div><div class="panel fleet-budget"><h2>全部实例并发上限</h2><form id="fleet-global-form" class="media-library-actions"><label>同时处理的视频总数上限 <input id="fleet-global-limit" type="number" min="0" max="10000" value="0" required></label><button type="submit" class="button button-dark">保存全局上限</button></form><p class="micro-copy">0 表示不额外限制，各实例按自己的并发设置运行；大于 0 时，限制全部实例同时处理的视频总数，包含解析、转换与传输阶段。</p></div></div></details><div id="fleet-instances"></div></section>
       <section id="media-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>全部素材 <span class="count-pill" id="all-media-count">0</span></h2><p class="panel-subtitle" id="media-directory"></p></div><div class="media-library-actions"><button class="button button-white" id="refresh-media"><svg><use href="#i-refresh"/></svg>同步本地文件</button><button type="button" class="button button-danger" id="clear-media">清空素材库</button></div></div><div class="catalog-toolbar"><input id="media-search" type="search" placeholder="按标题前缀或完整视频 ID 搜索" aria-label="搜索素材"><span>每页 24 条 · 按下载时间排列</span></div><div id="all-media"></div><div class="pagination"><button type="button" class="button button-white" data-page="media" data-direction="prev">上一页</button><span id="media-page-label"></span><button type="button" class="button button-white" data-page="media" data-direction="next">下一页</button></div></div></section>
 
       <section id="tasks-view" class="view" hidden><div class="panel"><div class="panel-heading"><div><h2>视频与后台操作日志</h2><p class="panel-subtitle">按结束时间倒序展示已结束的任务，支持分页、结果筛选与搜索。</p></div><select id="task-filter" aria-label="筛选任务"><option value="all">全部结果</option><option value="succeeded">已完成</option><option value="failed">失败 / 中断</option></select></div><div class="catalog-toolbar"><input id="task-search" type="search" placeholder="视频 ID、任务 ID 或标题前缀" aria-label="搜索任务"><span>每页 50 条</span></div><div id="all-tasks"></div><div class="pagination"><button type="button" class="button button-white" data-page="tasks" data-direction="prev">上一页</button><span id="tasks-page-label"></span><button type="button" class="button button-white" data-page="tasks" data-direction="next">下一页</button></div></div></section>
