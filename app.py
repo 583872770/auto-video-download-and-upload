@@ -202,7 +202,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/')
     def index():
         from webapp.cobalt_catalog import catalog
-        return render_template('index.html', csrf=session['csrf'], service_role=service_role, cobalt_catalog=catalog())
+        from webapp.risk_diagnostics import GUIDE
+        return render_template('index.html', csrf=session['csrf'], service_role=service_role, cobalt_catalog=catalog(), risk_guide=GUIDE)
 
     @app.get('/api/config')
     def read_config():
@@ -289,6 +290,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 paused=bool(fleet.row(db)['paused']) if fleet else queue.get('paused', False))
             from webapp.subtitles import summary as subtitle_summary
             concurrency['subtitles'] = subtitle_summary(db, stamp, identity)
+            from webapp.risk_diagnostics import observed, local_health
+            concurrency['local_health'] = local_health(store.directory, config, exts['clash'].directory)
+            concurrency['risks'] = observed(config, concurrency, youtube['auth'], stamp,
+                error=fleet.row(db)['error'] if fleet else '')
+            concurrency['auth_checked_at'] = youtube['auth'].get('checked_at')
         return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        throughput=rate, concurrency=concurrency,
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
@@ -714,6 +720,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/api/tasks/<task_id>')
     def task_detail(task_id):
         task = store.get(task_id)
+        if task:
+            from webapp.risk_diagnostics import task_risks
+            task['risk'] = task_risks(task)
         return (jsonify(task), 200) if task else (jsonify(error='任务不存在'), 404)
 
     @app.get('/api/tasks/<task_id>/logs')

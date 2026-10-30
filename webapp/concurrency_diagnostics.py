@@ -12,13 +12,14 @@ from webapp.throughput import automatic, policy_key
 
 
 def scopes_for(config, identity):
-    scopes = {'local-transfers:' + identity, 'local-connections:' + identity}
+    scopes = {'local-transfers:' + identity, 'local-connections:' + identity, 'route-probe:' + identity}
     for channel in registry(config):
         for group in {channel.upstream_group, 'youtube-origin'}:
             scopes.update(('upstream:' + group, 'connections:' + group,
                            'local-upstream:' + identity + ':' + group))
         scopes.update(('channel:' + channel.id, 'quota:' + channel.quota_group,
                        'resolver:' + channel.resolver_group,
+                       'route:' + channel.id, 'backend-route:' + backend_key(channel),
                        'backend-quota:' + backend_key(channel),
                        'backend-resolver:' + backend_key(channel)))
     return scopes
@@ -50,6 +51,11 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     transfers = int(rate['transfers']) if auto and fresh else min(requested, 2) if auto else requested
     channels = registry(config)
     caps = group_caps(channels)
+    backend_caps = {}
+    for channel in channels:
+        key = backend_key(channel)
+        limits = (channel.task_limit, channel.resolver_limit, channel.transfer_limit)
+        backend_caps[key] = tuple(min(a, b) for a, b in zip(backend_caps.get(key, limits), limits))
 
     def resource(scope, cap):
         state = states.get(scope, {})
@@ -57,12 +63,13 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         ceiling = min([cap, *live])
         cooling = max(0, state.get('cooldown_until', 0) - stamp)
         recovering = max(0, state.get('recover_until', 0) - stamp)
-        return {'scope': scope.split(':', 1)[0], 'limit': ceiling,
+        return {'scope': scope.split(':', 1)[0], 'group': scope.split(':', 1)[1], 'limit': ceiling,
                 'effective': 0 if cooling else min(1, ceiling) if recovering else ceiling,
                 'used': usage.get(scope, 0), 'cooldown_seconds': math.ceil(cooling),
                 'recovery_seconds': math.ceil(recovering),
                 'last_throttle_status': state.get('cooldown_status') if cooling or recovering else None,
-                'last_throttle_kind': state.get('cooldown_kind') if cooling or recovering else None}
+                'last_throttle_kind': state.get('cooldown_kind') if cooling or recovering else None,
+                'last_throttle_at': state.get('last_throttle_at')}
 
     rows, group_limits = [], {}
     for channel in channels:
@@ -74,8 +81,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                      resource('upstream:' + group, caps['upstream:' + group]),
                      resource('quota:' + channel.quota_group, caps['quota:' + channel.quota_group]),
                      resource('local-upstream:' + identity + ':' + group, group_limit)]
+        resources.append(resource('local-transfers:' + identity, transfers))
         if config.get('scheduler_mode') == 'auto':
-            resources.append(resource('backend-quota:' + backend_key(channel), channel.transfer_limit))
+            resources.append(resource('backend-quota:' + backend_key(channel), backend_caps[backend_key(channel)][2]))
         effective = min(transfers, *(r['effective'] for r in resources))
         # Manual yt-dlp reserves this many connection units before extraction.
         connection_units = (min(int(config.get('fragment_concurrency', 4)), channel.connection_limit,
@@ -86,9 +94,21 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         if connection_units:
             effective = min(effective, connection['effective'] // connection_units,
                             local_connection['effective'] // connection_units)
+        else:
+            effective = min(effective, connection['effective'], local_connection['effective'])
         resources.extend((connection, local_connection))
+        resolving = ([resource('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group])]
+                     if channel.adapter != 'yt_dlp' or auto else [])
+        if config.get('scheduler_mode') == 'auto':
+            resolving.extend((resource('backend-resolver:' + backend_key(channel), backend_caps[backend_key(channel)][1]),
+                              resource('route:' + channel.id, channel.task_limit),
+                              resource('backend-route:' + backend_key(channel), backend_caps[backend_key(channel)][0])))
+            if not (states.get('channel:' + channel.id, {}).get('rate', 0) > 0
+                    or states.get('channel:' + channel.id, {}).get('successes', 0) > 0):
+                resolving.append(resource('route-probe:' + identity, 1))
         cooldown = max(r['cooldown_seconds'] for r in resources)
         recovery = max(r['recovery_seconds'] for r in resources)
+        channel_state = states.get('channel:' + channel.id, {})
         rows.append({'id': channel.id, 'label': channel.label, 'group': group,
                      'transfer_limit': channel.transfer_limit, 'resolver_limit': channel.resolver_limit,
                      'resolver_separate': channel.adapter != 'yt_dlp' or auto,
@@ -96,6 +116,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                      'connection_units': connection_units, 'shared_limit': resources[1]['limit'],
                      'effective_limit': effective, 'occupied': resources[1]['used'],
                      'cooldown_seconds': cooldown, 'recovery_seconds': recovery,
+                     'resolver_cooldown_seconds': max((r['cooldown_seconds'] for r in resolving), default=0),
+                     'resources': [{**r, 'phase': phase} for phase, items in (('transfer', resources), ('resolve', resolving)) for r in items],
+                     'failures': channel_state.get('failures', 0),
                      'status': 'cooldown' if cooldown else 'recovering' if recovery else 'available',
                      'throttle_status': next((r['last_throttle_status'] for r in resources if r['last_throttle_status']), None),
                      'throttle_kind': next((r['last_throttle_kind'] for r in resources if r['last_throttle_kind']), None)})
@@ -110,6 +133,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
+            'local_health': (rate or {}).get('risk_local'),
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
@@ -118,6 +142,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'running': len(progress), 'transferring': stages.get('downloading', 0),
             'preparing': sum(value for stage, value in stages.items() if stage not in ('downloading', 'waiting_transfer', 'processing')),
             'processing': stages.get('processing', 0), 'waiting_transfer': stages.get('waiting_transfer', 0),
-            'wait_resources': dict(waits), 'channels': rows,
+            'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
+            'subtitle_mode': config.get('subtitle_mode', 'optional'),
+            'browser_limit': int(rate.get('browsers', config.get('yt5s_browser_count', 2))) if fresh else int(config.get('yt5s_browser_count', 2)),
+            'disk_sample_fresh': disk_fresh,
             'disk_blocked': bool(disk_fresh and disk.get('blocked')),
             'disk_message': disk.get('message', '') if disk_fresh else ''}

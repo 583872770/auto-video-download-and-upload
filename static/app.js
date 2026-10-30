@@ -950,6 +950,7 @@ async function openTask(taskId) {
   $('#task-result').replaceChildren();
   $('#task-error').hidden = true;
   $('#task-download-progress').replaceChildren();
+  $('#task-risk').replaceChildren();
   $('.task-technical').open = false;
   if (!$('#task-dialog').open) $('#task-dialog').showModal();
   try { await updateTaskDetail(); } catch (error) { toast(error.message, true); }
@@ -963,6 +964,7 @@ async function updateTaskDetail() {
   if (state.selectedTask !== taskId) return;
   $('#task-dialog-title').textContent = actionNames[task.action] || task.action;
   $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>${task.started_at ? `<span>开始于 ${escapeHTML(formatDate(task.started_at, true))}</span>` : ''}${task.finished_at ? `<span>结束于 ${escapeHTML(formatDate(task.finished_at, true))}</span>` : ''}`;
+  $('#task-risk').innerHTML = taskRiskHTML(task);
   $('#task-error').hidden = !task.error;
   $('#task-error').textContent = task.error ? readableError(task.error) : '';
   $('#task-download-progress').innerHTML = task.action === 'clear_media' ? `<p class="micro-copy">已删除 ${Number(task.progress?.deleted_files || 0)} 个文件 · 释放 ${bytes(task.progress?.deleted_bytes || 0)}${task.progress?.failed_files ? ` · ${Number(task.progress.failed_files)} 个文件未能删除` : ''}</p>` : ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';

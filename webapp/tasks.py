@@ -139,6 +139,10 @@ class TaskRunner:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
                         stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
                     self.throughput.update(config, stages)
+                    if self.store.fleet:
+                        from webapp.risk_diagnostics import local_health
+                        self.throughput.state['risk_local'] = local_health(self.store.directory, config,
+                            self.store.fleet.local_settings().get('clash_directory'))
                     if self.store.fleet and not self.store.fleet.beat(throughput=self.throughput.state):
                         self.stop.set()
                         continue

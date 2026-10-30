@@ -23,6 +23,8 @@ def summary(db, stamp, identity):
     from webapp.database import download_resources
     state = json.loads(db.execute(select(download_resources.c.state).where(download_resources.c.key == key)).scalar_one_or_none() or '{}')
     values['cooldown_seconds'] = max(0, math.ceil(state.get('cooldown_until', 0)-stamp))
+    values['cooldown_status'] = state.get('cooldown_status') if values['cooldown_seconds'] else None
+    values['interval_seconds'] = max(0, math.ceil(state.get('next_at', 0)-stamp))
     return values
 
 

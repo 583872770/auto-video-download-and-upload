@@ -288,6 +288,8 @@ class Fleet:
                               for row in rows if row['role'] in DOWNLOAD_ROLES]
             context = read_context(db, configurations, stamp)
             configs = dict(configurations)
+            from webapp.risk_diagnostics import observed, read_auth
+            auths = read_auth(db, configs)
             for item in result:
                 if item['id'] in configs:
                     item['concurrency'] = diagnose(configs[item['id']], item['id'], by_instance.get(item['id'], []),
@@ -295,6 +297,9 @@ class Fleet:
                         paused=item['paused'], online=item['online'])
                     from webapp.subtitles import summary as subtitle_summary
                     item['concurrency']['subtitles'] = subtitle_summary(db, stamp, item['id'])
+                    item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],
+                        auths.get(item['id']), stamp, error=item['error'])
+                    item['concurrency']['auth_checked_at'] = auths.get(item['id'], {}).get('checked_at')
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
     def control(self, identity, data):
