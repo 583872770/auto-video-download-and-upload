@@ -101,44 +101,25 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     config.update(json.loads(fleet.row()['limits']))
             return config, base
 
+    # Store settings getter and helpers in extensions
+    app.extensions['settings_func'] = settings
     app.extensions['disk_config'] = lambda: {**DEFAULTS, **settings()[0]}
 
-    from webapp.disk_budget import DiskBudget, DiskPressure
+    # Register helper functions
+    from app.helpers import get_body, sync_runtime
+
+    # Register blueprints
+    from app.routes import register_blueprints
+    register_blueprints(app)
+
+    from webapp.disk_budget import DiskPressure
 
     @app.errorhandler(DiskPressure)
     def disk_pressure(error):
         return jsonify(error=str(error), error_type='disk_wait'), 507
 
-    @app.get('/api/disk')
-    def disk_status():
-        return jsonify(DiskBudget(store.directory, settings()[0]).snapshot())
-
-    @app.get('/api/disk/logs')
-    def instance_logs():
-        from webapp.diagnostics import read_runtime_logs
-        return jsonify(text=read_runtime_logs(store.directory))
-
-    @app.post('/api/disk/cleanup')
-    def disk_cleanup():
-        result = DiskBudget(store.directory, settings()[0]).cleanup(store)
-        return jsonify(message='已检查并清理可安全删除的临时文件和过期日志，统计与素材保留。', disk=result)
-
-    def sync_runtime(config, base):
-        if fleet:
-            fleet.save_local({**DEFAULTS, **config}, base, clash.directory)
-            return
-        cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
-        store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
-        store.set_download_settings({**DEFAULTS, **config}, base, clash.directory)
-
     if not fleet:
         sync_runtime(*settings())
-
-    def body():
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            raise ValueError('请提交 JSON 对象。')
-        return data
 
     @app.before_request
     def csrf_protection():
@@ -162,12 +143,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if not secrets.compare_digest(token, session['csrf']):
                 return jsonify(error='页面会话已失效，请刷新后重试。'), 403
         return console_auth.guard()
-
-    @app.get('/health')
-    def health():
-        with store.connect() as db:
-            db.exec_driver_sql('SELECT 1')
-        return jsonify(status='ok', role=service_role)
 
     if fleet:
         from webapp.fleet_routes import register_fleet

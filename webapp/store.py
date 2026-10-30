@@ -2,8 +2,6 @@
 import base64
 import codecs
 from collections import Counter
-from datetime import datetime
-import hashlib
 import json
 import os
 import random
@@ -11,30 +9,13 @@ from pathlib import Path
 import socket
 import time
 import uuid
-from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import OperationalError
 
 from webapp.database import (Database, archive, batches, counters, download_lists, imports, reservations,
                              rotations, settings, snapshots, tasks, workers, job_profiles, job_imports, job_removed)
-
-
-def now():
-    return datetime.now().astimezone().isoformat(timespec='seconds')
-
-
-def source_identity(url):
-    parsed = urlsplit(url or '')
-    host = (parsed.hostname or '').lower().removeprefix('www.')
-    video_id = None
-    if host in ('youtube.com', 'm.youtube.com', 'music.youtube.com'):
-        video_id = parse_qs(parsed.query).get('v', [None])[0]
-        if not video_id and parsed.path.startswith(('/shorts/', '/live/')):
-            video_id = parsed.path.split('/')[2]
-    elif host == 'youtu.be':
-        video_id = parsed.path.strip('/')
-    return video_id, ('youtube:' + video_id if video_id else 'url:' + hashlib.sha256((url or '').encode()).hexdigest())
+from webapp.store_utils import now, source_identity
 
 
 class TaskStore:
