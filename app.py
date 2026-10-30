@@ -26,11 +26,10 @@ from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
 from webapp.media import VIDEO_SUFFIXES
 from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, download_methods, save_settings, urls_from, validate_settings, validate_method_urls
-from webapp.catalog import MediaCatalog
 from webapp.tasks import TaskRunner, TaskStore
-from webapp.clash import ClashError, ClashManager
+from webapp.clash import ClashError
 from webapp.clash_routes import register_clash
-from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired, is_youtube
+from webapp.youtube_auth import YouTubeAuthRequired, is_youtube
 from webapp.yt5s import BrowserEnvironmentRequired, require_browser_environment
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment, require_downmp3_environment
 from webapp.yt1d import require_environment as require_yt1d_environment
@@ -77,35 +76,22 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         TRUSTED_HOSTS=os.environ.get('VIDEO_WEB_HOSTS', f'localhost,127.0.0.1,[::1],{socket.gethostname()}').split(','),
     )
     app.extensions['task_store'] = store
-    catalog = MediaCatalog(store)
-    app.extensions['media_catalog'] = catalog
-    settings_lock = threading.RLock()
-    media_lock = threading.RLock()
-    clash = ClashManager(store.directory / 'clash')
-    app.extensions['clash'] = clash
-    fleet = None
-    if registered:
-        from webapp.fleet import Fleet
-        fleet = Fleet(store, service_role, identity=instance_id, url=instance_url, name=instance_name)
-        initial, initial_base = load_config(config_path)
-        fleet.initialize({**DEFAULTS, **initial}, initial_base, clash.directory)
-    app.extensions['fleet'] = fleet
+
+    # Initialize extensions
+    from app.extensions import init_extensions
+    exts = init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name)
+    settings_lock = exts['settings_lock']
+    media_lock = exts['media_lock']
+    clash = exts['clash']
+    fleet = exts['fleet']
+    youtube_auth = exts['youtube_auth']
+    console_auth = exts['console_auth']
 
     @app.context_processor
     def instance_context():
         return {'fleet_enabled': fleet is not None}
     if startup_report:
         startup_report('实例配置已就绪，正在加载接口与任务调度…')
-    youtube_auth = YouTubeAuth(store)
-    app.extensions['youtube_auth'] = youtube_auth
-    from webapp.startup import DownloadStartup
-    startup = DownloadStartup()
-    app.extensions['download_startup'] = startup
-    from webapp.execution import ExecutionControlService
-    app.extensions['execution_control'] = ExecutionControlService(store)
-    from webapp.console_auth import ConsoleAuth, rpc_allowed
-    console_auth = ConsoleAuth(app, store)
-    app.extensions['console_auth'] = console_auth
 
     def settings():
         with settings_lock:
@@ -156,6 +142,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.before_request
     def csrf_protection():
+        from webapp.console_auth import rpc_allowed
         g.fleet_rpc = False
         if fleet and fleet.can_download:
             if request.path == '/health' and request.method == 'GET':

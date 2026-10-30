@@ -639,6 +639,8 @@ def drain(directory, slot=0, role='all'):
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost
     from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
+    # Mark this process as a worker for dynamic connection pool sizing
+    os.environ['VIDEO_WORKER_PROCESS'] = 'true'
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
     name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
