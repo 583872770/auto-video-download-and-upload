@@ -46,7 +46,6 @@ def _add_url_prefix_index(engine):
     Uses 128-char prefix (YouTube URLs are ~43 chars, sufficient for uniqueness).
     MySQL TEXT columns require explicit length for indexes.
     """
-    from sqlalchemy import inspect
     inspector = inspect(engine)
     existing_indexes = {idx['name'] for idx in inspector.get_indexes('tasks')}
 
@@ -60,9 +59,42 @@ def _add_url_prefix_index(engine):
                 db.exec_driver_sql('CREATE INDEX ix_tasks_url_prefix ON tasks (batch_id, url)')
 
 
+def _optimize_indexes(engine):
+    """删除冗余索引，添加缺失索引。
+
+    删除：
+    - ix_tasks_seq: unique 列自动有索引
+    - ix_tasks_id_prefix: 主键已是聚簇索引
+    - ix_tasks_video_prefix: 与 ix_tasks_video 重复
+
+    新增：
+    - ix_tasks_instance_lease: 用于 heartbeat 和 recover 查询
+    - ix_reservations_source: reservations 表外键
+    """
+    inspector = inspect(engine)
+    existing_indexes = {idx['name'] for idx in inspector.get_indexes('tasks')}
+
+    with engine.begin() as db:
+        # 删除冗余索引（仅 MySQL）
+        if 'mysql' in engine.dialect.name:
+            for idx_name in ('ix_tasks_seq', 'ix_tasks_id_prefix', 'ix_tasks_video_prefix'):
+                if idx_name in existing_indexes:
+                    db.exec_driver_sql(f'DROP INDEX {idx_name} ON tasks')
+
+        # 添加 instance_lease 索引
+        if 'ix_tasks_instance_lease' not in existing_indexes:
+            db.exec_driver_sql('CREATE INDEX ix_tasks_instance_lease ON tasks (instance_id, status, lease_until)')
+
+        # 添加 reservations source 索引
+        reservations_indexes = {idx['name'] for idx in inspector.get_indexes('download_reservations')}
+        if 'ix_reservations_source' not in reservations_indexes:
+            db.exec_driver_sql('CREATE INDEX ix_reservations_source ON download_reservations (`key`)')
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
-         ('20261030_url_prefix_index', _add_url_prefix_index))
+         ('20261030_url_prefix_index', _add_url_prefix_index),
+         ('20261030_optimize_indexes', _optimize_indexes))
 
 
 def upgrade(engine):

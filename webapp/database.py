@@ -247,11 +247,11 @@ class Database:
                     options['poolclass'] = NullPool
                 else:
                     # Engines are process-local: bound both idle and busy connections.
-                    # The task center opens the list, summary, and status paths
-                    # concurrently. Keep enough connections for those reads while
-                    # retaining a hard per-process cap for small MySQL servers.
-                    options.update(pool_size=max(2, int(os.environ.get('VIDEO_DB_POOL_SIZE', '5'))),
-                                   max_overflow=max(0, int(os.environ.get('VIDEO_DB_MAX_OVERFLOW', '5'))),
+                    # Dynamic pool sizing based on role (main vs worker) and total budget
+                    from webapp.db_pool_calculator import calculate_pool_size
+                    is_worker = os.environ.get('VIDEO_WORKER_PROCESS') == 'true'
+                    pool_size, max_overflow = calculate_pool_size(is_worker=is_worker)
+                    options.update(pool_size=pool_size, max_overflow=max_overflow,
                                    pool_timeout=15, pool_pre_ping=True, pool_recycle=300)
                 engine = create_engine(self.url, hide_parameters=True, **options)
                 if engine.dialect.name == 'sqlite':
