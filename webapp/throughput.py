@@ -26,11 +26,12 @@ def policy_key(config):
             int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0)),
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
-                'builtin_resolver_limit', 'builtin_connection_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'builtin_resolver_limit', 'builtin_connection_limit', 'youtube_cookie_pool')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):
-    return config.get('throughput_mode', 'manual') == 'auto' or config.get('scheduler_mode') == 'auto'
+    # Channel routing and instance concurrency are independent policies.
+    return config.get('throughput_mode', 'manual') == 'auto'
 
 
 def _number(path):
@@ -105,8 +106,16 @@ def _atomic(path, data):
 def runtime_limits(config, directory):
     requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
     if not automatic(config):
-        return {'transfers': requested, 'workers': requested,
-                'browsers': int(config.get('yt5s_browser_count', 2)), 'mode': 'manual'}
+        result = {'transfers': requested, 'workers': requested,
+                  'browsers': int(config.get('yt5s_browser_count', 2)), 'mode': 'manual'}
+        try:
+            saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
+            if saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20:
+                # Retain fresh diagnostics without applying automatic limits.
+                result.update({key: saved[key] for key in ('policy', 'time', 'cookie_pool', 'reason') if key in saved})
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return result
     try:
         saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
         if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
@@ -117,7 +126,8 @@ def runtime_limits(config, directory):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     # An absent/stale supervisor snapshot never starts a large unmeasured pool.
-    return {'transfers': min(requested, 2), 'workers': min(requested, 2),
+    fallback = 1 if config.get('youtube_cookie_pool') else 2
+    return {'transfers': min(requested, fallback), 'workers': min(requested, fallback),
             'browsers': 1, 'mode': 'auto', 'reason': '等待资源采样'}
 
 
@@ -160,7 +170,7 @@ class ThroughputController:
             pass
         return resources
 
-    def update(self, config, stages=(), force=False):
+    def update(self, config, stages=(), force=False, *, cookie_capacity=None):
         tick = self.clock()
         if not force and self.state is not None and tick - self.last < 5 and self.state['policy'] == policy_key(config):
             return self.state
@@ -182,6 +192,13 @@ class ThroughputController:
         db_worker_cap = max(1, int(os.environ.get('VIDEO_WORKER_DB_CONNECTION_BUDGET', '48')) // worker_pool)
         nominal_workers = min(nominal_workers, db_worker_cap)
         ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
+        pooled = bool(config.get('youtube_cookie_pool'))
+        if pooled:
+            # A pool permit surrounds the whole task, including preparation.
+            # Do not spawn extra parsers that cannot acquire a session permit.
+            cookie_capacity = cookie_capacity or {'known': False, 'capacity': 0,
+                'reason': 'Cookie 会话容量尚未采样', 'configured_files': len(config['youtube_cookie_pool'])}
+            ceiling = min(ceiling, max(1, int(cookie_capacity['capacity'])))
         transfers = min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2)))
         counts = {}
         group_active = {}
@@ -247,7 +264,9 @@ class ThroughputController:
                 cpu = max(cpu, quota_cpu)
         self.pressure_hits = self.pressure_hits + 1 if cpu >= 90 or resources['io_pressure'] >= 15 else 0
         pressure = (self.pressure_hits >= 3 or cpu >= 97 or resources['memory_available'] < max(256 * MIB, resources['memory_total'] * .08))
-        control_rate = media_rate if metrics else rate
+        # Host traffic may include image pulls, backups, and unrelated services.
+        # Never use it as evidence that an extra media transfer is productive.
+        control_rate = media_rate
         reason = '有界解析与传输并行'
         changed = False
         if automatic(config) and same and tick - self.adjusted >= 60:
@@ -304,6 +323,7 @@ class ThroughputController:
                 self.probe_baseline = None
             elif (transfers < ceiling and (active >= max(1, transfers * .75)
                   or wait_resources.get('local-transfers', 0))
+                  and control_rate > 0
                   and (not target or control_rate < target * .9) and tick >= self.plateau_until):
                 self.probe_baseline = control_rate if transfers < ceiling else None
                 transfers = min(ceiling, transfers + 1)
@@ -369,6 +389,10 @@ class ThroughputController:
             preparation = browsers + min(2, browsers) if browser_methods else 2
             workers = max(transfers, min(MAX_WORKERS, nominal_workers, transfers + preparation))
             workers = min(workers, nominal_workers, sum(value['limit'] for value in groups.values()) + preparation)
+            if pooled:
+                workers = min(workers, max(1, int(cookie_capacity['capacity'])))
+                if cookie_capacity['capacity'] < requested:
+                    reason = cookie_capacity.get('reason') or 'Cookie 会话容量限制实例并发'
         self.state = {'time': time.time(), 'policy': policy_key(config), 'mode': 'auto' if automatic(config) else 'manual',
                       'transfers': transfers, 'workers': workers, 'browsers': browsers,
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
@@ -381,7 +405,8 @@ class ThroughputController:
                       'stages': counts, 'ready_transfer_count': counts.get('waiting_transfer', 0),
                       'transfer_wait_resources': wait_resources, 'target_mbps': int(config.get('bandwidth_mbps', 0)),
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
-                      'reason': reason}
+                      'reason': reason, 'control_metric': 'media_received_bytes',
+                      'cookie_pool': cookie_capacity if pooled else None}
         _atomic(self.directory / 'throughput.json', self.state)
         self.previous, self.last = resources, tick
         return self.state

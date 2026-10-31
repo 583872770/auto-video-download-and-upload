@@ -10,6 +10,13 @@ class DownloadLeaseLost(RuntimeError):
     """Do not start another provider after ownership of a task was lost."""
 
 
+class YouTubeAccountLimited(RuntimeError):
+    """An explicit account limit requires a circuit break, not another video."""
+    account_rate_limited = True
+    retryable = True
+    retry_after = 3600
+
+
 def initial_progress(config, policy_version=None):
     """Publish this attempt's selected providers as part of the claim itself."""
     from webapp.settings import download_methods
@@ -61,6 +68,19 @@ class DownloadFailure:
             return ('YouTube 要求登录验证，当前 Cookie 或代理节点未通过验证。'
                     '请使用当前节点在浏览器打开视频，完成登录验证后重新导出并上传 Cookie；仍失败可更换节点。')
         return f'下载失败：{reason}' if reason else '下载失败，下载器未返回具体原因，请查看日志。'
+
+    def as_error(self, exception=None):
+        """Only explicit content restrictions are scoped to an individual video."""
+        message = self.message(exception)
+        text = message.lower()
+        error = (YouTubeAccountLimited(message) if 'your account has been rate-limited' in text
+                 else RuntimeError(message))
+        if any(term in text for term in ('this video is private', 'private video',
+                'video has been removed', 'video has been deleted',
+                'video is not available in your country', 'members-only content')):
+            error.failure_scope = 'video'
+            error.retryable = False
+        return error
 
 
 def number(value):

@@ -1,6 +1,6 @@
 """Read-only YouTube session preflight, shared across download processes."""
 import hashlib
-from http.client import HTTPException
+from http.client import HTTPException, HTTPSConnection
 from http.cookiejar import MozillaCookieJar
 import json
 from pathlib import Path
@@ -9,7 +9,7 @@ import ssl
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, ProxyHandler, HTTPCookieProcessor, build_opener
+from urllib.request import Request, ProxyHandler, HTTPCookieProcessor, HTTPSHandler, build_opener
 import uuid
 
 from sqlalchemy import select
@@ -51,7 +51,19 @@ def logged_in(document):
     return authenticated
 
 
-def probe(cookie_data, proxy):
+class SourceHTTPSHandler(HTTPSHandler):
+    """Use the same direct source address as the media downloader."""
+    def __init__(self, source):
+        super().__init__()
+        self.source = source
+
+    def https_open(self, request):
+        def connection(host, **kwargs):
+            return HTTPSConnection(host, source_address=(self.source, 0), **kwargs)
+        return self.do_open(connection, request, context=self._context)
+
+
+def probe(cookie_data, proxy, *, source_address=''):
     # Load from the checked bytes, not a path that may change mid-request.
     import tempfile
     with tempfile.TemporaryDirectory(prefix='youtube-preflight-') as directory:
@@ -59,7 +71,10 @@ def probe(cookie_data, proxy):
         save_youtube_cookies(parse_youtube_cookie_file(cookie_data), file)
         jar = MozillaCookieJar(str(file))
         jar.load(ignore_discard=True)
-        opener = build_opener(ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}), HTTPCookieProcessor(jar))
+        handlers = [ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}), HTTPCookieProcessor(jar)]
+        if source_address and not proxy:
+            handlers.append(SourceHTTPSHandler(source_address))
+        opener = build_opener(*handlers)
         request = Request('https://www.youtube.com/feed/history?hl=en', headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9', 'Accept-Encoding': 'identity'})
@@ -116,10 +131,11 @@ class YouTubeAuth:
         fleet = self.store.fleet
         return f'i:{hashlib.sha256(fleet.id.encode()).hexdigest()[:16]}:{key}' if fleet else key
 
-    def invalidate(self):
+    def invalidate(self, *, preserve_block=False):
         self._write('youtube_auth_generation', uuid.uuid4().hex)
         self._write('youtube_auth_latest', {'state': 'unchecked', 'message': 'Cookie 或连接已更新，下载前将验证 YouTube 登录。'})
-        self.clear_block()
+        if not preserve_block:
+            self.clear_block()
 
     def clear_block(self):
         self._write('youtube_auth_block', None)
@@ -144,33 +160,64 @@ class YouTubeAuth:
             return {**result, 'state': 'unchecked', 'message': '登录验证已到期，下次下载前将重新检测。'}
         return result
 
-    def check(self, config, base, *, proxy=None, node='', force=False):
+    def check_profile(self, identity, config, base, **options):
+        from webapp.cookie_profiles import CookieProfiles
+        target = CookieProfiles(base, self.store).require(identity)
+        fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
+        result = self.check({**config, 'youtube_cookie': str(target)}, base,
+                            publish_latest=False, **options)
+        self._write('youtube_profile:' + identity, {'fingerprint': fingerprint, 'auth': result})
+        return result
+
+    def profile_status(self, identity, base):
+        from webapp.cookie_profiles import CookieProfiles
+        saved = self._read('youtube_profile:' + identity)
+        if saved:
+            try:
+                data = CookieProfiles(base, self.store).require(identity).read_bytes()
+            except (OSError, ValueError):
+                return None
+            if hashlib.sha256(data).hexdigest() == saved['fingerprint']:
+                return saved['auth']
+        return None
+
+    def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True):
+        # Library checks must not overwrite the selected account's live status.
+        def publish(result):
+            if publish_latest:
+                self._write('youtube_auth_latest', result)
+
         if proxy is None:
             proxy = '' if config.get('proxy_mode') == 'direct' else config.get('proxy', '')
         connection = ('Clash · ' + node) if node else '手动代理' if proxy else '直连'
+        source = config.get('youtube_source_address', '') if config.get('proxy_mode') == 'direct' else ''
+        if source:
+            connection += ' · 源地址 ' + source
         result = {'state': 'missing', 'message': '请先登录 YouTube 或上传 Cookie，再开始下载。',
                   'connection': connection, 'checked_at': time.time()}
         try:
             if not config.get('youtube_cookie'):
                 raise FileNotFoundError
+            from webapp.cookie_profiles import CookieProfiles
+            CookieProfiles(base, self.store).restore_selected(config['youtube_cookie'])
             path = resolve_path(base, config['youtube_cookie'])
             with path.open('rb') as stream:
                 data = stream.read(1024 * 1024 + 1)
             cookies = parse_youtube_cookie_file(data)
         except OSError:
-            self._write('youtube_auth_latest', result)
+            publish(result)
             return result
         except ValueError:
             result.update(state='invalid', message='Cookie 文件无效或已过期，请重新登录 YouTube 或上传新的 Cookie。')
-            self._write('youtube_auth_latest', result)
+            publish(result)
             return result
         auth = [cookie for cookie in cookies if cookie['name'] in AUTH_COOKIES and cookie['value']]
         if not auth:
             result.update(state='not_logged_in', message='Cookie 中没有 YouTube 登录凭据，请先登录或上传登录后的 Cookie。')
-            self._write('youtube_auth_latest', result)
+            publish(result)
             return result
         generation = self._read('youtube_auth_generation', '')
-        signature = hashlib.sha256(data + b'\0' + json.dumps([proxy, node, generation]).encode()).hexdigest()
+        signature = hashlib.sha256(data + b'\0' + json.dumps([proxy, node, source, generation]).encode()).hexdigest()
         key = 'youtube_auth:' + signature
         deadline = time.monotonic() + 20
         while True:
@@ -178,10 +225,10 @@ class YouTubeAuth:
                 if acquired:
                     cached = self._read(key)
                     if not force and cached and cached.get('expires_at', 0) > time.time():
-                        self._write('youtube_auth_latest', cached)
+                        publish(cached)
                         return cached
                     try:
-                        state, message = probe(data, proxy)
+                        state, message = probe(data, proxy, **({'source_address': source} if source else {}))
                     except Exception:
                         # A failed preflight must never become thousands of failed videos.
                         state, message = 'unconfirmed', '登录检测未完成，请检查网络和 Cookie 文件后重新检测。'
@@ -190,7 +237,7 @@ class YouTubeAuth:
                     result.update(state=state, message=message, checked_at=checked,
                                   expires_at=expiry if state == 'valid' else checked + 15)
                     self._write(key, result)
-                    self._write('youtube_auth_latest', result)
+                    publish(result)
                     return result
             if time.monotonic() >= deadline:
                 result.update(state='checking', message='另一个进程正在检测 YouTube 登录，请稍后重试。')
@@ -203,8 +250,12 @@ class YouTubeAuth:
             raise YouTubeAuthRequired(result)
         return result
 
-    def reject(self, message):
+    def reject(self, message, *, request_mode='authenticated', node=''):
         self.invalidate()
-        result = {'state': 'verification_required', 'message': message, 'checked_at': time.time()}
+        if request_mode == 'anonymous_fallback':
+            message = ('带 Cookie 的请求返回 Video unavailable；同一出口的匿名重试要求机器人验证。'
+                       '这不能证明上传的 Cookie 已失效。实例已暂停，请在同一出口重新检测登录和视频播放。')
+        result = {'state': 'verification_required', 'message': message, 'checked_at': time.time(),
+                  'source': 'download', 'request_mode': request_mode, 'node': node}
         self._write('youtube_auth_latest', result)
         return result

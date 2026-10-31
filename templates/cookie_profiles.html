@@ -1,0 +1,15 @@
+<dialog id="youtube-cookie-dialog" aria-labelledby="youtube-cookies-title">
+  <div class="dialog-heading"><div><span class="section-kicker">YOUTUBE / COOKIES</span><h2 id="youtube-cookies-title">Cookie 账号管理</h2></div><button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+  <p class="dialog-description">可保存多份 Cookie，并手动选择当前实例使用哪一份。名称仅作备注，系统无法据此确认是否为不同账号。Cookie 和名称保存在数据库，按实例隔离，不显示或回传内容。运行时生成本地缓存，缓存丢失后自动恢复；请备份数据库并保留实例标识。</p>
+  <p class="micro-copy">切换前请停止当前实例，等待全部下载结束。切换后需检查登录状态，再手动恢复；不会自动清除账号限流、验证码或源站冷却。同一账号的多份 Cookie 共享账号限制。</p>
+  <div id="youtube-cookie-list" role="status" aria-live="polite">正在读取已保存 Cookie…</div>
+  <p class="micro-copy">每行「检测登录」通过所选实例当前的代理 / IPv6 出口验证，不切换账号、不恢复任务、不清除限流。检测结果仅代表当时的登录状态，不保证视频可下载；出口变化后请重新检测。有效结果最多缓存 5 分钟，其他在线检测结果缓存 15 秒。</p>
+  <form id="youtube-cookie-form">
+    <h3>新增 Cookie</h3>
+    <label>名称 / 账号备注<input name="name" maxlength="80" placeholder="选填，留空使用上传文件名（含扩展名）" autocomplete="off"></label>
+    <label class="file-drop"><svg><use href="#i-upload"/></svg><strong>选择 Cookie 文件</strong><span>Netscape 格式 · .txt · 最大 1 MB</span><input type="file" name="cookie" accept=".txt,text/plain" required></label>
+    <p class="micro-copy">使用下载所选出口登录 YouTube，导出 youtube.com 的 Netscape Cookie。每次新增独立保存，不覆盖已有配置，也不自动切换。仅保留未过期的 YouTube Cookie；保存成功不代表登录有效。</p>
+    <p id="youtube-cookie-error" class="task-error" role="alert" hidden></p>
+    <div class="dialog-footer"><button class="button button-white" type="button" data-close>关闭</button><button class="button button-dark" type="submit"><svg><use href="#i-upload"/></svg>新增并保存</button></div>
+  </form>
+</dialog>

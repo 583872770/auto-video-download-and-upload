@@ -72,6 +72,11 @@ def build_ydl_options(config, base):
         'cachedir': False,
         '_temporary_directory': config.get('_temporary_directory'),
     }
+    if config.get('download_method', 'yt_dlp') == 'yt_dlp' and config.get('youtube_sleep_preset', True):
+        # Equivalent to yt-dlp's documented `-t sleep` preset. This spaces
+        # extractor requests and file starts; it does not rate-limit CDN bytes.
+        options.update(sleep_interval_requests=.75, sleep_interval=10,
+                       max_sleep_interval=20, sleep_interval_subtitles=5)
     if config.get('js_runtimes') is not None:
         if not isinstance(config['js_runtimes'], dict):
             raise ValueError('js_runtimes 必须是运行时配置表')
@@ -84,6 +89,8 @@ def build_ydl_options(config, base):
         options['proxy'] = config['proxy']
     if config.get('proxy_mode') == 'direct':
         options['proxy'] = ''
+        if config.get('youtube_source_address') and config.get('download_method', 'yt_dlp') == 'yt_dlp':
+            options['source_address'] = config['youtube_source_address']
     elif config.get('proxy_mode') == 'clash':
         if not config.get('_resolved_clash_proxy'):
             raise ValueError('请通过 Web 页面创建使用 Clash 订阅代理的下载任务。')

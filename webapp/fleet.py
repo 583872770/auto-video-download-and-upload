@@ -26,6 +26,10 @@ LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', '
 LOCAL_FIELDS |= DISK_FIELDS
 LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
+LOCAL_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
+LOCAL_FIELDS.add('youtube_throttle_cooldown')
+LOCAL_FIELDS.add('youtube_sleep_preset')
+LOCAL_FIELDS.add('youtube_cookie_pool')
 ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')

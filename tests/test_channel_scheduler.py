@@ -323,10 +323,10 @@ class AutoSchedulerTests(unittest.TestCase):
         with second.permit(second.channels[1], 'transfer', streams=2, timeout=0):
             pass
 
-    def test_auto_setting_roundtrip_includes_catalog_and_resource_control(self):
+    def test_auto_routing_does_not_override_custom_concurrency(self):
         from webapp.cobalt_catalog import verified_channels
         config = {'download_methods':['bergung'], 'scheduler_mode':'auto', 'throughput_mode':'manual',
                   'download_channels':verified_channels(), 'auto_channel_attempts':3}
         validate_settings(config)
-        self.assertEqual(config['throughput_mode'], 'auto')
+        self.assertEqual(config['throughput_mode'], 'manual')
         self.assertTrue(all(item['verification'] == 'auto' for item in config['download_channels']))

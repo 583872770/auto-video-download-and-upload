@@ -102,7 +102,10 @@ class AuthContract:
             response = self.post('/api/youtube/auth/check')
             check.assert_not_called()
         self.assertEqual(response.json['auth']['state'], 'not_logged_in')
-        (self.root / 'Cookies/youtube.txt').write_bytes(COOKIE.replace(b'\t0\tSID', b'\t1\tSID'))
+        from webapp.database import cookie_profiles
+        with self.store.connect() as db:
+            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'legacy').values(
+                content=COOKIE.replace(b'\t0\tSID', b'\t1\tSID').decode()))
         with patch('webapp.youtube_auth.probe') as check:
             response = self.post('/api/youtube/auth/check')
             check.assert_not_called()
@@ -243,6 +246,24 @@ class AuthContract:
                     execute('download', {'config': config, 'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
         self.assertEqual(events, ['login', 'download'])
         self.assertEqual(YouTubeAuth(self.store).status()['state'], 'verification_required')
+
+    def test_pool_aborts_at_first_invalid_cookie_warning(self):
+        import yt_dlp
+        from web_worker import execute
+        config = {**self.cookie(), '_cookie_pool_selected': 'test-profile'}
+        events = []
+        def download(downloader, urls):
+            events.append('started')
+            downloader.report_warning('The provided YouTube account cookies are no longer valid.')
+            events.append('continued_after_invalid_cookie')
+            return 0
+        with patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture verified')), \
+                patch('webapp.downloader.require_download_tools'), \
+                patch.object(yt_dlp.YoutubeDL, 'download', download):
+            with self.assertRaises(YouTubeAuthRequired):
+                execute('download', {'config': config, 'base': str(self.root),
+                    'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
+        self.assertEqual(events, ['started'])
 
 
 class SQLiteFixture(unittest.TestCase):

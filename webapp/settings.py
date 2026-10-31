@@ -1,5 +1,6 @@
 """Validate settings used by the YouTube download service."""
 import re
+import ipaddress
 from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
@@ -25,6 +26,10 @@ DEFAULTS = {
     'download_connection_limit': 32, 'shared_parser': True,
     'subtitle_mode': 'optional', 'subtitle_languages': 'en,zh-Hans,zh-Hant',
     'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4, 'builtin_connection_limit': 0,
+    'youtube_source_address': '', 'youtube_start_interval': 3, 'youtube_cookie_fallback': False,
+    'youtube_throttle_cooldown': 300,
+    'youtube_sleep_preset': True,
+    'youtube_cookie_pool': [],
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -39,6 +44,10 @@ DOWNLOAD_FIELDS |= DISK_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
 DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
+DOWNLOAD_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
+DOWNLOAD_FIELDS.add('youtube_sleep_preset')
+DOWNLOAD_FIELDS.add('youtube_throttle_cooldown')
+DOWNLOAD_FIELDS.add('youtube_cookie_pool')
 INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
@@ -49,6 +58,8 @@ INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
 INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
 INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))
+INTEGER_FIELDS['youtube_start_interval'] = (0, 60)
+INTEGER_FIELDS['youtube_throttle_cooldown'] = (30, 3600)
 
 
 def urls_from(value):
@@ -85,6 +96,29 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
+    pool = config.get('youtube_cookie_pool', [])
+    if (not isinstance(pool, list) or len(pool) > 50 or
+            any(not isinstance(item, str) or not re.fullmatch(r'(?:[a-f0-9]{32}|legacy)', item) for item in pool) or
+            len(set(pool)) != len(pool)):
+        raise ValueError('Cookie 账号池必须为不重复的已保存 Cookie ID 列表，最多 50 个。')
+    if pool and download_methods(config) != ['yt_dlp']:
+        raise ValueError('Cookie 账号池仅支持单独使用 yt-dlp。')
+    source = config.get('youtube_source_address', '')
+    try:
+        if source:
+            ipaddress.ip_address(source)
+    except (ValueError, TypeError):
+        raise ValueError('直连源地址必须是本机可用的 IPv4 或 IPv6 地址；留空自动选择。') from None
+    fallback = config.get('youtube_cookie_fallback', False)
+    if fallback in ('true', 'false'):
+        config['youtube_cookie_fallback'] = fallback == 'true'
+    elif type(fallback) is not bool:
+        raise ValueError('匿名重试必须为开关值。')
+    sleep_preset = config.get('youtube_sleep_preset', True)
+    if sleep_preset in ('true', 'false'):
+        config['youtube_sleep_preset'] = sleep_preset == 'true'
+    elif type(sleep_preset) is not bool:
+        raise ValueError('yt-dlp 请求等待预设必须为开关值。')
     if config.get('subtitle_mode', 'optional') not in ('optional', 'required', 'off'):
         raise ValueError('字幕请选择后台补下载、必须完整或关闭。')
     languages = config.get('subtitle_languages', 'en,zh-Hans,zh-Hant')
@@ -100,8 +134,6 @@ def validate_settings(config, *, download_only=False):
     download_methods(config)
     from webapp.channels import validate_channels
     validate_channels(config)
-    if config.get('scheduler_mode') == 'auto':
-        config['throughput_mode'] = 'auto'
     if type(config.get('shared_parser', True)) is not bool:
         if config.get('shared_parser') in ('true', 'false'):
             config['shared_parser'] = config['shared_parser'] == 'true'
@@ -135,7 +167,7 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('请选择有效的下载连接方式。')
     for key, default in DEFAULTS.items():
         value = config.get(key, default)
-        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods', 'download_channels', 'shared_parser'):
+        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods', 'download_channels', 'shared_parser', 'youtube_cookie_fallback', 'youtube_sleep_preset', 'youtube_cookie_pool'):
             continue
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')

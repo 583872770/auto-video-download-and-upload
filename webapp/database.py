@@ -66,6 +66,12 @@ rotations = Table('rotation_counters', metadata, Column('id', String(128), prima
 sequences = Table('sequence_counters', metadata, Column('key', String(32), primary_key=True),
                   Column('value', BigInteger, nullable=False))
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
+cookie_profiles = Table('youtube_cookie_profiles', metadata,
+    Column('scope', String(64), primary_key=True), Column('id', String(32), primary_key=True),
+    Column('name', String(80), nullable=False), Column('content', Text, nullable=False),
+    Column('created_at', String(40), nullable=False),
+    Column('deleted', Integer, nullable=False, server_default='0'))
+
 download_resources = Table('download_resources', metadata,
     Column('key', String(64), primary_key=True), Column('state', Text, nullable=False))
 download_permits = Table('download_permits', metadata,

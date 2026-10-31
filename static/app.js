@@ -172,10 +172,12 @@ function progressLabel(task) {
   if (stage === 'preparing_proxy') return '准备代理节点';
   if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
   if (stage === 'waiting_api_conversion') return 'downmp3 · 网站正在转换（尚未传输）';
+  if (stage === 'waiting_cookie') return '等待 Cookie 会话名额 / 启动窗口';
+  if (stage === 'waiting_resolver') return `${providerNames[task.progress?.download_method] || '下载器'} · 等待解析名额 / 渠道配额`;
   if (stage === 'switching_provider') return `正在切换到 ${providerNames[task.progress?.download_method] || '下一个下载器'}`;
   const browserStages = { waiting_browser: '等待浏览器名额', starting_browser: '启动浏览器', connecting_browser: '连接浏览器', opening_site: '打开网页', waiting_site_form: '等待网页输入框', submitting_site: '提交视频链接', waiting_verification: '等待网站验证', converting: '网站正在转换' };
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
-  return { checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { waiting_request: '\u7b49\u5f85 YouTube \u8bf7\u6c42\u95f4\u9694', checking_environment: '检查下载环境', waiting_browser: 'yt5s · 等待浏览器名额', starting_browser: 'yt5s · 启动浏览器', connecting_browser: 'yt5s · 连接浏览器', opening_site: 'yt5s · 打开网页', waiting_site_form: 'yt5s · 等待网页输入框', submitting_site: 'yt5s · 提交视频链接', waiting_verification: 'yt5s · 等待网站验证', converting: 'yt5s · 网站正在转换', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -486,7 +488,7 @@ function renderConcurrencyDraft() {
   const connection = number('download_connection_limit');
   const fragments = Math.min(number('fragment_concurrency') || 4, shared, Math.max(1, Math.floor(connection / Math.max(1, requested))));
   const methods = providerDraft || selectedProviders();
-  const manualNative = methods.includes('yt_dlp') && !auto && form.elements.throughput_mode.value !== 'auto';
+  const manualNative = methods.includes('yt_dlp') && form.elements.throughput_mode.value !== 'auto';
   const cap = Math.min(requested, channel, manualNative ? Math.floor(Math.min(connection, shared) / fragments) : requested);
   const warning = requested > cap;
   $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机 / 共享连接预算 ${connection} / ${shared}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
@@ -571,15 +573,21 @@ function readProviderChoices(container) {
 }
 function renderDownloadMethod() {
   const methods = providerDraft || selectedProviders();
+  $$('[data-provider-setting]', $('#settings-form')).forEach(field => {
+    field.hidden = !field.dataset.providerSetting.split(/\s+/).some(method => methods.includes(method));
+  });
   renderStrategySaveState();
   renderProviderChoices($('#download-method'), methods, downloadMethodBusy || !state.config);
   const tools = state.status?.tools;
   const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
-  const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。服务器负载或限流升高时自动收敛并发。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
+  const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
   const throughput = $('#settings-form [name="throughput_mode"]');
-  // Auto routing and the resource controller are one saved strategy.
-  if (auto) throughput.value = 'auto';
-  throughput.disabled = auto;
+  // Choosing a channel does not change how concurrency is controlled.
+  throughput.disabled = false;
+  const controlNote = $('#control-mode-note');
+  if (controlNote) controlNote.textContent = throughput.value === 'auto'
+    ? '自动调节：依据媒体下载吞吐、资源压力和 Cookie 会话容量调整并发；未获得新鲜会话采样时保守等待。'
+    : '自定义：保持设定的实例并发上限；Cookie 会话名额、启动间隔、渠道、连接及冷却仍会限制实际数量。';
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
@@ -596,6 +604,7 @@ function renderStrategySaveState() {
     : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
 }
 $('#settings-form [name="scheduler_mode"]').addEventListener('change', renderDownloadMethod);
+$('#settings-form [name="throughput_mode"]').addEventListener('change', renderDownloadMethod);
 for (const id of ['download-method']) {
   const container = $(`#${id}`);
   const update = async (event, moving) => {
@@ -998,7 +1007,12 @@ document.addEventListener('click', event => {
   const nav = event.target.closest('[data-view]');
   if (nav) { event.preventDefault(); setView(nav.dataset.view); }
   const open = event.target.closest('[data-open]');
-  if (open) $(`#${open.dataset.open}`).showModal();
+  if (open) {
+    $(`#${open.dataset.open}`).showModal();
+    if (open.dataset.open === 'youtube-cookie-dialog') loadCookieProfiles().catch(error => {
+      $('#youtube-cookie-list').textContent = error.message;
+    });
+  }
   if (event.target.closest('[data-close]')) event.target.closest('dialog').close();
   const task = event.target.closest('[data-task]');
   if (task) openTask(task.dataset.task);
@@ -1019,6 +1033,110 @@ async function runButton(button, operation) {
   try { await operation(); } catch (error) { toast(error.message || '请求失败，请稍后重试。', true); }
   finally { button.disabled = false; }
 }
+async function loadCookieProfiles() {
+  const data = await api('/api/youtube/cookies');
+  const list = $('#youtube-cookie-list');
+  list.replaceChildren();
+  const note = document.createElement('p');
+  note.className = 'micro-copy';
+  note.textContent = data.custom_active ? '当前使用配置文件指定的其他 Cookie。' :
+    data.items.some(item => item.active) ? '标记“当前使用”的配置供此实例下载使用，登录有效性请另行检查。' : '当前未选用已保存的 Cookie。';
+  list.append(note);
+  if (data.pool) {
+    const sessions = data.pool.effective_sessions ?? data.pool.effective_accounts;
+    note.textContent = `${data.items.filter(item => item.pooled).length} 份 Cookie · ${sessions} 个核心会话 · Google 账号身份未核验。` +
+      (data.pool.halted ? `会话池已停止：${data.pool.reason}` :
+      `每会话先运行 1 个任务，预热后最多 2 个，启动间隔至少 60 秒。不同会话不等于不同账号，也不代表独立源站额度。点击“使用此 Cookie”会关闭会话池。`);
+    if (data.pool.halted) {
+      const recover = document.createElement('button');
+      recover.type = 'button';
+      recover.className = 'button button-white';
+      recover.textContent = '检查全部账号并解除拦截';
+      recover.addEventListener('click', () => runButton(recover, async () => {
+        const result = await api('/api/youtube/cookies/pool/recover', { method: 'POST', body: {} });
+        toast(result.message);
+        await loadCookieProfiles();
+      }));
+      list.append(recover);
+    }
+  }
+  for (const item of data.items) {
+    const row = document.createElement('div');
+    row.className = 'cookie-profile-row';
+    const details = document.createElement('div');
+    details.className = 'cookie-profile-details';
+    const name = document.createElement('strong');
+    name.textContent = item.name + (item.pooled ? ' · 账号池成员' : '') + (item.active ? ' · 当前使用' : '');
+    const status = document.createElement('p');
+    status.className = 'micro-copy cookie-profile-status';
+    const renderStatus = auth => {
+      if (!auth) { status.textContent = '尚未检测登录'; return; }
+      const labels = { valid: '登录有效', not_logged_in: '未登录', invalid: 'Cookie 无效或过期',
+        missing: 'Cookie 文件缺失', verification_required: '需要额外验证 / 出口受限',
+        network_error: '网络异常，无法确认', unconfirmed: '尚未确认登录', checking: '检测进行中' };
+      const expired = auth.expires_at && auth.expires_at * 1000 <= Date.now();
+      status.textContent = `${labels[auth.state] || '尚未检测'}${expired ? '（历史结果，请重新检测）' : ''} · ${auth.message}` +
+        (auth.checked_at ? ` 检测时间：${new Date(auth.checked_at * 1000).toLocaleString()}` : '') +
+        (auth.connection ? ` 检测出口：${auth.connection}` : '');
+    };
+    renderStatus(item.auth);
+    details.append(name, status);
+    if (item.pooled) {
+      const account = data.pool?.accounts.find(value => value.id === item.id) || {};
+      const policy = document.createElement('p');
+      policy.className = 'micro-copy cookie-profile-status';
+      const cooldown = Math.max(0, Math.ceil((account.cooldown_until || 0) - Date.now() / 1000));
+      policy.textContent = `会话调度：并发上限 ${account.limit || 1}，启动间隔至少 ${account.interval || 60} 秒，成功 ${account.successes || 0} 次` +
+        (cooldown ? `，冷却剩余约 ${Math.ceil(cooldown / 60)} 分钟` : '') +
+        (account.shared_with ? '；与其他文件属于同一会话，合并并发和请求额度' : '') +
+        (account.unavailable ? '；Cookie 文件需重新检测' : '');
+      details.append(policy);
+    }
+    const check = document.createElement('button');
+    check.type = 'button';
+    check.className = 'button button-white';
+    check.textContent = '检测登录';
+    check.setAttribute('aria-label', `检测登录：${item.name}`);
+    check.addEventListener('click', () => runButton(check, async () => {
+      check.textContent = '检测中…';
+      status.textContent = '正在通过当前实例的下载出口检测，请稍候…';
+      try {
+        const result = await api('/api/youtube/cookies/check', { method: 'POST', body: { id: item.id } });
+        item.auth = result.auth;
+        renderStatus(result.auth);
+      } catch (error) {
+        renderStatus(item.auth);
+        status.textContent = `本次检测未完成：${error.message}。 ${status.textContent}`;
+        throw error;
+      } finally { check.textContent = '检测登录'; }
+    }));
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = 'button button-white';
+    select.textContent = item.active ? '当前使用' : '使用此 Cookie';
+    select.disabled = item.active && !data.pool;
+    select.addEventListener('click', () => runButton(select, async () => {
+      const result = await api('/api/youtube/cookies/select', { method: 'POST', body: { id: item.id } });
+      if (state.config) state.config.youtube_cookie = result.cookie_path;
+      toast(result.message);
+      await loadCookieProfiles();
+      await refresh();
+    }));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'button button-white';
+    remove.textContent = '删除';
+    remove.disabled = item.active || item.pooled;
+    remove.addEventListener('click', () => runButton(remove, async () => {
+      if (!window.confirm(`删除“${item.name}”？删除后需重新上传才能使用。`)) return;
+      const result = await api('/api/youtube/cookies/delete', { method: 'POST', body: { id: item.id } });
+      toast(result.message);
+      await loadCookieProfiles();
+    }));
+    row.append(details, check, select, remove);
+    list.append(row);
+  }
+}
 $('#youtube-cookie-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
@@ -1027,11 +1145,10 @@ $('#youtube-cookie-form').addEventListener('submit', event => {
     try {
       const file = $('input[name="cookie"]', event.target).files[0];
       if (!file || file.size === 0 || file.size > 1024 * 1024) throw new Error('请选择非空的 Cookie .txt 文件，最大 1 MB。');
-      const data = await api('/api/youtube/cookie', { method: 'POST', body: new FormData(event.target) });
-      if (state.config) state.config.youtube_cookie = data.cookie_path;
-      $('#youtube-cookie-dialog').close();
+      const data = await api('/api/youtube/cookies', { method: 'POST', body: new FormData(event.target) });
       $('#youtube-cookie-form').reset();
       toast(data.message);
+      await loadCookieProfiles();
       await refresh();
     } catch (error) {
       errorBox.textContent = error.message;

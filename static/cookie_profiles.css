@@ -1,0 +1,10 @@
+#youtube-cookie-dialog{width:680px;max-width:calc(100vw - 28px);max-height:calc(100dvh - 32px);overflow-y:auto}
+#youtube-cookie-form{border-top:1px solid var(--line);margin-top:20px;padding-top:16px}
+#youtube-cookie-form h3{font-size:14px;margin:0 0 14px}
+#youtube-cookie-form>label:not(.file-drop){display:grid;gap:8px;font-size:12px;margin-bottom:14px}
+.cookie-profile-row{display:flex;align-items:center;gap:8px;padding:12px 0;border-top:1px solid var(--line)}
+.cookie-profile-details{flex:1;min-width:0;overflow-wrap:anywhere}
+.cookie-profile-row strong{font-size:12px;line-height:1.6}
+.cookie-profile-status{margin:4px 0 0;line-height:1.6}
+.cookie-profile-row .button{flex-shrink:0;padding:9px 12px}
+@media(max-width:600px){.cookie-profile-row{flex-wrap:wrap}.cookie-profile-details{flex-basis:100%}}

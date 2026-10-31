@@ -130,6 +130,34 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     waits = Counter(p.get('transfer_wait_resource') or 'local-transfers' for p in progress if p.get('stage') == 'waiting_transfer')
     disk = disks.get(identity, {})
     disk_fresh = 0 <= stamp - disk.get('time', 0) < 90
+    cookie_pool = None
+    if config.get('youtube_cookie_pool'):
+        cookie_pool = (rate or {}).get('cookie_pool') if fresh else None
+        if not cookie_pool or not cookie_pool.get('known'):
+            cookie_pool = {'known': False, 'capacity': 0,
+                           'configured_files': len(config['youtube_cookie_pool']),
+                           'reason': 'Cookie 会话容量尚未取得新鲜采样，无法确认当前额度'}
+        upper = min(upper, cookie_pool['capacity'])
+    if disk_fresh and disk.get('blocked'):
+        upper = 0
+    if not online:
+        bottleneck = '实例离线，无法确认当前下载能力'
+    elif cookie_pool and (not cookie_pool.get('known') or cookie_pool.get('halted')):
+        bottleneck = cookie_pool['reason']
+    elif paused:
+        bottleneck = '实例已停止领取新任务'
+    elif disk_fresh and disk.get('blocked'):
+        bottleneck = disk.get('message') or '磁盘空间限制新任务'
+    elif cookie_pool and cookie_pool['capacity'] <= upper:
+        bottleneck = cookie_pool['reason']
+    elif global_limit and upper < transfers:
+        bottleneck = '渠道、连接预算或全部实例共享上限限制当前额度'
+    elif upper < transfers:
+        bottleneck = '渠道或共享连接预算低于实例设置'
+    elif auto and transfers < requested:
+        bottleneck = (rate or {}).get('reason') or '自动调节正在观察下载吞吐与服务器资源'
+    else:
+        bottleneck = '额度允许执行；实际任务数还取决于队列、启动间隔和视频处理阶段'
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
@@ -137,6 +165,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
+            'cookie_pool': cookie_pool, 'bottleneck': bottleneck,
             'connection_used': usage.get('local-connections:' + identity, 0),
             'connection_budget': int(config.get('download_connection_limit', 32)),
             'running': len(progress), 'transferring': stages.get('downloading', 0),
@@ -144,6 +173,10 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'processing': stages.get('processing', 0), 'waiting_transfer': stages.get('waiting_transfer', 0),
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
             'subtitle_mode': config.get('subtitle_mode', 'optional'),
+            'youtube_start_interval': int(config.get('youtube_start_interval', 3)),
+            'youtube_waiting': stages.get('waiting_request', 0),
+            'cookie_waiting': stages.get('waiting_cookie', 0),
+            'youtube_source_address': config.get('youtube_source_address', '') if config.get('proxy_mode') == 'direct' else '',
             'browser_limit': int(rate.get('browsers', config.get('yt5s_browser_count', 2))) if fresh else int(config.get('yt5s_browser_count', 2)),
             'disk_sample_fresh': disk_fresh,
             'disk_blocked': bool(disk_fresh and disk.get('blocked')),

@@ -39,6 +39,10 @@ def throttle_details(error):
     limited = False
     while error is not None and id(error) not in seen:
         seen.add(id(error))
+        # YouTube can return an account limit inside a successful HTTP response.
+        # 429 here is the scheduler's throttle category, not an observed HTTP code.
+        if getattr(error, 'account_rate_limited', False) or 'your account has been rate-limited' in str(error).lower():
+            return 429, max(3600, retry_after(getattr(error, 'retry_after', None)) or 0)
         status = getattr(error, 'http_status', None) or getattr(error, 'status', None)
         if status in (429, 503):
             headers = getattr(error, 'headers', None) or {}
@@ -359,6 +363,41 @@ class ChannelScheduler:
                     permits.c.owner == self.store.owner,
                     permits.c.resource == _key('route-probe:' + self.instance)))
         self.transaction_call(prepare)
+
+    def wait_youtube_start(self, channel, on_wait=None):
+        """Space video starts across processes without holding DB connections asleep.
+
+        This is a local request budget, not a claim about YouTube's quota. It is
+        shared by this instance even when its proxy node changes.
+        """
+        interval = int(self.config.get('youtube_start_interval', 3))
+        if self.config.get('_cookie_pool_selected'):
+            # Account-specific spacing is admitted by CookiePool. Retain a
+            # shared instance floor; never namespace source quotas per account.
+            interval = max(20, 60 // max(1, len(self.config.get('youtube_cookie_pool', []))))
+        if not self.enabled or channel.adapter != 'yt_dlp' or interval <= 0:
+            return
+        def reserve(db, stamp):
+            if not self._owned(db, stamp):
+                from webapp.downloads import DownloadLeaseLost
+                raise DownloadLeaseLost('请求节奏等待期间任务租约已失效。')
+            scope = 'youtube-start:' + self.instance
+            state = self._state(db, scope)
+            delay = min(interval, max(0, state.get('next_at', 0) - stamp))
+            if delay:
+                return delay
+            self._save(db, scope, {'next_at': stamp + interval, 'interval': interval})
+            return 0
+        deadline = time.monotonic() + 90
+        while True:
+            delay = self.transaction_call(reserve)
+            if not delay:
+                return
+            if on_wait:
+                on_wait()
+            if time.monotonic() >= deadline:
+                raise PipelineBusy('正在按 YouTube 请求节奏等待，稍后继续。')
+            time.sleep(min(.5, delay))
     @contextmanager
     def permit(self, channel, phase, *, info=None, streams=1, on_wait=None, timeout=90):
         if not self.enabled:
@@ -411,6 +450,8 @@ class ChannelScheduler:
         if not success and local_failure(error):
             return
         status, delay = throttle_details(error) if error else (None, None)
+        if channel.adapter == 'yt_dlp' and status == 429:
+            delay = max(delay or 0, int(self.config.get('youtube_throttle_cooldown', 300)))
         transient, video_error = error_traits(error)
         if not success and video_error and status != 429:
             return  # Content-specific failures must not poison shared health.
@@ -419,7 +460,9 @@ class ChannelScheduler:
             key = 'channel:' + channel.id
             state = self._state(db, key)
             throttle = {'last_throttle_status': status, 'last_throttle_at': stamp,
-                        'last_throttle_kind': 'subtitles' if 'subtitles' in str(error).lower() else phase} if status in (429, 503) else {}
+                        'last_throttle_kind': ('account' if getattr(error, 'account_rate_limited', False)
+                            or 'your account has been rate-limited' in str(error).lower() else
+                            'subtitles' if 'subtitles' in str(error).lower() else phase)} if status in (429, 503) else {}
             state.update(throttle)
             if success:
                 state['failures'] = 0

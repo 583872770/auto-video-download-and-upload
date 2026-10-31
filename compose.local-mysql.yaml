@@ -1,6 +1,7 @@
 name: youtube-downloader-local
 
 # 应用 + MySQL 一起部署；与远程数据库方案使用独立的配置和状态卷。
+# 固定 IPv6 直连：先运行 scripts/setup_ipv6_network.py，再追加 -f compose.ipv6.yaml。
 services:
   app:
     extends:

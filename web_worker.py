@@ -78,7 +78,19 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         prepared['_disk_state'] = str(state)
         payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path), '_disk_state': str(state)}
         try:
-            result = _execute(action, payload, report, rotation_completed, store, worker_slot)
+            from webapp.youtube_auth import is_youtube
+            if prepared.get('youtube_cookie_pool') and is_youtube(payload['urls']):
+                from webapp.cookie_pool import CookiePool
+                pool = CookiePool(store, prepared, payload['base'], task_id)
+                report({'stage': 'waiting_cookie'})
+                with pool.assignment() as selected:
+                    report({'cookie_profile_id': selected['_cookie_pool_selected']})
+                    event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
+                          source_address=selected.get('youtube_source_address', ''), identity_retry=False)
+                    result = _execute(action, {**payload, 'config': selected}, report,
+                                      rotation_completed, store, worker_slot)
+            else:
+                result = _execute(action, payload, report, rotation_completed, store, worker_slot)
             if result.get('file_count'):
                 try:
                     budget.record_video_size(result['file_bytes'] // result['file_count'],
@@ -177,10 +189,13 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from webapp.throughput import PipelineBusy, automatic as automatic_throughput, runtime_limits, transfer_slot
         route_health = None
         test_mode = config.get('storage_mode') == 'test'
-        if store and not payload.get('_execution_settings'):
+        if store and not payload.get('_execution_settings') and not config.get('_cookie_pool_selected'):
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
+        if store:
+            from webapp.cookie_profiles import CookieProfiles
+            CookieProfiles(base, store).restore_selected(config.get('youtube_cookie'))
         urls = payload['urls']
         if store and not test_mode:
             from webapp.store import source_identity
@@ -271,7 +286,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.save(force=True)
             auth = YouTubeAuth(store)
             try:
-                auth.require(config, base, **({'proxy': snapshot['proxy'], 'node': snapshot['node']}
+                auth.require(config, base, publish_latest=not bool(config.get('_cookie_pool_selected')),
+                             **({'proxy': snapshot['proxy'], 'node': snapshot['node']}
                                             if config.get('proxy_mode') == 'clash' else {}))
             except YouTubeAuthRequired as error:
                 if route_health and error.connection_failure:
@@ -358,8 +374,21 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         class ReportingDownloader(yt_dlp.YoutubeDL):
             skipped = False
 
+            def to_screen(self, message, *args, **kwargs):
+                if str(message).startswith('[download] Sleeping '):
+                    progress.state.update(stage='waiting_request', speed=None, eta=None,
+                                          request_wait_reason='file_start')
+                    progress.save(force=True)
+                return super().to_screen(message, *args, **kwargs)
+
             def report_warning(self, message, *args, **kwargs):
                 failure.warning(message)
+                if config.get('_cookie_pool_selected') and failure.cookie_rejected:
+                    # Stop at the first invalid-session warning, before yt-dlp
+                    # falls back to more clients or downloads anonymously.
+                    result = YouTubeAuth(store).reject(failure.message(),
+                        node=config.get('_resolved_clash_node', ''))
+                    raise YouTubeAuthRequired(result)
                 return super().report_warning(message, *args, **kwargs)
 
             def report_error(self, message, *args, **kwargs):
@@ -490,9 +519,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 failure_phase = 'resolve'
                 started = time.monotonic()
                 def waiting():
-                    progress.state.update(stage='waiting_browser', speed=None, eta=None)
-                    progress.save()
+                    # Resolver/quota admission is shared by all providers,
+                    # including yt-dlp; browser slots are acquired separately.
+                    changed = progress.state.get('stage') != 'waiting_resolver'
+                    progress.state.update(stage='waiting_resolver', speed=None, eta=None)
+                    progress.save(force=changed)
                 with scheduler.permit(channel, 'resolve', on_wait=waiting):
+                    progress.state.update(stage='extracting', speed=None, eta=None)
+                    progress.save(force=True)
                     yield
                 meter.resolved(time.monotonic() - started)
                 scheduler.prepared()
@@ -506,15 +540,31 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 # Some authenticated sessions get a misleading "Video unavailable"
                 # for public videos. Try once with a fresh anonymous cookie jar,
                 # before any media was received, on the same provider and proxy.
-                if (without_cookies or provider != 'yt_dlp' or not youtube or len(addresses) != 1
+                if (not config.get('youtube_cookie_fallback', False)
+                        or without_cookies or provider != 'yt_dlp' or not youtube or len(addresses) != 1
                         or not options.get('cookiefile') or output_files or progress.streams
                         or progress.state.get('downloaded_bytes') or failure.cookie_rejected
+                        or 'your account has been rate-limited' in failure.message(error).lower()
                         or 'video unavailable' not in failure.message(error).lower()):
                     return False
                 print('当前 Cookie 会话返回 Video unavailable；使用同一节点不带 Cookie 重试一次。已上传的 Cookie 保持不变。', flush=True)
                 event('youtube_cookie_fallback', provider=provider, reason='video_unavailable',
                       node_changed=False, cookie_file_preserved=True)
                 return True
+
+            def wait_request():
+                progress.state.update(stage='waiting_request', speed=None, eta=None)
+                progress.save()
+
+            if youtube:
+                scheduler.wait_youtube_start(channel, on_wait=wait_request)
+                progress.state.update(stage='extracting')
+                progress.save(force=True)
+
+            def reject_auth(message):
+                return YouTubeAuth(store).reject(message,
+                    request_mode='anonymous_fallback' if without_cookies else 'authenticated',
+                    node=config.get('_resolved_clash_node', ''))
 
             try:
                 with download_cookie_session(options) as session_options:
@@ -575,14 +625,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 if retry_without_cookies(error):
                     return attempt(channel, addresses, without_cookies=True)
                 if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
-                    raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message(error))) from error
-                raise RuntimeError(failure.message(error)) from error
+                    raise YouTubeAuthRequired(reject_auth(failure.message(error))) from error
+                raise failure.as_error(error) from error
             if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or (failed and '要求登录验证' in failure.message())):
-                raise YouTubeAuthRequired(YouTubeAuth(store).reject(failure.message()))
+                raise YouTubeAuthRequired(reject_auth(failure.message()))
             if failed:
                 if retry_without_cookies():
                     return attempt(channel, addresses, without_cookies=True)
-                raise RuntimeError(failure.message())
+                raise failure.as_error()
             return downloader.skipped
 
         skipped_any = False
@@ -654,6 +704,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
                           proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
+                    if getattr(error, 'account_rate_limited', False):
+                        raise
                     if not pending or index + 1 >= budget:
                         raise
                     # Local storage errors, missing dependencies and loss of
@@ -697,7 +749,7 @@ def drain(directory, slot=0, role='all'):
     from webapp.bergung import BergungError
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
-    from webapp.downloads import DownloadLeaseLost
+    from webapp.downloads import DownloadLeaseLost, YouTubeAccountLimited
     from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
     # Mark this process as a worker for dynamic connection pool sizing
     os.environ['VIDEO_WORKER_PROCESS'] = 'true'
@@ -709,7 +761,18 @@ def drain(directory, slot=0, role='all'):
         store.recover(expired_only=True)
         actions = ('subtitles',) if role == 'subtitles' else ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index', 'subtitles') if role == 'regular' else None
-        while task := store.claim(store.owner, actions=actions, exclude=exclude):
+        next_claim_after = 0
+        while True:
+            remaining = next_claim_after - time.monotonic()
+            if remaining > 0:
+                # Delay this idle worker too. Delaying only the released task
+                # lets a large queue churn thousands of unrelated task claims.
+                # No task lease or DB transaction is held during this wait.
+                time.sleep(min(1, remaining))
+                continue
+            task = store.claim(store.owner, actions=actions, exclude=exclude)
+            if not task:
+                break
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
             configure_diagnostics(runtime)
@@ -811,7 +874,10 @@ def drain(directory, slot=0, role='all'):
                           stage_seconds=last_progress.get('stage_seconds', {}))
                 except PipelineBusy as error:
                     store.release(task['id'], store.owner, str(error), delay=error.retry_after)
-                    event('attempt_released', reason='pipeline_backpressure', message=str(error))
+                    worker_delay = max(2, min(60, error.retry_after))
+                    next_claim_after = time.monotonic() + worker_delay
+                    event('attempt_released', reason='pipeline_backpressure', message=str(error),
+                          retry_after=error.retry_after, worker_delay_seconds=worker_delay)
                     continue
                 except DiskPressure as error:
                     resource_wait = str(error)
@@ -847,6 +913,19 @@ def drain(directory, slot=0, role='all'):
                     store.release(task['id'], store.owner, str(error), delay=0)
                     print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
                     event('attempt_released', reason='authentication_required', **error_details(error))
+                    break
+                except YouTubeAccountLimited as error:
+                    from webapp.execution import isolate_download_failure
+                    reason = ('YouTube 明确提示账号被限流，实例已停止领取，任务保留。'
+                              '至少冷却一小时后再人工检查；登录有效不代表没有限额。')
+                    isolate_download_failure(store, reason)
+                    store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
+                        'speed': None, 'eta': None, 'retry_delay_seconds': error.retry_after,
+                        'retry_reason': 'youtube_account_rate_limit'}, store.owner)
+                    store.release(task['id'], store.owner, reason, delay=error.retry_after)
+                    event('attempt_released', reason='youtube_account_rate_limit',
+                          retry_after=error.retry_after, instance_paused=True, **error_details(error))
+                    print(reason, flush=True)
                     break
                 except BaseException as error:
                     if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):

@@ -43,6 +43,11 @@ LOCAL_RPC_METHODS = {
     '/api/youtube/login': {'GET', 'HEAD', 'POST'},
     '/api/youtube/login/cancel': {'POST'},
     '/api/youtube/cookie': {'POST'},
+    '/api/youtube/cookies': {'GET', 'HEAD', 'POST'},
+    '/api/youtube/cookies/select': {'POST'},
+    '/api/youtube/cookies/check': {'POST'},
+    '/api/youtube/cookies/pool/recover': {'POST'},
+    '/api/youtube/cookies/delete': {'POST'},
     '/api/youtube/auth/check': {'POST'},
 }
 

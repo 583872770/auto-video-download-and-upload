@@ -229,9 +229,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if any(key in data and data[key] != config.get(key, DEFAULTS[key])
                    for key in ('path', 'dir', 'storage_mode')) and store.media_clear_busy():
                 return jsonify(error='素材库正在清空，完成后再修改保存目录或保存方式。'), 409
-            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
+            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie', 'youtube_source_address')):
                 require_login_idle()
-            if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode')):
+            if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode', 'youtube_source_address')):
                 if store.download_connection_busy():
                     return jsonify(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
             config.update(data)
@@ -246,7 +246,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     fleet.control(fleet.id, limits)
             save_settings(config_path, config)
             sync_runtime(config, config_path.parent)
-            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie')):
+            if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie', 'youtube_source_address')):
                 youtube_auth.invalidate()
         return jsonify(message='配置已保存；下载器、画质等策略从后续领取的视频生效，无需暂停或重启。'
                        '配置仅作用于当前实例，正在执行的视频保持本次配置。')
@@ -378,6 +378,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     config['youtube_cookie'] = 'Cookies/youtube.txt'
                     save_settings(config_path, config)
                     sync_runtime(config, base)
+                    from webapp.cookie_profiles import CookieProfiles
+                    CookieProfiles(base, store).save_legacy(target.read_bytes())
                     youtube_auth.invalidate()
                 except Exception:
                     config_backup.replace(config_path)
@@ -435,6 +437,107 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             require_login_idle()
             install_cookie(uploaded_data)
         return jsonify(message='YouTube Cookie 已保存，后续下载将自动使用。', cookie_path='Cookies/youtube.txt'), 201
+
+    @app.get('/api/youtube/cookies')
+    def list_youtube_cookies():
+        from webapp.cookie_profiles import CookieProfiles
+        with settings_lock:
+            config, base = settings()
+            items = CookieProfiles(base, store).items(config.get('youtube_cookie', ''))
+            for item in items:
+                item['auth'] = youtube_auth.profile_status(item['id'], base)
+                item['pooled'] = item['id'] in config.get('youtube_cookie_pool', [])
+            pool_status = None
+            if config.get('youtube_cookie_pool'):
+                from webapp.cookie_pool import CookiePool
+                pool_status = CookiePool(store, config, base, None, strict=False).status()
+        return jsonify(items=items, pool=pool_status, custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
+
+    @app.post('/api/youtube/cookies/check')
+    def check_youtube_cookie_profile():
+        identity = body().get('id')
+        with media_lock, settings_lock:
+            require_login_idle()
+            config, base = settings()
+            options = {}
+            if config.get('proxy_mode') == 'clash':
+                snapshot = clash.snapshot()
+                options.update(proxy=snapshot['proxy'], node=snapshot['node'])
+            result = youtube_auth.check_profile(identity, config, base, **options)
+        return jsonify(auth=result, message=result['message'])
+
+    @app.post('/api/youtube/cookies/pool/recover')
+    def recover_youtube_cookie_pool():
+        from webapp.cookie_pool import CookiePool
+        with media_lock, settings_lock:
+            require_login_idle()
+            if cookie_update_busy() or not store.claims_paused():
+                raise LoginBusy('请先停止当前实例，并等待全部下载结束，再检查账号池。')
+            config, base = settings()
+            if not config.get('youtube_cookie_pool'):
+                raise ValueError('当前未启用 Cookie 账号池。')
+            pool = CookiePool(store, config, base, None)
+            if pool.status().get('cooldown_until', 0) > time.time():
+                raise ValueError('账号池仍在冷却，请等待冷却结束后再检测和解除拦截。')
+            options = {}
+            if config.get('proxy_mode') == 'clash':
+                snapshot = clash.snapshot()
+                options.update(proxy=snapshot['proxy'], node=snapshot['node'])
+            for identity in config['youtube_cookie_pool']:
+                result = youtube_auth.check_profile(identity, config, base, force=True, **options)
+                if result['state'] != 'valid':
+                    return jsonify(error='账号池登录检查未全部通过，拦截保持有效。', auth=result), 409
+            pool.clear_halt_after_checks()
+        return jsonify(message='账号池已通过检查并解除拦截，每账号重新从 1 个任务预热。请手动恢复下载；源站冷却保持有效。')
+
+    @app.post('/api/youtube/cookies')
+    def add_youtube_cookie():
+        from webapp.cookie_profiles import CookieProfiles
+        request.max_content_length = 2 * 1024 * 1024
+        uploaded = request.files.get('cookie')
+        if uploaded is None or not uploaded.filename or Path(uploaded.filename).suffix.lower() != '.txt':
+            raise ValueError('请选择 Netscape 格式的 Cookie .txt 文件。')
+        data = uploaded.stream.read(1024 * 1024 + 1)
+        with media_lock, settings_lock:
+            _, base = settings()
+            item = CookieProfiles(base, store).add(request.form.get('name'), data, uploaded.filename)
+        return jsonify(item=item, message='Cookie 已独立保存；点击“使用此 Cookie”后生效。'), 201
+
+    @app.post('/api/youtube/cookies/select')
+    def select_youtube_cookie():
+        from webapp.cookie_profiles import CookieProfiles
+        identity = body().get('id')
+        with media_lock, settings_lock:
+            require_login_idle()
+            if cookie_update_busy():
+                raise LoginBusy('请先停止当前实例并等待全部下载结束，再切换 Cookie。')
+            config, base = settings()
+            target = CookieProfiles(base, store).require(identity)
+            parse_youtube_cookie_file(target.read_bytes())
+            previous = dict(config)
+            original = config_path.read_bytes()
+            config['youtube_cookie'] = target.relative_to(base).as_posix()
+            config['youtube_cookie_pool'] = []
+            try:
+                save_settings(config_path, config)
+                sync_runtime(config, base)
+            except Exception:
+                config_path.write_bytes(original)
+                sync_runtime(previous, base)
+                raise
+            youtube_auth.invalidate(preserve_block=True)
+        return jsonify(cookie_path=config['youtube_cookie'], message='已切换为单 Cookie，账号池已关闭。请检查登录状态后恢复下载；已有的限流冷却保持有效。')
+
+    @app.post('/api/youtube/cookies/delete')
+    def delete_youtube_cookie():
+        from webapp.cookie_profiles import CookieProfiles
+        identity = body().get('id')
+        with media_lock, settings_lock:
+            config, base = settings()
+            if identity in config.get('youtube_cookie_pool', []):
+                raise ValueError('这份 Cookie 正在账号池中，请先停止实例并关闭账号池，再删除。')
+            CookieProfiles(base, store).delete(identity, config.get('youtube_cookie', ''))
+        return jsonify(message='Cookie 已删除。')
 
     @app.get('/api/media')
     def media():
@@ -858,7 +961,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 except ClashError as error:
                     clash.last_error = str(error)
         threading.Thread(target=restore_clash, name='restore-clash', daemon=True).start()
-        runner = TaskRunner(store, lambda: settings()[0])
+        runner = TaskRunner(store, lambda: settings()[0], base=config_path.parent)
         runner.start()
         app.extensions['task_runner'] = runner
     return app

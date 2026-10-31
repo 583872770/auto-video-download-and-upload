@@ -28,7 +28,7 @@ def main():
     output = Path(__file__).resolve().parents[1] / '.cache/concurrency-preview'
     output.mkdir(parents=True, exist_ok=True)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
-    with tempfile.TemporaryDirectory(prefix='concurrency-ui-') as temporary, patch.dict(os.environ, environment, clear=True):
+    with tempfile.TemporaryDirectory(prefix='concurrency-ui-', dir=output.parent) as temporary, patch.dict(os.environ, environment, clear=True):
         root = Path(temporary)
         config = root / 'config.yaml'
         config.write_text('path: videos\nproxy_mode: direct\nworker_count: 16\nmin_free_gb: 0\n', encoding='utf-8')
@@ -60,10 +60,10 @@ def main():
             with store.connect() as db:
                 db.execute(download_resources.delete())
                 db.execute(settings.delete().where(settings.c.key == 'disk:preview'))
-                if kind in ('throttle', 'disk', 'service'):
+                if kind in ('throttle', 'disk', 'service', 'account'):
                     value = {'cooldown_until': stamp + 95, 'recover_until': stamp + 155,
                              'cooldown_status': 503 if kind == 'service' else 429,
-                             'cooldown_kind': 'transfer' if kind == 'service' else 'subtitles'}
+                             'cooldown_kind': 'account' if kind == 'account' else 'transfer' if kind == 'service' else 'subtitles'}
                     db.execute(download_resources.insert().values(
                         key=hashlib.sha256(b'upstream:youtube-origin').hexdigest(), state=json.dumps(value)))
                 if kind == 'recovery':
@@ -94,6 +94,16 @@ def main():
                 page.goto(f'http://127.0.0.1:{server.server_port}/#overview')
                 expect(panel).to_contain_text('单渠道上限 8 路')
                 expect(panel.locator('.capacity-metrics>div').nth(1)).to_contain_text('8')
+                for provider in ('yt_dlp', 'downmp3'):
+                    label = page.evaluate("""provider => progressLabel({action: 'download', status: 'running',
+                        instance_id: 'preview', progress: {stage: 'waiting_resolver', download_method: provider}})""", provider)
+                    assert '等待解析名额 / 渠道配额' in label and '浏览器' not in label, label
+                resolver_html = page.evaluate("""() => concurrencyHTML({
+                    ...state.fleet.items.find(item => item.id === 'preview').concurrency,
+                    stages: {waiting_resolver: 3}})""")
+                assert '解析名额 / 渠道配额等待' in resolver_html
+                assert '提高浏览器数量不会解除这类等待' in resolver_html
+                assert '浏览器与转换阶段占用' not in resolver_html
                 panel.locator('summary').first.click()
                 expect(panel.locator('.capacity-table').first).to_be_visible()
                 expect(panel).to_contain_text('解析与传输共用名额')
@@ -104,7 +114,8 @@ def main():
                 expect(guide).to_contain_text('不能单独证明封号或封 IP')
                 expect(guide).to_contain_text('目录权限、路径过长或文件写入失败')
                 expect(guide).to_contain_text('第三方配额、每日额度或接口限制')
-                expect(guide.locator('.risk-guide-item')).to_have_count(38)
+                expect(guide.locator('.risk-guide-item')).to_have_count(39)
+                expect(guide.locator('[data-guide-code=account_rate_limit]')).to_contain_text('账号被限流')
                 page.screenshot(path=str(output/'normal-desktop.png'), full_page=True)
                 fixture('throttle')
                 expect(panel).to_contain_text('HTTP 429', timeout=12000)
@@ -125,6 +136,10 @@ def main():
                 fixture('service')
                 expect(panel.locator('.capacity-notices')).to_contain_text('HTTP 503', timeout=12000)
                 expect(panel.locator('.capacity-notices')).not_to_contain_text('HTTP 429')
+                fixture('account')
+                expect(panel.locator('.capacity-notices')).to_contain_text('账号限流冷却中', timeout=12000)
+                expect(panel.locator('.capacity-notices')).not_to_contain_text('· HTTP 429')
+                page.screenshot(path=str(output/'account-limit-mobile.png'), full_page=True)
                 fixture('disk')
                 expect(panel).to_contain_text('临时空间等待', timeout=12000)
                 expect(panel).to_contain_text('HTTP 429')
@@ -134,17 +149,27 @@ def main():
                 fixture('throttle')
                 page.set_viewport_size({'width': 1440, 'height': 1150})
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
+                page.get_by_role('tab', name='运行诊断').click()
                 settings_panel = page.locator('[data-concurrency-panel=settings]')
                 expect(settings_panel).to_contain_text('HTTP 429', timeout=12000)
                 settings_panel.scroll_into_view_if_needed()
                 page.screenshot(path=str(output/'settings-desktop.png'))
                 draft = page.locator('#concurrency-config-note')
+                page.get_by_role('tab', name='并发与渠道').click()
                 expect(draft).to_have_class('micro-copy capacity-draft-warning')
                 expect(draft).to_contain_text('最多约 8 路')
                 page.locator('[name=builtin_transfer_limit]').fill('16')
                 page.locator('[name=builtin_connection_limit]').fill('32')
+                page.get_by_role('tab', name='下载策略').click()
                 page.locator('[name=subtitle_mode]').select_option('optional')
                 page.locator('[name=subtitle_languages]').fill('en,zh-Hans')
+                page.get_by_role('tab', name='Cookie 与登录').click()
+                page.get_by_text('出口与请求节奏（高级）', exact=True).click()
+                expect(page.locator('[name=youtube_start_interval]')).to_have_value('3')
+                page.locator('[name=youtube_start_interval]').fill('5')
+                page.locator('[name=youtube_cookie_fallback]').select_option('false')
+                expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('true')
+                page.locator('[name=youtube_sleep_preset]').select_option('false')
                 expect(draft).not_to_have_class('micro-copy capacity-draft-warning')
                 page.locator('#settings-form button[type=submit]').click()
                 expect(page.locator('#settings-save-state')).to_contain_text('设置已保存', timeout=12000)
@@ -152,8 +177,13 @@ def main():
                 expect(page.locator('[name=builtin_transfer_limit]')).to_have_value('16')
                 expect(page.locator('[name=builtin_connection_limit]')).to_have_value('32')
                 expect(page.locator('[name=subtitle_languages]')).to_have_value('en,zh-Hans')
+                expect(page.locator('[name=youtube_start_interval]')).to_have_value('5')
+                expect(page.locator('[name=youtube_cookie_fallback]')).to_have_value('false')
+                expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('false')
+                expect(page.locator('[name=youtube_source_address]')).to_have_value('')
                 child = store.create('subtitles', {'base': str(root), 'config': cfg})
                 fixture('subtitles')
+                page.get_by_role('tab', name='运行诊断').click()
                 expect(settings_panel).to_contain_text('字幕独立补下载', timeout=12000)
                 expect(settings_panel).to_contain_text('字幕上游冷却')
                 expect(settings_panel).not_to_contain_text('渠道冷却中')
@@ -198,7 +228,7 @@ def main():
             thread.join(timeout=5)
             server.server_close()
             store.db.engine.dispose()
-        print(json.dumps({'scenarios': ['normal', '429', '503', 'recovery', 'disk', 'offline', 'settings', 'save-reload', 'subtitle-cooldown', 'risk-guide', 'risk-task-403', 'risk-task-retry', 'auth-required', 'auth-valid', 'stale-request'],
+        print(json.dumps({'scenarios': ['normal', '429', '503', 'account-limit', 'recovery', 'disk', 'offline', 'settings', 'save-reload', 'subtitle-cooldown', 'risk-guide', 'risk-task-403', 'risk-task-retry', 'auth-required', 'auth-valid', 'stale-request'],
                           'mobile_overflow': False, 'page_errors': errors, 'output': str(output)}, ensure_ascii=False))
 
 

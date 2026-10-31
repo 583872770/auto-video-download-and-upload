@@ -1,0 +1,221 @@
+"""Single-instance Cookie admission with fenced permits and conservative pacing.
+
+No retry changes identities. Explicit account limits or verification halt the
+whole pool; content failures do not lower unrelated accounts' capacity.
+"""
+from contextlib import contextmanager
+import hashlib
+import json
+import random
+import time
+
+from Utils.youtube_login import parse_youtube_cookie_file
+from webapp.channel_scheduler import ChannelScheduler, throttle_details, error_traits
+from webapp.cookie_profiles import CookieProfiles
+from webapp.throughput import PipelineBusy
+from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
+
+
+def credential_key(data):
+    cookies = parse_youtube_cookie_file(data)
+    # LOGIN_INFO and auxiliary flags can differ across repeated exports of the
+    # same browser session. SID/PSID, rather than the entire file, owns a budget.
+    values = []
+    for name in ('SID', '__Secure-3PSID', '__Secure-1PSID', 'SAPISID'):
+        values = sorted(set((c['name'], c['value']) for c in cookies if c['name'] == name and c['value']))
+        if values:
+            break
+    if not values:
+        values = sorted((c['name'], c['value']) for c in cookies
+                        if c['name'] in AUTH_COOKIES and c['value'])
+    if not values:
+        raise ValueError('账号池中的 Cookie 缺少登录凭据，请先检测登录。')
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+def capacity_summary(snapshot, stamp=None):
+    """Public capacity estimate, never evidence of independent Google accounts."""
+    stamp = time.time() if stamp is None else stamp
+    sessions = [a for a in snapshot['accounts'] if not a.get('shared_with') and not a.get('unavailable')]
+    capacities = [(a, min(2, max(1, int(a.get('limit', 1))))) for a in sessions]
+    capacity = sum(limit for a, limit in capacities if a.get('cooldown_until', 0) <= stamp)
+    active = sum(a.get('active', 0) for a in sessions)
+    next_starts = [max(snapshot.get('next_at', 0), a.get('next_at', 0), a.get('cooldown_until', 0), stamp)
+                   for a, limit in capacities if a.get('active', 0) < limit]
+    blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
+    capacity = 0 if blocked else capacity
+    warmup = sum(1 for _, limit in capacities if limit < 2)
+    reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if blocked else
+              '没有可用的 Cookie 会话' if not sessions else
+              'Cookie 会话正在冷却' if not capacity else
+              f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
+              f"当前容量 {capacity}，{warmup} 个会话尚未完成预热" if warmup else
+              f'Cookie 核心会话当前容量为 {capacity}')
+    return {'known': True, 'sampled_at': stamp, 'configured_files': snapshot.get('configured_files', len(snapshot['accounts'])),
+            'effective_sessions': len(sessions), 'unavailable_files': sum(bool(a.get('unavailable')) for a in snapshot['accounts']),
+            'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
+            'halted': blocked, 'reason': reason,
+            'next_start_at': min(next_starts) if next_starts and not blocked else None}
+
+
+class CookiePool:
+    def __init__(self, store, config, base, task_id, *, strict=True):
+        self.router = ChannelScheduler(store, config, task_id)
+        self.config, self.base = config, base
+        profiles = CookieProfiles(base, store)
+        self.accounts = []
+        self.unavailable = []
+        self.aliases = {}
+        seen = {}
+        for identity in config.get('youtube_cookie_pool', []):
+            try:
+                target = profiles.require(identity)
+                key = credential_key(target.read_bytes())
+            except (ValueError, OSError):
+                if strict:
+                    raise YouTubeAuthRequired({'state': 'invalid',
+                        'message': '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
+                self.unavailable.append({'id': identity, 'unavailable': True})
+                continue
+            if key not in seen:
+                self.accounts.append((identity, target, 'youtube-account:' + key))
+                seen[key] = identity
+            else:
+                self.aliases[identity] = seen[key]
+        self.global_scope = 'youtube-cookie-pool:' + self.router.instance
+
+    def status(self):
+        def read(db, stamp):
+            global_state = self.router._state(db, self.global_scope)
+            accounts = [{'id': identity, **self.router._state(db, scope),
+                         'active': self.router._active(db, scope, stamp)} for identity, _, scope in self.accounts]
+            for identity, canonical in self.aliases.items():
+                accounts.append({**next(a for a in accounts if a['id'] == canonical),
+                                 'id': identity, 'shared_with': canonical})
+            result = {'halted': bool(global_state.get('halted')), 'reason': global_state.get('reason'),
+                    'cooldown_until': global_state.get('cooldown_until', 0),
+                    'next_at': global_state.get('next_at', 0),
+                    'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
+                    'configured_files': len(self.config.get('youtube_cookie_pool', [])),
+                    'accounts': accounts + self.unavailable}
+            result['capacity_summary'] = capacity_summary(result, stamp)
+            return result
+        return self.router.transaction_call(read)
+
+    def clear_halt_after_checks(self):
+        """Called only by the idle-only API after fresh checks of every member."""
+        def clear(db, stamp):
+            gate = self.router._state(db, self.global_scope)
+            if gate.get('cooldown_until', 0) > stamp:
+                raise ValueError('账号池仍在冷却，不能解除拦截。请等待冷却结束。')
+            for _, _, scope in self.accounts:
+                state = self.router._state(db, scope)
+                if state.get('cooldown_until', 0) > stamp or self.router._active(db, scope, stamp):
+                    raise ValueError('账号仍在冷却或有任务运行，不能解除拦截。请等待冷却结束。')
+            for _, _, scope in self.accounts:
+                state = self.router._state(db, scope)
+                state.update(limit=1, streak=0, first_success=0)
+                self.router._save(db, scope, state)
+            gate = self.router._state(db, self.global_scope)
+            gate.update(halted=False, reason=None)
+            self.router._save(db, self.global_scope, gate)
+        self.router.transaction_call(clear)
+
+    @contextmanager
+    def assignment(self):
+        router = self.router
+        if not router.enabled or not self.accounts:
+            raise ValueError('Cookie 账号池必须通过下载队列执行，且至少选择一个账号。')
+
+        def reserve(db, stamp):
+            gate = router._state(db, self.global_scope)
+            if gate.get('halted'):
+                raise YouTubeAuthRequired({'state': 'verification_required',
+                    'message': gate.get('reason') or '账号池已停止，请人工检查登录及限流状态。'})
+            if gate.get('next_at', 0) > stamp:
+                return None, gate['next_at'] - stamp
+            candidates, delays = [], []
+            for identity, path, scope in self.accounts:
+                state = router._state(db, scope)
+                active = router._active(db, scope, stamp)
+                if max(state.get('next_at', 0), state.get('cooldown_until', 0)) > stamp:
+                    delays.append(max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp)
+                    continue
+                cap = min(2, max(1, state.get('limit', 1)))
+                if active < cap:
+                    candidates.append((active, state.get('last_start', 0), identity, path, scope, state, cap))
+            if not candidates:
+                return None, min(delays, default=10)
+            _, _, identity, path, scope, state, cap = min(candidates, key=lambda x: x[:3])
+            token, delay = router._admit(db, stamp, [(scope, cap, 1)])
+            if not token:
+                return None, delay
+            # Preserve the permit policy written by _admit.
+            state = router._state(db, scope)
+            interval = max(60, int(self.config.get('youtube_start_interval', 60)), state.get('interval', 60))
+            state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, 15))
+            router._save(db, scope, state)
+            # This floor remains shared by all accounts on the same instance.
+            gate['next_at'] = stamp + max(20, 60 / len(self.accounts))
+            router._save(db, self.global_scope, gate)
+            return (identity, path, scope, token), 0
+
+        selected, delay = router.transaction_call(reserve)
+        if not selected:
+            error = PipelineBusy('Cookie 账号池正在按账号并发及请求间隔等待。')
+            error.retry_after = max(2, min(60, delay))
+            raise error
+        identity, path, scope, token = selected
+        error = None
+        try:
+            yield {**self.config, 'youtube_cookie': str(path), '_cookie_pool_selected': identity}
+        except BaseException as failure:
+            error = failure
+            raise
+        finally:
+            try:
+                self.outcome(scope, error)
+            finally:
+                router._release(token)
+
+    def outcome(self, scope, error):
+        status, delay = throttle_details(error) if error else (None, None)
+        transient, video_error = error_traits(error) if error else (False, False)
+        if error:
+            from webapp.proxy_health import connection_failure
+            transient |= (connection_failure(error) or status == 503 or
+                          any(term in str(error).lower() for term in ('timed out', 'timeout')))
+        auth_block = isinstance(error, YouTubeAuthRequired) and not error.retryable
+        text = str(error).lower()
+        content = video_error or any(term in text for term in (
+            'requested format is not available', 'drm protected', 'account associated with this video has been terminated'))
+        if content and status != 429 and not auth_block:
+            return
+        if error and not auth_block and status != 429 and not transient:
+            # Includes content failures, local pressure, and unknown failures;
+            # none are evidence that an account can safely increase its pace.
+            return
+
+        def record(db, stamp):
+            state = self.router._state(db, scope)
+            if auth_block or status == 429:
+                reason = ('账号池检测到限流或登录验证，已停止整个实例。请检查后人工恢复；不会换账号继续重试。')
+                gate = self.router._state(db, self.global_scope)
+                gate.update(halted=True, reason=reason, halted_at=stamp,
+                            cooldown_until=stamp + max(3600, delay or 0))
+                self.router._save(db, self.global_scope, gate)
+                state.update(limit=1, streak=0, interval=max(120, state.get('interval', 60) * 2),
+                             cooldown_until=stamp + max(3600, delay or 0))
+            elif error:
+                state.update(limit=1, streak=0, first_success=0,
+                             interval=min(600, max(120, state.get('interval', 60) * 2)),
+                             cooldown_until=stamp + max(60, delay or 0))
+            else:
+                state['streak'] = state.get('streak', 0) + 1
+                state['first_success'] = state.get('first_success') or stamp
+                state['successes'] = state.get('successes', 0) + 1
+                if state['streak'] >= 5 and stamp - state['first_success'] >= 600:
+                    state['limit'] = 2
+                    state['interval'] = max(60, state.get('interval', 60) - 15)
+            self.router._save(db, scope, state)
+        self.router.transaction_call(record)

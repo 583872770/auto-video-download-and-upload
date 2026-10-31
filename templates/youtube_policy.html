@@ -1,0 +1,8 @@
+<div class="scale-fields" data-provider-setting="yt_dlp">
+  <label>直连源地址<input name="youtube_source_address" placeholder="留空自动选择；:: 表示仅 IPv6"><small>仅直连生效，登录检测与 yt-dlp 使用相同源地址。Docker 需先具备 IPv6 网络。:: 由系统选择 IPv6，不会自动轮换 16 个地址。</small></label>
+  <label>YouTube 视频启动最小间隔（秒）<input name="youtube_start_interval" type="number" min="0" max="60" required><small>默认 3 秒，本实例的多个进程共享；文件传输仍可并行。限制视频解析启动节奏，不等于每个 HTTP 请求的间隔，也不是 YouTube 公布的安全额度。0 表示关闭。</small></label>
+  <label>Cookie 会话返回不可用时<select name="youtube_cookie_fallback"><option value="false">保留原始错误，不增加匿名请求（推荐）</option><option value="true">同一出口不带 Cookie 重试一次</option></select><small>匿名重试可能触发机器人验证，默认关闭。验证失败仍暂停实例，不能据此断定 Cookie 失效。</small></label>
+  <label>yt-dlp 请求等待预设<select name="youtube_sleep_preset"><option value="true">启用 sleep 预设（推荐）</option><option value="false">关闭预设等待</option></select><small>采用 yt-dlp 的 sleep 预设：解析请求间隔 0.75 秒、每个媒体文件开始前等待 10～20 秒、字幕等待 5 秒。视频 / 音轨可能分别等待；不限制已开始文件的字节传输速度。它与上面的视频启动间隔共同生效，不能保证免限流。</small></label>
+  <p class="micro-copy">账号被限流时，源站可能不返回 HTTP 429。识别到明确账号限流会停止本实例领取、保留任务并共享冷却至少一小时；到期后仍需人工确认。登录有效、固定 IP 和更多 IPv6 都不代表账号没有配额限制。</p>
+  <label>YouTube HTTP 429 最短冷却（秒）<input name="youtube_throttle_cooldown" type="number" min="30" max="3600" required><small>默认 300 秒；若源站 Retry-After 更长则按更长时间等待，之后保留现有单路恢复观察。机器人验证或登录失效仍会暂停实例，不能靠冷却保证恢复。</small></label>
+</div>

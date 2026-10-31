@@ -19,6 +19,7 @@ class CookieFallbackTests(unittest.TestCase):
         self.cookie.write_bytes(self.original)
         self.payload = {'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=u71MaudlmOc'],
                         'config': {'path': 'videos', 'proxy_mode': 'direct', 'throughput_mode': 'manual',
+                                   'youtube_cookie_fallback': True,
                                    'youtube_cookie': str(self.cookie)}}
 
     def test_cookie_unavailable_retries_once_without_mutating_uploaded_cookie_or_double_counting(self):
@@ -61,6 +62,52 @@ class CookieFallbackTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Video unavailable'):
                 execute('download', self.payload)
         self.assertEqual(calls, [True, False])
+
+    def test_default_policy_does_not_double_unavailable_requests(self):
+        self.payload['config'].pop('youtube_cookie_fallback')
+        calls = []
+        def download(downloader, urls):
+            calls.append(True)
+            downloader.report_error('[youtube] fixture: Video unavailable')
+            return 1
+        with patch.object(yt_dlp.YoutubeDL, 'download', download):
+            with self.assertRaisesRegex(RuntimeError, 'Video unavailable'):
+                execute('download', self.payload)
+        self.assertEqual(len(calls), 1)
+
+    def test_explicit_account_limit_never_falls_back_to_anonymous_requests(self):
+        from webapp.downloads import YouTubeAccountLimited
+        for automatic in (False,True):
+            with self.subTest(automatic=automatic):
+                self.payload['config']['throughput_mode']='auto' if automatic else 'manual'
+                def fail(downloader,*args,**kwargs):
+                    downloader.report_error('Video unavailable. Your account has been rate-limited by YouTube for up to an hour.')
+                    return None if automatic else 1
+                method='extract_info' if automatic else 'download'
+                with patch.object(yt_dlp.YoutubeDL,method,autospec=True,side_effect=fail) as request:
+                    with self.assertRaises(YouTubeAccountLimited):
+                        execute('download',self.payload)
+                self.assertEqual(request.call_count,1)
+                self.assertEqual(self.cookie.read_bytes(),self.original)
+
+    def test_worker_marks_anonymous_challenge_without_claiming_cookie_expired(self):
+        from webapp.store import TaskStore
+        from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired
+        store = TaskStore(self.root / 'state')
+        calls = []
+        def download(downloader, urls):
+            calls.append(bool(downloader.params.get('cookiefile')))
+            downloader.report_error('[youtube] fixture: ' + (
+                'Video unavailable' if len(calls) == 1 else "Sign in to confirm you're not a bot"))
+            return 1
+        with patch.object(yt_dlp.YoutubeDL, 'download', download), \
+                patch.object(YouTubeAuth, 'require', return_value={'state':'valid'}):
+            with self.assertRaises(YouTubeAuthRequired) as caught:
+                execute('download', self.payload, store=store)
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(caught.exception.result['request_mode'], 'anonymous_fallback')
+        self.assertIn('不能证明', caught.exception.result['message'])
+        self.assertEqual(self.cookie.read_bytes(), self.original)
 
     def test_automatic_pipeline_retries_suppressed_extraction_error_before_transfer(self):
         self.payload['config']['throughput_mode'] = 'auto'

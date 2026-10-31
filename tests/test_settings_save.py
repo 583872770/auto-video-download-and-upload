@@ -11,6 +11,15 @@ from webapp.database import instances, job_profiles
 
 
 class SettingsSaveContract:
+    def test_routing_save_preserves_explicit_concurrency_mode(self):
+        for mode, routing in (('manual', 'auto'), ('auto', 'ordered_fallback')):
+            response = self.client.put('/api/config', json={
+                'throughput_mode': mode, 'scheduler_mode': routing}, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.json)
+            saved = self.client.get('/api/config').json['config']
+            self.assertEqual(saved['throughput_mode'], mode)
+            self.assertEqual(saved['scheduler_mode'], routing)
+
     def create(self, name='Existing'):
         self.client.put('/api/config', json={'download_methods':['downmp3']}, headers=self.headers)
         response = self.client.post('/api/jobs', json={'customer':'Customer', 'name':name,

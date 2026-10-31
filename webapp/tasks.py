@@ -28,9 +28,10 @@ from webapp.store import TaskStore
 
 class TaskRunner:
     """Supervise download slots, one import/index lane and one subtitle lane."""
-    def __init__(self, store, settings=None):
+    def __init__(self, store, settings=None, *, base=None):
         self.store = store
         self.settings = settings or (lambda: {})
+        self.base = base
         self.process = None
         self.processes = {}
         self.last_started = {}
@@ -138,7 +139,13 @@ class TaskRunner:
                         if self.store.fleet:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
                         stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
-                    self.throughput.update(config, stages)
+                    cookie_capacity = None
+                    if config.get('youtube_cookie_pool'):
+                        from webapp.cookie_pool import CookiePool
+                        base = self.store.fleet.local_settings()['base'] if self.store.fleet else self.base
+                        if base:
+                            cookie_capacity = CookiePool(self.store, config, base, None, strict=False).status()['capacity_summary']
+                    self.throughput.update(config, stages, cookie_capacity=cookie_capacity)
                     if self.store.fleet:
                         from webapp.risk_diagnostics import local_health
                         self.throughput.state['risk_local'] = local_health(self.store.directory, config,

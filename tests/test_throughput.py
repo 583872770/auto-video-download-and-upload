@@ -131,7 +131,8 @@ class ResourceFeedbackTests(unittest.TestCase):
         clock=[100]
         controller=ThroughputController(self.directory,clock=lambda:clock[0])
         sample={'cpu_cores':4,'memory_total':8192*MIB,'memory_available':4096*MIB,'cpu_percent':30,'io_pressure':0,'rx':0}
-        with patch.object(controller,'sample',side_effect=lambda:dict(sample)):
+        with patch.object(controller,'sample',side_effect=lambda:dict(sample)), \
+             patch('webapp.download_metrics.read_counters', side_effect=lambda *_: {'worker': {'received_bytes': sample['rx']}}):
             initial=controller.update(config)
             self.assertEqual(initial['transfers'],8)
             self.assertEqual(initial['workers'],6)  # one unverified upstream + bounded preparation
@@ -249,6 +250,19 @@ class ResourceFeedbackTests(unittest.TestCase):
             reverted=controller.update(config,['waiting_browser']*4)
             self.assertEqual(reverted['browsers'],2)
             self.assertEqual(runtime_limits(config,self.directory)['workers'],reverted['workers'])
+
+    def test_resolver_wait_does_not_grow_browser_pool(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 16, 'yt5s_browser_count': 4,
+                  'download_methods': ['yt_dlp']}
+        clock = [100]
+        controller = ThroughputController(self.directory, clock=lambda: clock[0])
+        sample = {'cpu_cores': 4, 'memory_total': 8192*MIB, 'memory_available': 4096*MIB,
+                  'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        with patch.object(controller, 'sample', return_value=sample):
+            initial = controller.update(config)
+            clock[0] += 61
+            waiting = controller.update(config, ['waiting_resolver']*4)
+        self.assertEqual(waiting['browsers'], initial['browsers'])
 
     def test_parser_cpu_pressure_retires_browser_before_media_capacity(self):
         config = {'throughput_mode': 'auto', 'worker_count': 16, 'yt5s_browser_count': 3,
