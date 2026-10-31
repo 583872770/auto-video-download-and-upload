@@ -1,29 +1,7 @@
 """Common helper functions for routes."""
-from flask import current_app, request, jsonify
-from pathlib import Path
+from flask import current_app, request
 
-from Utils.config import load_config
 from webapp.settings import DEFAULTS
-
-
-def get_settings():
-    """Read current merged settings through the app's settings closure."""
-    settings_func = current_app.extensions.get('settings_func')
-    if settings_func:
-        return settings_func()
-
-    # Fallback for routes that don't have settings closure
-    config_path = current_app.config.get('CONFIG_PATH')
-    if config_path:
-        config, base = load_config(Path(config_path))
-    else:
-        config, base = {}, None
-
-    fleet = current_app.extensions.get('fleet')
-    if fleet and fleet.can_download:
-        config.update(fleet.resource_limits())
-
-    return config, base
 
 
 def get_body():

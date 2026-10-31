@@ -1,0 +1,24 @@
+{% include 'settings_navigation.html' %}
+<form id="settings-form">
+  <section id="settings-pane-download" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-download" data-settings-category="download">
+    <p class="settings-category-note">选择下载方式、画质和重试策略。保存方式为测试模式时，下载完成的文件会自动删除。</p>
+    {% include 'settings_download.html' %}
+  </section>
+  <section id="settings-pane-accounts" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-accounts" data-settings-category="accounts" hidden>
+    <p class="settings-category-note">先确认下载出口，再检测 Cookie。账号名称只是备注；相同核心会话共享额度，登录通过也不代表视频一定可下载。</p>
+    {% include 'settings_accounts.html' %}
+  </section>
+  <section id="settings-pane-performance" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-performance" data-settings-category="performance" hidden>
+    <p class="settings-category-note">设置值是上限，实际并发还受 Cookie 会话、启动间隔、渠道和连接预算约束。修改后可在运行诊断查看实际限制。</p>
+    {% include 'settings_performance.html' %}
+  </section>
+  <section id="settings-pane-storage" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-storage" data-settings-category="storage" hidden>
+    <p class="settings-category-note">素材目录决定正式文件位置；临时预算、暂停水位和日志期限决定空间管理方式。</p>
+    {% include 'settings_storage.html' %}
+  </section>
+  <section id="settings-pane-diagnostics" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-diagnostics" data-settings-category="diagnostics" hidden>
+    <p class="settings-category-note">这里显示已保存配置的实时运行结果。限流、验证码、账号失效和资源等待分别处理，详细提示与排查说明均保留。</p>
+    {% include 'settings_diagnostics.html' %}
+  </section>
+  <div class="settings-save"><span id="settings-save-state">画质、下载器顺序与转换超时等在后续领取视频时生效，无需暂停或重启。只作用于当前实例；正在执行的视频保持本次配置。</span><button class="button button-dark" type="submit"><svg><use href="#i-check"/></svg>保存设置</button></div>
+</form>

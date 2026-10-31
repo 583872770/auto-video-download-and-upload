@@ -15,6 +15,9 @@
     <label>单次清单上传上限（MiB）<input name="disk_upload_limit_mb" type="number" min="1" max="100000" required></label>
     <label>成功任务日志保留（小时）<input name="disk_success_log_hours" type="number" min="1" max="100000" required></label>
     <label>失败任务日志保留（天）<input name="disk_failure_log_days" type="number" min="1" max="100000" required><small>总量预算优先；简短错误原因和统计永久保留在数据库。</small></label>
+      <label>磁盘预留空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" required><small>低于此值暂停领取下载任务，释放空间后自动继续；0 表示不预留。</small></label>
+    <label>单条日志上限（MB）<input name="max_log_mb" type="number" min="1" max="1000" required><small>写入时自动轮转，实际大小还受全部日志预算限制。</small></label>
+    <label>历史日志保留天数<input name="log_retention_days" type="number" min="0" max="3650" required><small>0 表示使用磁盘管理中的分类保留期限；容量预算始终生效。任务记录和视频保留。</small></label>
   </div>
   <p class="micro-copy">当前为软件容量控制，突发写入可能短暂超额。严格上限需由宿主机配置文件系统配额。正式素材、数据库和 Docker 镜像单独规划容量。</p>
   <p class="micro-copy">清单导入完成后自动删除原 TXT/CSV；视频 ID 和导入结果保留，CSV 中未入库的额外列请自行备份。</p>

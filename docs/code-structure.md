@@ -22,6 +22,10 @@
 | `webapp/catalog.py`、`disk_budget.py`、`Utils/download_storage.py` | 素材索引、容量预算与清理、测试下载工作区 |
 | `templates/`、`static/` | 页面、草稿与配置回显、任务和实例实时状态 |
 
+系统设置的结构由 `templates/settings.html` 和五个 `settings_*.html` 分类模板直接生成；渠道和磁盘面板各自使用已有的独立模板。表单只有一个，分类切换不拆分提交范围。`static/settings_tabs.js` 只负责键盘导航、分类切换和无效字段定位，不创建控件、不搬动 DOM，也不改写字段标题。新增设置应在所属模板声明，保存和回显继续由 `static/app.js` 处理。
+
+2026-10-31 清理移除了无仓库内调用的 `media_items()`、`trim_log()`、`get_settings()` 及其专用导入；素材类型常量、当前索引和日志轮转实现保留。任务阶段名称清除了已被前置分支处理的重复浏览器映射。旧接口、数据迁移与下载渠道功能未在本轮退出。
+
 应用内部模块统一位于 `webapp/`。不要新建与 `app.py` 同名的 `app/` 包，否则 `from app import create_app` 可能导入错误对象，造成启动失败。
 
 ## 配置保存与生效
@@ -56,5 +60,8 @@
 - `python scripts/test_imports.py`、`python docker/check_startup.py`：导入及打包启动检查。
 - `.github/workflows/tests.yml`：当前持续集成的浏览器检查清单。
 - `python scripts/verify_p0_fixes.py`：有真实断言和失败退出码的定向回归入口。
+- `python scripts/verify_cookie_profiles_ui.py`：检查服务端直出与 JS 初始化后的 45 个命名设置字段、约束、选项及所属分类一致，并验证键盘导航、隐藏字段校验、跨分类保存和 Cookie 操作。
+
+本轮设置、素材清理、日志和磁盘回归共执行 91 项：88 项通过、2 项跳过，Windows 的 16 进程磁盘压力测试首次失败。该压力项在未修改的 HEAD 副本同样失败，当前工作区单独复测通过，不能视作已解决其运行波动。Cookie 页面、并发诊断页面、24 个模块导入及打包启动检查通过；未进行服务器部署或真实下载测试。
 
 本地 SQLite、模拟第三方网站及浏览器检查不能替代线上 MySQL、真实代理内核与第三方服务可用性测试。具体检查范围及结果见 [全项目检查报告](full-project-audit-20261030.md)。

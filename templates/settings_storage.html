@@ -1,0 +1,20 @@
+<div class="panel settings-panel">
+  <div class="panel-heading">
+    <div>
+      <span class="section-kicker">DOWNLOAD LOCATION</span>
+      <h2>当前实例 · 素材目录</h2>
+    </div>
+  </div>
+  <label data-local-storage>素材目录<input name="path" required placeholder="videos">
+    <small>相对路径以 config.yaml 所在目录为基准</small>
+  </label>
+  <label data-local-storage>子目录<input name="dir" placeholder="可选，例如 minecraft">
+  </label>
+  <label>视频文件组织<select name="shard_downloads">
+      <option value="true">按视频 ID 分目录（推荐）</option>
+      <option value="false">直接保存到素材目录</option>
+    </select>
+    <small>仅影响新下载，已有素材保持原位置。</small>
+  </label>
+</div>
+{% include 'disk_settings.html' %}

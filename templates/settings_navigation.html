@@ -2,7 +2,7 @@
   <div><span class="section-kicker">INSTANCE SETTINGS</span><h2>按用途配置当前实例</h2><p>分类切换会保留未保存的修改，完成后统一保存。账号操作与网络连接有各自的生效按钮。</p></div>
   <a class="button button-white" href="#overview" data-view="overview">返回下载工作台 ↗</a>
 </div>
-<div class="settings-tabs" role="tablist" aria-label="设置分类" hidden>
+<div class="settings-tabs" role="tablist" aria-label="设置分类">
   {% for key, label, description in [('download','下载策略','下载器 · 画质 · 重试'),('accounts','Cookie 与登录','凭据 · 检测 · 出口'),('performance','并发与渠道','任务数 · 连接预算'),('storage','存储与清理','目录 · 空间 · 保留'),('diagnostics','运行诊断','限流 · 风控 · 工具')] %}
   <button type="button" role="tab" id="settings-tab-{{ key }}" aria-controls="settings-pane-{{ key }}" aria-selected="{{ 'true' if key == 'download' else 'false' }}" tabindex="{{ '0' if key == 'download' else '-1' }}" data-settings-target="{{ key }}"><strong>{{ label }}</strong><span>{{ description }}</span></button>
   {% endfor %}

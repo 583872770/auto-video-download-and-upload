@@ -33,6 +33,44 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
                 expect(page.get_by_role('tab')).to_have_count(5)
+                expect(page.locator('[name="worker_count"]')).to_have_value('1')
+                # Controls and their categories exist before application JS runs.
+                # Hydration must not clone fields or change their constraints.
+                plain = browser.new_page(java_script_enabled=False)
+                plain.goto(f'http://127.0.0.1:{server.server_port}/')
+                schema = """nodes => nodes.map(node => ({name: node.name, tag: node.tagName,
+                    type: node.getAttribute('type'), min: node.getAttribute('min'), max: node.getAttribute('max'),
+                    required: node.required, options: [...(node.options || [])].map(option => option.value),
+                    category: node.closest('[data-settings-category]')?.dataset.settingsCategory}))"""
+                static_fields = plain.locator('#settings-form [name]').evaluate_all(schema)
+                live_fields = page.locator('#settings-form [name]').evaluate_all(schema)
+                assert len(static_fields) == 45 and static_fields == live_fields
+                assert len({field['name'] for field in static_fields}) == len(static_fields)
+                expect(plain.locator('[role="tabpanel"]')).to_have_count(5)
+                assert page.evaluate("""() => { const ids = [...document.querySelectorAll('[id]')].map(node => node.id);
+                    return ids.length === new Set(ids).size; }"""), 'duplicate DOM ids'
+                plain.close()
+                page.locator('#settings-tab-download').focus()
+                page.keyboard.press('ArrowRight')
+                expect(page.locator('#settings-tab-accounts')).to_be_focused()
+                expect(page.locator('#settings-pane-accounts')).to_be_visible()
+                page.keyboard.press('End')
+                expect(page.locator('#settings-pane-diagnostics')).to_be_visible()
+                page.keyboard.press('Home')
+                expect(page.locator('#settings-pane-download')).to_be_visible()
+                page.get_by_role('tab', name='Cookie 与登录').click()
+                policy = page.locator('.settings-policy-details')
+                policy.locator('summary').click()
+                interval = page.locator('[name="youtube_start_interval"]')
+                interval_value = interval.input_value()
+                interval.fill('')
+                policy.locator('summary').click()
+                page.get_by_role('tab', name='下载策略').click()
+                page.locator('#settings-form button[type="submit"]').click()
+                expect(page.locator('#settings-pane-accounts')).to_be_visible()
+                expect(interval).to_be_visible()
+                interval.fill(interval_value)
+                policy.locator('summary').click()
                 preview = Path('.cache/workspace-layout-preview')
                 preview.mkdir(parents=True, exist_ok=True)
                 for key in ('download', 'accounts', 'performance', 'storage', 'diagnostics'):
