@@ -75,9 +75,30 @@ class DownloadStatistics:
         from webapp.statistics_methods import MethodStatistics
         self.methods = MethodStatistics(store)
 
-    def _active(self, db):
-        return db.execute(self.store._locked(select(settings.c.value).where(
-            settings.c.key == 'download_statistics_active'))).scalar_one()
+    @staticmethod
+    def _scope(instance_id=None):
+        return str(instance_id or 'local')
+
+    @classmethod
+    def _active_key(cls, instance_id=None):
+        return 'download_statistics_active:' + cls._scope(instance_id)
+
+    def _active(self, db, instance_id=None):
+        """Return the active session for one executor scope.
+
+        Session ownership is per download instance.  The old singleton setting
+        is read only as a compatibility fallback for sessions created before
+        instance-scoped sessions were introduced.
+        """
+        key = self._active_key(instance_id)
+        value = db.execute(self.store._locked(select(settings.c.value).where(
+            settings.c.key == key))).scalar_one_or_none()
+        if value is not None:
+            return value or ''
+        if self._scope(instance_id) == 'local':
+            return db.execute(self.store._locked(select(settings.c.value).where(
+                settings.c.key == 'download_statistics_active'))).scalar_one_or_none() or ''
+        return ''
 
     def defaults(self, db):
         value = db.execute(select(settings.c.value).where(settings.c.key == 'download_billing_defaults')).scalar_one_or_none()
@@ -92,18 +113,77 @@ class DownloadStatistics:
         result = {key: int(value) for key, value in {**dict(sizes), **dict(testing)}.items()}
         return {**result, 'file_bytes_exact': str(result['file_bytes']), 'test_file_bytes_exact': str(result['test_file_bytes'])}
 
-    def ensure_session(self, db):
-        identity = self._active(db)
+    def ensure_session(self, db, instance_id=None):
+        scope = self._scope(instance_id)
+        identity = self._active(db, scope)
         if identity:
-            return identity
+            row = db.execute(select(sessions.c.status).where(sessions.c.id == identity)).scalar_one_or_none()
+            if row in ('active', 'stopping'):
+                return identity
         identity = uuid.uuid4().hex
         db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
             started_at=stamp(), status='active', label='', **self.defaults(db)))
-        db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=identity))
+        self.db.ensure(db, settings, {'key': self._active_key(scope), 'value': identity})
+        db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=identity))
         return identity
 
+    def start_session(self, db, instance_id=None):
+        """Start the lifecycle session for an instance if one is not active."""
+        scope = self._scope(instance_id)
+        key = self._active_key(scope)
+        existing = self._active(db, scope)
+        if existing:
+            status = db.execute(select(sessions.c.status).where(sessions.c.id == existing)).scalar_one_or_none()
+            if status == 'active':
+                return existing
+            db.execute(sessions.update().where(sessions.c.id == existing, sessions.c.ended_at.is_(None)).values(
+                status='paused', ended_at=stamp()))
+        # A pre-upgrade local session used the singleton key. Close it before
+        # creating the first scoped session so a restart cannot reuse it.
+        if scope == 'local':
+            legacy = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one_or_none()
+            if legacy and legacy != existing:
+                db.execute(sessions.update().where(sessions.c.id == legacy, sessions.c.ended_at.is_(None)).values(
+                    status='paused', ended_at=stamp()))
+            db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
+        identity = uuid.uuid4().hex
+        db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
+            started_at=stamp(), status='active', label='', **self.defaults(db)))
+        self.db.ensure(db, settings, {'key': key, 'value': ''})
+        db.execute(settings.update().where(settings.c.key == key).values(value=identity))
+        return identity
+
+    def stop_session(self, db, instance_id=None):
+        """Mark an instance session as stopping and close it when idle."""
+        scope = self._scope(instance_id)
+        identity = self._active(db, scope)
+        if not identity:
+            return
+        row = db.execute(select(sessions).where(sessions.c.id == identity).with_for_update()).mappings().first()
+        if not row:
+            db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=''))
+            return
+        if row['status'] == 'active':
+            db.execute(sessions.update().where(sessions.c.id == identity).values(
+                status='stopping', stop_requested_at=stamp()))
+            row = {**row, 'status': 'stopping'}
+        if not row['running']:
+            db.execute(sessions.update().where(sessions.c.id == identity).values(
+                status='paused', ended_at=stamp()))
+            db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=''))
+            if scope == 'local':
+                db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
+
+    def stop_all(self, db):
+        """Stop every instance session for a global pause/stop command."""
+        keys = db.execute(select(settings.c.key).where(
+            settings.c.key.startswith('download_statistics_active:'))).scalars().all()
+        for key in keys:
+            self.stop_session(db, key.split(':', 1)[1])
+        self.stop_session(db, 'local')
+
     def begin(self, db, row):
-        identity = self.ensure_session(db)
+        identity = self.ensure_session(db, row.get('instance_id'))
         old = db.execute(select(session_tasks).where(session_tasks.c.session_id == identity,
             session_tasks.c.task_id == row['id'])).mappings().first()
         if old:
@@ -131,7 +211,7 @@ class DownloadStatistics:
         identity = self.store.decode(row, private=True, db=db)['payload'].get('download_session_id')
         if not identity:
             return
-        self._active(db)  # Use one lock order across completion, pause and file registration.
+        self._active(db, row.get('instance_id'))  # Use one lock order across completion, pause and file registration.
         old = db.execute(select(session_tasks).where(session_tasks.c.session_id == identity,
             session_tasks.c.task_id == row['id'])).mappings().first()
         if not old or old['status'] == status:
@@ -147,21 +227,22 @@ class DownloadStatistics:
             db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
         self.methods.change(db, row, identity, status, fallback_used=fallback_used)
 
-    def settle(self, db, *, stop=False):
-        identity = self._active(db)
+    def settle(self, db, *, stop=False, instance_id=None):
+        # Sessions follow instance start/stop.  A completed queue does not end
+        # the session because the instance may be waiting for the next task.
+        if stop:
+            self.stop_session(db, instance_id)
+            return
+        identity = self._active(db, instance_id)
         if not identity:
             return
         row = db.execute(select(sessions).where(sessions.c.id == identity)).mappings().one()
-        if stop and row['status'] == 'active':
-            db.execute(sessions.update().where(sessions.c.id == identity).values(status='stopping', stop_requested_at=stamp()))
-        paused = stop or row['status'] == 'stopping'
-        # Unreleased customer lists must not extend an unrelated session.
-        pending = self.store._released_queued_count(db)
-        released_import = self.store.released_import_pending(db)
-        if not row['running'] and (paused or not (pending or released_import)):
+        if row['status'] == 'stopping' and not row['running']:
             db.execute(sessions.update().where(sessions.c.id == identity).values(
-                status='paused' if paused else 'completed', ended_at=stamp()))
-            db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
+                status='paused', ended_at=stamp()))
+            db.execute(settings.update().where(settings.c.key == self._active_key(instance_id)).values(value=''))
+            if self._scope(instance_id) == 'local':
+                db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
 
     def record_file(self, task_id, path, video_id='', title='', *, test_mode=False):
         """Called only after successful final-file processing, never from progress bytes."""
@@ -189,7 +270,7 @@ class DownloadStatistics:
                 self.store.fleet or self.store.single or (task['source_key'] or '').startswith('job:')) else (
                 (task_id + '\0' if test_mode else '') + str(path))
             identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
-            self._active(db)
+            self._active(db, task.get('instance_id'))
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
                 return False
             db.execute(ledger.insert().values(id=identity, seq=self.db.sequence(db, 'download_test_file' if test_mode else 'download_delivery'),
@@ -232,7 +313,10 @@ class DownloadStatistics:
                 .where(condition)).mappings().one()
             from webapp.billing import BillingService
             billing = BillingService(self.store).summary(db)
-            active_id = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one()
+            active_id = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one_or_none()
+            if not active_id:
+                active_id = db.execute(select(sessions.c.id).where(sessions.c.status.in_(('active', 'stopping')))
+                    .order_by(sessions.c.seq.desc()).limit(1)).scalar_one_or_none()
             active = db.execute(session_select().where(sessions.c.id == active_id, condition)).mappings().first() if active_id else None
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
             test_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_test_statistics_since')).scalar_one()

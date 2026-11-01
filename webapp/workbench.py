@@ -116,12 +116,14 @@ class Workbench:
                 db.execute(self.store.db.upsert(settings, {'key': key, 'value': job_id}, ['key']))
                 db.execute(instances.update().where(instances.c.id == identity).values(
                     paused=0, stop_requested=0, error=''))
+                self.store.statistics.start_session(db, identity)
             else:
                 db.execute(instances.update().where(instances.c.id == identity).values(
                     paused=1, stop_requested=int(action == 'stop')))
                 if action == 'stop':
                     self.jobs.stop_running(db, tasks.c.instance_id == identity)
-            self.store.statistics.settle(db)
+                self.store.statistics.stop_session(db, identity)
+            self.store.statistics.settle(db, instance_id=identity)
 
 
 def register_workbench(app, store, configuration, preflight):

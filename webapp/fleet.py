@@ -334,6 +334,11 @@ class Fleet:
                 if action == 'resume':
                     values['error'] = ''
             db.execute(instances.update().where(instances.c.id == identity).values(**values, limits=json.dumps(limits)))
+            if data.get('action') == 'resume':
+                self.store.statistics.start_session(db, identity)
+            elif data.get('action') in ('drain', 'stop'):
+                self.store.statistics.stop_session(db, identity)
+            self.store.statistics.settle(db, instance_id=identity)
 
     def resolve_target(self, identity):
         with self.store.connect() as db:

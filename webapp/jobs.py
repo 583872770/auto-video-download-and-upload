@@ -335,6 +335,7 @@ class Jobs:
                     schema_settings.c.key == 'downloads_paused').with_for_update()).first()
             row, old = self.require(db, identity, editable=action not in ('delete', 'unarchive'))
             value = old or self.ensure(db, identity, config)
+            session_scope = self.store.fleet.id if self.store.fleet else 'local'
             if action == 'start':
                 resume = data.get('resume_system', False)
                 paused = self.store.downloads_paused(db)
@@ -364,6 +365,7 @@ class Jobs:
                 if resume:
                     db.execute(schema_settings.update().where(
                         schema_settings.c.key == 'downloads_paused').values(value='false'))
+                self.store.statistics.start_session(db, session_scope)
             elif action in ('pause', 'stop', 'archive', 'delete'):
                 self.pause_instances(db, identity, stop=action != 'pause')
                 if action == 'delete' and data.get('confirmation') != row['name']:
@@ -375,6 +377,9 @@ class Jobs:
                     self.cancel_imports(db, identity)
                 if action != 'pause':
                     self.stop_running(db, tasks.c.batch_id == identity)
+                # Pause/drain and stop both end the instance lifecycle session;
+                # a draining session remains stopping until its last task exits.
+                self.store.statistics.stop_session(db, session_scope)
             elif action == 'unarchive':
                 db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(archived=0))
             elif action == 'retry':
@@ -391,7 +396,7 @@ class Jobs:
                     edit_version=value['edit_version']+1, updated_at=stamp()))
             event(self.store, db, identity, {'start':'开始任务','pause':'完成当前视频后暂停','stop':'立即停止当前任务',
                 'archive':'归档任务','delete':'删除任务（保留账本与文件）','unarchive':'恢复归档任务','retry':'重新入队失败视频'}[action])
-            self.store.statistics.settle(db)
+            self.store.statistics.settle(db, instance_id=session_scope)
 
     def stop_running(self, db, condition):
         rows = db.execute(select(tasks).where(condition, tasks.c.action == 'download',
@@ -465,7 +470,7 @@ class Jobs:
                         self.store.statistics.transition(db, task, 'paused')
                 removed += len(rows)
             event(self.store, db, identity, f'{"清空" if clear else "移除"}清单：移除 {removed} 个视频；历史交付和费用保留。')
-            self.store.statistics.settle(db)
+            self.store.statistics.settle(db, instance_id=self.store.fleet.id if self.store.fleet else 'local')
         return removed
 
 

@@ -481,7 +481,7 @@ class TaskStore:
                     from webapp.database import instances
                     db.execute(instances.update().where(instances.c.role.in_(('worker', 'hybrid')))
                                .values(paused=1, stop_requested=1))
-                self.statistics.settle(db, stop=True)
+                self.statistics.stop_all(db)
 
     def activate_download_lists(self, expected_policy_version=None):
         with self.connect() as db:
@@ -645,7 +645,7 @@ class TaskStore:
                     lease_until=None, available_at=0, finished_at=None, error=None,
                     attempts=max(0, row['attempts'] - 1), progress=json.dumps(progress, ensure_ascii=False)))
                 self.statistics.transition(db, row, 'paused')
-                self.statistics.settle(db)
+                self.statistics.settle(db, instance_id=row.get('instance_id'))
                 if owner:
                     db.execute(workers.update().where(workers.c.id == owner).values(state='stopped', task_id=None, message='用户已停止下载。'))
                 stopped += 1
@@ -835,7 +835,7 @@ class TaskStore:
                     progress.update(stage='disk_wait', speed=None, eta=None)
                     db.execute(tasks.update().where(tasks.c.id == task_id).values(progress=json.dumps(progress)))
                 self.statistics.transition(db, row, 'paused', reason)
-                self.statistics.settle(db)
+                self.statistics.settle(db, instance_id=row.get('instance_id'))
 
     def update_progress(self, task_id, progress, worker_id=None):
         statement = tasks.update().where(tasks.c.id == task_id)
@@ -902,7 +902,7 @@ class TaskStore:
                 self.lists.outcome(db, row, outcome)
                 if self.fleet:
                     self._counter(db, 'instance:' + self.fleet.id, outcome, 1)
-            self.statistics.settle(db)
+            self.statistics.settle(db, instance_id=row.get('instance_id'))
             if not retry:
                 generation = progress.get('rotation_id')
                 if generation and not (result or {}).get('skipped'):
@@ -933,7 +933,9 @@ class TaskStore:
                 # to avoid interrupting other instances' work during emergency recovery
                 statement = statement.where(tasks.c.instance_id == self.fleet.id)
             rows = db.execute(self._locked(statement.limit(1000), skip=True)).mappings().all()
+            scopes = set()
             for row in rows:
+                scopes.add(row.get('instance_id'))
                 retry = expired_only and row['action'] in ('download', 'import', 'index', 'subtitles') and row['attempts'] < row['max_attempts']
                 status = 'queued' if retry else 'interrupted'
                 self._transition(db, row, status)
@@ -943,7 +945,8 @@ class TaskStore:
                 self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
                 if not retry and not (row['source_key'] or '').startswith('job:'):
                     db.execute(reservations.delete().where(reservations.c.task_id == row['id']))
-            self.statistics.settle(db)
+            for scope in scopes:
+                self.statistics.settle(db, instance_id=scope)
             return len(rows)
 
     def worker_status(self, worker_id, slot, state, task_id=None, message=''):

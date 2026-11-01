@@ -185,6 +185,23 @@ function progressLabel(task) {
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
   return { waiting_request: '\u7b49\u5f85 YouTube \u8bf7\u6c42\u95f4\u9694', checking_environment: '检查下载环境', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
+function progressVisualState(task) {
+  if (task.status === 'failed') return { className: 'failed', order: 90, label: '失败' };
+  if (task.status === 'interrupted') return { className: 'failed', order: 91, label: '已中断' };
+  if (task.status === 'succeeded') return { className: 'success', order: 92, label: '已完成' };
+  if (task.status === 'queued') return { className: 'queued', order: 80, label: taskPaused(task) ? '等待启动' : '排队中' };
+  const stage = task.progress?.stage || '';
+  if (stage === 'downloading') return { className: 'transferring', order: 0, label: '正在传输' };
+  if (stage === 'processing' || stage === 'cleaning') return { className: 'finalizing', order: 30, label: stage === 'cleaning' ? '正在清理' : '合并 / 处理' };
+  if (stage.startsWith('waiting_') || stage === 'disk_wait' || stage === 'switching_provider') {
+    const labels = { waiting_request: '等待请求', waiting_cookie: '等待 Cookie', waiting_transfer: '等待传输', waiting_resolver: '等待解析', waiting_browser: '等待浏览器', waiting_verification: '等待验证', waiting_api_conversion: '等待转换', disk_wait: '等待空间', switching_provider: '切换渠道' };
+    return { className: 'waiting', order: 20, label: labels[stage] || '等待资源' };
+  }
+  if (stage === 'extracting' || stage === 'checking_environment' || stage === 'checking_login' || stage === 'preparing_workspace' || stage === 'preparing_proxy') {
+    return { className: 'preparing', order: 10, label: stage === 'extracting' ? '正在解析' : '准备中' };
+  }
+  return { className: 'preparing', order: 15, label: '处理中' };
+}
 function downloadProgress(task) {
   const data = task.progress || {};
   const active = task.status === 'running';
@@ -217,7 +234,11 @@ function renderBatches() {
   const queue = state.workbench || {};
   $('#batch-count').textContent = tasks.length;
   $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例处理中视频 ${tasks.length} 个 · 任务待下载视频 ${selectedJob?.queued || 0} 个`;
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => { const cookie = task.status === 'running' && task.progress?.cookie_profile_name ? ` · Cookie：${escapeHTML(task.progress.cookie_profile_name)}` : ''; return `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}${cookie}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`; }).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
+  const orderedTasks = [...tasks].sort((a, b) => {
+    const left = progressVisualState(a), right = progressVisualState(b);
+    return left.order - right.order || (Number(a.seq) || 0) - (Number(b.seq) || 0);
+  });
+  $('#batch-progress').innerHTML = orderedTasks.length ? orderedTasks.map((task, index) => { const visual = progressVisualState(task); const cookie = task.status === 'running' && task.progress?.cookie_profile_name ? ` · Cookie：${escapeHTML(task.progress.cookie_profile_name)}` : ''; return `<article class="batch-video batch-video-${visual.className}" data-download-id="${task.id}" data-progress-state="${visual.className}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}${cookie}</small></div><span class="batch-video-state"><i aria-hidden="true"></i>${visual.label}</span><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`; }).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
   renderPagination();
 }
 function renderPagination() {
