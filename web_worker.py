@@ -17,6 +17,20 @@ from webapp.diagnostics import (event, error_details, safe_text, diagnostic_cont
 from webapp.tasks import TaskStore
 
 
+def format_bytes(value):
+    """Format byte counts for the human-readable execution log."""
+    try:
+        amount = max(0, int(value or 0))
+    except (TypeError, ValueError):
+        amount = 0
+    units = ('B', 'KB', 'MB', 'GB', 'TB')
+    size = float(amount)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f'{size:.1f} {unit}' if unit != 'B' else f'{int(size)} B'
+        size /= 1024
+
+
 @contextmanager
 def worker_lock(path):
     from webapp.disk_budget import file_lock
@@ -84,7 +98,19 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 pool = CookiePool(store, prepared, payload['base'], task_id)
                 report({'stage': 'waiting_cookie'})
                 with pool.assignment() as selected:
-                    report({'cookie_profile_id': selected['_cookie_pool_selected']})
+                    cookie_profile_id = selected['_cookie_pool_selected']
+                    cookie_profile_name = cookie_profile_id
+                    try:
+                        from webapp.cookie_profiles import CookieProfiles
+                        cookie_profile_name = next((item['name'] for item in
+                            CookieProfiles(payload['base'], store).items()
+                            if item['id'] == cookie_profile_id), cookie_profile_id)
+                    except Exception:
+                        # The ID remains useful for diagnostics if the display
+                        # name cannot be read while the worker is starting.
+                        pass
+                    report({'cookie_profile_id': cookie_profile_id,
+                            'cookie_profile_name': cookie_profile_name})
                     event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
                           source_address=selected.get('youtube_source_address', ''), identity_retry=False)
                     result = _execute(action, {**payload, 'config': selected}, report,
@@ -686,7 +712,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                         record_route(channel,
                             transferred_bytes=progress.state['downloaded_bytes'],
                             elapsed=progress.state.get('stage_seconds', {}).get('downloading', 0))
+                    transferred = progress.state.get('downloaded_bytes', 0)
+                    output_bytes = sum(output_files.values()) - before_bytes
+                    print(f'{PROVIDERS[provider]} 完成：传输 {format_bytes(transferred)}，生成文件 {format_bytes(output_bytes)}。', flush=True)
                     event('provider_end', provider=provider, outcome='completed',
+                          transferred_bytes=transferred, output_bytes=output_bytes,
                           elapsed_seconds=round(time.monotonic() - provider_started, 3))
                     break
                 except PipelineBusy:
@@ -701,6 +731,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     meter.finish(False, upstream_failure=phase == 'transfer' and status in (429, 503))
                     record_route(channel, error=error)
                     event('provider_end', provider=provider, outcome='failed',
+                          transferred_bytes=progress.state.get('downloaded_bytes', 0),
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
                           proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
@@ -865,7 +896,12 @@ def drain(directory, slot=0, role='all'):
                     result = execute(task['action'], task['payload'],
                                      report,
                                      rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
-                    print('任务执行完成。', flush=True)
+                    if task['action'] == 'download':
+                        transferred = last_progress.get('downloaded_bytes', 0)
+                        output_bytes = result.get('file_bytes', 0)
+                        print(f'任务执行完成。传输数据：{format_bytes(transferred)}；文件大小：{format_bytes(output_bytes)}。', flush=True)
+                    else:
+                        print('任务执行完成。', flush=True)
                     committed = store.finish(task['id'], result=result, worker_id=store.owner)
                     event('attempt_end', outcome='succeeded' if committed else 'lease_lost',
                           elapsed_seconds=round(time.monotonic() - started, 3),

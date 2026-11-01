@@ -443,7 +443,18 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         from webapp.cookie_profiles import CookieProfiles
         with settings_lock:
             config, base = settings()
-            items = CookieProfiles(base, store).items(config.get('youtube_cookie', ''))
+            profiles = CookieProfiles(base, store)
+            # Repair installations created before first-upload auto-activation:
+            # a saved profile with no selected path is safe to make active.
+            if not config.get('youtube_cookie'):
+                saved = profiles.items()
+                if saved:
+                    config['youtube_cookie'] = f"Cookies/profiles/{saved[0]['id']}.txt"
+                    config['youtube_cookie_pool'] = []
+                    save_settings(config_path, config)
+                    sync_runtime(config, base)
+                    youtube_auth.invalidate()
+            items = profiles.items(config.get('youtube_cookie', ''))
             for item in items:
                 item['auth'] = youtube_auth.profile_status(item['id'], base)
                 item['pooled'] = item['id'] in config.get('youtube_cookie_pool', [])
@@ -499,9 +510,21 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             raise ValueError('请选择 Netscape 格式的 Cookie .txt 文件。')
         data = uploaded.stream.read(1024 * 1024 + 1)
         with media_lock, settings_lock:
-            _, base = settings()
+            config, base = settings()
             item = CookieProfiles(base, store).add(request.form.get('name'), data, uploaded.filename)
-        return jsonify(item=item, message='Cookie 已独立保存；点击“使用此 Cookie”后生效。'), 201
+            # A first upload must be immediately usable. Keep an explicitly
+            # selected Cookie untouched when adding a second profile.
+            activated = not bool(config.get('youtube_cookie'))
+            if activated:
+                config['youtube_cookie'] = f"Cookies/profiles/{item['id']}.txt"
+                config['youtube_cookie_pool'] = []
+                save_settings(config_path, config)
+                sync_runtime(config, base)
+                youtube_auth.invalidate()
+                item['active'] = True
+        message = ('Cookie 已保存并设为当前使用；请点击“检测登录”确认当前出口可用。'
+                   if activated else 'Cookie 已保存；请在列表中点击“使用此 Cookie”后生效。')
+        return jsonify(item=item, activated=activated, message=message), 201
 
     @app.post('/api/youtube/cookies/select')
     def select_youtube_cookie():

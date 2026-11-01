@@ -20,6 +20,30 @@ class Workbench:
             raise ValueError('请先选择一个下载实例。')
         return row
 
+    @staticmethod
+    def decorate_cookie_names(tasks, base, store):
+        """Attach the current Cookie label without exposing Cookie contents."""
+        if not tasks or not base:
+            return tasks
+        ids = {((task.get('progress') or {}).get('cookie_profile_id')) for task in tasks}
+        ids.discard(None)
+        if not ids:
+            return tasks
+        try:
+            from webapp.cookie_profiles import CookieProfiles
+            names = {item['id']: item['name'] for item in CookieProfiles(base, store).items()}
+        except Exception:
+            names = {}
+        result = []
+        for task in tasks:
+            progress = task.get('progress') or {}
+            identity = progress.get('cookie_profile_id')
+            if identity and not progress.get('cookie_profile_name'):
+                task = {**task, 'progress': {**progress,
+                    'cookie_profile_name': names.get(identity, identity)}}
+            result.append(task)
+        return result
+
     def status(self, identity, preview=None):
         with self.store.connect() as db:
             row = self.node(identity, db)
@@ -38,6 +62,8 @@ class Workbench:
             from webapp.disk_budget import resource_blocked
             blocked = resource_blocked(self.store, db, identity)
             error = row['error']
+        local = self.store.fleet.local_settings() if self.store.fleet else {}
+        active = self.decorate_cookie_names(active, local.get('base'), self.store)
         job = self.jobs.detail(preview or selected) if preview or selected else None
         if job and job['deleted']:
             job = None
@@ -106,11 +132,11 @@ def register_workbench(app, store, configuration, preflight):
         fleet = store.fleet
         if not fleet:
             # A standalone service has exactly one executor.
+            config, base = configuration()
             if request.method == 'POST':
                 data = request.get_json(silent=True)
                 if not isinstance(data, dict):
                     raise ValueError('请提交 JSON 对象。')
-                config, base = configuration()
                 action = data.get('action')
                 if action == 'start':
                     preflight(config, base)
@@ -124,6 +150,7 @@ def register_workbench(app, store, configuration, preflight):
             job = workbench.jobs.detail(request.args.get('job_id') or identity) if request.args.get('job_id') or identity else None
             queue = store.download_queue()
             active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
+            active = Workbench.decorate_cookie_names(active, base, store)
             return jsonify(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='')

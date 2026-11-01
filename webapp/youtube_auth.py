@@ -196,6 +196,14 @@ class YouTubeAuth:
         result = {'state': 'missing', 'message': '请先登录 YouTube 或上传 Cookie，再开始下载。',
                   'connection': connection, 'checked_at': time.time()}
         try:
+            # Older deployments could persist profiles before selecting one.
+            # Use the first saved profile for this preflight as a safe fallback;
+            # the settings endpoint also persists this repair for future jobs.
+            if not config.get('youtube_cookie'):
+                from webapp.cookie_profiles import CookieProfiles
+                saved = CookieProfiles(base, self.store).items()
+                if saved:
+                    config = {**config, 'youtube_cookie': f"Cookies/profiles/{saved[0]['id']}.txt"}
             if not config.get('youtube_cookie'):
                 raise FileNotFoundError
             from webapp.cookie_profiles import CookieProfiles

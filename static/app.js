@@ -82,7 +82,16 @@ async function api(path, options = {}) {
     options.body = JSON.stringify(options.body);
   }
   const response = await fetch(path, { ...options, headers });
-  const data = await response.json();
+  const raw = await response.text();
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    if (response.redirected || response.url.includes('/login')) {
+      throw new Error('管理登录已过期，请刷新页面后重新登录。');
+    }
+    throw new Error(`服务返回了非 JSON 响应（HTTP ${response.status}），请刷新页面后重试。`);
+  }
   if (response.status === 401) { location.assign('/login'); throw new Error('请先登录管理账户。'); }
   if (!response.ok) { const error = new Error(data.error || `请求失败（${response.status}）`); error.status = response.status; throw error; }
   return data;
@@ -99,6 +108,9 @@ function setView(name) {
   history.replaceState(null, '', `${location.search}#${name}`);
   if (typeof renderInstanceScope === 'function') renderInstanceScope();
   document.dispatchEvent(new CustomEvent('viewchange', { detail: name }));
+  if (name === 'settings' && $('#youtube-cookie-list')) loadCookieProfiles().catch(error => {
+    $('#youtube-cookie-list').textContent = error.message;
+  });
 }
 function emptyState(title, description, button = false) {
   return `<div class="empty-state"><div class="empty-icon">${icon('film')}</div><div><strong>${escapeHTML(title)}</strong><p>${escapeHTML(description)}</p>${button ? `<button class="button button-white" data-view="overview">${icon('download')}开始下载视频</button>` : ''}</div></div>`;
@@ -191,7 +203,8 @@ function downloadProgress(task) {
   const timing = stageSeconds !== null || slowest ? `<p class="micro-copy stage-timing">${stageSeconds !== null ? `本阶段已用 ${etaText(stageSeconds)}` : `${queued ? '上次' : '本次'}执行已记录用时 ${etaText(data.elapsed || 0)}`}${slowest ? ` · ${active ? '已结束阶段中最久' : '耗时最长阶段'}：${escapeHTML(stageName(slowest[0]))} ${etaText(slowest[1])}` : ''}</p>` : '';
   const methods = data.selected_download_methods;
   const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}下载方式：${escapeHTML(methods.map(method => providerNames[method] || method).join('、'))}${queued ? '；下次启动处理时使用该实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">实例设置：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
+  const cookie = active && data.cookie_profile_name ? `<span class="active-cookie-metric">Cookie <b>${escapeHTML(data.cookie_profile_name)}</b></span>` : '';
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
@@ -204,7 +217,7 @@ function renderBatches() {
   const queue = state.workbench || {};
   $('#batch-count').textContent = tasks.length;
   $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例处理中视频 ${tasks.length} 个 · 任务待下载视频 ${selectedJob?.queued || 0} 个`;
-  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
+  $('#batch-progress').innerHTML = tasks.length ? tasks.map((task, index) => { const cookie = task.status === 'running' && task.progress?.cookie_profile_name ? ` · Cookie：${escapeHTML(task.progress.cookie_profile_name)}` : ''; return `<article class="batch-video" data-download-id="${task.id}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}${cookie}</small></div><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`; }).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
   renderPagination();
 }
 function renderPagination() {
@@ -241,10 +254,17 @@ function renderWorkbenchSpeed() {
   $('#speed-caption').textContent = !workbench ? '等待实例状态' : !available ? '当前实例离线' : !transfers.length ? '当前没有视频传输' :
     `传输中视频 ${transfers.length} 个${measured.length < transfers.length ? ' · 速度计算中' : ''}`;
 }
+function renderOutputSpeed() {
+  const element = $('#stat-output-speed');
+  if (!element) return;
+  const value = state.status?.throughput?.verified_mbps;
+  element.textContent = value === null || value === undefined || !Number.isFinite(Number(value))
+    ? '—' : Number(value).toFixed(2);
+}
 function renderTasks() {
   const counts = state.overview.download_counts || {};
   $('#stat-active').textContent = selectedJob?.queued || 0;
-  $('#stat-running').textContent = state.workbench?.running || 0;
+  renderOutputSpeed();
   renderWorkbenchSpeed();
   $('#stat-complete').textContent = selectedJob?.file_count || 0;
   $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
@@ -255,6 +275,7 @@ function renderTasks() {
 function renderStatus() {
   if (!state.status) return;
   renderConcurrency();
+  renderOutputSpeed();
   const { tools } = state.status;
   if (!fleetEnabled) renderChannelPerformance(state.status.throughput);
   const methods = selectedProviders();
@@ -998,6 +1019,11 @@ function readableError(message) {
 $('.task-technical').addEventListener('toggle', () => { if ($('.task-technical').open && state.selectedTask) updateTaskDetail().catch(error => toast(error.message, true)); });
 
 document.addEventListener('click', event => {
+  const cookieJump = event.target.closest('[data-scroll-cookie]');
+  if (cookieJump) {
+    event.preventDefault();
+    $('#youtube-cookie-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
   const nav = event.target.closest('[data-view]');
   if (nav) { event.preventDefault(); setView(nav.dataset.view); }
   const open = event.target.closest('[data-open]');
@@ -1029,6 +1055,12 @@ async function runButton(button, operation) {
 }
 async function loadCookieProfiles() {
   const data = await api('/api/youtube/cookies');
+  const poolEnabled = $('#youtube-cookie-pool-enabled');
+  const poolStatus = $('#youtube-cookie-pool-status');
+  if (poolEnabled) poolEnabled.checked = !!data.pool;
+  if (poolStatus) poolStatus.textContent = data.pool
+    ? `已启用 ${data.items.filter(item => item.pooled).length} 份 Cookie；账号池会按会话容量和请求间隔调度。`
+    : '选择至少 2 份已检测通过的 Cookie；仅支持单独使用 yt-dlp。';
   const list = $('#youtube-cookie-list');
   list.replaceChildren();
   const note = document.createElement('p');
@@ -1075,6 +1107,12 @@ async function loadCookieProfiles() {
     };
     renderStatus(item.auth);
     details.append(name, status);
+    const poolCheck = document.createElement('input');
+    poolCheck.type = 'checkbox';
+    poolCheck.dataset.cookiePoolId = item.id;
+    poolCheck.checked = !!item.pooled;
+    poolCheck.title = '加入 Cookie 账号池';
+    poolCheck.setAttribute('aria-label', `加入账号池：${item.name}`);
     if (item.pooled) {
       const account = data.pool?.accounts.find(value => value.id === item.id) || {};
       const policy = document.createElement('p');
@@ -1127,20 +1165,37 @@ async function loadCookieProfiles() {
       toast(result.message);
       await loadCookieProfiles();
     }));
-    row.append(details, check, select, remove);
+    row.append(poolCheck, details, check, select, remove);
     list.append(row);
   }
 }
-$('#youtube-cookie-form').addEventListener('submit', event => {
-  event.preventDefault();
-  runButton($('button[type="submit"]', event.target), async () => {
+$('#youtube-cookie-pool-save').addEventListener('click', event => runButton(event.currentTarget, async () => {
+  const enabled = $('#youtube-cookie-pool-enabled').checked;
+  const ids = enabled ? $$('[data-cookie-pool-id]:checked').map(input => input.dataset.cookiePoolId) : [];
+  if (enabled && ids.length < 2) throw new Error('账号池至少需要选择 2 份 Cookie。');
+  if (enabled && selectedProviders().some(method => method !== 'yt_dlp')) {
+    throw new Error('Cookie 账号池仅支持单独使用 yt-dlp，请先在下载策略中关闭其他下载方式。');
+  }
+  const result = await api('/api/config', { method: 'PUT', body: { youtube_cookie_pool: ids } });
+  toast(enabled ? 'Cookie 账号池已启用。' : 'Cookie 账号池已关闭。');
+  if ($('#youtube-cookie-pool-status')) $('#youtube-cookie-pool-status').textContent = result.message;
+  await loadCookieProfiles();
+  await refresh();
+}));
+$('#youtube-cookie-submit').addEventListener('click', event => {
+  runButton(event.currentTarget, async () => {
+    const form = $('#youtube-cookie-form');
     const errorBox = $('#youtube-cookie-error');
     errorBox.hidden = true;
     try {
-      const file = $('input[name="cookie"]', event.target).files[0];
+      const file = $('[data-cookie-file]', form).files[0];
       if (!file || file.size === 0 || file.size > 1024 * 1024) throw new Error('请选择非空的 Cookie .txt 文件，最大 1 MB。');
-      const data = await api('/api/youtube/cookies', { method: 'POST', body: new FormData(event.target) });
-      $('#youtube-cookie-form').reset();
+      const upload = new FormData();
+      upload.append('name', $('[data-cookie-name]', form).value);
+      upload.append('cookie', file);
+      const data = await api('/api/youtube/cookies', { method: 'POST', body: upload });
+      $('[data-cookie-name]', form).value = '';
+      $('[data-cookie-file]', form).value = '';
       toast(data.message);
       await loadCookieProfiles();
       await refresh();
