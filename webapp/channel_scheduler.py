@@ -373,8 +373,10 @@ class ChannelScheduler:
         interval = int(self.config.get('youtube_start_interval', 3))
         if self.config.get('_cookie_pool_selected'):
             # Account-specific spacing is admitted by CookiePool. Retain a
-            # shared instance floor; never namespace source quotas per account.
-            interval = max(20, 60 // max(1, len(self.config.get('youtube_cookie_pool', []))))
+            # shared instance floor without making the pool itself the
+            # bottleneck. CookiePool still enforces each core session's
+            # persisted 30s/45s/60s interval.
+            interval = max(10, 30 // max(1, len(self.config.get('youtube_cookie_pool', []))))
         if not self.enabled or channel.adapter != 'yt_dlp' or interval <= 0:
             return
         def reserve(db, stamp):

@@ -16,6 +16,14 @@ from webapp.throughput import PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 
 
+# A newly imported account remains deliberately conservative.  Once the same
+# session has produced a long, clean run, its start interval can be reduced in
+# small steps.  The floor still leaves a visible gap between authenticated
+# YouTube requests and is restored by any timeout/throttle outcome below.
+MATURE_ACCOUNT_INTERVAL = 30
+STABLE_ACCOUNT_INTERVAL = 45
+
+
 def credential_key(data):
     cookies = parse_youtube_cookie_file(data)
     # LOGIN_INFO and auxiliary flags can differ across repeated exports of the
@@ -51,9 +59,11 @@ def capacity_summary(snapshot, stamp=None):
               f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
               f"当前容量 {capacity}，{warmup} 个会话尚未完成预热" if warmup else
               f'Cookie 核心会话当前容量为 {capacity}')
+    intervals = [int(a.get('interval', 60)) for a, _ in capacities if a.get('interval')]
     return {'known': True, 'sampled_at': stamp, 'configured_files': snapshot.get('configured_files', len(snapshot['accounts'])),
             'effective_sessions': len(sessions), 'unavailable_files': sum(bool(a.get('unavailable')) for a in snapshot['accounts']),
             'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
+            'min_interval': min(intervals) if intervals else None,
             'halted': blocked, 'reason': reason,
             'next_start_at': min(next_starts) if next_starts and not blocked else None}
 
@@ -152,11 +162,19 @@ class CookiePool:
                 return None, delay
             # Preserve the permit policy written by _admit.
             state = router._state(db, scope)
-            interval = max(60, int(self.config.get('youtube_start_interval', 60)), state.get('interval', 60))
-            state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, 15))
+            # Keep the persisted per-account backoff.  Stable accounts may
+            # reach the mature 30s floor, while a fresh account always starts
+            # at the conservative 60s interval.
+            interval = max(30, state.get('interval', max(60, int(self.config.get('youtube_start_interval', 60)))))
+            jitter = min(10, max(2, interval * .2))
+            state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, jitter))
             router._save(db, scope, state)
-            # This floor remains shared by all accounts on the same instance.
-            gate['next_at'] = stamp + max(20, 60 / len(self.accounts))
+            # This floor remains shared by all accounts on the same instance,
+            # but should not become the bottleneck once each account has its
+            # own 30s/45s lease.  With three mature sessions this allows at
+            # most six starts per minute while each session remains at its
+            # individual interval.
+            gate['next_at'] = stamp + max(10, 30 / len(self.accounts))
             router._save(db, self.global_scope, gate)
             return (identity, path, scope, token), 0
 
@@ -216,6 +234,13 @@ class CookiePool:
                 state['successes'] = state.get('successes', 0) + 1
                 if state['streak'] >= 5 and stamp - state['first_success'] >= 600:
                     state['limit'] = 2
-                    state['interval'] = max(60, state.get('interval', 60) - 15)
+                    # The first stable window only moves to 45s.  A mature
+                    # session (20 clean completions over at least 30 minutes)
+                    # can step down to 30s; any error below resets it to 120s.
+                    floor = (MATURE_ACCOUNT_INTERVAL
+                             if state['successes'] >= 20 and stamp - state['first_success'] >= 1800
+                             else STABLE_ACCOUNT_INTERVAL)
+                    step = 15 if floor == MATURE_ACCOUNT_INTERVAL else 5
+                    state['interval'] = max(floor, state.get('interval', 60) - step)
             self.router._save(db, scope, state)
         self.router.transaction_call(record)

@@ -257,10 +257,38 @@ function renderWorkbenchSpeed() {
 function renderOutputSpeed() {
   const element = $('#stat-output-speed');
   if (!element) return;
-  const value = state.status?.throughput?.verified_mbps;
+  const throughput = state.status?.throughput || {};
+  const value = throughput.verified_mbps;
   element.textContent = value === null || value === undefined || !Number.isFinite(Number(value))
     ? '—' : Number(value).toFixed(2);
+  const tip = $('#stat-output-speed-tip');
+  if (tip) {
+    const windowSeconds = Number(throughput.verified_window_seconds);
+    const windowText = Number.isFinite(windowSeconds) && windowSeconds > 0
+      ? `${Math.max(1, Math.round(windowSeconds))} 秒` : '最近一段采样窗口';
+    const samples = Number(throughput.verified_samples);
+    const sampleText = Number.isFinite(samples) && samples > 0 ? `${samples} 个采样段` : '等待首个采样段';
+    const bytesText = throughput.verified_bytes_window ? bytes(throughput.verified_bytes_window) : '暂无';
+    tip.innerHTML = `<strong>计算口径</strong><span>近 ${escapeHTML(windowText)} 内，已完成校验的成品字节数 × 8 ÷ 采样时长。</span><span>当前样本：${escapeHTML(bytesText)} · ${escapeHTML(sampleText)}。</span><span>只统计下载完成并通过成品校验的文件，不包含解析、失败、重试和未合并传输；不是整机网卡速度。</span>`;
+    const foot = $('#stat-output-speed-foot');
+    if (foot) foot.textContent = throughput.verified_bytes_window ? `已校验成品 · 近 ${Math.max(1, Math.round(windowSeconds || 0))} 秒` : '等待成品校验样本';
+  }
 }
+document.addEventListener('click', event => {
+  const help = event.target.closest('.metric-help-button');
+  const open = $('.metric-help-wrap.is-open');
+  if (help) {
+    const wrap = help.closest('.metric-help-wrap');
+    wrap.classList.toggle('is-open');
+    if (open && open !== wrap) open.classList.remove('is-open');
+    event.stopPropagation();
+  } else if (open && !event.target.closest('.metric-help-wrap')) {
+    open.classList.remove('is-open');
+  }
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') $('.metric-help-wrap.is-open')?.classList.remove('is-open');
+});
 function renderTasks() {
   const counts = state.overview.download_counts || {};
   $('#stat-active').textContent = selectedJob?.queued || 0;

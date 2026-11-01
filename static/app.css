@@ -140,3 +140,20 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .task-defaults-panel .scale-fields label{margin-top:0}
 .subscription-form{display:flex;flex-direction:column;gap:10px}.subscription-form .field-label{margin-top:5px}.subscription-form .micro-copy{margin:0;line-height:1.8}.subscription-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 6px}.subscription-actions .text-button{white-space:nowrap}.subscription-form>#clash-import{align-self:flex-start}
 @media(max-width:650px){.download-console .download-job-picker,.selected-job-summary{margin-left:17px;margin-right:17px}.selected-job-counts{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.download-dashboard .stat-foot{font-size:9px}.download-dashboard .stat-number{font-size:25px}.system-download-control{padding:17px}.download-queue-controls>.button{width:100%}}
+
+/* Output throughput explanation */
+.stat-card-with-help{position:relative}
+.stat-card-with-help .stat-label{gap:7px}
+.metric-help-wrap{position:relative;display:inline-flex;align-items:center;flex-shrink:0}
+.metric-help-button{display:grid;place-items:center;width:17px;height:17px;padding:0;border:1px solid #cbd6be;border-radius:50%;background:#f4f7ef;color:#6c815b;font-size:11px;font-weight:700;line-height:1}
+.metric-help-button:hover,.metric-help-button:focus-visible{background:#e8f0df;border-color:#9eb28c;color:#4f673f}
+.metric-tooltip{position:absolute;z-index:40;right:-8px;top:27px;width:280px;padding:13px 14px;border:1px solid #d7e2cc;border-radius:9px;background:#fff;box-shadow:0 14px 30px #26351d22;color:#61705d;font-size:10px;line-height:1.7;opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .15s,transform .15s,visibility .15s;pointer-events:none}
+.metric-tooltip:before{content:"";position:absolute;right:12px;top:-6px;width:10px;height:10px;background:#fff;border-left:1px solid #d7e2cc;border-top:1px solid #d7e2cc;transform:rotate(45deg)}
+.metric-tooltip strong,.metric-tooltip span{display:block;position:relative}
+.metric-tooltip strong{margin-bottom:5px;color:#4d6248;font-size:11px}
+.metric-tooltip span+span{margin-top:5px}
+.metric-help-wrap:hover .metric-tooltip,.metric-help-button:focus-visible+.metric-tooltip,.metric-help-wrap.is-open .metric-tooltip{opacity:1;visibility:visible;transform:translateY(0)}
+@media(max-width:650px){
+ .metric-tooltip{position:fixed;right:17px;top:auto;bottom:78px;width:min(300px,calc(100vw - 34px));transform:translateY(5px)}
+ .metric-tooltip:before{top:auto;bottom:-6px;right:20px;border-top:0;border-left:0;border-right:1px solid #d7e2cc;border-bottom:1px solid #d7e2cc}
+}

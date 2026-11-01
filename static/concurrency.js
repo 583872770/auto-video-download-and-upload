@@ -17,7 +17,7 @@ function concurrencyAdmissionHTML(data) {
   const pool = data.cookie_pool;
   const next = pool?.known && pool.next_start_at > data.time
     ? `下一启动窗口：${concurrencyCountdown(pool.next_start_at - data.time, data.time)}。` : '';
-  const sessions = pool ? `<p>${Number(pool.configured_files || 0)} 份 Cookie · ${pool.known ? Number(pool.effective_sessions || 0) : '待确认'} 个核心会话 · 账号身份未核验。不同会话不代表不同账号或独立额度。${pool.unavailable_files ? ` ${Number(pool.unavailable_files)} 份文件不可用，请在账号管理中检查。` : ''}</p>` : '';
+  const sessions = pool ? `<p>${Number(pool.configured_files || 0)} 份 Cookie · ${pool.known ? Number(pool.effective_sessions || 0) : '待确认'} 个核心会话 · 账号身份未核验。不同会话不代表不同账号或独立额度。${pool.known ? `当前容量 ${Number(pool.capacity || 0)} 路${pool.warming_sessions ? ` · ${Number(pool.warming_sessions)} 个会话尚未完成预热` : ''}${pool.min_interval ? ` · 稳定会话启动间隔至少 ${Number(pool.min_interval)} 秒` : ''}` : ''}${pool.unavailable_files ? ` ${Number(pool.unavailable_files)} 份文件不可用，请在账号管理中检查。` : ''}</p>` : '';
   return `<div class="capacity-admission" role="status"><strong>当前限制说明</strong><p>${escapeHTML(data.bottleneck || '等待实例更新调度说明')}</p>${sessions}${next ? `<p>${next}</p>` : ''}<small>运行模式：${data.mode === 'auto' ? '自动调节' : '自定义'} · 执行中等待会话 ${Number(data.cookie_waiting || 0)} · 等待请求间隔 ${Number(data.youtube_waiting || 0)} · 解析 ${Number(data.stages?.extracting || 0)} · 传输 ${Number(data.transferring || 0)} · 合并 / 后处理 ${Number(data.processing || 0)}</small></div>`;
 }
 function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
@@ -31,7 +31,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const subtitles = data.subtitles || {};
   const subtitleRate = subtitles.cooldown_status ? ` HTTP ${Number(subtitles.cooldown_status)}` : '';
   const subtitleInterval = subtitles.interval_seconds ? `最少请求间隔：${concurrencyCountdown(subtitles.interval_seconds, data.time)}。` : '';
-  if (data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
+  if (data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.cookie_pool?.min_interval ? `账号池还会按每个核心会话至少 ${Number(data.cookie_pool.min_interval)} 秒错峰启动。` : ''}${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
 
   if (subtitles.queued || subtitles.running || subtitles.failed) notices.push(['info', '字幕独立补下载', `待补 ${subtitles.queued || 0} · 执行中 ${subtitles.running || 0} · 补下载失败 ${subtitles.failed || 0}。${subtitleInterval}${subtitles.cooldown_seconds ? '字幕上游冷却'+subtitleRate+'：'+concurrencyCountdown(subtitles.cooldown_seconds, data.time)+'。' : ''}字幕队列不占用视频传输额度，也不改变视频成功及计费；完成当前后停止时不再领取新字幕任务。`, '#tasks', '查看执行日志']);
   if (!data.online || stale) notices.push(['unavailable', !data.online ? '实例离线' : '状态暂未更新', '下方保留最近数据，无法确认当前可用额度。请检查实例连接。', '#instances', '查看实例']);

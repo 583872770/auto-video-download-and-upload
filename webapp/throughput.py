@@ -125,8 +125,13 @@ def runtime_limits(config, directory):
             return saved
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    # An absent/stale supervisor snapshot never starts a large unmeasured pool.
-    fallback = 1 if config.get('youtube_cookie_pool') else 2
+    # An absent/stale supervisor snapshot starts conservatively, but a pool
+    # should not collapse to one worker merely because its first sample is
+    # missing.  Admission still verifies the effective core-session capacity
+    # before each task, so duplicate/invalid Cookie files cannot increase
+    # actual YouTube concurrency.
+    pool_size = len(config.get('youtube_cookie_pool') or [])
+    fallback = min(requested, pool_size) if pool_size else 2
     return {'transfers': min(requested, fallback), 'workers': min(requested, fallback),
             'browsers': 1, 'mode': 'auto', 'reason': '等待资源采样'}
 
@@ -142,7 +147,10 @@ class ThroughputController:
         self.probe_baseline = None
         self.plateau_until = 0
         self.history = deque(maxlen=6)
-        self.metric_history = deque(maxlen=12)
+        # Keep a three-minute completion window.  A one-minute window made the
+        # displayed finished-output rate collapse whenever a large file was
+        # still downloading, even while media bytes were arriving steadily.
+        self.metric_history = deque(maxlen=36)
         self.metric_previous = None
         self.group_control = {}
         self.pressure_hits = 0
@@ -254,6 +262,7 @@ class ThroughputController:
         media_rate = sum(item[1] for item in self.metric_history) / metric_seconds
         verified_rate = sum(item[2] for item in self.metric_history) / metric_seconds
         resolve_rate = sum(item[4] for item in self.metric_history) / metric_seconds
+        verified_bytes_window = sum(item[2] for item in self.metric_history)
         rate, cpu = 0.0, resources['cpu_percent']
         if self.previous and tick > self.last:
             elapsed = tick - self.last
@@ -348,7 +357,15 @@ class ThroughputController:
         groups = {}
         for group, cap in upstream_caps.items():
             cap = min(cap, transfers)
-            control = self.group_control.setdefault(group, {'limit': min(2, cap), 'adjusted': tick, 'until': 0})
+            initial_limit = min(2, cap)
+            if pooled and group == 'youtube-origin':
+                # Start one transfer per proven core session.  Per-account
+                # permits still cap each session, so this does not multiply a
+                # duplicate Cookie or bypass the account pool's limits.
+                sessions = int((cookie_capacity or {}).get('effective_sessions', 0))
+                if sessions:
+                    initial_limit = min(cap, max(initial_limit, sessions))
+            control = self.group_control.setdefault(group, {'limit': initial_limit, 'adjusted': tick, 'until': 0})
             limit = min(control['limit'], cap)
             total = {name: sum(item[3].get(group, {}).get(name, 0) for item in self.metric_history)
                      for name in ('bytes', 'failed', 'succeeded', 'upstream_failed')}
@@ -398,6 +415,9 @@ class ThroughputController:
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
                       'media_receive_mbps': round(media_rate * 8 / 1e6, 2),
                       'verified_mbps': round(verified_rate * 8 / 1e6, 2), 'groups': groups, 'channels':channel_rates,
+                      'verified_window_seconds': round(metric_seconds, 1),
+                      'verified_samples': len(self.metric_history),
+                      'verified_bytes_window': int(verified_bytes_window),
                       'resolves_per_minute': round(resolve_rate * 60, 2),
                       'io_pressure': resources['io_pressure'], 'db_worker_cap': db_worker_cap,
                       'cpu_cores': round(resources['cpu_cores'], 2),

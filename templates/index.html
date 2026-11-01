@@ -60,7 +60,7 @@
         {% include 'workflow_strip.html' %}
         <div class="stats-grid download-dashboard">
           <article class="stat-card"><div class="stat-label">所选任务 · 待下载视频</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">选择任务后查看待下载视频</div></article>
-          <article class="stat-card"><div class="stat-label">成品产出速度（近期平均）</div><div class="stat-number"><span id="stat-output-speed">—</span><small>Mbps</small></div><div class="stat-foot">已校验成品</div></article>
+          <article class="stat-card stat-card-with-help"><div class="stat-label"><span>成品产出速度（近期平均）</span><span class="metric-help-wrap"><button type="button" class="metric-help-button" aria-label="查看成品产出速度计算说明" aria-describedby="stat-output-speed-tip">?</button><span id="stat-output-speed-tip" class="metric-tooltip" role="tooltip">正在读取计算口径…</span></span></div><div class="stat-number"><span id="stat-output-speed">—</span><small>Mbps</small></div><div class="stat-foot" id="stat-output-speed-foot">已校验成品</div></article>
           <article class="stat-card"><div class="stat-label">当前实例 · 总传输速度</div><div class="stat-number"><span id="stat-speed">—</span><small id="stat-speed-unit"></small></div><div class="stat-foot" id="speed-caption">等待实例状态</div></article>
           <article class="stat-card"><div class="stat-label">所选任务 · 已交付文件</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">本任务在全部实例的计费成品</div></article>
 
