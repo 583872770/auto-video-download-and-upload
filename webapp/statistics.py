@@ -113,6 +113,23 @@ class DownloadStatistics:
         result = {key: int(value) for key, value in {**dict(sizes), **dict(testing)}.items()}
         return {**result, 'file_bytes_exact': str(result['file_bytes']), 'test_file_bytes_exact': str(result['test_file_bytes'])}
 
+    def current_session(self, db, instance_id=None):
+        """Workbench output rate uses this executor's session ledger and wall time."""
+        identity = self._active(db, instance_id)
+        if not identity:
+            return None
+        row = db.execute(session_select().where(sessions.c.id == identity,
+            sessions.c.status.in_(('active', 'stopping')))).mappings().first()
+        if not row:
+            return None
+        from webapp.fleet import database_time
+        end = (datetime.fromisoformat(row['ended_at']).timestamp() if row['ended_at']
+               else database_time(db, self.db.mysql))
+        elapsed = max(0, end - datetime.fromisoformat(row['started_at']).timestamp())
+        value = describe(row)
+        return {**value, 'elapsed_seconds': round(elapsed, 3),
+                'output_mbps': round(value['downloaded_file_bytes'] * 8 / elapsed / 1e6, 2) if elapsed > 0 else None}
+
     def ensure_session(self, db, instance_id=None):
         scope = self._scope(instance_id)
         identity = self._active(db, scope)

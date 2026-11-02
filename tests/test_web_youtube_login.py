@@ -88,13 +88,17 @@ class LoginContract:
 
     def test_paused_queue_login_success_updates_configuration_and_runtime(self):
         queued = self.store.create('download', {'config': {'youtube_cookie': ''}, 'base': str(self.root)})
-        self.assertEqual(self.post().status_code, 409)
         self.store.set_downloads_paused(True)
         self.start()
         self.assertEqual(self.finish()['state'], 'succeeded')
-        target = self.root / 'Cookies/youtube.txt'
+        cookie_path = yaml.safe_load(self.config.read_text())['youtube_cookie']
+        target = self.root / cookie_path
         self.assertTrue(target.is_file())
-        self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], 'Cookies/youtube.txt')
+        self.assertTrue(cookie_path.startswith('Cookies/profiles/'))
+        items = self.client.get('/api/youtube/cookies').json['items']
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]['active'])
+        self.assertTrue(items[0]['name'].startswith('浏览器登录 '))
         self.assertEqual(self.store.runtime()['youtube_cookie'], str(target))
         self.assertEqual(self.store.get(queued['id'])['status'], 'queued')
         self.assertTrue(self.store.downloads_paused())
@@ -115,6 +119,71 @@ class LoginContract:
             execute('download', payload, store=self.store)
         self.assertEqual(captured, [target.read_bytes()])
 
+    def test_login_during_download_saves_new_profile_without_replacing_running_credentials(self):
+        original_cookie = COOKIE.replace(b'fixture-only-secret', b'original-fixture-secret')
+        self.assertEqual(self.post('/api/youtube/cookie', data={
+            'cookie': (io.BytesIO(original_cookie), 'cookie.txt')}).status_code, 201)
+        queued = self.store.create('download', {'base': str(self.root),
+            'urls': ['https://example.test/current.mp4']})
+        task = self.store.claim(self.store.owner)
+        self.assertEqual(task['id'], queued['id'])
+        target = self.root / 'Cookies/youtube.txt'
+        original, config, runtime = target.read_bytes(), self.config.read_bytes(), self.store.runtime()
+        from webapp.downloader import download_cookie_session
+        with download_cookie_session({'cookiefile': str(target)}) as options:
+            self.start()
+            self.assertEqual(self.finish()['state'], 'succeeded')
+            self.assertEqual(Path(options['cookiefile']).read_bytes(), original)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.config.read_bytes(), config)
+        self.assertEqual(self.store.runtime(), runtime)
+        self.assertFalse(self.store.downloads_paused())
+        self.assertTrue(self.store.heartbeat(task['id'], self.store.owner))
+        self.assertEqual(self.store.get(task['id'])['status'], 'running')
+        profiles = self.client.get('/api/youtube/cookies').json['items']
+        added = [item for item in profiles if item['id'] != 'legacy']
+        self.assertEqual(len(added), 1)
+        self.assertFalse(added[0]['active'])
+        from webapp.cookie_profiles import CookieProfiles
+        self.assertIn(b'fixture-only-secret', CookieProfiles(self.root, self.store).require(added[0]['id']).read_bytes())
+        self.assertIn('已新增 Cookie', self.manager.status()['message'])
+        self.assertNotIn('fixture-only-secret', str(profiles))
+
+    def test_downloads_can_be_created_and_resumed_while_browser_login_is_pending(self):
+        self.store.set_downloads_paused(True)
+        self.start()
+        response = self.post('/api/downloads', json={'urls': 'https://example.test/parallel.mp4'})
+        self.assertEqual(response.status_code, 202, response.json)
+        response = self.post('/api/downloads/resume')
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertIsNotNone(self.store.claim(self.store.owner))
+        self.assertTrue(self.manager.status()['active'])
+        self.assertEqual(self.finish()['state'], 'succeeded')
+        self.assertIn('已新增 Cookie', self.manager.status()['message'])
+
+    def test_repeated_idle_logins_add_profiles_and_preserve_previous_credentials(self):
+        from webapp.cookie_profiles import CookieProfiles
+        self.assertEqual(self.post('/api/youtube/cookie', data={
+            'cookie': (io.BytesIO(COOKIE), 'cookie.txt')}).status_code, 201)
+        original = (self.root / 'Cookies/youtube.txt').read_bytes()
+        identities = {'legacy'}
+        for value in (b'first-new-session', b'second-new-session'):
+            async def completed(config, output, *, on_status, cancelled):
+                output.write_bytes(COOKIE.replace(b'fixture-only-secret', value))
+            with patch('webapp.youtube_login.login', completed):
+                self.assertEqual(self.post().status_code, 202)
+                self.assertEqual(self.finish()['state'], 'succeeded')
+            items = self.client.get('/api/youtube/cookies').json['items']
+            current = {item['id'] for item in items}
+            added = current - identities
+            self.assertEqual(len(added), 1)
+            new_id = added.pop()
+            self.assertTrue(next(item for item in items if item['id'] == new_id)['active'])
+            self.assertIn(value, CookieProfiles(self.root, self.store).require(new_id).read_bytes())
+            self.assertEqual((self.root / 'Cookies/youtube.txt').read_bytes(), original)
+            identities = current
+        self.assertEqual(len(identities), 3)
+
     def test_duplicate_login_and_conflicting_mutations_are_blocked(self):
         self.start()
         other = YouTubeLogin(self.store.directory, lambda data: None)
@@ -122,10 +191,7 @@ class LoginContract:
         with self.assertRaises(LoginBusy):
             other.start({}, '直连')
         self.assertEqual(self.post().status_code, 409)
-        for endpoint, data in (('/api/downloads/resume', None),
-                               ('/api/downloads', {'urls': 'npNnbj46_ik'}),
-                               ('/api/clash/stop', None)):
-            self.assertEqual(self.post(endpoint, json=data).status_code, 409)
+        self.assertEqual(self.post('/api/clash/stop').status_code, 409)
         self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct'}, headers=self.headers).status_code, 409)
         self.assertEqual(self.post('/api/youtube/cookie', data={'cookie': (io.BytesIO(COOKIE), 'cookie.txt')}).status_code, 409)
         self.assertEqual(self.post('/api/downloads/import', data={'file': (io.BytesIO(b'npNnbj46_ik'), 'ids.txt')}).status_code, 202)

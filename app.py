@@ -389,7 +389,28 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                         target.unlink(missing_ok=True)
                     raise
 
-    youtube_login = YouTubeLogin(store.directory, install_cookie)
+    def install_browser_cookie(data):
+        with media_lock, settings_lock:
+            from webapp.cookie_profiles import CookieProfiles
+            config, base = settings()
+            profiles = CookieProfiles(base, store)
+            item = profiles.add('浏览器登录 ' + time.strftime('%Y-%m-%d %H:%M:%S'), data)
+            name = item['name']
+            if cookie_update_busy():
+                return f'YouTube 登录成功，已新增 Cookie「{name}」。当前下载继续使用原 Cookie；停止当前实例后可在列表中选择新 Cookie。'
+            original_config = config_path.read_bytes()
+            try:
+                config['youtube_cookie'] = profiles.require(item['id']).relative_to(base).as_posix()
+                save_settings(config_path, config)
+                sync_runtime(config, base)
+                youtube_auth.invalidate()
+            except Exception:
+                config_path.write_bytes(original_config)
+                profiles.delete(item['id'])
+                raise
+        return f'YouTube 登录成功，已新增并启用 Cookie「{name}」，后续下载将自动使用。'
+
+    youtube_login = YouTubeLogin(store.directory, install_browser_cookie)
     app.extensions['youtube_login'] = youtube_login
 
     def require_login_idle():
@@ -404,8 +425,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def start_youtube_login():
         with media_lock:
             require_login_idle()
-            if cookie_update_busy():
-                raise LoginBusy('请先停止全部下载并等待当前任务结束，再打开登录窗口。')
             config, base = settings()
             mode = config.get('proxy_mode', 'manual')
             connection = '直连'
@@ -814,7 +833,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             stage('releasing_queue')
             store.activate_download_lists(expected_policy_version=policy_version)
             return
-        require_login_idle()
         config, base = settings()
         stage('reading_queue')
         upcoming = store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
@@ -924,8 +942,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             validate_method_urls(config, payload['urls'])
         with media_lock:
             local_download = action == 'download' and not (fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc))
-            if local_download:
-                require_login_idle()
             if local_download and config.get('proxy_mode') == 'clash':
                 payload['clash'] = clash.snapshot()
             if action == 'download':
@@ -971,7 +987,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                     fleet.quarantine(node['id'], str(error), boot_id=node['boot_id'])
                     warnings.append(f'{node["name"]} 已暂停领取：{error}')
             return warnings
-        require_login_idle()
         methods = download_methods(config)
         if 'yt1d' in methods:
             require_yt1d_environment(config, base)
@@ -996,7 +1011,6 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def prepare_system_resume():
         if fleet:
             return  # Nodes are checked on enable/start and isolate their own failures.
-        require_login_idle()
         from sqlalchemy import select
         from webapp.database import tasks as task_table
         with store.connect() as db:

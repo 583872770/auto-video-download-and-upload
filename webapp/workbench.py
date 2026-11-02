@@ -62,6 +62,7 @@ class Workbench:
             from webapp.disk_budget import resource_blocked
             blocked = resource_blocked(self.store, db, identity)
             error = row['error']
+            session = self.store.statistics.current_session(db, identity)
         local = self.store.fleet.local_settings() if self.store.fleet else {}
         active = self.decorate_cookie_names(active, local.get('base'), self.store)
         job = self.jobs.detail(preview or selected) if preview or selected else None
@@ -77,7 +78,7 @@ class Workbench:
             job['state'] = self.jobs.execution_state(job)
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
-                    queued=job['queued'] if job else 0, active_tasks=active, error=error)
+                    queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session)
 
     def control(self, identity, action, job_id=None, expected=None):
         if action not in ('start', 'pause', 'stop'):
@@ -153,9 +154,11 @@ def register_workbench(app, store, configuration, preflight):
             queue = store.download_queue()
             active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
             active = Workbench.decorate_cookie_names(active, base, store)
+            with store.connect() as db:
+                session = store.statistics.current_session(db)
             return jsonify(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
-                queued=job['queued'] if job else 0, online=True, active_tasks=active, error='')
+                queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session)
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         from webapp.fleet_routes import selected_id, rpc

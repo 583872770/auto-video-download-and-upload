@@ -278,22 +278,21 @@ function renderWorkbenchSpeed() {
 function renderOutputSpeed() {
   const element = $('#stat-output-speed');
   if (!element) return;
-  const throughput = state.status?.throughput || {};
-  const value = throughput.verified_mbps;
+  const session = state.workbench?.session;
+  const value = session?.output_mbps;
   element.textContent = value === null || value === undefined || !Number.isFinite(Number(value))
     ? '—' : Number(value).toFixed(2);
   const tip = $('#stat-output-speed-tip');
   if (tip) {
-    const windowSeconds = Number(throughput.verified_window_seconds);
-    const windowText = Number.isFinite(windowSeconds) && windowSeconds > 0
-      ? `${Math.max(1, Math.round(windowSeconds))} 秒` : '最近一段采样窗口';
-    const samples = Number(throughput.verified_samples);
-    const sampleText = Number.isFinite(samples) && samples > 0 ? `${samples} 个采样段` : '等待首个采样段';
-    const bytesText = throughput.verified_bytes_window ? bytes(throughput.verified_bytes_window) : '暂无';
-    tip.innerHTML = `<strong>计算口径</strong><span>近 ${escapeHTML(windowText)} 内，已完成校验的成品字节数 × 8 ÷ 采样时长。</span><span>当前样本：${escapeHTML(bytesText)} · ${escapeHTML(sampleText)}。</span><span>只统计下载完成并通过成品校验的文件，不包含解析、失败、重试和未合并传输；不是整机网卡速度。</span>`;
-    const foot = $('#stat-output-speed-foot');
-    if (foot) foot.textContent = throughput.verified_bytes_window ? `已校验成品 · 近 ${Math.max(1, Math.round(windowSeconds || 0))} 秒` : '等待成品校验样本';
+    const elapsed = Number(session?.elapsed_seconds || 0);
+    const detail = session
+      ? `本次会话 #${session.seq}：计费大小 ${decimalGB(session.file_bytes_exact)} + 测试大小 ${decimalGB(session.test_file_bytes_exact)}；会话用时 ${etaText(elapsed)}。`
+      : '当前实例暂无进行中的下载会话；启动后开始统计。';
+    tip.innerHTML = `<strong>计算口径</strong><span>本次会话平均速度 =（计费成品字节数 + 测试成品字节数）× 8 ÷ 会话用时（秒）÷ 1,000,000，单位 Mbps。</span><span>${escapeHTML(detail)}</span><span>用时从本次实例会话启动算起，包含解析、等待和重试。大小只累计已完成登记的成品；已删除的测试文件仍计入产出，不计费。重新启动实例后按新会话统计。</span>`;
   }
+  const foot = $('#stat-output-speed-foot');
+  if (foot) foot.textContent = session
+    ? `计费 + 测试 · 本次用时 ${etaText(Number(session.elapsed_seconds || 0))}` : '暂无当前会话';
 }
 document.addEventListener('click', event => {
   const help = event.target.closest('.metric-help-button');
@@ -363,16 +362,16 @@ $('#youtube-auth-check').addEventListener('click', async () => {
   finally { authChecking = false; await refresh(); renderStatus(); }
 });
 let youtubeLoginBusy = false;
+let refreshedLoginCookie = '';
 function renderYouTubeLogin() {
   const login = state.status?.youtube?.login;
   const busy = youtubeLoginBusy || !!login?.active;
-  const needsStop = !!state.status?.connection_busy;
-  $('#youtube-login-start').disabled = !login || busy || needsStop;
+  $('#youtube-login-start').disabled = !login || busy;
   $('#youtube-login-start').textContent = login?.active ? '登录进行中…' : login?.state === 'idle' ? '打开登录窗口' : '重新打开登录窗口';
   $('#youtube-login-cancel').hidden = !login?.active;
   $('#youtube-login-cancel').disabled = youtubeLoginBusy || ['cancelling', 'committing'].includes(login?.state);
   const status = $('#youtube-login-status');
-  status.textContent = needsStop && !login?.active ? '请先停止全部下载，等待当前下载结束后再打开登录窗口。' : login?.message || '正在读取登录状态…';
+  status.textContent = login?.message || '正在读取登录状态…';
   status.classList.toggle('error', ['failed', 'interrupted'].includes(login?.state));
   status.classList.toggle('success', login?.state === 'succeeded');
   const connection = state.clash?.mode === 'clash' ? `Clash · ${state.clash.selected || '尚未选择节点'}` : state.config?.proxy_mode === 'manual' && state.config?.proxy ? '手动代理' : '直连';
@@ -381,6 +380,14 @@ function renderYouTubeLogin() {
     element.hidden = !login || login.state === 'idle';
     element.textContent = login?.message || '';
   });
+  const savedLogin = login?.state === 'succeeded' ? `${state.instanceId || 'local'}:${login.id}` : '';
+  if (savedLogin && refreshedLoginCookie !== savedLogin) {
+    refreshedLoginCookie = savedLogin;
+    loadCookieProfiles().catch(error => {
+      if (refreshedLoginCookie === savedLogin) refreshedLoginCookie = '';
+      toast(`Cookie 已保存，列表刷新失败：${error.message}`, true);
+    });
+  }
 }
 async function youtubeLoginAction(action) {
   if (youtubeLoginBusy) return;

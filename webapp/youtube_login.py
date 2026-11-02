@@ -122,8 +122,8 @@ class YouTubeLogin:
                         raise LoginCancelled('登录已取消，已有 Cookie 保持不变。')
                     state.update(state='committing', message='正在保存登录结果…')
                     self._write(state)
-                self.install(output.read_bytes())
-                state.update(state='succeeded', message='YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
+                message = self.install(output.read_bytes())
+                state.update(state='succeeded', message=message or 'YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
         except LoginCancelled as error:
             state.update(state='cancelled', message=str(error))
         except BrowserError as error:

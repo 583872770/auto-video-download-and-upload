@@ -2,12 +2,13 @@
 import json
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from sqlalchemy import event, select
 
 from tests import test_fleet, test_jobs
-from webapp.database import instances, settings, job_profiles, download_lists
+from webapp.database import instances, settings, job_profiles, download_lists, download_sessions
 
 
 class WorkbenchFleetTests(unittest.TestCase):
@@ -33,6 +34,67 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.control('alpha', 'start', a)
         self.control('beta', 'start', b)
         return a, b
+
+    def test_output_speed_uses_current_instance_session_and_retains_deleted_test_sizes(self):
+        self.pair()
+        task = self.a.claim(self.a.owner)
+        identity = task['payload']['download_session_id']
+        now = time.time()
+        with self.manager.connect() as db:
+            db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(
+                started_at=datetime.fromtimestamp(now - 20, timezone.utc).isoformat()))
+        for name, size, testing in [('billable.mp4', 1_000_000, False), ('test.mp4', 2_000_000, True)]:
+            path = self.root / name
+            path.write_bytes(b'x' * size)
+            self.assertTrue(self.a.statistics.record_file(task['id'], path, test_mode=testing))
+            if testing:
+                path.unlink()
+        with patch('webapp.fleet.database_time', return_value=now):
+            alpha = self.status('alpha')['session']
+            beta = self.status('beta')['session']
+        self.assertEqual(alpha['id'], identity)
+        self.assertEqual(alpha['elapsed_seconds'], 20)
+        self.assertEqual(alpha['file_bytes_exact'], '1000000')
+        self.assertEqual(alpha['test_file_bytes_exact'], '2000000')
+        self.assertEqual(alpha['downloaded_file_bytes_exact'], '3000000')
+        self.assertEqual(alpha['output_mbps'], 1.2)
+        self.assertNotEqual(beta['id'], identity)
+        self.assertEqual(beta['downloaded_file_bytes'], 0)
+        self.assertEqual(beta['output_mbps'], 0)
+        # Previewing another job must not switch the executor's session totals.
+        preview = self.client.get('/api/jobs/workbench?job_id=' + self.status('beta')['job']['id'],
+            headers={'X-Instance-ID': 'alpha'}).json
+        self.assertEqual(preview['session']['id'], identity)
+
+    def test_output_speed_waits_for_elapsed_time_and_resets_with_new_session(self):
+        self.control('alpha', 'pause')
+        self.assertIsNone(self.status('alpha')['session'])
+        job = self.create()
+        self.control('alpha', 'start', job)
+        first = self.status('alpha')['session']['id']
+        now = datetime.now(timezone.utc).timestamp()
+        with self.manager.connect() as db:
+            db.execute(download_sessions.update().where(download_sessions.c.id == first).values(
+                started_at=datetime.fromtimestamp(now, timezone.utc).isoformat(), file_bytes=1_000_000))
+        with patch('webapp.fleet.database_time', return_value=now):
+            self.assertIsNone(self.status('alpha')['session']['output_mbps'])
+        with patch('webapp.fleet.database_time', return_value=now + 10):
+            self.assertEqual(self.status('alpha')['session']['output_mbps'], .8)
+        self.control('alpha', 'pause')
+        self.assertIsNone(self.status('alpha')['session'])
+        self.control('alpha', 'start', job)
+        current = self.status('alpha')['session']
+        self.assertNotEqual(current['id'], first)
+        self.assertEqual(current['downloaded_file_bytes'], 0)
+
+    def test_output_speed_keeps_stopping_session_until_inflight_download_finishes(self):
+        job = self.create()
+        self.control('alpha', 'start', job)
+        task = self.a.claim(self.a.owner)
+        self.control('alpha', 'pause')
+        self.assertEqual(self.status('alpha')['session']['status'], 'stopping')
+        self.a.finish(task['id'], result={}, worker_id=self.a.owner)
+        self.assertIsNone(self.status('alpha')['session'])
 
     def assert_job_state(self, job, state, desired, reason=''):
         detail = self.client.get('/api/jobs/' + job).json
@@ -297,6 +359,9 @@ class StandaloneWorkbenchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.json)
         first = self.store.claim('owner')
         self.assertEqual(first['batch_id'], job)
+        session = self.client.get('/api/jobs/workbench').json['session']
+        self.assertEqual(session['id'], first['payload']['download_session_id'])
+        self.assertEqual(session['downloaded_file_bytes'], 0)
         response = self.client.post('/api/jobs/workbench', json={'action':'pause'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         self.assertIsNone(self.store.claim('next'))

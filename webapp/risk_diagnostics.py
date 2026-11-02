@@ -15,6 +15,7 @@ def entry(code, category, title, impact, recovery, action, href='/#settings'):
 
 
 GUIDE = [
+    entry('cookie_pool_halted', '任务、实例与恢复', 'Cookie 池保存了停止状态，需要检查后人工恢复', '这是本地持久化拦截；重新启用池也会沿用，不能据此认定本次收到 YouTube 账号限流响应。旧记录可能没有区分限流与登录验证。', '冷却到期不会自动解除。停止实例并等待任务结束后，在 Cookie 账号管理中检查全部账号并解除拦截，再手动恢复下载。', '查看池的原停止时间和触发原因；单 Cookie 可用也不会自动清除池的历史拦截。'),
     entry('account_rate_limit', '上游限流与验证', 'YouTube 明确提示账号被限流（不一定返回 429）', '登录检查通过也可能被账号配额限制，不能据此认定 Cookie 失效；同账号的其他下载程序也可能共同消耗额度。', '识别到明确账号限流时停止本实例领取、保留任务，按至少一小时共享冷却；到期不自动恢复，也不保证恢复。', '停止反复重试；恢复前降低启动频率与并发，不轮换 IP 或账号继续请求。'),
     entry('http_429', '上游限流与验证', 'HTTP 429：请求过多', '可能限制当前请求、渠道、共享上游或出口；不能据此确定账号或 IP 被封。', '按已记录冷却时间等待；到期后重新检查，恢复窗口可能暂按 1 路放行。', '降低并发与字幕请求频率，查看触发阶段和共享范围，避免反复手动重试。'),
     entry('http_503', '上游限流与验证', 'HTTP 503 / 5xx：服务暂不可用', '可能是服务负载、临时故障或验证页面；503 不一定是限流。', '遵守 Retry-After；无此信息时按本系统退避策略重试，不保证上游何时恢复。', '查看任务阶段，等待后重试；连续失败时检查服务状态。'),
@@ -57,7 +58,8 @@ GUIDE = [
 ]
 
 RULES = [
-    ('account_rate_limit', r'your account has been rate-limited|账号.*限流'),
+    ('account_rate_limit', r'your account has been rate-limited|YouTube\s*明确提示账号被限流'),
+    ('cookie_pool_halted', r'账号池检测到限流或登录验证|账号池已停止|Cookie\s*池(?:已停止|沿用此前保存的停止状态)'),
     ('http_429', r'\b429\b|too many requests'),
     ('http_503', r'\b50[0234]\b|service unavailable'),
     ('http_403', r'\b40[13]\b|forbidden|unauthorized'),

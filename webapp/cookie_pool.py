@@ -4,6 +4,7 @@ No retry changes identities. Explicit account limits or verification halt the
 whole pool; content failures do not lower unrelated accounts' capacity.
 """
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import random
@@ -22,6 +23,24 @@ from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 # YouTube requests and is restored by any timeout/throttle outcome below.
 MATURE_ACCOUNT_INTERVAL = 30
 STABLE_ACCOUNT_INTERVAL = 45
+
+
+def halt_message(state, *, previous=False):
+    """Describe persisted admission state without reasserting a fresh source error."""
+    cause = {'account_rate_limit': 'YouTube 明确提示账号被限流',
+             'http_429': 'HTTP 429（请求过多）',
+             'authentication_required': '登录检查未通过或需要额外验证'}.get(
+                 state.get('halt_kind'), '旧记录未区分限流与登录验证')
+    if previous:
+        # The gate is checked before reserving an account or yielding to yt-dlp.
+        # Historical causes remain in status metadata; this is a local refusal.
+        message = 'Cookie 池沿用此前保存的停止状态，本次尚未选择 Cookie 或发起视频下载请求。'
+    else:
+        message = f'Cookie 池已停止。触发原因：{cause}。'
+    stamp = state.get('halted_at')
+    if isinstance(stamp, (int, float)) and 0 < stamp < 253402300800:
+        message += '原停止时间：' + datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec='seconds') + '。'
+    return message + '请在停止实例后检查全部账号并解除拦截；冷却到期不会自动恢复。'
 
 
 def credential_key(data):
@@ -102,7 +121,9 @@ class CookiePool:
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
-            result = {'halted': bool(global_state.get('halted')), 'reason': global_state.get('reason'),
+            result = {'halted': bool(global_state.get('halted')),
+                    'reason': halt_message(global_state) if global_state.get('halted') else None,
+                    'halted_at': global_state.get('halted_at'), 'halt_kind': global_state.get('halt_kind'),
                     'cooldown_until': global_state.get('cooldown_until', 0),
                     'next_at': global_state.get('next_at', 0),
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
@@ -127,7 +148,7 @@ class CookiePool:
                 state.update(limit=1, streak=0, first_success=0)
                 self.router._save(db, scope, state)
             gate = self.router._state(db, self.global_scope)
-            gate.update(halted=False, reason=None)
+            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None)
             self.router._save(db, self.global_scope, gate)
         self.router.transaction_call(clear)
 
@@ -141,7 +162,8 @@ class CookiePool:
             gate = router._state(db, self.global_scope)
             if gate.get('halted'):
                 raise YouTubeAuthRequired({'state': 'verification_required',
-                    'message': gate.get('reason') or '账号池已停止，请人工检查登录及限流状态。'})
+                    'source': 'cookie_pool_halted', 'halted_at': gate.get('halted_at'),
+                    'halt_kind': gate.get('halt_kind'), 'message': halt_message(gate, previous=True)})
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp
             candidates, delays = [], []
@@ -217,10 +239,13 @@ class CookiePool:
         def record(db, stamp):
             state = self.router._state(db, scope)
             if auth_block or status == 429:
-                reason = ('账号池检测到限流或登录验证，已停止整个实例。请检查后人工恢复；不会换账号继续重试。')
+                kind = ('account_rate_limit' if getattr(error, 'account_rate_limited', False) or
+                        'your account has been rate-limited' in str(error).lower() else
+                        'http_429' if status == 429 else 'authentication_required')
                 gate = self.router._state(db, self.global_scope)
-                gate.update(halted=True, reason=reason, halted_at=stamp,
+                gate.update(halted=True, halt_kind=kind, halted_at=stamp,
                             cooldown_until=stamp + max(3600, delay or 0))
+                gate['reason'] = halt_message(gate)
                 self.router._save(db, self.global_scope, gate)
                 state.update(limit=1, streak=0, interval=max(120, state.get('interval', 60) * 2),
                              cooldown_until=stamp + max(3600, delay or 0))

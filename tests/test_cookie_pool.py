@@ -10,6 +10,7 @@ from webapp.cookie_pool import CookiePool
 from webapp.cookie_profiles import CookieProfiles
 from webapp.database import tasks, download_permits, cookie_profiles
 from webapp.downloads import YouTubeAccountLimited, DownloadLeaseLost
+from webapp.risk_diagnostics import classify
 from webapp.settings import validate_settings
 from webapp.store import TaskStore
 from webapp.throughput import PipelineBusy
@@ -99,10 +100,49 @@ class CookiePoolTests(unittest.TestCase):
             with pool.assignment():
                 raise YouTubeAccountLimited('Your account has been rate-limited')
         self.assertTrue(pool.status()['halted'])
+        self.assertEqual(pool.status()['halt_kind'], 'account_rate_limit')
         with self.assertRaises(YouTubeAuthRequired):
             with self.pool().assignment():
                 self.fail('Pool switched identity after account limit')
         self.assertGreater(max(a.get('cooldown_until', 0) for a in pool.status()['accounts']), time.time() + 3500)
+
+    def test_expired_legacy_halt_is_replayed_without_new_admission_or_throttle(self):
+        pool = self.pool()
+        old_stamp = time.time() - 86400
+        def halt(db, stamp):
+            pool.router._state(db, pool.global_scope)
+            gate = {'halted': True, 'halted_at': old_stamp, 'cooldown_until': old_stamp + 3600,
+                    'reason': '账号池检测到限流或登录验证，已停止整个实例。'}
+            pool.router._save(db, pool.global_scope, gate)
+        pool.router.transaction_call(halt)
+        before = pool.status()
+        # Recreate the pool just as toggling the mode or restarting a worker does.
+        with patch.object(pool.router, '_admit', side_effect=AssertionError('Unexpected admission')):
+            with self.assertRaises(YouTubeAuthRequired) as caught:
+                with pool.assignment():
+                    self.fail('Historical halt reached the downloader')
+        result = caught.exception.result
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(result['source'], 'cookie_pool_halted')
+        self.assertEqual(result['halted_at'], old_stamp)
+        self.assertIn('本次尚未选择 Cookie', str(caught.exception))
+        self.assertEqual(classify(str(caught.exception)), ['cookie_pool_halted'])
+        after = self.pool().status()
+        self.assertEqual({k: v for k, v in after.items() if k != 'capacity_summary'},
+                         {k: v for k, v in before.items() if k != 'capacity_summary'})
+        self.assertIsNone(before['halt_kind'])
+        self.assertIn('旧记录未区分', before['reason'])
+        with self.store.connect() as db:
+            self.assertEqual(len(db.execute(select(download_permits)).all()), 0)
+
+    def test_http_429_is_distinct_from_explicit_account_limit(self):
+        pool = self.pool()
+        error = RuntimeError('HTTP Error 429: Too Many Requests')
+        pool.outcome(pool.accounts[0][2], error)
+        status = pool.status()
+        self.assertEqual(status['halt_kind'], 'http_429')
+        self.assertIn('http_429', classify(status['reason']))
+        self.assertNotIn('account_rate_limit', classify(status['reason']))
 
     def test_content_error_does_not_poison_other_accounts(self):
         pool = self.pool()
@@ -117,6 +157,8 @@ class CookiePoolTests(unittest.TestCase):
             with pool.assignment():
                 raise YouTubeAuthRequired({'state':'not_logged_in', 'message':'Login rejected'})
         self.assertTrue(pool.status()['halted'])
+        self.assertEqual(pool.status()['halt_kind'], 'authentication_required')
+        self.assertNotIn('account_rate_limit', classify(pool.status()['reason']))
         with self.assertRaises(YouTubeAuthRequired):
             with self.pool().assignment():
                 self.fail('Pool selected another account after invalid login')

@@ -11,6 +11,19 @@ from webapp.database import settings
 
 
 class RiskDiagnosticsTests(unittest.TestCase):
+    def test_saved_pool_halt_is_not_evidence_of_explicit_account_limit(self):
+        old = '账号池检测到限流或登录验证，已停止整个实例。请检查后人工恢复；不会换账号继续重试。'
+        replay = 'Cookie 池沿用此前保存的停止状态，本次尚未选择 Cookie 或发起视频下载请求。'
+        for message in (old, replay):
+            self.assertEqual(classify(message), ['cookie_pool_halted'])
+            values = observed({'download_method': 'yt_dlp'}, {}, None, time.time(), error=message)
+            self.assertIn('cookie_pool_halted', [v['code'] for v in values])
+            self.assertNotIn('account_rate_limit', [v['code'] for v in values])
+        for message in ('Your account has been rate-limited',
+                        'YouTube 明确提示账号被限流，实例已停止领取，任务保留。'):
+            self.assertIn('account_rate_limit', classify(message))
+        self.assertNotIn('account_rate_limit', classify('账号登录验证未通过，请检查限流状态'))
+
     def test_ambiguous_errors_keep_qualified_explanations_and_multiple_causes(self):
         self.assertEqual(classify('Video unavailable'), ['content_unavailable'])
         codes = classify('HTTP Error 403: Sign in to confirm you are not a bot')
