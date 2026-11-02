@@ -763,7 +763,8 @@ class TaskStore:
                     payload.get('policy_version')), ensure_ascii=False)
                 # Generate snapshot BEFORE adding download_session_id
                 packed_without_session = self._pack(db, payload)
-                row = {**row, 'payload': packed_without_session, '_previous_download_method': previous_method}
+                row = {**row, 'instance_id': values.get('instance_id', row.get('instance_id')),
+                       'payload': packed_without_session, '_previous_download_method': previous_method}
                 identity = self.statistics.begin(db, row)
                 # Add download_session_id and create final snapshot
                 payload_with_session = {**payload, 'download_session_id': identity}

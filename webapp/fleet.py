@@ -240,10 +240,15 @@ class Fleet:
 
     def quarantine(self, identity, reason, *, boot_id=None):
         with self.store.connect() as db:
+            db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             statement = instances.update().where(instances.c.id == identity)
             if boot_id:
                 statement = statement.where(instances.c.boot_id == boot_id)
-            db.execute(statement.values(paused=1, error=str(reason)[:500]))
+            if db.execute(statement.values(paused=1, error=str(reason)[:500])).rowcount:
+                # Automatic isolation ends the same lifecycle as a manual pause.
+                # In-flight tasks drain before the session is closed; an old
+                # boot's health result must not touch the current session.
+                self.store.statistics.stop_session(db, identity)
 
     def list(self):
         with self.store.connect() as db:

@@ -241,11 +241,22 @@ class NodeIsolationTests(unittest.TestCase):
         with patch('webapp.fleet_routes.rpc', return_value={'ready':True}):
             self.client.post(f'/api/jobs/{identity}/control', json={'action':'start'}, headers=self.headers)
         task = self.a.claim(self.a.owner)
+        session_id = task['payload']['download_session_id']
         isolate_download_failure(self.a, 'fixture missing tool')
+        self.assertEqual(self.a.statistics.session(session_id)['status'], 'stopping')
         self.a.release(task['id'], self.a.owner, 'fixture missing tool', delay=0)
+        closed = self.a.statistics.session(session_id)
+        self.assertEqual((closed['status'], closed['running']), ('paused', 0))
+        self.assertIsNotNone(closed['ended_at'])
         self.assertTrue(self.detail(identity)['desired_running'])
         self.assertFalse(self.manager.downloads_paused())
-        self.assertEqual(self.b.claim(self.b.owner)['id'], task['id'])
+        takeover = self.b.claim(self.b.owner)
+        self.assertEqual(takeover['id'], task['id'])
+        with self.b.connect() as db:
+            self.assertEqual(takeover['payload']['download_session_id'], self.b.statistics._active(db, 'beta'))
+            self.assertFalse(self.b.statistics._active(db, 'alpha'))
+            self.assertFalse(self.b.statistics._active(db, 'local'))
+        self.assertEqual(self.a.statistics.session(session_id), closed)
         self.assertIsNone(self.a.claim(self.a.owner))
 
     def test_no_nodes_retains_running_intent_and_explains_wait(self):
@@ -259,8 +270,32 @@ class NodeIsolationTests(unittest.TestCase):
         self.assertTrue(response.json['job']['desired_running'])
 
     def test_stale_health_result_cannot_pause_a_new_boot(self):
+        with self.a.connect() as db:
+            session_id = self.a.statistics._active(db, 'alpha')
+        before = self.a.statistics.session(session_id)
         self.a.fleet.quarantine('alpha', 'old environment failure', boot_id='older-boot-generation')
         self.assertFalse(self.a.fleet.row()['paused'])
+        self.assertEqual(self.a.statistics.session(session_id), before)
+
+    def test_idle_executor_failure_closes_only_its_session_and_resume_starts_new_one(self):
+        from webapp.execution import isolate_download_failure
+        with self.a.connect() as db:
+            session_id = self.a.statistics._active(db, 'alpha')
+            peer_id = self.a.statistics._active(db, 'beta')
+        peer_before = self.b.statistics.session(peer_id)
+        isolate_download_failure(self.a, 'fixture account rate limit')
+        closed = self.a.statistics.session(session_id)
+        self.assertEqual((closed['status'], closed['running']), ('paused', 0))
+        self.assertIsNotNone(closed['ended_at'])
+        self.assertEqual(self.b.statistics.session(peer_id), peer_before)
+        with self.a.connect() as db:
+            self.assertFalse(self.a.statistics._active(db, 'alpha'))
+        self.a.fleet.control('alpha', {'action': 'resume'})
+        with self.a.connect() as db:
+            resumed_id = self.a.statistics._active(db, 'alpha')
+        self.assertNotEqual(resumed_id, session_id)
+        self.assertEqual(self.a.statistics.session(resumed_id)['status'], 'active')
+        self.assertEqual(self.a.statistics.session(session_id), closed)
 
     def test_node_token_cannot_open_business_or_account_apis(self):
         client = self.apps['alpha'].test_client()
