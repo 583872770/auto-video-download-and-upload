@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from webapp.channels import backend_key, group_caps, registry
 from webapp.database import download_permits, download_resources, settings, tasks
+from webapp.parallel_http import fragment_connection_budget
 from webapp.throughput import automatic, policy_key
 
 
@@ -86,10 +87,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         if config.get('scheduler_mode') == 'auto':
             resources.append(resource('backend-quota:' + backend_key(channel), backend_caps[backend_key(channel)][2]))
         effective = min(transfers, *(r['effective'] for r in resources))
-        # Manual yt-dlp reserves this many connection units before extraction.
-        connection_units = (min(int(config.get('fragment_concurrency', 4)), channel.connection_limit,
-                               max(1, int(config.get('download_connection_limit', 32)) // transfers))
-                            if channel.adapter == 'yt_dlp' and not auto else None)
+        # Native HTTP ranges and manifest fragments share the same connection budget.
+        connection_units = (fragment_connection_budget(config, channel.connection_limit, transfers)
+                            if channel.adapter == 'yt_dlp' else None)
         connection = resource('connections:' + group, caps['connections:' + group])
         local_connection = resource('local-connections:' + identity, int(config.get('download_connection_limit', 32)))
         if connection_units:

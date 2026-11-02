@@ -543,6 +543,7 @@ function fillConfig(config) {
   renderConcurrencyDraft();
 }
 function renderConcurrencyDraft() {
+  renderYouTubePacingRuntime();
   const form = $('#settings-form');
   const number = name => Number(form.elements[name]?.value || 0);
   const auto = form.elements.scheduler_mode?.value === 'auto';
@@ -551,8 +552,8 @@ function renderConcurrencyDraft() {
   const connection = number('download_connection_limit');
   const fragments = Math.min(number('fragment_concurrency') || 4, shared, Math.max(1, Math.floor(connection / Math.max(1, requested))));
   const methods = providerDraft || selectedProviders();
-  const manualNative = methods.includes('yt_dlp') && form.elements.throughput_mode.value !== 'auto';
-  const cap = Math.min(requested, channel, manualNative ? Math.floor(Math.min(connection, shared) / fragments) : requested);
+  const native = methods.includes('yt_dlp');
+  const cap = Math.min(requested, channel, native ? Math.floor(Math.min(connection, shared) / fragments) : requested);
   const warning = requested > cap;
   $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机 / 共享连接预算 ${connection} / ${shared}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
   $('#concurrency-config-note').classList.toggle('capacity-draft-warning', warning);
@@ -1412,6 +1413,7 @@ $('#copy-logs').addEventListener('click', async () => {
 });
 function markSettingsDirty() {
   settingsDirty = true;
+  renderYouTubePacingRuntime();
   $('#settings-save-state').textContent = '有未保存的设置，保存后生效';
   renderStrategySaveState(); renderDownloadControl();
 }

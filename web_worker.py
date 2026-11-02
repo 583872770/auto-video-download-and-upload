@@ -397,7 +397,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             print('自动调度将根据可用渠道的负载和健康状态选择下载方式。', flush=True)
         elif automatic:
             print(f'按优先级尝试：{method_label}；成功后不再尝试后续下载器。', flush=True)
-        class ReportingDownloader(yt_dlp.YoutubeDL):
+        from webapp.parallel_http import ParallelYoutubeDL, fragment_connection_budget, transfer_connection_units
+
+        class ReportingDownloader(ParallelYoutubeDL):
             skipped = False
 
             def to_screen(self, message, *args, **kwargs):
@@ -520,8 +522,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if without_cookies:
                 options.pop('cookiefile', None)
             transfer_count = runtime_limits(config, store.directory if store else base / '.cache')['transfers']
-            fragment_budget = min(int(config.get('fragment_concurrency', 4)), channel.connection_limit,
-                                  max(1, int(config.get('download_connection_limit', 32)) // transfer_count))
+            fragment_budget = fragment_connection_budget(config, channel.connection_limit, transfer_count)
             options['concurrent_fragment_downloads'] = fragment_budget
             options.update(retries=2, fragment_retries=2, extractor_retries=1)
             if payload.get('_restart_transfer') or automatic:
@@ -558,9 +559,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 scheduler.prepared()
 
             def transfer(info):
-                protocols = [item.get('protocol', '') for item in info.get('requested_formats') or [info]]
-                fragmented = any(any(word in protocol for word in ('m3u8', 'dash', 'ism')) for protocol in protocols)
-                return transmitting(channel, info, fragment_budget if fragmented else 1)
+                return transmitting(channel, info, transfer_connection_units(info, fragment_budget,
+                                    native=provider == 'yt_dlp'))
 
             def retry_without_cookies(error=None):
                 # Some authenticated sessions get a misleading "Video unavailable"
@@ -660,7 +660,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if failed:
                 if retry_without_cookies():
                     return attempt(channel, addresses, without_cookies=True)
-                raise failure.as_error()
+                cause = getattr(downloader, 'http_range_error', None)
+                raise failure.as_error(cause) from cause
             return downloader.skipped
 
         skipped_any = False

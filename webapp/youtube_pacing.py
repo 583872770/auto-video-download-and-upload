@@ -28,8 +28,31 @@ def session_scope(config, base, instance):
 
 def summary(config, state, stamp):
     starts = [s for s in state.get('starts', []) if s > stamp - DAY]
+    minimum = int(config.get('youtube_start_interval', 3))
+    interval = max(minimum, state.get('interval', 60))
+    reason = state.get('interval_reason_code')
+    if minimum >= state.get('interval', 60):
+        reason = 'configured_minimum'
+    elif not reason:
+        # Older persisted states predate reason tracking; describe only the
+        # history they actually contain, without mistaking a wait for a cause.
+        reason = ('account_limit' if state.get('last_limit_at') else
+                  'adaptive_backoff' if interval > 60 else
+                  'stable_success' if interval < 60 else 'initial')
+    explanations = {
+        'configured_minimum': '当前间隔受已设置的最小间隔约束。',
+        'previous_minimum': '此前提高过最小间隔，当前保留该间隔；稳定完成后逐步缩短。',
+        'initial': '渐进模式从至少 60 秒起步，稳定完成后逐步缩短。',
+        'account_limit': '此前发生账号限流，当前保持退避恢复节奏；稳定完成后逐步缩短。',
+        'transient_error': '上游超时或临时故障触发自动退避，当前已放慢启动节奏。',
+        'adaptive_backoff': '当前保留此前的自动退避间隔，稳定完成后逐步缩短。',
+        'stable_success': '连续稳定完成视频后，系统已逐步缩短启动间隔。',
+    }
     return {'mode': config.get('youtube_pacing_mode', 'manual'),
-            'interval': max(int(config.get('youtube_start_interval', 3)), state.get('interval', 60)),
+            'minimum_interval': minimum, 'interval': interval,
+            'initialized': 'interval' in state,
+            'interval_reason_code': reason,
+            'interval_reason': explanations.get(reason, explanations['adaptive_backoff']),
             'hourly_used': sum(s > stamp - 3600 for s in starts),
             'daily_used': len(starts),
             'hourly_limit': int(config.get('youtube_hourly_start_limit', 80)),
@@ -54,15 +77,19 @@ class YouTubePacing:
             state = self.router._state(db, scope)
             floor = max(1, int(self.config.get('youtube_start_interval', 45)))
             if 'interval' not in state:
-                state.update(interval=max(60, floor), clean_since=stamp, clean_successes=0)
+                state.update(interval=max(60, floor), clean_since=stamp, clean_successes=0,
+                             interval_reason_code='initial')
             # Also adopt newer limits recorded while adaptive mode was disabled.
             last_limit = legacy.get('last_throttle_at', 0)
             if (legacy.get('last_throttle_kind') == 'account' and last_limit > stamp - DAY
                     and last_limit > state.get('last_limit_at', 0)):
                 state.update(interval=max(120, floor, state['interval']), last_limit_at=last_limit,
+                             interval_reason_code='account_limit',
                              strikes=max(1, state.get('strikes', 0)),
                              cooldown_until=max(state.get('cooldown_until', 0), legacy.get('cooldown_until', 0)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
+            if floor > state['interval']:
+                state['interval_reason_code'] = 'previous_minimum'
             state['interval'] = max(floor, state['interval'])
             state['starts'] = sorted(s for s in state.get('starts', []) if s > stamp - DAY)
             rows.append((scope, state))
@@ -119,12 +146,14 @@ class YouTubePacing:
                     strikes = 1
                 delay = max(delay or 0, min(21600, 3600 * 2 ** min(3, strikes - 1)))
                 state.update(strikes=strikes, last_limit_at=stamp,
+                             interval_reason_code='account_limit',
                              interval=min(600, max(120, state['interval'] if same_incident else state['interval'] * 2)),
                              cooldown_until=max(state.get('cooldown_until', 0), stamp + delay),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp,
                              wait_reason='账号或源站正在冷却')
             elif transient or status == 503:
                 state.update(interval=min(600, max(90, math.ceil(state['interval'] * 1.5))),
+                             interval_reason_code='transient_error',
                              cooldown_until=max(state.get('cooldown_until', 0), stamp + max(60, delay or 0)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
             elif success and size > 0 and state.get('cooldown_until', 0) <= stamp:
@@ -135,6 +164,7 @@ class YouTubePacing:
                         and stamp - state.get('last_adjust_at', state['clean_since']) >= 7200):
                     state['interval'] = max(int(self.config.get('youtube_start_interval', 45)),
                                             state['interval'] - 5)
+                    state['interval_reason_code'] = 'stable_success'
                     state['last_adjust_at'] = stamp
             self.router._save(db, scope, state)
         return delay

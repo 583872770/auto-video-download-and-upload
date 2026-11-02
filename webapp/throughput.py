@@ -26,7 +26,7 @@ def policy_key(config):
             int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0)),
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
-                'builtin_resolver_limit', 'builtin_connection_limit', 'youtube_cookie_pool')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):

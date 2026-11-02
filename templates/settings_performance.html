@@ -14,7 +14,7 @@
   <div class="panel-heading concurrency-card-heading"><div><span class="section-kicker">LOCAL RESOURCES</span><h2>浏览器与分片预算</h2><p class="panel-subtitle">这些是本机资源上限，实际任务数还要同时满足渠道和共享连接预算。</p></div></div>
   <div class="concurrency-resource-grid">
     <label data-provider-setting="yt5s yt1d bergung">浏览器并发数<input name="yt5s_browser_count" type="number" min="1" max="16" required><small>yt5s、yt1d、Bergung 共享。默认 2；浏览器名额不足时，增加实例并发不会加快解析。</small></label>
-    <label>分片并发数<input name="fragment_concurrency" type="number" min="1" max="16" required><small>默认 4；只影响分片视频，每个下载进程分别计算。低配置服务器可设为 1～2。</small></label>
+    <label>分片并发数<input name="fragment_concurrency" type="number" min="1" max="16" required><small>默认 4；控制分片媒体及 yt-dlp 普通 HTTP 视频的分块并行。每个任务分别计算，受连接预算限制；设为 1 时顺序下载，不支持并行的源自动回退。</small></label>
   </div>
 </section>
 {% include 'channel_settings.html' %}

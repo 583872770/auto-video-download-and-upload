@@ -20,6 +20,36 @@ function concurrencyAdmissionHTML(data) {
   const sessions = pool ? `<p>${Number(pool.configured_files || 0)} 份 Cookie · ${pool.known ? Number(pool.effective_sessions || 0) : '待确认'} 个核心会话 · 账号身份未核验。不同会话不代表不同账号或独立额度。${pool.known ? `当前容量 ${Number(pool.capacity || 0)} 路${pool.warming_sessions ? ` · ${Number(pool.warming_sessions)} 个会话尚未完成预热` : ''}${pool.min_interval ? ` · 稳定会话启动间隔至少 ${Number(pool.min_interval)} 秒` : ''}` : ''}${pool.unavailable_files ? ` ${Number(pool.unavailable_files)} 份文件不可用，请在账号管理中检查。` : ''}</p>` : '';
   return `<div class="capacity-admission" role="status"><strong>当前限制说明</strong><p>${escapeHTML(data.bottleneck || '等待实例更新调度说明')}</p>${sessions}${next ? `<p>${next}</p>` : ''}<small>运行模式：${data.mode === 'auto' ? '自动调节' : '自定义'} · 执行中等待会话 ${Number(data.cookie_waiting || 0)} · 等待请求间隔 ${Number(data.youtube_waiting || 0)} · 解析 ${Number(data.stages?.extracting || 0)} · 传输 ${Number(data.transferring || 0)} · 合并 / 后处理 ${Number(data.processing || 0)}</small></div>`;
 }
+function youtubePacingRuntimeHTML(data, draft = {}) {
+  if (!data) return '<p>正在读取当前实例的实际启动间隔…</p>';
+  const pacing = data.youtube_pacing;
+  const mode = pacing ? 'adaptive' : 'manual';
+  const minimum = Number(pacing?.minimum_interval ?? data.youtube_start_interval ?? 0);
+  const stale = Date.now() / 1000 - data.time > 20;
+  const current = data.online && !stale;
+  const pending = (draft.mode !== undefined && draft.mode !== mode) ||
+    (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum);
+  const actual = pacing && pacing.initialized === false ? '待首次启动确认' : `${Number(pacing?.interval ?? minimum)} 秒`;
+  const reason = pacing?.initialized === false ? '尚无执行记录；渐进模式首次从至少 60 秒起步。' :
+    pacing?.interval_reason || (pacing ? '系统根据已保存的运行记录自动调整启动间隔。' :
+      minimum ? '按已保存的固定间隔启动视频。' : '已关闭固定启动间隔。');
+  const next = current && pacing?.next_start_at > data.time
+    ? `<p>下一启动窗口：${concurrencyCountdown(pacing.next_start_at - data.time, data.time)}${pacing.reason ? ` · ${escapeHTML(pacing.reason)}` : ''}</p>` : '';
+  const pendingText = draft.saved ? '设置已保存，等待后续调度状态更新；上方保留最近一次运行采样。' :
+    '请求节奏设置尚未保存；上方显示已保存策略的运行状态，保存后在后续调度中生效。';
+  return `<div class="youtube-pacing-runtime-heading"><strong>${current ? '当前实际启动间隔' : '上次记录的启动间隔'}：${actual}</strong><span>${pacing ? '渐进调速' : '固定间隔'}</span></div><p>已保存的最小间隔：${minimum} 秒</p><p>调整原因：${escapeHTML(reason)}</p>${next}${!current ? `<p class="youtube-pacing-runtime-note">${data.online ? '运行状态已过期，等待实例更新。' : '实例离线，当前实际间隔待确认。'}</p>` : ''}${pending ? `<p class="youtube-pacing-runtime-note">${pendingText}</p>` : ''}${data.cookie_pool ? '<p>Cookie 会话间隔、启动预算和冷却也可能延长等待。</p>' : ''}`;
+}
+function renderYouTubePacingRuntime(data = fleetEnabled
+  ? state.fleet?.items.find(value => value.id === state.instanceId)?.concurrency : state.status?.concurrency) {
+  const form = document.querySelector('#settings-form');
+  const draft = {mode: form?.elements.youtube_pacing_mode?.value,
+    minimum: form?.elements.youtube_start_interval?.value, saved: !settingsDirty};
+  for (const target of document.querySelectorAll('[data-youtube-pacing-runtime]')) {
+    target.innerHTML = youtubePacingRuntimeHTML(data, draft);
+    target.dataset.capacitySampledAt = data?.time || '';
+    target.classList.toggle('capacity-stale', !!data && (!data.online || Date.now() / 1000 - data.time > 20));
+  }
+}
 function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   if (!data) return '<p class="capacity-empty">正在读取并发与渠道状态…</p>';
   const channels = data.channels || [];
@@ -32,7 +62,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const subtitleRate = subtitles.cooldown_status ? ` HTTP ${Number(subtitles.cooldown_status)}` : '';
   const subtitleInterval = subtitles.interval_seconds ? `最少请求间隔：${concurrencyCountdown(subtitles.interval_seconds, data.time)}。` : '';
   const pacing = data.youtube_pacing;
-  if (pacing) notices.push(['info', 'YouTube 渐进调速', `当前启动间隔 ${Number(pacing.interval)} 秒 · 最近一小时 ${Number(pacing.hourly_used)} / ${Number(pacing.hourly_limit)} 次 · 最近二十四小时 ${Number(pacing.daily_used)} / ${Number(pacing.daily_limit)} 次。${pacing.next_start_at > data.time ? '下一启动窗口：' + concurrencyCountdown(pacing.next_start_at - data.time, data.time) + '。' : ''}${escapeHTML(pacing.reason || '')}。文件传输可并行，累计预算包含启动许可、重试及字幕请求。`, '#settings', '查看请求节奏']);
+  if (pacing) notices.push(['info', 'YouTube 渐进调速', `当前启动间隔 ${Number(pacing.interval)} 秒 · 最近一小时 ${Number(pacing.hourly_used)} / ${Number(pacing.hourly_limit)} 次 · 最近二十四小时 ${Number(pacing.daily_used)} / ${Number(pacing.daily_limit)} 次。${pacing.interval_reason ? escapeHTML(pacing.interval_reason) : ''}${pacing.next_start_at > data.time ? '下一启动窗口：' + concurrencyCountdown(pacing.next_start_at - data.time, data.time) + '。' : ''}${escapeHTML(pacing.reason || '')}。文件传输可并行，累计预算包含启动许可、重试及字幕请求。`, '#settings', '查看请求节奏']);
   if (!pacing && data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.cookie_pool?.min_interval ? `账号池还会按每个核心会话至少 ${Number(data.cookie_pool.min_interval)} 秒错峰启动。` : ''}${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
 
   if (subtitles.queued || subtitles.running || subtitles.failed) notices.push(['info', '字幕独立补下载', `待补 ${subtitles.queued || 0} · 执行中 ${subtitles.running || 0} · 补下载失败 ${subtitles.failed || 0}。${subtitleInterval}${subtitles.cooldown_seconds ? '字幕上游冷却'+subtitleRate+'：'+concurrencyCountdown(subtitles.cooldown_seconds, data.time)+'。' : ''}字幕队列不占用视频传输额度，也不改变视频成功及计费；完成当前后停止时不再领取新字幕任务。`, '#tasks', '查看执行日志']);
@@ -70,6 +100,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
 function renderConcurrency() {
   const item = state.fleet?.items.find(value => value.id === state.instanceId);
   const data = fleetEnabled ? item?.concurrency : state.status?.concurrency;
+  renderYouTubePacingRuntime(data);
   for (const target of document.querySelectorAll('[data-concurrency-panel]')) {
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
     target.innerHTML = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});

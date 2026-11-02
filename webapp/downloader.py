@@ -10,6 +10,7 @@ import yt_dlp
 
 from Utils.config import DEFAULT_CONFIG, load_config, resolve_path, video_directory
 from Utils.runtime import configure_runtime
+from webapp.parallel_http import ParallelYoutubeDL, fragment_connection_budget
 
 
 def output_template(config, base):
@@ -71,7 +72,12 @@ def build_ydl_options(config, base):
         'windowsfilenames': True,
         'cachedir': False,
         '_temporary_directory': config.get('_temporary_directory'),
+        '_parallel_http': config.get('download_method', 'yt_dlp') == 'yt_dlp',
     }
+    if options['_parallel_http']:
+        options['concurrent_fragment_downloads'] = fragment_connection_budget(config,
+            int(config.get('builtin_connection_limit') or (64 if config.get('scheduler_mode') == 'auto' else 16)),
+            max(1, int(config.get('worker_count', 1))))
     if config.get('download_method', 'yt_dlp') == 'yt_dlp' and config.get('youtube_sleep_preset', True):
         # Equivalent to yt-dlp's documented `-t sleep` preset. This spaces
         # extractor requests and file starts; it does not rate-limit CDN bytes.
@@ -146,7 +152,7 @@ def main(argv=None):
                 require_download_tools(urls, options)
             options['simulate'] = args.simulate
             with download_cookie_session(options) as session_options:
-                with yt_dlp.YoutubeDL(session_options) as downloader:
+                with ParallelYoutubeDL(session_options) as downloader:
                     return downloader.download(urls)
         finally:
             workspace.cleanup()

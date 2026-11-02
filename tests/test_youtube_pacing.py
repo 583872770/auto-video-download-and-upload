@@ -13,6 +13,7 @@ from webapp.settings import validate_settings, validate_method_urls, DOWNLOAD_FI
 from webapp.store import TaskStore
 from webapp.throughput import PipelineBusy
 from webapp.youtube_auth import YouTubeAuthRequired
+from webapp.youtube_pacing import summary
 
 
 class YouTubePacingTests(unittest.TestCase):
@@ -173,7 +174,40 @@ class YouTubePacingTests(unittest.TestCase):
         self.assertEqual(self.state(router)['interval'], 60)
         self.feedback(router, success=False, error=TimeoutError('connection timed out'))
         self.assertEqual(self.state(router)['interval'], 90)
+        self.assertEqual(summary(self.config, self.state(router), self.now)['interval_reason_code'], 'transient_error')
         self.assertGreater(self.reserve(router)[0], 0)
+
+    def test_summary_explains_legacy_account_backoff_separately_from_wait(self):
+        state = dict(interval=120, last_limit_at=self.now - 7200,
+                     wait_reason='等待下一次视频启动', next_at=self.now + 20)
+        before = dict(state)
+        value = summary(self.config, state, self.now)
+        self.assertEqual((value['minimum_interval'], value['interval']), (45, 120))
+        self.assertEqual(value['interval_reason_code'], 'account_limit')
+        self.assertIn('账号限流', value['interval_reason'])
+        self.assertEqual(value['reason'], state['wait_reason'])
+        self.assertEqual(state, before)  # Reading the UI must not reset backoff.
+
+    def test_summary_distinguishes_initial_state_and_saved_minimum(self):
+        initial = summary(self.config, {}, self.now)
+        self.assertFalse(initial['initialized'])
+        self.assertEqual(initial['interval'], 60)
+        floor = summary({**self.config, 'youtube_start_interval': 180},
+                        dict(interval=120, interval_reason_code='account_limit'), self.now)
+        self.assertEqual(floor['interval'], 180)
+        self.assertEqual(floor['interval_reason_code'], 'configured_minimum')
+
+    def test_stable_recovery_explanation_replaces_prior_limit_reason(self):
+        router = self.scheduler()
+        self.reserve(router)
+        self.feedback(router, success=False, error=YouTubeAccountLimited('Your account has been rate-limited'))
+        self.assertEqual(summary(self.config, self.state(router), self.now)['interval_reason_code'], 'account_limit')
+        self.now += 6 * 3600
+        for _ in range(100):
+            self.feedback(router, success=True, size=100)
+        value = summary(self.config, self.state(router), self.now)
+        self.assertEqual(value['interval'], 115)
+        self.assertEqual(value['interval_reason_code'], 'stable_success')
 
     def test_invalid_cookie_is_auth_failure_and_settings_are_validated(self):
         with self.assertRaises(YouTubeAuthRequired):

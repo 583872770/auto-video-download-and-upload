@@ -59,12 +59,32 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         rate.update(time=self.stamp, policy=[])
         self.assertEqual(self.show(rate=rate)['transfer_limit'], 2)
 
+    def test_auto_native_parallel_connections_reduce_effective_video_limit(self):
+        self.config.update(throughput_mode='auto', worker_count=4,
+                           fragment_concurrency=4, download_connection_limit=16,
+                           builtin_connection_limit=4)
+        rate = {'policy': policy_key(self.config), 'time': self.stamp, 'transfers': 4}
+        result = self.show(rate=rate)
+        self.assertEqual(result['channels'][0]['connection_units'], 4)
+        self.assertEqual(result['effective_limit'], 1)
+
     def test_wait_counts_are_separate_from_real_transfers(self):
         value = self.show(progress=[{'stage': 'downloading'}, {'stage': 'extracting'},
             {'stage': 'waiting_transfer', 'transfer_wait_resource': 'upstream:cooldown'},
             {'stage': 'processing'}])
         self.assertEqual((value['running'], value['transferring'], value['waiting_transfer'], value['preparing'], value['processing']), (4, 1, 1, 1, 1))
         self.assertEqual(value['wait_resources'], {'upstream:cooldown': 1})
+
+    def test_pacing_settings_and_diagnostics_share_effective_interval_and_cause(self):
+        self.config.update(youtube_pacing_mode='adaptive', youtube_start_interval=45)
+        value = self.show({'youtube-pacing:instance:node': {
+            'interval': 120, 'last_limit_at': self.stamp - 3600,
+            'wait_reason': '等待下一次视频启动'}})
+        self.assertEqual(value['youtube_start_interval'], 45)
+        pacing = value['youtube_pacing']
+        self.assertEqual((pacing['minimum_interval'], pacing['interval']), (45, 120))
+        self.assertEqual(pacing['interval_reason_code'], 'account_limit')
+        self.assertTrue(pacing['initialized'])
 
     def test_disk_block_expires_without_claiming_it_has_recovered(self):
         context = ({}, {}, {'node': {'time': self.stamp, 'blocked': True, 'message': 'budget full'}})
