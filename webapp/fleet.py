@@ -248,6 +248,8 @@ class Fleet:
             if boot_id:
                 statement = statement.where(instances.c.boot_id == boot_id)
             if db.execute(statement.values(paused=1, error=str(reason)[:500])).rowcount:
+                from webapp.download_policy import execution_decision
+                execution_decision(self.store, db, identity, error=reason, stamp=self.clock(db))
                 # Automatic isolation ends the same lifecycle as a manual pause.
                 # In-flight tasks drain before the session is closed; an old
                 # boot's health result must not touch the current session.
@@ -343,6 +345,8 @@ class Fleet:
                     values['error'] = ''
             db.execute(instances.update().where(instances.c.id == identity).values(**values, limits=json.dumps(limits)))
             if data.get('action') == 'resume':
+                from webapp.download_policy import execution_decision
+                execution_decision(self.store, db, identity, stamp=self.clock(db))
                 self.store.statistics.start_session(db, identity)
             elif data.get('action') in ('drain', 'stop'):
                 self.store.statistics.stop_session(db, identity)

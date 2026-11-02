@@ -169,7 +169,7 @@ class YouTubePolicyTests(unittest.TestCase):
         failure.error("Video unavailable. Your account has been rate-limited by YouTube for up to an hour.")
         error = failure.as_error()
         self.assertTrue(error.retryable)
-        self.assertEqual(throttle_details(error), (429, 3600))
+        self.assertEqual(throttle_details(error), (None, 3600))
         self.assertIn('account_rate_limit', classify(str(error)))
         scheduler = self.scheduler()
         scheduler.outcome(scheduler.channels[0], success=False, error=error, phase='resolve')

@@ -10,11 +10,13 @@ from webapp.channels import backend_key, group_caps, registry
 from webapp.database import download_permits, download_resources, settings, tasks
 from webapp.parallel_http import fragment_connection_budget
 from webapp.throughput import automatic, policy_key
+from webapp.decision_diagnostics import public_failure
 
 
 def scopes_for(config, identity):
     scopes = {'local-transfers:' + identity, 'local-connections:' + identity, 'route-probe:' + identity,
-              'youtube-pacing:instance:' + identity}
+              'youtube-pacing:instance:' + identity, 'youtube-cookie-pool:' + identity,
+              'youtube-start:' + identity, 'subtitles:youtube-origin', 'execution:' + identity}
     for channel in registry(config):
         for group in {channel.upstream_group, 'youtube-origin'}:
             scopes.update(('upstream:' + group, 'connections:' + group,
@@ -55,6 +57,15 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         cookie_pool = {'known': False, 'capacity': 0,
                        'configured_files': len(config['youtube_cookie_pool']),
                        'reason': 'Cookie 会话容量尚未取得新鲜采样，无法确认当前额度'}
+    pool_gate = states.get('youtube-cookie-pool:' + identity, {}) if pooled else {}
+    if pooled and (pool_gate.get('halted') or pool_gate.get('cooldown_until', 0) > stamp):
+        cookie_pool = {**cookie_pool, 'capacity': 0, 'halted': bool(pool_gate.get('halted')),
+            'cooling': pool_gate.get('cooldown_until', 0) > stamp,
+            'cooldown_until': pool_gate.get('cooldown_until', 0), 'halted_at': pool_gate.get('halted_at'),
+            'halt_kind': pool_gate.get('halt_kind'), 'decisions': pool_gate.get('decisions', []),
+            'halt_decision': pool_gate.get('halt_decision'),
+            'reason': 'Cookie 池沿用已保存的停止状态，需检查后人工恢复；本次读取未向源站发起请求。'
+                      if pool_gate.get('halted') else 'Cookie 池正在临时冷却，到期后重新检查准入。'}
     requested = cookie_pool['capacity'] if pooled else int(config.get('worker_count', 1))
     transfers = int(rate['transfers']) if auto and fresh else min(requested, 2) if auto else requested
     channels = registry(config)
@@ -77,7 +88,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                 'recovery_seconds': math.ceil(recovering),
                 'last_throttle_status': state.get('cooldown_status') if cooling or recovering else None,
                 'last_throttle_kind': state.get('cooldown_kind') if cooling or recovering else None,
-                'last_throttle_at': state.get('last_throttle_at')}
+                'last_throttle_at': state.get('last_throttle_at'),
+                'last_failure': public_failure(state.get('last_decision', {}).get('failure'))}
 
     rows, group_limits = [], {}
     for channel in channels:
@@ -144,7 +156,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         upper = 0
     if not online:
         bottleneck = '实例离线，无法确认当前下载能力'
-    elif cookie_pool and (not cookie_pool.get('known') or cookie_pool.get('halted')):
+    elif cookie_pool and (not cookie_pool.get('known') or cookie_pool.get('halted') or cookie_pool.get('cooling')):
         bottleneck = cookie_pool['reason']
     elif paused:
         bottleneck = '实例已停止领取新任务'
@@ -163,6 +175,11 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     from webapp.youtube_pacing import summary as pacing_summary
     pacing = (pacing_summary(config, states.get('youtube-pacing:instance:' + identity, {}), stamp)
               if config.get('youtube_pacing_mode') == 'adaptive' else None)
+    from webapp.decision_diagnostics import explain
+    own_scopes = scopes_for(config, identity)
+    decision_states = {key: value for key, value in states.items()
+                       if key in own_scopes and (pooled or not key.startswith('youtube-cookie-pool:'))}
+    decisions = explain(decision_states, rows, cookie_pool, pacing, stamp, paused=paused, running=len(progress))
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'cookie_pool' if pooled else 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
@@ -171,6 +188,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
             'cookie_pool': cookie_pool, 'bottleneck': bottleneck,
+            'decisions': decisions,
             'connection_used': usage.get('local-connections:' + identity, 0),
             'connection_budget': int(config.get('download_connection_limit', 32)),
             'running': len(progress), 'transferring': stages.get('downloading', 0),

@@ -57,7 +57,9 @@ def error_details(error):
             detail['code'] = current.args[0]
         causes.append(detail)
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
-    return {'error_type': type(error).__name__, 'causes': causes}
+    from webapp.download_policy import failure_evidence
+    return {'error_type': type(error).__name__, 'causes': causes,
+            'failure': failure_evidence(error).public()}
 
 
 class SafeOutput:

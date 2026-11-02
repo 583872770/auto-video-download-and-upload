@@ -97,14 +97,27 @@ def classify(message):
 
 def task_risks(task):
     progress = task.get('progress') or {}
-    codes = classify(task.get('error'))
+    from webapp.decision_diagnostics import public_failure
+    failure = public_failure(progress.get('last_failure'))
+    kinds = {'account_rate_limit': 'account_rate_limit', 'request_rate_limit': 'http_429',
+             'authentication_required': 'auth_missing', 'verification_required': 'bot_check',
+             'local_halt': 'cookie_pool_halted', 'transient_failure': 'network',
+             'access_denied': 'http_403', 'content_restriction': 'content_permission'}
+    if failure and task.get('error'):
+        codes = [kinds[failure['kind']]] if failure.get('kind') in kinds else []
+        if failure.get('http_status') == 503:
+            codes = ['http_503']
+        if failure.get('http_status') == 429 and 'http_429' not in codes:
+            codes.append('http_429')
+    else:
+        codes = classify(task.get('error'))
     if task['action'] == 'subtitles':
         codes.append('subtitle')
     if task['status'] == 'queued' and progress.get('stage') == 'retrying':
         codes.append('retry')
     if task['status'] in ('failed', 'interrupted') and not codes:
         codes.append('unknown')
-    return dict(codes=list(dict.fromkeys(codes)), status=task['status'],
+    return dict(codes=list(dict.fromkeys(codes)), status=task['status'], failure=failure,
                 attempts=task.get('attempts', 0), max_attempts=task.get('max_attempts', 0),
                 available_at=task.get('available_at', 0), stage=progress.get('stage'),
                 retry_scheduled=task['status'] == 'queued' and progress.get('stage') == 'retrying')

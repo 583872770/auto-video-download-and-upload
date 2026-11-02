@@ -11,7 +11,8 @@ import random
 import time
 
 from Utils.youtube_login import parse_youtube_cookie_file
-from webapp.channel_scheduler import ChannelScheduler, throttle_details, error_traits
+from webapp.channel_scheduler import ChannelScheduler
+from webapp.download_policy import (failure_evidence, recovery_policy, cooldown_deadline, remember_decision)
 from webapp.cookie_profiles import CookieProfiles
 from webapp.throughput import MAX_TRANSFERS, PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
@@ -29,7 +30,8 @@ def halt_message(state, *, previous=False):
     """Describe persisted admission state without reasserting a fresh source error."""
     cause = {'account_rate_limit': 'YouTube 明确提示账号被限流',
              'http_429': 'HTTP 429（请求过多）',
-             'authentication_required': '登录检查未通过或需要额外验证'}.get(
+             'authentication_required': '登录检查未通过或需要额外验证',
+             'verification_required': '源站要求额外验证'}.get(
                  state.get('halt_kind'), '旧记录未区分限流与登录验证')
     if previous:
         # The gate is checked before reserving an account or yielding to yt-dlp.
@@ -79,7 +81,8 @@ def capacity_summary(snapshot, stamp=None):
     blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
     capacity = 0 if blocked else capacity
     warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
-    reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if blocked else
+    reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if snapshot.get('halted') else
+              'Cookie 会话池临时冷却，到期后重新准入检查' if snapshot.get('cooldown_until', 0) > stamp else
               '没有可用的 Cookie 会话' if not sessions else
               'Cookie 会话正在冷却' if not capacity else
               f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
@@ -91,7 +94,15 @@ def capacity_summary(snapshot, stamp=None):
             'execution_limit': MAX_TRANSFERS, 'session_limit': snapshot.get('session_limit'),
             'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
             'min_interval': min(intervals) if intervals else None,
-            'halted': blocked, 'reason': reason,
+            'halted': bool(snapshot.get('halted')), 'cooling': snapshot.get('cooldown_until', 0) > stamp,
+            'cooldown_until': snapshot.get('cooldown_until', 0),
+            'halted_at': snapshot.get('halted_at'), 'halt_kind': snapshot.get('halt_kind'),
+            'halt_decision': snapshot.get('halt_decision'),
+            'decisions': sorted([*snapshot.get('decisions', []),
+                *(r for a in sessions for r in a.get('decisions', []))],
+                key=lambda r: r.get('time', 0))[-8:], 'reason': reason,
+            'session_restrictions': [dict(scope='Cookie 核心会话', action='cooldown',
+                until=a['cooldown_until'], manual=False) for a in sessions if a.get('cooldown_until', 0) > stamp],
             'next_start_at': min(next_starts) if next_starts and not blocked else None}
 
 
@@ -137,6 +148,8 @@ class CookiePool:
             result = {'halted': bool(global_state.get('halted')),
                     'reason': halt_message(global_state) if global_state.get('halted') else None,
                     'halted_at': global_state.get('halted_at'), 'halt_kind': global_state.get('halt_kind'),
+                    'halt_decision': global_state.get('halt_decision'),
+                    'decisions': global_state.get('decisions', []),
                     'cooldown_until': global_state.get('cooldown_until', 0),
                     'next_at': global_state.get('next_at', 0),
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
@@ -162,7 +175,7 @@ class CookiePool:
                 state.update(limit=1, streak=0, first_success=0)
                 self.router._save(db, scope, state)
             gate = self.router._state(db, self.global_scope)
-            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None)
+            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None, halt_decision=None)
             self.router._save(db, self.global_scope, gate)
         self.router.transaction_call(clear)
 
@@ -178,6 +191,8 @@ class CookiePool:
                 raise YouTubeAuthRequired({'state': 'verification_required',
                     'source': 'cookie_pool_halted', 'halted_at': gate.get('halted_at'),
                     'halt_kind': gate.get('halt_kind'), 'message': halt_message(gate, previous=True)})
+            if gate.get('cooldown_until', 0) > stamp:
+                return None, gate['cooldown_until'] - stamp
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp
             states = [(identity, path, scope, router._state(db, scope), router._active(db, scope, stamp))
@@ -236,41 +251,39 @@ class CookiePool:
                 router._release(token)
 
     def outcome(self, scope, error):
-        status, delay = throttle_details(error) if error else (None, None)
-        transient, video_error = error_traits(error) if error else (False, False)
-        if error:
-            from webapp.proxy_health import connection_failure
-            transient |= (connection_failure(error) or status == 503 or
-                          any(term in str(error).lower() for term in ('timed out', 'timeout')))
-        auth_block = isinstance(error, YouTubeAuthRequired) and not error.retryable
-        text = str(error).lower()
-        content = video_error or any(term in text for term in (
-            'requested format is not available', 'drm protected', 'account associated with this video has been terminated'))
-        if content and status != 429 and not auth_block:
-            return
-        if error and not auth_block and status != 429 and not transient:
-            # Includes content failures, local pressure, and unknown failures;
-            # none are evidence that an account can safely increase its pace.
+        failure = failure_evidence(error, source='youtube', task_id=self.router.task_id,
+            profile_id=next((identity for identity, _, resource in self.accounts if resource == scope), None)) if error else None
+        policy = recovery_policy(failure, self.config) if failure else None
+        if failure and policy.action == 'none':
             return
 
         def record(db, stamp):
             state = self.router._state(db, scope)
-            if auth_block or status == 429:
-                kind = ('account_rate_limit' if getattr(error, 'account_rate_limited', False) or
-                        'your account has been rate-limited' in str(error).lower() else
-                        'http_429' if status == 429 else 'authentication_required')
-                gate = self.router._state(db, self.global_scope)
-                gate.update(halted=True, halt_kind=kind, halted_at=stamp,
-                            cooldown_until=stamp + max(3600, delay or 0))
-                gate['reason'] = halt_message(gate)
-                self.router._save(db, self.global_scope, gate)
-                state.update(limit=1, streak=0, interval=max(120, state.get('interval', 60) * 2),
-                             cooldown_until=stamp + max(3600, delay or 0))
-            elif error:
+            if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
+                return
+            if failure:
+                until = cooldown_deadline(error, stamp, max(policy.delay, getattr(error, 'retry_after', 0) or 0))
                 state.update(limit=1, streak=0, first_success=0,
                              interval=min(600, max(120, state.get('interval', 60) * 2)),
-                             cooldown_until=stamp + max(60, delay or 0))
-            else:
+                             cooldown_until=max(state.get('cooldown_until', 0), until))
+                remember_decision(state, failure, layer='session', scope='当前 Cookie 核心会话',
+                    action=policy.action, until=until, manual=policy.manual, stamp=stamp)
+            if failure and 'pool' in policy.targets:
+                gate = self.router._state(db, self.global_scope)
+                gate['cooldown_until'] = max(gate.get('cooldown_until', 0), until)
+                first_halt = policy.manual and not gate.get('halted')
+                if first_halt:
+                    gate.update(halted=True, halt_kind=failure.kind, halted_at=stamp)
+                    gate['reason'] = halt_message(gate)
+                decision = remember_decision(gate, failure, layer='pool', scope='当前实例 Cookie 池',
+                    action=policy.action, until=gate['cooldown_until'], manual=policy.manual, stamp=stamp)
+                if first_halt:
+                    gate['halt_decision'] = decision
+                self.router._save(db, self.global_scope, gate)
+            elif not failure:
+                # A task already in flight cannot undo a newer failure's backoff.
+                if state.get('cooldown_until', 0) > stamp:
+                    return
                 state['streak'] = state.get('streak', 0) + 1
                 state['first_success'] = state.get('first_success') or stamp
                 state['successes'] = state.get('successes', 0) + 1

@@ -3,6 +3,22 @@
 const riskGuide = JSON.parse(document.getElementById('risk-guide-data')?.textContent || '[]');
 const riskByCode = new Map(riskGuide.map(item => [item.code, item]));
 
+const failureKindNames = {
+  account_rate_limit: '明确账号限流', request_rate_limit: '请求限流',
+  authentication_required: '登录检查未通过', verification_required: '需要额外验证',
+  access_denied: '请求被拒绝', content_restriction: '视频权限或格式限制',
+  transient_failure: '暂时性故障', local_halt: '沿用本地停止状态',
+  local_resource: '本地资源或执行条件限制', unknown: '证据不足，尚未分类',
+};
+function failureEvidenceHTML(failure) {
+  if (!failure) return '';
+  const phase = {auth:'登录检查',resolve:'解析',transfer:'媒体传输',subtitles:'字幕',unknown:'未记录'}[failure.phase] || '未记录';
+  const source = {youtube:'YouTube 请求',provider:'第三方渠道请求',local:'本地状态',unknown:'来源未记录'}[failure.source] || '来源未记录';
+  const http = failure.http_status == null ? 'HTTP 状态未记录' : `HTTP ${Number(failure.http_status)}`;
+  const evidence = {http_response:'HTTP 异常中的状态',http_message:'下载器错误文本中的 HTTP 状态',message:'错误提示',typed_exception:'程序异常类型',local_state:'已保存的本地状态'}[failure.evidence] || '历史记录';
+  return `<p><b>${escapeHTML(failureKindNames[failure.kind] || failureKindNames.unknown)}</b> · ${escapeHTML(source)} · ${escapeHTML(phase)} · ${http}</p>${failure.task_id || failure.profile_id ? `<p>${failure.task_id ? `任务 ${escapeHTML(String(failure.task_id).slice(0, 8))}` : ''}${failure.profile_id ? ` · Cookie：${escapeHTML(failure.profile_name || String(failure.profile_id).slice(0, 8))}` : ''}</p>` : ''}<p>依据：${escapeHTML(evidence)}${failure.retry_after ? `；记录的重试等待 ${Number(failure.retry_after)} 秒` : ''}。${failure.kind === 'account_rate_limit' && failure.http_status == null ? '账号限流提示不等于收到了 HTTP 429。' : ''}${failure.kind === 'local_halt' ? '这条记录不能证明本次向源站发起了请求。' : ''}</p>${failure.message ? `<p>错误摘要：${escapeHTML(failure.message)}</p>` : ''}`;
+}
+
 function riskFactsHTML(data, compact = false) {
   const facts = data.risks || [];
   if (!facts.length) return '';
@@ -21,18 +37,18 @@ function riskGuideHTML(key) {
 }
 
 function riskResourcesHTML(data, key) {
-  return `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}-resources"><summary>全部准入资源明细 <span>传输、解析、入口准备及共享范围</span></summary><p class="capacity-footnote">这里显示系统配置与许可占用，不是源站公开配额。额度降低后已有任务可继续；冷却与恢复可能同时存在，具体范围逐行查看。</p><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>渠道 / 上游组</th><th>阶段与范围</th><th>许可占用 / 上限</th><th>冷却与恢复</th></tr></thead><tbody>${(data.channels || []).flatMap(row => (row.resources || []).map(resource => `<tr><td>${escapeHTML(row.label)}<small>${escapeHTML(row.group)}</small></td><td>${resource.phase === 'resolve' ? '解析 / 准备' : '传输'}<small>${escapeHTML(waitResourceNames[resource.scope] || resource.scope)}${resource.scope.startsWith('backend-') ? '' : ' / '+escapeHTML(resource.group || '')}</small></td><td>${resource.used} / ${resource.limit}${resource.effective !== resource.limit ? `<small>当前有效额度 ${resource.effective}</small>` : ''}</td><td>${resource.cooldown_seconds ? '冷却 '+concurrencyCountdown(resource.cooldown_seconds, data.time) : resource.recovery_seconds ? '恢复观察 '+concurrencyCountdown(resource.recovery_seconds, data.time) : '未记录冷却'}${resource.last_throttle_status ? `<small>HTTP ${Number(resource.last_throttle_status)} / ${escapeHTML({resolve:'解析',transfer:'传输',subtitles:'字幕'}[resource.last_throttle_kind] || '触发阶段未记录')}</small>` : ''}</td></tr>`)).join('')}</tbody></table></div></details>`;
+  return `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}-resources"><summary>全部准入资源明细 <span>传输、解析、入口准备及共享范围</span></summary><p class="capacity-footnote">这里显示系统配置与许可占用，不是源站公开配额。额度降低后已有任务可继续；冷却与恢复可能同时存在，具体范围逐行查看。</p><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>渠道 / 上游组</th><th>阶段与范围</th><th>许可占用 / 上限</th><th>冷却与恢复</th></tr></thead><tbody>${(data.channels || []).flatMap(row => (row.resources || []).map(resource => `<tr><td>${escapeHTML(row.label)}<small>${escapeHTML(row.group)}</small></td><td>${resource.phase === 'resolve' ? '解析 / 准备' : '传输'}<small>${escapeHTML(waitResourceNames[resource.scope] || resource.scope)}${resource.scope.startsWith('backend-') ? '' : ' / '+escapeHTML(resource.group || '')}</small></td><td>${resource.used} / ${resource.limit}${resource.effective !== resource.limit ? `<small>当前有效额度 ${resource.effective}</small>` : ''}</td><td>${resource.cooldown_seconds ? '冷却 '+concurrencyCountdown(resource.cooldown_seconds, data.time) : resource.recovery_seconds ? '恢复观察 '+concurrencyCountdown(resource.recovery_seconds, data.time) : '未记录冷却'}${resource.last_failure ? failureEvidenceHTML(resource.last_failure) : resource.last_throttle_kind === 'account' ? '<small>历史账号限流分类；HTTP 状态未确认</small>' : resource.last_throttle_status ? `<small>HTTP ${Number(resource.last_throttle_status)} / ${escapeHTML({resolve:'解析',transfer:'传输',subtitles:'字幕'}[resource.last_throttle_kind] || '触发阶段未记录')}</small>` : ''}</td></tr>`)).join('')}</tbody></table></div></details>`;
 }
 
 function taskRiskHTML(task) {
   const risk = task.risk;
-  if (!risk?.codes?.length) return '';
+  if (!risk?.codes?.length && !risk?.failure) return '';
   const queued = task.status === 'queued';
   const retry = risk.retry_scheduled;
   const remaining = Math.max(0, Math.ceil((risk.available_at || 0) - Date.now() / 1000));
   const exhausted = task.status === 'failed' && risk.max_attempts > 0 && risk.attempts >= risk.max_attempts;
   const stateText = task.status === 'failed' ? '任务已失败，当前没有已安排的自动重试。' : task.status === 'interrupted' ? '任务已中断，以当前队列状态为准。' : retry ? `已安排退避重试，${remaining ? `约 ${remaining} 秒后可再次领取` : '已到可领取时间，仍需等待实例、额度及资源'}。` : queued ? '正在排队，等待可用实例与资源。' : task.status === 'running' ? '任务正在执行，最终结果尚未确认。' : '任务已结束，请查看结果。';
-  return `<section class="task-risk"><h3>限制与处理建议</h3><p class="risk-task-state">${escapeHTML(stateText)} 当前任务已尝试 ${Number(risk.attempts || 0)} / ${Number(risk.max_attempts || 0)} 次。${exhausted ? '已达到最大尝试次数，请先处理原因再手动重试。' : ''}${task.action === 'subtitles' ? '字幕任务状态不会改变父视频成功及计费。' : ''}</p>${risk.codes.map(code => {
+  return `<section class="task-risk"><h3>限制与处理建议</h3><p class="risk-task-state">${escapeHTML(stateText)} 当前任务已尝试 ${Number(risk.attempts || 0)} / ${Number(risk.max_attempts || 0)} 次。${exhausted ? '已达到最大尝试次数，请先处理原因再手动重试。' : ''}${task.action === 'subtitles' ? '字幕任务状态不会改变父视频成功及计费。' : ''}</p>${failureEvidenceHTML(risk.failure)}${risk.codes.map(code => {
     const item = riskByCode.get(code);
     return item ? `<article data-risk-code="${escapeHTML(code)}"><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.impact)}</p><p><b>恢复：</b>${escapeHTML(item.recovery)}</p><p><b>操作：</b>${escapeHTML(item.action)} <a href="${escapeHTML(item.href)}">前往查看 ↗</a></p></article>` : '';
   }).join('')}<p class="capacity-footnote">分类依据当前任务已记录的信息，可能同时匹配多个原因；请结合下方错误与日志判断，不能据此认定封号或封 IP。</p></section>`;

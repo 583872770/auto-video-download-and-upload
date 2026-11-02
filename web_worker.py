@@ -15,6 +15,7 @@ from webapp.diagnostics import (event, error_details, safe_text, diagnostic_cont
                                 configure_diagnostics, process_diagnostics, active_task_log)
 
 from webapp.tasks import TaskStore
+from webapp.download_policy import failure_evidence, recovery_policy
 
 
 def format_bytes(value):
@@ -111,6 +112,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                         pass
                     report({'cookie_profile_id': cookie_profile_id,
                             'cookie_profile_name': cookie_profile_name})
+                    selected['_cookie_pool_profile_name'] = cookie_profile_name
                     event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
                           source_address=selected.get('youtube_source_address', ''), identity_retry=False)
                     result = _execute(action, {**payload, 'config': selected}, report,
@@ -727,8 +729,16 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 except (RuntimeError, yt_dlp.utils.DownloadError) as error:
                     previous_error = error
                     phase = failure_phase
+                    observed_phase = ('resolve' if progress.state.get('stage') in (
+                        'extracting', 'waiting_resolver', 'waiting_browser', 'waiting_verification', 'converting') else phase)
+                    failure_evidence(error, phase=observed_phase,
+                        source='youtube' if provider == 'yt_dlp' else 'provider')
                     scheduler.outcome(channel, success=False, error=error, phase=phase,
                                       upstream_group=progress.state.get('upstream_group'))
+                    evidence = failure_evidence(error, phase=phase,
+                        source='youtube' if provider == 'yt_dlp' else 'provider')
+                    progress.state['last_failure'] = evidence.public()
+                    progress.save(force=True)
                     from webapp.channel_scheduler import throttle_details
                     status, _ = throttle_details(error)
                     meter.finish(False, upstream_failure=phase == 'transfer' and status in (429, 503))
@@ -738,7 +748,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),
                           proxy_node=config.get('_resolved_clash_node', ''), **error_details(error))
-                    if getattr(error, 'account_rate_limited', False):
+                    if evidence.kind == 'account_rate_limit':
                         raise
                     if not pending or index + 1 >= budget:
                         raise
@@ -881,6 +891,28 @@ def drain(directory, slot=0, role='all'):
                 last_progress.update(value)
                 if not store.update_progress(task['id'], value, store.owner):
                     raise DownloadLeaseLost('任务租约已失效，当前执行已停止。')
+
+            def record_failure(error):
+                evidence = failure_evidence(error, phase='subtitles' if task['action'] == 'subtitles' else None)
+                last_progress['last_failure'] = evidence.public()
+                store.update_progress(task['id'], dict(last_progress), store.owner)
+
+            def stop_for_account_limit(error):
+                from webapp.execution import isolate_download_failure
+                failure = failure_evidence(error)
+                policy = recovery_policy(failure, {**runtime, **config})
+                delay = max(policy.delay, getattr(error, 'retry_after', 0) or 0,
+                            getattr(error, '_download_recovery_delay', 0))
+                reason = ('YouTube 明确提示账号被限流，实例已停止领取，任务保留。'
+                          '至少冷却一小时后再人工检查；登录有效不代表没有限额。')
+                isolate_download_failure(store, error)
+                store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
+                    'speed': None, 'eta': None, 'retry_delay_seconds': delay,
+                    'retry_reason': 'youtube_account_rate_limit'}, store.owner)
+                store.release(task['id'], store.owner, reason, delay=delay)
+                event('attempt_released', reason='youtube_account_rate_limit',
+                      retry_after=delay, instance_paused=True, **error_details(error))
+                print(reason, flush=True)
             # Redirect OS handles too, so FFmpeg stderr and Python logs stay together.
             sys.stdout.flush()
             sys.stderr.flush()
@@ -912,6 +944,7 @@ def drain(directory, slot=0, role='all'):
                           file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
                           stage_seconds=last_progress.get('stage_seconds', {}))
                 except PipelineBusy as error:
+                    record_failure(error)
                     store.release(task['id'], store.owner, str(error), delay=error.retry_after)
                     worker_delay = max(2, min(60, error.retry_after))
                     next_claim_after = time.monotonic() + worker_delay
@@ -933,6 +966,7 @@ def drain(directory, slot=0, role='all'):
                     event('attempt_released', reason='environment_required', **error_details(error))
                     break
                 except YouTubeAuthRequired as error:
+                    record_failure(error)
                     if error.retryable:
                         retry_after = 30
                         message = f'{error} 任务将在 {retry_after} 秒后自动重试，实例继续运行。'
@@ -954,19 +988,21 @@ def drain(directory, slot=0, role='all'):
                     event('attempt_released', reason='authentication_required', **error_details(error))
                     break
                 except YouTubeAccountLimited as error:
-                    from webapp.execution import isolate_download_failure
-                    reason = ('YouTube 明确提示账号被限流，实例已停止领取，任务保留。'
-                              '至少冷却一小时后再人工检查；登录有效不代表没有限额。')
-                    isolate_download_failure(store, reason)
-                    store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
-                        'speed': None, 'eta': None, 'retry_delay_seconds': error.retry_after,
-                        'retry_reason': 'youtube_account_rate_limit'}, store.owner)
-                    store.release(task['id'], store.owner, reason, delay=error.retry_after)
-                    event('attempt_released', reason='youtube_account_rate_limit',
-                          retry_after=error.retry_after, instance_paused=True, **error_details(error))
-                    print(reason, flush=True)
+                    record_failure(error)
+                    stop_for_account_limit(error)
                     break
                 except BaseException as error:
+                    record_failure(error)
+                    failure = failure_evidence(error)
+                    if failure.kind == 'account_rate_limit':
+                        stop_for_account_limit(error)
+                        break
+                    if failure.kind in ('authentication_required', 'verification_required'):
+                        from webapp.execution import isolate_download_failure
+                        isolate_download_failure(store, error)
+                        store.release(task['id'], store.owner, str(error), delay=0)
+                        event('attempt_released', reason='authentication_required', **error_details(error))
+                        break
                     if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
                         resource_wait = '磁盘空间或配额不足，等待释放空间。'
                         store.release(task['id'], store.owner, resource_wait, delay=60, resource=True)
@@ -976,13 +1012,10 @@ def drain(directory, slot=0, role='all'):
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = safe_text(str(error) or type(error).__name__)[:2000]
-                    transient = (error.retryable if isinstance(error, (WebsiteHTTPError, Downmp3Error, BergungError)) else
-                                 isinstance(error, WebsiteTimeoutError) or any(term in message.lower() for term in ('timed out', 'timeout', 'connection reset',
-                                    'http error 429', 'http error 500', 'http error 502', 'http error 503', 'http error 504')))
-                    from webapp.channel_scheduler import throttle_details, error_traits
-                    _, server_delay = throttle_details(error)
-                    typed_retry, video_error = error_traits(error)
-                    transient = (transient or typed_retry) and not video_error
+                    policy = recovery_policy(failure, {**runtime, **config}, youtube=failure.source != 'provider')
+                    server_delay = max(getattr(error, '_download_recovery_delay', policy.delay),
+                        failure.retry_after or 0, getattr(error, 'retry_after', 0) or 0) or None
+                    transient = failure.retryable
                     store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])
                     event('attempt_end', outcome=current['status'] if current else 'unknown',

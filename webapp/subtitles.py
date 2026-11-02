@@ -11,6 +11,7 @@ from webapp.disk_budget import DiskBudget, MIB
 from webapp.downloader import build_ydl_options, download_cookie_session
 from webapp.downloads import DownloadLeaseLost
 from webapp.throughput import PipelineBusy
+from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline, remember_decision
 
 
 def summary(db, stamp, identity):
@@ -84,14 +85,20 @@ def run_subtitles(store, payload, report):
         account_limit = (YouTubeAccountLimited(str(error))
                          if 'your account has been rate-limited' in str(error).lower() else None)
         failure = account_limit or error
+        evidence = failure_evidence(failure, phase='subtitles')
+        policy = recovery_policy(evidence, config)
         status, delay = throttle_details(failure)
         if account_limit or scheduler.youtube_pacing and status in (429, 503):
             scheduler.outcome(scheduler.channels[0], success=False, error=failure, phase='subtitles')
             delay = max(delay or 0, getattr(failure, 'retry_after', 0))
-        if scheduler.enabled and status in (429, 503):
+        if scheduler.enabled and (account_limit or status in (429, 503)):
             def cool(db, stamp):
                 state = scheduler._state(db, scope)
-                state.update(cooldown_until=stamp + (delay or 120), cooldown_status=status, cooldown_kind='subtitles')
+                state.update(cooldown_until=max(state.get('cooldown_until', 0),
+                    cooldown_deadline(failure, stamp, max(policy.delay, delay or 0))),
+                    cooldown_status=status, cooldown_kind='subtitles')
+                remember_decision(state, evidence, layer='subtitles', scope='字幕补下载队列',
+                    action='cooldown', until=state['cooldown_until'], stamp=stamp)
                 scheduler._save(db, scope, state)
             scheduler.transaction_call(cool)
         if account_limit:

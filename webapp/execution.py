@@ -71,6 +71,9 @@ class ExecutionControlService:
             if self.store.fleet:
                 self.store.fleet.activate(db)
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))
+            if not self.store.fleet:
+                from webapp.download_policy import execution_decision
+                execution_decision(self.store, db, 'local')
         queue = self.store.download_queue()
         execution = self.status(queue)
         return dict(message=execution['message'], download_queue=queue, execution=execution)
@@ -79,7 +82,14 @@ class ExecutionControlService:
 def isolate_download_failure(store, reason):
     """An executor's environment failure must not change a customer's intent."""
     if store.fleet:
-        store.fleet.quarantine(store.fleet.id, str(reason), boot_id=store.fleet.boot_id)
+        store.fleet.quarantine(store.fleet.id, reason, boot_id=store.fleet.boot_id)
     else:
         # In standalone mode this flag controls the only executor.
-        store.set_downloads_paused(True)
+        from webapp.download_policy import execution_decision
+        with store.connect() as db:
+            if store.db.sqlite:
+                db.exec_driver_sql('BEGIN IMMEDIATE')
+            db.execute(select(settings.c.key).where(settings.c.key == 'downloads_paused').with_for_update()).first()
+            db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true'))
+            store.statistics.stop_all(db)
+            execution_decision(store, db, 'local', error=reason)

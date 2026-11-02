@@ -71,9 +71,11 @@ class CookieFallbackTests(unittest.TestCase):
             downloader.report_error('[youtube] fixture: Video unavailable')
             return 1
         with patch.object(yt_dlp.YoutubeDL, 'download', download):
-            with self.assertRaisesRegex(RuntimeError, 'Video unavailable'):
+            with self.assertRaisesRegex(RuntimeError, 'Video unavailable') as caught:
                 execute('download', self.payload)
         self.assertEqual(len(calls), 1)
+        from webapp.download_policy import failure_evidence
+        self.assertEqual(failure_evidence(caught.exception).phase, 'resolve')
 
     def test_explicit_account_limit_never_falls_back_to_anonymous_requests(self):
         from webapp.downloads import YouTubeAccountLimited

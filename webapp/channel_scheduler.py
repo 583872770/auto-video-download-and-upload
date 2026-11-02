@@ -5,7 +5,6 @@ take place AFTER the transaction closes. Scope IDs contain no signed URLs.
 """
 from contextlib import contextmanager
 from dataclasses import replace
-from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import random
@@ -18,41 +17,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from webapp.channels import backend_key, group_caps, observed_group, registry
 from webapp.database import download_permits as permits, download_resources as resources, tasks
 from webapp.throughput import PipelineBusy, runtime_limits
-
-
-def retry_after(value, now=None):
-    now = time.time() if now is None else now
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        try:
-            seconds = parsedate_to_datetime(str(value)).timestamp() - now
-        except (TypeError, ValueError, OverflowError):
-            return None
-    if not 0 <= seconds < float('inf'):
-        return None
-    return min(86400, max(1, seconds))
+from webapp.download_policy import (failure_evidence, recovery_policy, retry_after,
+                                    cooldown_deadline, remember_decision)
 
 
 def throttle_details(error):
-    seen = set()
-    limited = False
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        # YouTube can return an account limit inside a successful HTTP response.
-        # 429 here is the scheduler's throttle category, not an observed HTTP code.
-        if getattr(error, 'account_rate_limited', False) or 'your account has been rate-limited' in str(error).lower():
-            return 429, max(3600, retry_after(getattr(error, 'retry_after', None)) or 0)
-        status = getattr(error, 'http_status', None) or getattr(error, 'status', None)
-        if status in (429, 503):
-            headers = getattr(error, 'headers', None) or {}
-            value = getattr(error, 'retry_after', None) or headers.get('Retry-After') or headers.get('retry-after')
-            return status, retry_after(value)
-        # yt-dlp preserves the underlying networking.HTTPError as a cause.
-        if '429' in str(error) and any(x in str(error).lower() for x in ('http', 'rate')):
-            limited = True
-        error = error.__cause__ or error.__context__
-    return (429, None) if limited else (None, None)
+    """Actual HTTP status only; account limits are a separate failure kind."""
+    if error is None:
+        return None, None
+    failure = failure_evidence(error)
+    delay = max(3600, failure.retry_after or 0) if failure.kind == 'account_rate_limit' else failure.retry_after
+    return failure.http_status, delay
 
 
 def _key(scope):
@@ -60,14 +35,11 @@ def _key(scope):
 
 
 def error_traits(error):
-    """Preserve typed errors through downloader/IPC exception wrappers."""
-    seen, transient, video = set(), False, False
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        video |= getattr(error, 'failure_scope', None) == 'video'
-        transient |= bool(getattr(error, 'retryable', False)) or type(error).__name__ == 'WebsiteTimeoutError'
-        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
-    return transient, video
+    """Compatibility view of the shared failure classifier."""
+    if error is None:
+        return False, False
+    failure = failure_evidence(error)
+    return failure.retryable, failure.kind == 'content_restriction'
 
 
 def local_failure(error):
@@ -462,31 +434,36 @@ class ChannelScheduler:
                 resolve_elapsed=0, transfer_elapsed=0):
         if not self.enabled:
             return
+        failure = failure_evidence(error, phase=phase,
+            source='youtube' if channel.adapter == 'yt_dlp' else 'provider', task_id=self.task_id,
+            profile_id=self.config.get('_cookie_pool_selected'),
+            profile_name=self.config.get('_cookie_pool_profile_name')) if error else None
+        policy = recovery_policy(failure, self.config, youtube=channel.adapter == 'yt_dlp') if failure else None
         if not success and local_failure(error):
             return
-        status, delay = throttle_details(error) if error else (None, None)
-        if channel.adapter == 'yt_dlp' and status == 429:
-            delay = max(delay or 0, int(self.config.get('youtube_throttle_cooldown', 300)))
+        status, delay = (failure.http_status, policy.delay) if failure else (None, None)
+        limited = bool(failure and failure.kind in ('account_rate_limit', 'request_rate_limit'))
         transient, video_error = error_traits(error)
-        if not success and video_error and status != 429:
+        if not success and (video_error or failure.kind == 'content_restriction') and not limited:
             return  # Content-specific failures must not poison shared health.
         def record(db, stamp):
             nonlocal transient, delay
-            if self.youtube_pacing and channel.adapter == 'yt_dlp':
-                from webapp.proxy_health import connection_failure
-                delay = self.youtube_pacing.outcome(db, stamp, channel, success=success, size=size,
-                    status=status, delay=delay, transient=bool(not success and (transient or connection_failure(error)
-                        or isinstance(error, TimeoutError) or 'timed out' in str(error).lower())))
             key = 'channel:' + channel.id
             state = self._state(db, key)
+            if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
+                return
+            if self.youtube_pacing and channel.adapter == 'yt_dlp':
+                delay = self.youtube_pacing.outcome(db, stamp, channel, success=success, size=size,
+                    failure=failure, delay=delay, error=error)
+            until = cooldown_deadline(error, stamp, delay) if delay else 0
             throttle = {'last_throttle_status': status, 'last_throttle_at': stamp,
-                        'last_throttle_kind': ('account' if getattr(error, 'account_rate_limited', False)
-                            or 'your account has been rate-limited' in str(error).lower() else
-                            'subtitles' if 'subtitles' in str(error).lower() else phase)} if status in (429, 503) else {}
+                        'last_throttle_kind': ('account' if failure.kind == 'account_rate_limit' else phase)
+                       } if limited or status == 503 else {}
             state.update(throttle)
             if success:
                 state['failures'] = 0
-                state.pop('cooldown_until', None)
+                if state.get('cooldown_until', 0) <= stamp:
+                    state.pop('cooldown_until', None)
                 state['successes'] = state.get('successes', 0) + 1
                 state['success_ewma'] = state.get('success_ewma', 1) * .8 + .2
                 for name, value in (('completion_seconds', elapsed), ('resolve_seconds', resolve_elapsed),
@@ -499,16 +476,18 @@ class ChannelScheduler:
             else:
                 state['failures'] = state.get('failures', 0) + 1
                 state['success_ewma'] = state.get('success_ewma', 1) * .8
-                from webapp.proxy_health import connection_failure
-                transient = bool(transient or connection_failure(error)
-                                 or status in (408, 500, 502, 503, 504))
-                if (status == 429 or (transient or self.config.get('scheduler_mode') == 'auto')
+                transient = failure.kind == 'transient_failure'
+                if (limited or (transient or self.config.get('scheduler_mode') == 'auto')
                         and (self.config.get('scheduler_mode') == 'auto' or state['failures'] >= 3)):
-                    state['cooldown_until'] = stamp + (delay or min(300, 15 * 2 ** min(4, state['failures'] - 1))) + random.uniform(0, 3)
+                    state['cooldown_until'] = max(state.get('cooldown_until', 0), until or
+                        stamp + min(300, 15 * 2 ** min(4, state['failures'] - 1)))
                     state['cooldown_status'] = status
                     state['cooldown_kind'] = throttle.get('last_throttle_kind')
+                remember_decision(state, failure, layer='channel', scope='渠道健康',
+                    action='cooldown' if state.get('cooldown_until', 0) > stamp else 'record',
+                    until=state.get('cooldown_until', 0), stamp=stamp)
             self._save(db, key, state)
-            if status == 429 or status == 503 and delay:
+            if policy and 'shared' in policy.targets:
                 scope = ('resolver:' + channel.resolver_group if phase == 'resolve' else 'upstream:' + (upstream_group or channel.upstream_group))
                 scopes = [scope, 'quota:' + channel.quota_group]
                 if self.config.get('scheduler_mode') == 'auto':
@@ -520,9 +499,12 @@ class ChannelScheduler:
                     shared.update(throttle)
                     shared['cooldown_status'] = status
                     shared['cooldown_kind'] = throttle.get('last_throttle_kind')
-                    shared['cooldown_until'] = max(shared.get('cooldown_until', 0), stamp + (delay or 30))
+                    shared['cooldown_until'] = max(shared.get('cooldown_until', 0), until)
                     shared['recover_until'] = shared['cooldown_until'] + 60
+                    remember_decision(shared, failure, layer='shared', scope='共享解析与渠道配额' if phase == 'resolve' else
+                        '共享字幕与渠道配额' if phase == 'subtitles' else '共享传输与渠道配额',
+                        action='cooldown', until=shared['cooldown_until'], stamp=stamp)
                     self._save(db, key, shared)
         self.transaction_call(record)
-        if status == 429 and error is not None and getattr(error, 'account_rate_limited', False):
+        if limited and error is not None:
             error.retry_after = max(getattr(error, 'retry_after', 0), delay or 0)

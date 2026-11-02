@@ -476,6 +476,9 @@ class TaskStore:
                     db.exec_driver_sql('BEGIN IMMEDIATE')
                 db.execute(select(settings.c.key).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true' if paused else 'false'))
+            if not paused and not self.fleet:
+                from webapp.download_policy import execution_decision
+                execution_decision(self, db, 'local')
             if paused:
                 if self.fleet:
                     from webapp.database import instances
@@ -495,6 +498,9 @@ class TaskStore:
             # Release the new lists and resume claims in one transaction.
             self.lists.release(db)
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))
+            if not self.fleet:
+                from webapp.download_policy import execution_decision
+                execution_decision(self, db, 'local')
 
     def media_clear_busy(self, db=None):
         if db is None:

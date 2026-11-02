@@ -199,9 +199,15 @@ class CookiePoolTests(unittest.TestCase):
         error = RuntimeError('HTTP Error 429: Too Many Requests')
         pool.outcome(pool.accounts[0][2], error)
         status = pool.status()
-        self.assertEqual(status['halt_kind'], 'http_429')
-        self.assertIn('http_429', classify(status['reason']))
-        self.assertNotIn('account_rate_limit', classify(status['reason']))
+        self.assertFalse(status['halted'])
+        self.assertIsNone(status['halt_kind'])
+        self.assertTrue(status['capacity_summary']['cooling'])
+        self.assertEqual(status['capacity_summary']['capacity'], 0)
+        self.assertEqual(status['decisions'][-1]['failure']['kind'], 'request_rate_limit')
+        self.assertEqual(status['decisions'][-1]['failure']['http_status'], 429)
+        with self.assertRaises(PipelineBusy):
+            with self.pool().assignment():
+                self.fail('Temporary pool cooling must prevent identity switching')
 
     def test_content_error_does_not_poison_other_accounts(self):
         pool = self.pool()

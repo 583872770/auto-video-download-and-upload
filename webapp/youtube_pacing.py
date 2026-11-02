@@ -1,6 +1,7 @@
 """Persistent start budgets, independent of media transfer throughput."""
 from pathlib import Path
 import math
+from webapp.download_policy import cooldown_deadline, remember_decision
 
 
 PACING_FIELDS = {'youtube_pacing_mode', 'youtube_hourly_start_limit', 'youtube_daily_start_limit'}
@@ -44,6 +45,7 @@ def summary(config, state, stamp):
         'previous_minimum': '此前提高过最小间隔，当前保留该间隔；稳定完成后逐步缩短。',
         'initial': '渐进模式从至少 60 秒起步，稳定完成后逐步缩短。',
         'account_limit': '此前发生账号限流，当前保持退避恢复节奏；稳定完成后逐步缩短。',
+        'request_limit': '此前请求收到 HTTP 429，当前保持退避节奏；这不等于明确账号限流。',
         'transient_error': '上游超时或临时故障触发自动退避，当前已放慢启动节奏。',
         'adaptive_backoff': '当前保留此前的自动退避间隔，稳定完成后逐步缩短。',
         'stable_success': '连续稳定完成视频后，系统已逐步缩短启动间隔。',
@@ -124,9 +126,10 @@ class YouTubePacing:
             self.router._save(db, scope, state)
         return max(0, next_at - stamp), reason
 
-    def outcome(self, db, stamp, channel, *, success, size, status, delay, transient):
+    def outcome(self, db, stamp, channel, *, success, size, failure, delay, error=None):
         rows = self._states(db, stamp, channel)
-        account_limit = status == 429
+        account_limit = bool(failure and failure.kind == 'account_rate_limit')
+        request_limit = bool(failure and failure.kind == 'request_rate_limit')
         if account_limit:
             # Both scopes retain the strongest backoff when their histories differ.
             for _, state in rows:
@@ -136,6 +139,8 @@ class YouTubePacing:
                     strikes = 1
                 delay = max(delay or 0, min(21600, 3600 * 2 ** min(3, strikes - 1)))
         for scope, state in rows:
+            if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
+                continue
             if account_limit:
                 # Concurrent reports from the same incident are one strike.
                 same_incident = stamp - state.get('last_limit_at', 0) <= 300
@@ -148,13 +153,13 @@ class YouTubePacing:
                 state.update(strikes=strikes, last_limit_at=stamp,
                              interval_reason_code='account_limit',
                              interval=min(600, max(120, state['interval'] if same_incident else state['interval'] * 2)),
-                             cooldown_until=max(state.get('cooldown_until', 0), stamp + delay),
+                             cooldown_until=max(state.get('cooldown_until', 0), cooldown_deadline(error, stamp, delay)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp,
                              wait_reason='账号或源站正在冷却')
-            elif transient or status == 503:
+            elif request_limit or failure and failure.kind == 'transient_failure':
                 state.update(interval=min(600, max(90, math.ceil(state['interval'] * 1.5))),
-                             interval_reason_code='transient_error',
-                             cooldown_until=max(state.get('cooldown_until', 0), stamp + max(60, delay or 0)),
+                             interval_reason_code='request_limit' if request_limit else 'transient_error',
+                             cooldown_until=max(state.get('cooldown_until', 0), cooldown_deadline(error, stamp, delay)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
             elif success and size > 0 and state.get('cooldown_until', 0) <= stamp:
                 state['clean_successes'] = state.get('clean_successes', 0) + 1
@@ -166,5 +171,8 @@ class YouTubePacing:
                                             state['interval'] - 5)
                     state['interval_reason_code'] = 'stable_success'
                     state['last_adjust_at'] = stamp
+            if failure and (account_limit or request_limit or failure.kind == 'transient_failure'):
+                remember_decision(state, failure, layer='pacing', scope='实例与登录会话启动节奏',
+                    action='cooldown', until=state.get('cooldown_until', 0), stamp=stamp)
             self.router._save(db, scope, state)
         return delay

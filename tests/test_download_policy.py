@@ -1,0 +1,72 @@
+import unittest
+
+from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline
+from webapp.downloads import YouTubeAccountLimited
+from webapp.throughput import PipelineBusy
+from webapp.youtube_auth import YouTubeAuthRequired
+
+
+class FailureEvidenceTests(unittest.TestCase):
+    def test_account_limit_does_not_manufacture_http_status(self):
+        error = YouTubeAccountLimited('Your account has been rate-limited')
+        value = failure_evidence(error, phase='resolve', source='youtube')
+        self.assertEqual(value.kind, 'account_rate_limit')
+        self.assertIsNone(value.http_status)
+        self.assertEqual(recovery_policy(value, {}).action, 'halt')
+        error.http_status = 200
+        # An independently observed response can report an account limit in HTTP 200.
+        second = YouTubeAccountLimited(str(error))
+        second.http_status = 200
+        self.assertEqual(failure_evidence(second).http_status, 200)
+
+    def test_real_http_evidence_and_retry_after_survive_wrapping(self):
+        cause = RuntimeError('request rejected')
+        cause.http_status = 429
+        cause.headers = {'Retry-After': '720'}
+        outer = RuntimeError('download failed')
+        outer.__cause__ = cause
+        value = failure_evidence(outer, phase='subtitles', source='youtube')
+        self.assertEqual((value.kind, value.http_status, value.retry_after), ('request_rate_limit', 429, 720))
+        self.assertEqual(value.evidence, 'http_response')
+        self.assertFalse(recovery_policy(value, {}).manual)
+
+    def test_local_halt_and_resource_messages_cannot_become_remote_limits(self):
+        halt = YouTubeAuthRequired(dict(state='verification_required', source='cookie_pool_halted',
+            message='Cookie 池沿用此前保存的停止状态：Your account has been rate-limited HTTP 429'))
+        for error, kind in ((halt, 'local_halt'), (PipelineBusy('HTTP 429 quota wait'), 'local_resource')):
+            value = failure_evidence(error)
+            self.assertEqual(value.kind, kind)
+            self.assertEqual(value.source, 'local')
+            self.assertEqual(recovery_policy(value, {}).action, 'none')
+
+    def test_http_codes_inside_urls_and_secrets_do_not_classify(self):
+        value = failure_evidence(RuntimeError('failure https://u:SECRET@example.test/HTTP/429?token=SECRET'))
+        self.assertEqual(value.kind, 'unknown')
+        self.assertIsNone(value.http_status)
+        self.assertNotIn('SECRET', value.message)
+
+    def test_content_denial_and_unknown_are_not_request_throttles(self):
+        for message, kind in (('HTTP Error 403: Forbidden', 'access_denied'),
+                              ('Requested format is not available', 'content_restriction'),
+                              ('private video', 'content_restriction'), ('unrecognized fixture', 'unknown')):
+            value = failure_evidence(RuntimeError(message))
+            self.assertEqual(value.kind, kind)
+            self.assertEqual(recovery_policy(value, {}).action, 'none')
+
+    def test_cached_incident_is_enriched_and_retained_across_exception_wrapper(self):
+        error = RuntimeError('HTTP Error 429')
+        first = failure_evidence(error)
+        outer = RuntimeError('wrapped')
+        outer.__cause__ = error
+        second = failure_evidence(outer, phase='transfer', source='youtube')
+        self.assertEqual(first.incident_id, second.incident_id)
+        self.assertEqual((second.source, second.phase), ('youtube', 'transfer'))
+        self.assertEqual(cooldown_deadline(error, 100, 300), 400)
+        self.assertEqual(cooldown_deadline(error, 120, 300), 400)
+        self.assertEqual(cooldown_deadline(error, 120, 600), 700)
+
+    def test_suppressed_exception_context_is_not_evidence(self):
+        error = RuntimeError('unrelated')
+        error.__context__ = YouTubeAccountLimited('Your account has been rate-limited')
+        error.__suppress_context__ = True
+        self.assertEqual(failure_evidence(error).kind, 'unknown')
