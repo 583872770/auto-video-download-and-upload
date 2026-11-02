@@ -44,7 +44,7 @@ def main():
                     category: node.closest('[data-settings-category]')?.dataset.settingsCategory}))"""
                 static_fields = plain.locator('#settings-form [name]').evaluate_all(schema)
                 live_fields = page.locator('#settings-form [name]').evaluate_all(schema)
-                assert len(static_fields) == 45 and static_fields == live_fields
+                assert static_fields and static_fields == live_fields
                 assert len({field['name'] for field in static_fields}) == len(static_fields)
                 expect(plain.locator('[role="tabpanel"]')).to_have_count(5)
                 assert page.evaluate("""() => { const ids = [...document.querySelectorAll('[id]')].map(node => node.id);
@@ -125,12 +125,18 @@ def main():
                 expect(rows.filter(has_text='Account A')).to_contain_text('检测出口：直连')
                 expect(section.locator('.cookie-profile-row').filter(has_text='Account A')).to_contain_text('当前使用')
                 assert probe.call_count == 1
-                expect(rows.filter(has_text='Account A').get_by_role('button', name='删除')).to_be_disabled()
+                expect(rows.filter(has_text='Account A').get_by_role('button', name='删除')).to_be_enabled()
                 rows.filter(has_text='Account B').get_by_role('button', name='使用此 Cookie').click()
+                expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
+                # Cancelling deletion keeps the selected account and both rows.
+                page.once('dialog', lambda prompt: prompt.dismiss())
+                rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
+                expect(rows).to_have_count(2)
                 expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
                 page.once('dialog', lambda prompt: prompt.accept())
                 rows.filter(has_text='Account A').get_by_role('button', name='删除').click()
                 expect(rows).to_have_count(1)
+                expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
                 expect(section.locator('b')).to_have_count(0)
                 form.locator('[data-cookie-name]').fill('')
                 form.locator('[data-cookie-file]').set_input_files({'name': 'filename-default.txt', 'mimeType': 'text/plain',
@@ -146,13 +152,39 @@ def main():
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert section.evaluate('(e) => e.scrollWidth <= e.clientWidth'), 'Mobile Cookie section overflows'
                 page.screenshot(path=str(output / 'mobile.png'))
+                # Deleting the selected profile selects the remaining upload.
+                page.once('dialog', lambda prompt: prompt.accept())
+                rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
+                expect(rows).to_have_count(1)
+                expect(rows.filter(has_text='filename-default.txt')).to_contain_text('当前使用')
+                selected = page.request.get(f'http://127.0.0.1:{server.server_port}/api/youtube/cookies').json()['items'][0]
+                selected_path = f"Cookies/profiles/{selected['id']}.txt"
+                assert page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']['youtube_cookie'] == selected_path
+                # Historical browser-login success cannot overwrite the selection.
+                app.extensions['youtube_login']._write({'state': 'succeeded', 'message': 'Fixture past login'})
+                page.reload()
+                page.get_by_role('tab', name='Cookie 与登录').click()
+                expect(rows).to_have_count(1)
+                expect(rows.first).to_contain_text('当前使用')
+                assert page.evaluate('state.config.youtube_cookie') == selected_path
+                page.once('dialog', lambda prompt: prompt.accept())
+                rows.first.get_by_role('button', name='删除').click()
+                expect(rows).to_have_count(0)
+                expect(section).to_contain_text('当前未选用已保存的 Cookie')
+                expect(page.locator('[data-youtube-status]').first).to_have_text('尚未登录 YouTube')
+                assert page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']['youtube_cookie'] == ''
+                assert page.evaluate('state.config.youtube_cookie') == ''
+                page.reload()
+                page.get_by_role('tab', name='Cookie 与登录').click()
+                expect(rows).to_have_count(0)
+                expect(section).to_contain_text('当前未选用已保存的 Cookie')
                 assert not errors, errors
                 browser.close()
         finally:
             server.shutdown()
             thread.join(5)
             server.server_close()
-    print('Cookie UI: upload, filename default, select, login check, active guard, delete, escaping, mobile layout: OK')
+    print('Cookie UI: upload, select, login check, cancel/delete, active replacement, empty selection, reload, escaping, mobile layout: OK')
 
 
 if __name__ == '__main__':

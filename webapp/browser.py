@@ -2,15 +2,22 @@
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
+import shutil
 
 
 def browser_options(chromium, executable_path=None):
+    executable_path = executable_path or os.environ.get('YT5S_BROWSER')
     if executable_path:
         if not Path(executable_path).is_file():
-            raise FileNotFoundError(f'指定的浏览器不存在：{executable_path}')
+            raise RuntimeError('指定的浏览器不存在，请检查 browser_executable 或 YT5S_BROWSER 配置。')
         return {'executable_path': str(executable_path)}
     if Path(str(chromium.executable_path)).is_file():
         return {}
+    # Docker installs Debian Chromium, not Playwright's bundled browser.
+    for name in ('chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable'):
+        candidate = shutil.which(name)
+        if candidate and Path(candidate).is_file():
+            return {'executable_path': candidate}
     for variable in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
         root = os.environ.get(variable)
         if not root:
@@ -20,7 +27,7 @@ def browser_options(chromium, executable_path=None):
             candidate = Path(root) / relative
             if candidate.is_file():
                 return {'executable_path': str(candidate)}
-    return {}
+    raise RuntimeError('未找到 Chrome/Chromium。Docker 部署请使用包含浏览器的 Compose 文件重新构建并创建容器（up -d --build）；本机部署请安装浏览器。')
 
 
 @asynccontextmanager

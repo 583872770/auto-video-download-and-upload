@@ -10,9 +10,29 @@ from playwright.async_api import Error as BrowserError
 import yaml
 
 from tests import test_web, test_scale
-from webapp.youtube_login import YouTubeLogin, LoginBusy
+from webapp.youtube_login import YouTubeLogin, LoginBusy, browser_failure_message
 
 COOKIE = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only-secret\n'
+
+
+class BrowserFailureTests(unittest.TestCase):
+    def test_failures_identify_environment_network_and_closed_windows_safely(self):
+        cases = [
+            ("BrowserType.launch: Executable doesn't exist at /private/path", 'starting', '未找到'),
+            ('Missing X server or $DISPLAY', 'starting', '显示环境'),
+            ('error while loading shared libraries: libexample.so', 'starting', '系统依赖'),
+            ('Page.goto: net::ERR_PROXY_CONNECTION_FAILED', 'starting', 'ERR_PROXY_CONNECTION_FAILED'),
+            ('Page.goto: Timeout 60000ms exceeded', 'starting', '超时'),
+            ('BrowserType.launch: process exited', 'starting', '启动'),
+            ('Target page, context or browser has been closed', 'waiting', '已关闭'),
+        ]
+        for detail, stage, expected in cases:
+            with self.subTest(detail=detail):
+                error = BrowserError(detail + '\nhttp://user:DO_NOT_EXPOSE@proxy.test --password=SECRET')
+                message = browser_failure_message(error, stage)
+                self.assertIn(expected, message)
+                for private in ('DO_NOT_EXPOSE', 'SECRET', 'proxy.test', '/private/path'):
+                    self.assertNotIn(private, message)
 
 
 class LoginFixture:

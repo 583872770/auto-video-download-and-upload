@@ -11,6 +11,15 @@ from webapp.database import instances, job_profiles
 
 
 class SettingsSaveContract:
+    def test_adaptive_pacing_saves_as_instance_policy(self):
+        submitted = {'youtube_pacing_mode': 'adaptive', 'youtube_start_interval': 120,
+                     'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200}
+        response = self.client.put('/api/config', json=submitted, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        saved = self.client.get('/api/config').json['config']
+        for key, value in submitted.items():
+            self.assertEqual(saved[key], value)
+
     def test_routing_save_preserves_explicit_concurrency_mode(self):
         for mode, routing in (('manual', 'auto'), ('auto', 'ordered_fallback')):
             response = self.client.put('/api/config', json={

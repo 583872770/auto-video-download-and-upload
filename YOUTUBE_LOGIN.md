@@ -54,6 +54,30 @@ Web 页面首页顶部、下载区和设置页均提供 **浏览器登录** 入�
 
 登录期间暂时不能恢复下载、创建下载任务、替换 Cookie 或修改代理节点。取消、超时、关闭浏览器或登录失败时保留原有 Cookie；Google 拒绝登录时仍可使用 **上传 Cookie 文件**。这里确认的是浏览器登录成功，具体视频能否下载仍以下载结果为准。
 
+### Docker 服务器查看登录窗口
+
+容器中的浏览器显示在服务器的 Xvfb 虚拟桌面，不会在访问管理页面的电脑上弹窗。先通过 SSH 转发远程桌面端口（如部署修改过 `YT5S_DESKTOP_PORT`，替换右侧端口）：
+
+```bash
+ssh -N -L 6080:127.0.0.1:6080 你的SSH用户@服务器地址
+```
+
+保持 SSH 连接，在本机浏览器打开 `http://127.0.0.1:6080/vnc.html?autoconnect=true`，再在管理页面点击 **打开登录窗口**，到远程桌面完成登录。远程桌面端口保持仅绑定服务器本机，通过 SSH 隧道访问。
+
+登录流程会优先使用 `browser_executable` 或容器桌面设置的 `YT5S_BROWSER`，也会查找系统 Chromium。若提示缺少浏览器，需在服务器项目目录更新代码，使用原部署的 Compose 文件及项目名称重新构建并创建容器，例如：
+
+```bash
+docker compose -p 原项目名称 -f compose.remote-mysql.yaml up -d --build app
+```
+
+自带 MySQL 的部署使用 `compose.local-mysql.yaml`。仅重启旧容器不会应用代码或安装 Chromium。可以用同一 Compose 项目检查容器环境：
+
+```bash
+docker compose -p 原项目名称 -f compose.remote-mysql.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER DISPLAY; pgrep -a Xvfb'
+```
+
+内置浏览器镜像正常应显示 Chromium 路径、`DISPLAY=:99` 和运行中的 Xvfb。若浏览器能打开但提示代理或网络错误，检查当前下载连接和所选节点。
+
 也可运行以下命令，在项目打开的独立浏览器中手动登录：
 
 ```powershell

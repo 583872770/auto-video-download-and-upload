@@ -118,13 +118,13 @@ class CookieProfiles:
             return  # User-managed custom paths retain their existing behavior.
         self.require(identity)
 
-    def delete(self, identity, active):
+    def delete(self, identity):
         target = self.require(identity)
-        if active and target.resolve() == resolve_path(self.base, active).resolve():
-            raise ValueError('当前正在使用这份 Cookie，请先切换到其他配置再删除。')
-        with self.store.connect() as db:
-            # Tombstone prevents any leftover cache being re-imported after a crash.
-            db.execute(table.update().where(self._where(identity)).values(deleted=1, content=''))
+        # Remove caches before committing the tombstone. If cleanup fails, the
+        # database still owns the credentials and can restore the selected file.
         target.unlink(missing_ok=True)
         if identity != 'legacy':
             target.with_suffix('.json').unlink(missing_ok=True)
+        with self.store.connect() as db:
+            # Tombstone prevents any leftover cache being re-imported after a crash.
+            db.execute(table.update().where(self._where(identity)).values(deleted=1, content=''))

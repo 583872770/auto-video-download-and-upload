@@ -30,6 +30,7 @@ DEFAULTS = {
     'youtube_throttle_cooldown': 300,
     'youtube_sleep_preset': True,
     'youtube_cookie_pool': [],
+    'youtube_pacing_mode': 'manual', 'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -48,6 +49,8 @@ DOWNLOAD_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube
 DOWNLOAD_FIELDS.add('youtube_sleep_preset')
 DOWNLOAD_FIELDS.add('youtube_throttle_cooldown')
 DOWNLOAD_FIELDS.add('youtube_cookie_pool')
+from webapp.youtube_pacing import PACING_FIELDS
+DOWNLOAD_FIELDS |= PACING_FIELDS
 INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
                   'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
                   'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
@@ -58,8 +61,10 @@ INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
 INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
 INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))
-INTEGER_FIELDS['youtube_start_interval'] = (0, 60)
+INTEGER_FIELDS['youtube_start_interval'] = (0, 600)
 INTEGER_FIELDS['youtube_throttle_cooldown'] = (30, 3600)
+INTEGER_FIELDS['youtube_hourly_start_limit'] = (1, 5000)
+INTEGER_FIELDS['youtube_daily_start_limit'] = (1, 5000)
 
 
 def urls_from(value):
@@ -96,6 +101,8 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
+    if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):
+        raise ValueError('YouTube 请求节奏请选择固定间隔或渐进调速。')
     pool = config.get('youtube_cookie_pool', [])
     if (not isinstance(pool, list) or len(pool) > 50 or
             any(not isinstance(item, str) or not re.fullmatch(r'(?:[a-f0-9]{32}|legacy)', item) for item in pool) or
@@ -179,6 +186,11 @@ def validate_settings(config, *, download_only=False):
 
 
 def validate_method_urls(config, urls):
+    if config.get('youtube_pacing_mode') == 'adaptive' and 'yt_dlp' in download_methods(config):
+        from webapp.youtube_auth import is_youtube
+        from webapp.store import source_identity
+        if any(is_youtube([url]) and not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
+            raise ValueError('渐进调速需要逐个视频计量，请先导入播放列表展开为视频队列。')
     if any(method != 'yt_dlp' for method in download_methods(config)):
         from webapp.store import source_identity
         if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):

@@ -109,6 +109,26 @@ class TransactionTests(unittest.TestCase):
 
 
 class SubtitleTests(unittest.TestCase):
+    def test_adaptive_subtitle_account_limit_stops_upstream_and_releases_permits(self):
+        import yt_dlp
+        from web_worker import execute
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.downloads import YouTubeAccountLimited
+        self.config.update(youtube_pacing_mode='adaptive', youtube_start_interval=45)
+        parent, child = self.queue()
+        with patch.object(yt_dlp.YoutubeDL, 'download', side_effect=RuntimeError(
+                'Your account has been rate-limited by YouTube for up to an hour.')):
+            with self.assertRaises(YouTubeAccountLimited) as limited:
+                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
+        self.assertGreaterEqual(limited.exception.retry_after, 3600)
+        router = ChannelScheduler(self.store, self.config, child['id'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute(select(download_permits)).all(), [])
+            state = router._state(db, 'youtube-pacing:instance:local')
+        self.assertGreaterEqual(state['cooldown_until'] - time.time(), 3598)
+        self.assertEqual(len(state['starts']), 1)
+        self.assertTrue(self.video.is_file())
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

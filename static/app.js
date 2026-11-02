@@ -381,7 +381,6 @@ function renderYouTubeLogin() {
     element.hidden = !login || login.state === 'idle';
     element.textContent = login?.message || '';
   });
-  if (login?.state === 'succeeded' && state.config) state.config.youtube_cookie = 'Cookies/youtube.txt';
 }
 async function youtubeLoginAction(action) {
   if (youtubeLoginBusy) return;
@@ -1104,6 +1103,10 @@ async function runButton(button, operation) {
 }
 async function loadCookieProfiles() {
   const data = await api('/api/youtube/cookies');
+  if (state.config) {
+    state.config.youtube_cookie = data.cookie_path;
+    state.config.youtube_cookie_pool = data.items.filter(item => item.pooled).map(item => item.id);
+  }
   const poolEnabled = $('#youtube-cookie-pool-enabled');
   const poolStatus = $('#youtube-cookie-pool-status');
   if (poolEnabled) poolEnabled.checked = !!data.pool;
@@ -1207,12 +1210,18 @@ async function loadCookieProfiles() {
     remove.type = 'button';
     remove.className = 'button button-white';
     remove.textContent = '删除';
-    remove.disabled = item.active || item.pooled;
     remove.addEventListener('click', () => runButton(remove, async () => {
-      if (!window.confirm(`删除“${item.name}”？删除后需重新上传才能使用。`)) return;
+      const selectionNote = item.active ? (data.items.length > 1
+        ? '删除后将自动选择列表中的其他 Cookie 作为当前使用项。' : '删除后将进入无 Cookie 状态。') : '';
+      if (!window.confirm(`删除“${item.name}”？${selectionNote}删除后需重新上传才能使用。`)) return;
       const result = await api('/api/youtube/cookies/delete', { method: 'POST', body: { id: item.id } });
+      if (state.config) {
+        state.config.youtube_cookie = result.cookie_path;
+        state.config.youtube_cookie_pool = result.cookie_pool;
+      }
       toast(result.message);
       await loadCookieProfiles();
+      await refresh();
     }));
     row.append(poolCheck, details, check, select, remove);
     list.append(row);

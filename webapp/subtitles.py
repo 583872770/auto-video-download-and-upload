@@ -35,7 +35,7 @@ def run_subtitles(store, payload, report):
         return {'message': '视频文件已移除，字幕补下载已跳过。', 'skipped': True}
     if config.get('storage_mode') == 'test':
         return {'message': '测试模式不保留字幕。', 'skipped': True}
-    scheduler = ChannelScheduler(store, config, payload.get('_task_id'))
+    scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=payload['base'])
     scope = 'subtitles:youtube-origin'
     token = None
     if scheduler.enabled:
@@ -56,6 +56,8 @@ def run_subtitles(store, payload, report):
             error.retry_after = max(2, delay)
             raise error
     try:
+        if scheduler.youtube_pacing:
+            scheduler.wait_youtube_start(scheduler.channels[0])
         budget = DiskBudget(store.directory, config)
         with budget.lease('cache', task=payload.get('_task_id'), reserve=16 * MIB) as lease:
             config['_temporary_directory'] = str(lease.path)
@@ -78,13 +80,22 @@ def run_subtitles(store, payload, report):
                         raise RuntimeError('字幕补下载失败，视频已保留。')
             return {'message': '字幕补下载已完成；源视频没有所选语言时不生成字幕。', 'video_preserved': True}
     except Exception as error:
-        status, delay = throttle_details(error)
+        from webapp.downloads import YouTubeAccountLimited
+        account_limit = (YouTubeAccountLimited(str(error))
+                         if 'your account has been rate-limited' in str(error).lower() else None)
+        failure = account_limit or error
+        status, delay = throttle_details(failure)
+        if account_limit or scheduler.youtube_pacing and status in (429, 503):
+            scheduler.outcome(scheduler.channels[0], success=False, error=failure, phase='subtitles')
+            delay = max(delay or 0, getattr(failure, 'retry_after', 0))
         if scheduler.enabled and status in (429, 503):
             def cool(db, stamp):
                 state = scheduler._state(db, scope)
                 state.update(cooldown_until=stamp + (delay or 120), cooldown_status=status, cooldown_kind='subtitles')
                 scheduler._save(db, scope, state)
             scheduler.transaction_call(cool)
+        if account_limit:
+            raise account_limit from error
         raise
     finally:
         if token:

@@ -449,7 +449,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if not config.get('youtube_cookie'):
                 saved = profiles.items()
                 if saved:
-                    config['youtube_cookie'] = f"Cookies/profiles/{saved[0]['id']}.txt"
+                    config['youtube_cookie'] = profiles.require(saved[0]['id']).relative_to(base).as_posix()
                     config['youtube_cookie_pool'] = []
                     save_settings(config_path, config)
                     sync_runtime(config, base)
@@ -462,7 +462,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if config.get('youtube_cookie_pool'):
                 from webapp.cookie_pool import CookiePool
                 pool_status = CookiePool(store, config, base, None, strict=False).status()
-        return jsonify(items=items, pool=pool_status, custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
+        return jsonify(items=items, pool=pool_status, cookie_path=config.get('youtube_cookie', ''),
+                       custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
 
     @app.post('/api/youtube/cookies/check')
     def check_youtube_cookie_profile():
@@ -557,10 +558,44 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         identity = body().get('id')
         with media_lock, settings_lock:
             config, base = settings()
-            if identity in config.get('youtube_cookie_pool', []):
-                raise ValueError('这份 Cookie 正在账号池中，请先停止实例并关闭账号池，再删除。')
-            CookieProfiles(base, store).delete(identity, config.get('youtube_cookie', ''))
-        return jsonify(message='Cookie 已删除。')
+            profiles = CookieProfiles(base, store)
+            items = profiles.items(config.get('youtube_cookie', ''))
+            item = next((item for item in items if item['id'] == identity), None)
+            if item is None:
+                raise ValueError('Cookie 配置不存在。')
+            pooled = identity in config.get('youtube_cookie_pool', [])
+            changed = item['active'] or pooled
+            replacement = None
+            previous = dict(config)
+            original = config_path.read_bytes()
+            if changed:
+                require_login_idle()
+                if cookie_update_busy():
+                    raise LoginBusy('请先停止当前实例并等待全部下载结束，再删除正在使用的 Cookie。')
+                if item['active']:
+                    replacement = next((value for value in items if value['id'] != identity), None)
+                    config['youtube_cookie'] = (profiles.require(replacement['id']).relative_to(base).as_posix()
+                                                if replacement else '')
+                if pooled:
+                    remaining_pool = [value for value in config['youtube_cookie_pool'] if value != identity]
+                    config['youtube_cookie_pool'] = remaining_pool if len(remaining_pool) >= 2 else []
+            try:
+                if changed:
+                    save_settings(config_path, config)
+                    sync_runtime(config, base)
+                    youtube_auth.invalidate(preserve_block=True)
+                profiles.delete(identity)
+            except Exception:
+                if changed:
+                    config_path.write_bytes(original)
+                    profiles.restore_selected(previous.get('youtube_cookie', ''))
+                    sync_runtime(previous, base)
+                raise
+        message = ('Cookie 已删除，已自动选择其他 Cookie 作为当前使用项。' if replacement else
+                   'Cookie 已删除，当前未使用 Cookie。' if item['active'] else 'Cookie 已删除。')
+        return jsonify(message=message, cookie_path=config.get('youtube_cookie', ''),
+                       cookie_pool=config.get('youtube_cookie_pool', []),
+                       selection_changed=bool(item['active']))
 
     @app.get('/api/media')
     def media():

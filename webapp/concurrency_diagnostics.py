@@ -12,7 +12,8 @@ from webapp.throughput import automatic, policy_key
 
 
 def scopes_for(config, identity):
-    scopes = {'local-transfers:' + identity, 'local-connections:' + identity, 'route-probe:' + identity}
+    scopes = {'local-transfers:' + identity, 'local-connections:' + identity, 'route-probe:' + identity,
+              'youtube-pacing:instance:' + identity}
     for channel in registry(config):
         for group in {channel.upstream_group, 'youtube-origin'}:
             scopes.update(('upstream:' + group, 'connections:' + group,
@@ -97,8 +98,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         else:
             effective = min(effective, connection['effective'], local_connection['effective'])
         resources.extend((connection, local_connection))
+        separate_resolver = channel.adapter != 'yt_dlp' or auto or config.get('youtube_pacing_mode') == 'adaptive'
         resolving = ([resource('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group])]
-                     if channel.adapter != 'yt_dlp' or auto else [])
+                     if separate_resolver else [])
         if config.get('scheduler_mode') == 'auto':
             resolving.extend((resource('backend-resolver:' + backend_key(channel), backend_caps[backend_key(channel)][1]),
                               resource('route:' + channel.id, channel.task_limit),
@@ -111,7 +113,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         channel_state = states.get('channel:' + channel.id, {})
         rows.append({'id': channel.id, 'label': channel.label, 'group': group,
                      'transfer_limit': channel.transfer_limit, 'resolver_limit': channel.resolver_limit,
-                     'resolver_separate': channel.adapter != 'yt_dlp' or auto,
+                     'resolver_separate': separate_resolver,
                      'connection_limit': connection['limit'], 'connection_used': connection['used'],
                      'connection_units': connection_units, 'shared_limit': resources[1]['limit'],
                      'effective_limit': effective, 'occupied': resources[1]['used'],
@@ -158,6 +160,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         bottleneck = (rate or {}).get('reason') or '自动调节正在观察下载吞吐与服务器资源'
     else:
         bottleneck = '额度允许执行；实际任务数还取决于队列、启动间隔和视频处理阶段'
+    from webapp.youtube_pacing import summary as pacing_summary
+    pacing = (pacing_summary(config, states.get('youtube-pacing:instance:' + identity, {}), stamp)
+              if config.get('youtube_pacing_mode') == 'adaptive' else None)
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
@@ -174,6 +179,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
             'subtitle_mode': config.get('subtitle_mode', 'optional'),
             'youtube_start_interval': int(config.get('youtube_start_interval', 3)),
+            'youtube_pacing': pacing,
             'youtube_waiting': stages.get('waiting_request', 0),
             'cookie_waiting': stages.get('waiting_cookie', 0),
             'youtube_source_address': config.get('youtube_source_address', '') if config.get('proxy_mode') == 'direct' else '',

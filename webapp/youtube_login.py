@@ -2,6 +2,7 @@
 import asyncio
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import uuid
@@ -17,6 +18,25 @@ ACTIVE = ('starting', 'waiting', 'saving', 'committing', 'cancelling')
 
 class LoginBusy(ValueError):
     pass
+
+
+def browser_failure_message(error, stage):
+    """Classify errors without exposing browser arguments or proxy credentials."""
+    detail = str(error).lower()
+    if "executable doesn't exist" in detail or 'executable does not exist' in detail:
+        return '未找到 Chrome/Chromium。Docker 部署请重新构建并创建包含浏览器的容器（up -d --build）。'
+    if 'missing x server' in detail or '$display' in detail or 'cannot open display' in detail:
+        return '浏览器缺少显示环境。Docker 部署请检查 Xvfb 是否启动及 DISPLAY 配置，通过 noVNC 远程桌面查看登录窗口。'
+    if 'error while loading shared libraries' in detail or 'host system is missing dependencies' in detail:
+        return '浏览器缺少系统依赖。Docker 部署请重新构建包含 Chromium 和 Xvfb 的镜像。'
+    network_code = re.search(r'\bnet::(ERR_[A-Z0-9_]+)\b', str(error))
+    if network_code:
+        return f'浏览器访问 YouTube 失败（{network_code[1]}），请检查当前下载连接和所选代理节点。'
+    if 'timeout' in detail:
+        return '浏览器操作超时，请检查当前下载连接和所选代理节点能否访问 YouTube，并通过服务器远程桌面查看窗口。'
+    if stage == 'starting':
+        return '独立浏览器启动或打开 YouTube 失败，请检查 Chromium、Xvfb 显示环境及所选代理；Docker 登录窗口需通过 noVNC 远程桌面查看。'
+    return '登录浏览器已关闭或连接中断，请重新打开登录窗口；Docker 登录窗口需通过 noVNC 远程桌面查看。'
 
 
 class YouTubeLogin:
@@ -106,9 +126,10 @@ class YouTubeLogin:
                 state.update(state='succeeded', message='YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
         except LoginCancelled as error:
             state.update(state='cancelled', message=str(error))
-        except BrowserError:
+        except BrowserError as error:
             # Playwright errors may contain proxy URLs or browser process arguments.
-            state.update(state='failed', message='浏览器无法启动、访问 YouTube 或已被关闭。请检查浏览器安装和所选代理后重试；也可上传 Cookie 文件。')
+            message = browser_failure_message(error, state['state'])
+            state.update(state='failed', message=message)
         except (ValueError, RuntimeError) as error:
             state.update(state='failed', message=str(error))
         except Exception:

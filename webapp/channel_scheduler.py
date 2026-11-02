@@ -84,7 +84,7 @@ def local_failure(error):
 
 
 class ChannelScheduler:
-    def __init__(self, store, config, task_id=None):
+    def __init__(self, store, config, task_id=None, *, base=None):
         self.store, self.config, self.task_id = store, config, task_id
         self.channels = registry(config)
         self.caps = group_caps(self.channels)
@@ -96,6 +96,10 @@ class ChannelScheduler:
             self.backend_caps[key] = tuple(min(a, b) for a, b in zip(previous, limits))
         self.instance = store.fleet.id if store and store.fleet else 'local'
         self.enabled = bool(store and task_id)
+        self.youtube_pacing = None
+        if self.enabled and config.get('youtube_pacing_mode') == 'adaptive':
+            from webapp.youtube_pacing import YouTubePacing
+            self.youtube_pacing = YouTubePacing(self, base)
 
     def clock(self, db):
         if self.store.fleet:
@@ -370,6 +374,15 @@ class ChannelScheduler:
         This is a local request budget, not a claim about YouTube's quota. It is
         shared by this instance even when its proxy node changes.
         """
+        if self.youtube_pacing and channel.adapter == 'yt_dlp':
+            delay, reason = self.transaction_call(lambda db, stamp: self.youtube_pacing.reserve(db, stamp, channel))
+            if delay:
+                if on_wait:
+                    on_wait()
+                error = PipelineBusy(reason + '，已保留任务等待。')
+                error.retry_after = max(2, min(300, delay))
+                raise error
+            return
         interval = int(self.config.get('youtube_start_interval', 3))
         if self.config.get('_cookie_pool_selected'):
             # Account-specific spacing is admitted by CookiePool. Retain a
@@ -458,7 +471,12 @@ class ChannelScheduler:
         if not success and video_error and status != 429:
             return  # Content-specific failures must not poison shared health.
         def record(db, stamp):
-            nonlocal transient
+            nonlocal transient, delay
+            if self.youtube_pacing and channel.adapter == 'yt_dlp':
+                from webapp.proxy_health import connection_failure
+                delay = self.youtube_pacing.outcome(db, stamp, channel, success=success, size=size,
+                    status=status, delay=delay, transient=bool(not success and (transient or connection_failure(error)
+                        or isinstance(error, TimeoutError) or 'timed out' in str(error).lower())))
             key = 'channel:' + channel.id
             state = self._state(db, key)
             throttle = {'last_throttle_status': status, 'last_throttle_at': stamp,
@@ -506,3 +524,5 @@ class ChannelScheduler:
                     shared['recover_until'] = shared['cooldown_until'] + 60
                     self._save(db, key, shared)
         self.transaction_call(record)
+        if status == 429 and error is not None and getattr(error, 'account_rate_limited', False):
+            error.retry_after = max(getattr(error, 'retry_after', 0), delay or 0)

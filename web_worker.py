@@ -190,7 +190,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             return ('cobalt:' + backend_key(channel) if config.get('scheduler_mode') == 'auto'
                     and channel.adapter == 'bergung' else channel.adapter)
         automatic = len(channels) > 1
-        scheduler = ChannelScheduler(store, config, payload.get('_task_id'))
+        scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=base)
         meter = meter_for(store.directory if store else base / '.cache', worker_slot)
         validate_method_urls(config, payload['urls'])
         progress.state.update(download_method=methods[0], selected_download_methods=methods)
@@ -409,7 +409,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
             def report_warning(self, message, *args, **kwargs):
                 failure.warning(message)
-                if config.get('_cookie_pool_selected') and failure.cookie_rejected:
+                if (config.get('_cookie_pool_selected') or config.get('youtube_pacing_mode') == 'adaptive') and failure.cookie_rejected:
                     # Stop at the first invalid-session warning, before yt-dlp
                     # falls back to more clients or downloads anonymously.
                     result = YouTubeAuth(store).reject(failure.message(),
@@ -582,7 +582,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 progress.state.update(stage='waiting_request', speed=None, eta=None)
                 progress.save()
 
-            if youtube:
+            if youtube and not (provider == 'yt_dlp' and config.get('youtube_pacing_mode') == 'adaptive'):
                 scheduler.wait_youtube_start(channel, on_wait=wait_request)
                 progress.state.update(stage='extracting')
                 progress.save(force=True)
@@ -635,9 +635,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                     downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         else:
-                            if automatic_throughput(config):
+                            if automatic_throughput(config) or config.get('youtube_pacing_mode') == 'adaptive':
                                 for address in addresses:
                                     with resolving():
+                                        if youtube and config.get('youtube_pacing_mode') == 'adaptive':
+                                            scheduler.wait_youtube_start(channel, on_wait=wait_request)
                                         info = downloader.extract_info(address, download=False)
                                     if info is None:
                                         raise yt_dlp.utils.DownloadError(failure.message())
