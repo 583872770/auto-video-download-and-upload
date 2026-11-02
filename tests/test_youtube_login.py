@@ -46,6 +46,66 @@ class YoutubeCookieTests(unittest.TestCase):
 
 
 class YoutubeBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_label_comes_only_from_active_account_header(self):
+        from scripts.login_youtube import current_account_name
+        from playwright.async_api import TimeoutError as BrowserTimeoutError
+        page, avatar, header = MagicMock(), MagicMock(), MagicMock()
+        avatar.first, header.first = avatar, header
+        avatar.click, header.wait_for = AsyncMock(), AsyncMock()
+        page.locator.side_effect = lambda selector: {'#avatar-btn': avatar,
+            'ytd-active-account-header-renderer': header}[selector]
+        for labels, expected in [({'#email': ' alice@example.test ', '#account-name': 'Alice'}, 'alice@example.test'),
+                                 ({'#email': '', '#account-name': '频道名称'}, '频道名称'),
+                                 ({'#channel-handle': '@alice'}, '@alice'), ({}, None)]:
+            def field(selector):
+                element = MagicMock()
+                element.first = element
+                element.inner_text = AsyncMock(return_value=labels.get(selector, ''))
+                if selector not in labels:
+                    element.inner_text.side_effect = BrowserTimeoutError('Missing optional field')
+                return element
+            header.locator.side_effect = field
+            self.assertEqual(await current_account_name(page), expected)
+        header.wait_for.side_effect = BrowserTimeoutError('Account menu changed')
+        self.assertIsNone(await current_account_name(page))
+
+    async def test_login_returns_account_label_before_cookie_export_and_can_fall_back(self):
+        from scripts.login_youtube import login
+        for account_result in ('alice@example.test', asyncio.TimeoutError()):
+            page, avatar, refusal = AsyncMock(), MagicMock(), MagicMock()
+            avatar.first, refusal.first = avatar, refusal
+            avatar.wait_for = AsyncMock()
+            refusal.is_visible = AsyncMock(return_value=False)
+            page.locator = MagicMock(return_value=avatar)
+            page.get_by_text = MagicMock(return_value=refusal)
+            context = AsyncMock()
+            context.new_page.return_value = page
+            cookies = [cookie('.youtube.com')]
+            context.cookies.return_value = cookies
+            session = AsyncMock()
+            session.__aenter__.return_value = context
+            order = []
+            async def navigate(url, **kwargs):
+                order.append(url)
+            page.goto.side_effect = navigate
+            async def read_account(current_page):
+                self.assertIs(current_page, page)
+                order.append('account')
+                if isinstance(account_result, Exception):
+                    raise account_result
+                return account_result
+            with patch('scripts.login_youtube.async_playwright') as driver, \
+                    patch('scripts.login_youtube.browser_session', return_value=session), \
+                    patch('scripts.login_youtube.current_account_name', read_account), \
+                    patch('scripts.login_youtube.save_youtube_cookies') as save:
+                driver.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+                driver.return_value.__aexit__ = AsyncMock(return_value=False)
+                result = await login({}, Path('unused.txt'))
+            self.assertEqual(result['account_name'], account_result if isinstance(account_result, str) else None)
+            self.assertEqual(order, ['https://www.youtube.com/', 'account', 'https://www.youtube.com/robots.txt'])
+            save.assert_called_once_with(cookies, Path('unused.txt'))
+            session.__aexit__.assert_awaited_once()
+
     async def test_timeout_waits_for_browser_cleanup_without_export(self):
         from scripts.login_youtube import login
         closed = []

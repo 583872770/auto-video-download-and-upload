@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
+import unicodedata
 import uuid
 
 from playwright.async_api import Error as BrowserError
@@ -18,6 +20,16 @@ ACTIVE = ('starting', 'waiting', 'saving', 'committing', 'cancelling')
 
 class LoginBusy(ValueError):
     pass
+
+
+def browser_cookie_name(account_name):
+    """Keep the account label and a timestamp within the profile's name limit."""
+    label = account_name if isinstance(account_name, str) else ''
+    label = ' '.join(''.join(char for char in label
+                            if not unicodedata.category(char).startswith('C')).split())
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    suffix = ' · ' + stamp
+    return label[:80 - len(suffix)].rstrip() + suffix if label else '浏览器登录 ' + stamp
 
 
 def browser_failure_message(error, stage):
@@ -116,13 +128,14 @@ class YouTubeLogin:
         try:
             with tempfile.TemporaryDirectory(prefix='cookies-', dir=self.directory) as staging:
                 output = Path(staging) / 'youtube.txt'
-                asyncio.run(login(config, output, on_status=report, cancelled=Cancellation()))
+                result = asyncio.run(login(config, output, on_status=report, cancelled=Cancellation()))
                 with self.lock:
                     if cancel_file.exists():
                         raise LoginCancelled('登录已取消，已有 Cookie 保持不变。')
                     state.update(state='committing', message='正在保存登录结果…')
                     self._write(state)
-                message = self.install(output.read_bytes())
+                account_name = result.get('account_name') if isinstance(result, dict) else None
+                message = self.install(output.read_bytes(), account_name=account_name)
                 state.update(state='succeeded', message=message or 'YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
         except LoginCancelled as error:
             state.update(state='cancelled', message=str(error))

@@ -17,6 +17,25 @@ class LoginCancelled(RuntimeError):
     pass
 
 
+async def current_account_name(page):
+    """Read only the active YouTube account header, never other signed-in accounts."""
+    try:
+        await page.locator('#avatar-btn').first.click(timeout=2000)
+        header = page.locator('ytd-active-account-header-renderer').first
+        await header.wait_for(state='visible', timeout=3000)
+        for selector in ('#email', '#account-name', '#channel-handle'):
+            try:
+                label = await header.locator(selector).first.inner_text(timeout=1000)
+            except BrowserError:
+                continue
+            label = ' '.join(label.split())
+            if label:
+                return label
+    except BrowserError:
+        pass
+    return None
+
+
 async def login(config, output, *, on_status=None, cancelled=None, timeout_seconds=600):
     """Use a fresh visible session; cancellation also closes its browser."""
     def report(state, message):
@@ -64,11 +83,16 @@ async def _login(config, output, report):
                     continue
                 # Freeze the session before exporting, as recommended by yt-dlp.
                 report('saving', '已确认登录，正在保存 YouTube Cookie…')
+                try:
+                    account_name = await asyncio.wait_for(current_account_name(page), timeout=5)
+                except asyncio.TimeoutError:
+                    # Account labels are optional; a menu change must not lose a valid login.
+                    account_name = None
                 await page.goto('https://www.youtube.com/robots.txt', wait_until='domcontentloaded', timeout=30000)
                 cookies = await context.cookies(['https://www.youtube.com/'])
                 save_youtube_cookies(cookies, output)
                 print(f'YouTube 登录已确认，Netscape Cookie 已保存到：{output}', flush=True)
-                return
+                return {'account_name': account_name}
 
 
 def main(argv=None):

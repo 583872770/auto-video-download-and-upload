@@ -10,12 +10,25 @@ from playwright.async_api import Error as BrowserError
 import yaml
 
 from tests import test_web, test_scale
-from webapp.youtube_login import YouTubeLogin, LoginBusy, browser_failure_message
+from webapp.youtube_login import YouTubeLogin, LoginBusy, browser_cookie_name, browser_failure_message
 
 COOKIE = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only-secret\n'
 
 
 class BrowserFailureTests(unittest.TestCase):
+    def test_browser_profile_name_keeps_account_and_time_within_limit(self):
+        with patch('webapp.youtube_login.time.strftime', return_value='2026-11-02 18:00:00'):
+            self.assertEqual(browser_cookie_name(' alice@example.test '),
+                             'alice@example.test · 2026-11-02 18:00:00')
+            self.assertEqual(browser_cookie_name('频道名称'), '频道名称 · 2026-11-02 18:00:00')
+            for missing in (None, '', '  ', '\x00', {'unexpected': 'value'}):
+                self.assertEqual(browser_cookie_name(missing), '浏览器登录 2026-11-02 18:00:00')
+            name = browser_cookie_name('\x00' + '长名称' * 80 + '\n')
+            self.assertEqual(len(name), 80)
+            self.assertTrue(name.endswith(' · 2026-11-02 18:00:00'))
+            self.assertNotIn('\x00', name)
+            self.assertNotIn('\n', name)
+
     def test_failures_identify_environment_network_and_closed_windows_safely(self):
         cases = [
             ("BrowserType.launch: Executable doesn't exist at /private/path", 'starting', '未找到'),
@@ -41,6 +54,7 @@ class LoginFixture:
         self.complete = threading.Event()
         self.config = None
         self.failure = None
+        self.account_name = None
 
     async def run(self, config, output, *, on_status, cancelled):
         from scripts.login_youtube import LoginCancelled
@@ -54,6 +68,7 @@ class LoginFixture:
         if self.failure:
             raise self.failure
         output.write_bytes(COOKIE)
+        return {'account_name': self.account_name}
 
 
 class LoginContract:
@@ -120,6 +135,7 @@ class LoginContract:
         self.assertEqual(captured, [target.read_bytes()])
 
     def test_login_during_download_saves_new_profile_without_replacing_running_credentials(self):
+        self.fixture.account_name = 'busy-account@example.test'
         original_cookie = COOKIE.replace(b'fixture-only-secret', b'original-fixture-secret')
         self.assertEqual(self.post('/api/youtube/cookie', data={
             'cookie': (io.BytesIO(original_cookie), 'cookie.txt')}).status_code, 201)
@@ -144,6 +160,7 @@ class LoginContract:
         added = [item for item in profiles if item['id'] != 'legacy']
         self.assertEqual(len(added), 1)
         self.assertFalse(added[0]['active'])
+        self.assertTrue(added[0]['name'].startswith('busy-account@example.test · '))
         from webapp.cookie_profiles import CookieProfiles
         self.assertIn(b'fixture-only-secret', CookieProfiles(self.root, self.store).require(added[0]['id']).read_bytes())
         self.assertIn('已新增 Cookie', self.manager.status()['message'])
@@ -183,6 +200,22 @@ class LoginContract:
             self.assertEqual((self.root / 'Cookies/youtube.txt').read_bytes(), original)
             identities = current
         self.assertEqual(len(identities), 3)
+
+    def test_same_browser_account_adds_separate_named_profiles(self):
+        self.fixture.account_name = 'alice@example.test'
+        self.start()
+        self.assertEqual(self.finish()['state'], 'succeeded')
+        first = self.client.get('/api/youtube/cookies').json['items']
+        self.fixture = LoginFixture()
+        self.fixture.account_name = 'alice@example.test'
+        with patch('webapp.youtube_login.login', self.fixture.run):
+            self.start()
+            self.assertEqual(self.finish()['state'], 'succeeded')
+        items = self.client.get('/api/youtube/cookies').json['items']
+        self.assertEqual(len(items), 2)
+        self.assertEqual(len({item['id'] for item in items}), 2)
+        self.assertTrue(all(item['name'].startswith('alice@example.test · ') for item in items))
+        self.assertEqual(next(item['name'] for item in items if item['id'] == first[0]['id']), first[0]['name'])
 
     def test_duplicate_login_and_conflicting_mutations_are_blocked(self):
         self.start()

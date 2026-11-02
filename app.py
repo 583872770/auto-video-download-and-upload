@@ -306,7 +306,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                        download_methods=download_methods(config),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 
-    from webapp.youtube_login import YouTubeLogin, LoginBusy
+    from webapp.youtube_login import YouTubeLogin, LoginBusy, browser_cookie_name
 
     @app.errorhandler(LoginBusy)
     def login_busy(error):
@@ -389,12 +389,12 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                         target.unlink(missing_ok=True)
                     raise
 
-    def install_browser_cookie(data):
+    def install_browser_cookie(data, *, account_name=None):
         with media_lock, settings_lock:
             from webapp.cookie_profiles import CookieProfiles
             config, base = settings()
             profiles = CookieProfiles(base, store)
-            item = profiles.add('浏览器登录 ' + time.strftime('%Y-%m-%d %H:%M:%S'), data)
+            item = profiles.add(browser_cookie_name(account_name), data)
             name = item['name']
             if cookie_update_busy():
                 return f'YouTube 登录成功，已新增 Cookie「{name}」。当前下载继续使用原 Cookie；停止当前实例后可在列表中选择新 Cookie。'
