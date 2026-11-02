@@ -47,9 +47,15 @@ def read_context(db, configurations, stamp):
 
 def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True):
     states, usage, disks = context
-    requested = int(config.get('worker_count', 1))
     auto = automatic(config)
     fresh = bool(rate and rate.get('policy') == policy_key(config) and 0 <= stamp - rate.get('time', 0) < 20)
+    pooled = bool(config.get('youtube_cookie_pool'))
+    cookie_pool = (rate or {}).get('cookie_pool') if pooled and fresh else None
+    if pooled and (not cookie_pool or not cookie_pool.get('known')):
+        cookie_pool = {'known': False, 'capacity': 0,
+                       'configured_files': len(config['youtube_cookie_pool']),
+                       'reason': 'Cookie 会话容量尚未取得新鲜采样，无法确认当前额度'}
+    requested = cookie_pool['capacity'] if pooled else int(config.get('worker_count', 1))
     transfers = int(rate['transfers']) if auto and fresh else min(requested, 2) if auto else requested
     channels = registry(config)
     caps = group_caps(channels)
@@ -98,7 +104,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         else:
             effective = min(effective, connection['effective'], local_connection['effective'])
         resources.extend((connection, local_connection))
-        separate_resolver = channel.adapter != 'yt_dlp' or auto or config.get('youtube_pacing_mode') == 'adaptive'
+        separate_resolver = channel.adapter != 'yt_dlp' or auto or pooled or config.get('youtube_pacing_mode') == 'adaptive'
         resolving = ([resource('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group])]
                      if separate_resolver else [])
         if config.get('scheduler_mode') == 'auto':
@@ -132,13 +138,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     waits = Counter(p.get('transfer_wait_resource') or 'local-transfers' for p in progress if p.get('stage') == 'waiting_transfer')
     disk = disks.get(identity, {})
     disk_fresh = 0 <= stamp - disk.get('time', 0) < 90
-    cookie_pool = None
-    if config.get('youtube_cookie_pool'):
-        cookie_pool = (rate or {}).get('cookie_pool') if fresh else None
-        if not cookie_pool or not cookie_pool.get('known'):
-            cookie_pool = {'known': False, 'capacity': 0,
-                           'configured_files': len(config['youtube_cookie_pool']),
-                           'reason': 'Cookie 会话容量尚未取得新鲜采样，无法确认当前额度'}
+    if pooled:
         upper = min(upper, cookie_pool['capacity'])
     if disk_fresh and disk.get('blocked'):
         upper = 0
@@ -164,7 +164,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     pacing = (pacing_summary(config, states.get('youtube-pacing:instance:' + identity, {}), stamp)
               if config.get('youtube_pacing_mode') == 'adaptive' else None)
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
-            'mode': 'auto' if auto else 'manual', 'sample_fresh': fresh,
+            'mode': 'cookie_pool' if pooled else 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
             'local_health': (rate or {}).get('risk_local'),
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,

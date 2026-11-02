@@ -22,16 +22,19 @@ class PipelineBusy(RuntimeError):
 
 
 def policy_key(config):
-    return [config.get('throughput_mode', 'manual'), int(config.get('worker_count', 1)),
-            int(config.get('yt5s_browser_count', 2)), int(config.get('bandwidth_mbps', 0)),
+    pooled = bool(config.get('youtube_cookie_pool'))
+    return ['cookie_pool' if pooled else config.get('throughput_mode', 'manual'),
+            0 if pooled else int(config.get('worker_count', 1)),
+            int(config.get('yt5s_browser_count', 2)), 0 if pooled else int(config.get('bandwidth_mbps', 0)),
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
-                'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool',
+                'youtube_cookie_session_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):
     # Channel routing and instance concurrency are independent policies.
-    return config.get('throughput_mode', 'manual') == 'auto'
+    return not config.get('youtube_cookie_pool') and config.get('throughput_mode', 'manual') == 'auto'
 
 
 def _number(path):
@@ -104,6 +107,21 @@ def _atomic(path, data):
 
 
 def runtime_limits(config, directory):
+    if config.get('youtube_cookie_pool'):
+        # Before a fresh snapshot, start one worker per configured file. The
+        # database pool gate verifies deduplication, warmup and cooling on admission.
+        target = min(MAX_TRANSFERS, max(1, len(config['youtube_cookie_pool'])))
+        result = {'transfers': target, 'workers': target, 'browsers': 1,
+                  'mode': 'cookie_pool', 'reason': 'Cookie 池独立调度，等待会话容量采样'}
+        try:
+            saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
+            if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
+                    and (saved.get('cookie_pool') or {}).get('known')):
+                target = max(1, min(MAX_TRANSFERS, int(saved['cookie_pool']['capacity'])))
+                result.update(saved, transfers=target, workers=target, mode='cookie_pool')
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return result
     requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
     if not automatic(config):
         result = {'transfers': requested, 'workers': requested,
@@ -125,13 +143,7 @@ def runtime_limits(config, directory):
             return saved
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    # An absent/stale supervisor snapshot starts conservatively, but a pool
-    # should not collapse to one worker merely because its first sample is
-    # missing.  Admission still verifies the effective core-session capacity
-    # before each task, so duplicate/invalid Cookie files cannot increase
-    # actual YouTube concurrency.
-    pool_size = len(config.get('youtube_cookie_pool') or [])
-    fallback = min(requested, pool_size) if pool_size else 2
+    fallback = 2
     return {'transfers': min(requested, fallback), 'workers': min(requested, fallback),
             'browsers': 1, 'mode': 'auto', 'reason': '等待资源采样'}
 
@@ -183,7 +195,12 @@ class ThroughputController:
         if not force and self.state is not None and tick - self.last < 5 and self.state['policy'] == policy_key(config):
             return self.state
         resources = self.sample()
-        requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
+        pooled = bool(config.get('youtube_cookie_pool'))
+        if pooled:
+            cookie_capacity = cookie_capacity or {'known': False, 'capacity': 0,
+                'reason': 'Cookie 会话容量尚未采样', 'configured_files': len(config['youtube_cookie_pool'])}
+        requested = (max(1, min(MAX_TRANSFERS, int(cookie_capacity['capacity']))) if pooled else
+                     max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1)))))
         browser_requested = max(1, min(16, int(config.get('yt5s_browser_count', 2))))
         browser_methods = {'yt5s', 'yt1d', 'bergung'} & set(config.get('download_methods') or [config.get('download_method', 'yt_dlp')])
         browser_ceiling = min(browser_requested, max(1, math.floor(resources['cpu_cores'] * .75)),
@@ -200,14 +217,10 @@ class ThroughputController:
         db_worker_cap = max(1, int(os.environ.get('VIDEO_WORKER_DB_CONNECTION_BUDGET', '48')) // worker_pool)
         nominal_workers = min(nominal_workers, db_worker_cap)
         ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
-        pooled = bool(config.get('youtube_cookie_pool'))
         if pooled:
-            # A pool permit surrounds the whole task, including preparation.
-            # Do not spawn extra parsers that cannot acquire a session permit.
-            cookie_capacity = cookie_capacity or {'known': False, 'capacity': 0,
-                'reason': 'Cookie 会话容量尚未采样', 'configured_files': len(config['youtube_cookie_pool'])}
-            ceiling = min(ceiling, max(1, int(cookie_capacity['capacity'])))
-        transfers = min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2)))
+            ceiling = requested
+        transfers = (requested if pooled else
+                     min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2))))
         counts = {}
         group_active = {}
         group_ready = {}
@@ -358,13 +371,6 @@ class ThroughputController:
         for group, cap in upstream_caps.items():
             cap = min(cap, transfers)
             initial_limit = min(2, cap)
-            if pooled and group == 'youtube-origin':
-                # Start one transfer per proven core session.  Per-account
-                # permits still cap each session, so this does not multiply a
-                # duplicate Cookie or bypass the account pool's limits.
-                sessions = int((cookie_capacity or {}).get('effective_sessions', 0))
-                if sessions:
-                    initial_limit = min(cap, max(initial_limit, sessions))
             control = self.group_control.setdefault(group, {'limit': initial_limit, 'adjusted': tick, 'until': 0})
             limit = min(control['limit'], cap)
             total = {name: sum(item[3].get(group, {}).get(name, 0) for item in self.metric_history)
@@ -398,19 +404,16 @@ class ThroughputController:
                              'ready': group_ready.get(group, 0),
                              'failed': total['failed'], 'upstream_failed': total['upstream_failed'], 'succeeded': total['succeeded']}
         if not automatic(config):
-            transfers, workers, browsers = requested, requested, browser_requested
-            reason = '使用手动并发'
+            transfers, workers, browsers = requested, requested, 1 if pooled else browser_requested
+            reason = cookie_capacity.get('reason', 'Cookie 池独立调度') if pooled else '使用手动并发'
         else:
             # Extra preparation workers are bounded; a ready URL waits inside
             # its owning leased task, never in an unbounded or cross-node cache.
             preparation = browsers + min(2, browsers) if browser_methods else 2
             workers = max(transfers, min(MAX_WORKERS, nominal_workers, transfers + preparation))
             workers = min(workers, nominal_workers, sum(value['limit'] for value in groups.values()) + preparation)
-            if pooled:
-                workers = min(workers, max(1, int(cookie_capacity['capacity'])))
-                if cookie_capacity['capacity'] < requested:
-                    reason = cookie_capacity.get('reason') or 'Cookie 会话容量限制实例并发'
-        self.state = {'time': time.time(), 'policy': policy_key(config), 'mode': 'auto' if automatic(config) else 'manual',
+        self.state = {'time': time.time(), 'policy': policy_key(config),
+                      'mode': 'cookie_pool' if pooled else 'auto' if automatic(config) else 'manual',
                       'transfers': transfers, 'workers': workers, 'browsers': browsers,
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
                       'media_receive_mbps': round(media_rate * 8 / 1e6, 2),
@@ -423,7 +426,8 @@ class ThroughputController:
                       'cpu_cores': round(resources['cpu_cores'], 2),
                       'memory_available_mb': round(resources['memory_available'] / MIB),
                       'stages': counts, 'ready_transfer_count': counts.get('waiting_transfer', 0),
-                      'transfer_wait_resources': wait_resources, 'target_mbps': int(config.get('bandwidth_mbps', 0)),
+                      'transfer_wait_resources': wait_resources,
+                      'target_mbps': 0 if pooled else int(config.get('bandwidth_mbps', 0)),
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
                       'reason': reason, 'control_metric': 'media_received_bytes',
                       'cookie_pool': cookie_capacity if pooled else None}

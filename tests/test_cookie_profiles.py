@@ -55,11 +55,26 @@ class CookieProfileTests(unittest.TestCase):
             probe.assert_not_called()
         self.assertEqual(result.status_code, 200)
         capacity = result.json['concurrency']
-        self.assertEqual(capacity['requested'], 16)
+        self.assertEqual(capacity['requested'], 1)
+        self.assertEqual(capacity['mode'], 'cookie_pool')
+        self.assertEqual(capacity['cookie_pool']['capacity'], 1)
         self.assertEqual(capacity['effective_limit'], 1)
         self.assertEqual(capacity['cookie_pool']['configured_files'], 2)
         self.assertEqual(capacity['cookie_pool']['effective_sessions'], 1)
         self.assertNotIn('PRIVATE_COOKIE_VALUE', result.text)
+
+    def test_session_limit_setting_saves_and_pool_list_reports_effective_limit(self):
+        identity = self.add().json['item']['id']
+        response = self.client.put('/api/config', json={'youtube_cookie_pool': [identity],
+            'youtube_cookie_session_limit': 2, 'worker_count': 6}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.client.get('/api/config').json['config']['youtube_cookie_session_limit'], 2)
+        pool = self.client.get('/api/youtube/cookies').json['pool']
+        self.assertEqual(pool['session_limit'], 2)
+        self.assertEqual(pool['execution_limit'], 64)
+        self.assertEqual(pool['accounts'][0]['configured_limit'], 2)
+        self.assertEqual(pool['accounts'][0]['limit'], 1)
+        self.assertIn('name="youtube_cookie_session_limit"', self.client.get('/').text)
 
     def test_database_restores_deleted_cache_and_metadata(self):
         from webapp.cookie_profiles import CookieProfiles

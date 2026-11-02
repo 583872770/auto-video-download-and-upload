@@ -635,7 +635,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                     downloader.process_ie_result(info, download=True)
                             failed = downloader._download_retcode
                         else:
-                            if automatic_throughput(config) or config.get('youtube_pacing_mode') == 'adaptive':
+                            if automatic_throughput(config) or config.get('youtube_cookie_pool') or config.get('youtube_pacing_mode') == 'adaptive':
                                 for address in addresses:
                                     with resolving():
                                         if youtube and config.get('youtube_pacing_mode') == 'adaptive':

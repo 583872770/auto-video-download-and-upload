@@ -7,10 +7,21 @@ from sqlalchemy import select
 
 from app import create_app
 from tests import test_hybrid, test_scale
-from webapp.database import instances, job_profiles
+from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_cookie_session_limit_saves_as_instance_policy(self):
+        response = self.client.put('/api/config', json={'youtube_cookie_session_limit': 5}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.client.get('/api/config').json['config']['youtube_cookie_session_limit'], 5)
+        if self.store.fleet:
+            self.assertEqual(self.store.runtime()['youtube_cookie_session_limit'], 5)
+        else:
+            with self.store.connect() as db:
+                saved = json.loads(db.execute(select(settings.c.value).where(settings.c.key == 'download_settings')).scalar_one())
+            self.assertEqual(saved['config']['youtube_cookie_session_limit'], 5)
+
     def test_adaptive_pacing_saves_as_instance_policy(self):
         submitted = {'youtube_pacing_mode': 'adaptive', 'youtube_start_interval': 120,
                      'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200}

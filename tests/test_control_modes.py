@@ -54,8 +54,9 @@ class ControlModeTests(unittest.TestCase):
             self.assertNotEqual(policy_key(config), policy_key({**config, 'youtube_cookie_pool': []}))
             Path(root, 'throughput.json').unlink()
             self.assertEqual(runtime_limits(config, root)['workers'], 1)
+            self.assertNotEqual(policy_key(config), policy_key({**config, 'youtube_cookie_session_limit': 4}))
 
-    def test_custom_mode_keeps_fixed_workers_but_reports_fresh_session_limits(self):
+    def test_pool_ignores_custom_worker_setting_and_reports_session_limits(self):
         config = {'throughput_mode': 'manual', 'worker_count': 16, 'download_methods': ['yt_dlp'],
                   'youtube_cookie_pool': ['a' * 32]}
         sample = dict(cpu_cores=4, memory_total=8192*MIB, memory_available=4096*MIB,
@@ -65,10 +66,56 @@ class ControlModeTests(unittest.TestCase):
             with patch.object(controller, 'sample', return_value=sample):
                 controller.update(config, cookie_capacity={'known': True, 'capacity': 1, 'reason': 'session cap'})
             rate = runtime_limits(config, root)
-            self.assertEqual(rate['workers'], 16)
+            self.assertEqual(rate['workers'], 1)
+            self.assertEqual(rate['mode'], 'cookie_pool')
             self.assertEqual(rate['cookie_pool']['capacity'], 1)
             value = diagnose(config, 'node', [], rate, ({}, {}, {}), time.time())
             self.assertEqual(value['effective_limit'], 1)
+
+    def test_pool_dispatch_is_independent_of_mode_worker_limit_and_auto_pressure(self):
+        config = {'throughput_mode': 'auto', 'worker_count': 1, 'download_methods': ['yt_dlp'],
+                  'youtube_cookie_pool': ['a' * 32, 'b' * 32], 'youtube_cookie_session_limit': 4,
+                  'bandwidth_mbps': 100}
+        capacity = {'known': True, 'capacity': 8, 'effective_sessions': 2, 'reason': 'pool capacity'}
+        sample = dict(cpu_cores=.5, memory_total=512*MIB, memory_available=64*MIB,
+                      cpu_percent=99, io_pressure=20, rx=0)
+        with tempfile.TemporaryDirectory() as root:
+            tick = [100]
+            controller = ThroughputController(root, clock=lambda: tick[0])
+            with patch.object(controller, 'sample', return_value=sample):
+                for mode in ('auto', 'manual'):
+                    for workers in (1, 64):
+                        changed = {**config, 'throughput_mode': mode, 'worker_count': workers}
+                        self.assertFalse(automatic(changed))
+                        self.assertEqual(policy_key(config), policy_key(changed))
+                        tick[0] += 61
+                        state = controller.update(changed, force=True, cookie_capacity=capacity)
+                        self.assertEqual((state['workers'], state['transfers'], state['mode']), (8, 8, 'cookie_pool'))
+                        self.assertEqual(state['target_mbps'], 0)
+                        runtime = runtime_limits(changed, root)
+                        self.assertEqual((runtime['workers'], runtime['transfers']), (8, 8))
+                        diagnostic = diagnose(changed, 'node', [], state, ({}, {}, {}), time.time())
+                        self.assertEqual(diagnostic['requested'], 8)
+                        self.assertEqual(diagnostic['mode'], 'cookie_pool')
+            self.assertNotEqual(policy_key(config), policy_key({**config, 'youtube_cookie_pool': []}))
+
+    def test_disabling_pool_restores_saved_mode_and_worker_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            for mode in ('manual', 'auto'):
+                config = {'throughput_mode': mode, 'worker_count': 7,
+                          'youtube_cookie_pool': ['a' * 32], 'bandwidth_mbps': 100}
+                saved = dict(config)
+                self.assertEqual(runtime_limits(config, root)['mode'], 'cookie_pool')
+                disabled = {**config, 'youtube_cookie_pool': []}
+                limits = runtime_limits(disabled, root)
+                self.assertEqual(limits['mode'], mode)
+                self.assertEqual(limits['workers'], 7 if mode == 'manual' else 2)
+                self.assertEqual(automatic(disabled), mode == 'auto')
+                self.assertEqual(config, saved)
+
+    def test_pool_capacity_respects_executor_ceiling(self):
+        result = capacity_summary({'accounts': [{'id': 'a', 'limit': 64}, {'id': 'b', 'limit': 64}]}, 100)
+        self.assertEqual(result['capacity'], 64)
 
     def test_unrelated_nic_traffic_never_grows_media_concurrency(self):
         config = {'throughput_mode': 'auto', 'worker_count': 16, 'download_methods': ['yt_dlp']}

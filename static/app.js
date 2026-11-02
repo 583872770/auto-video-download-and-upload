@@ -553,6 +553,11 @@ function renderConcurrencyDraft() {
   renderYouTubePacingRuntime();
   const form = $('#settings-form');
   const number = name => Number(form.elements[name]?.value || 0);
+  if (state.config?.youtube_cookie_pool?.length) {
+    $('#concurrency-config-note').textContent = `Cookie 池独立调度：每会话预热前 1 个任务，预热后最多 ${number('youtube_cookie_session_limit')} 个；不使用运行模式与实例并发上限。相同核心会话合并计数，总执行容量最多 64；启动间隔、冷却及渠道连接额度仍生效。`;
+    $('#concurrency-config-note').classList.remove('capacity-draft-warning');
+    return;
+  }
   const auto = form.elements.scheduler_mode?.value === 'auto';
   const requested = number('worker_count'), channel = number('builtin_transfer_limit') || (auto ? 32 : 8);
   const shared = number('builtin_connection_limit') || (auto ? 64 : 16);
@@ -653,12 +658,16 @@ function renderDownloadMethod() {
   const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
   const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
   const throughput = $('#settings-form [name="throughput_mode"]');
-  // Choosing a channel does not change how concurrency is controlled.
-  throughput.disabled = false;
+  const pooled = !!state.config?.youtube_cookie_pool?.length;
+  throughput.disabled = pooled;
+  $('#settings-form [name="worker_count"]').disabled = pooled;
+  $('#settings-form [name="bandwidth_mbps"]').disabled = pooled;
   const controlNote = $('#control-mode-note');
-  if (controlNote) controlNote.textContent = throughput.value === 'auto'
-    ? '自动调节：依据媒体下载吞吐、资源压力和 Cookie 会话容量调整并发；未获得新鲜会话采样时保守等待。'
-    : '自定义：保持设定的实例并发上限；Cookie 会话名额、启动间隔、渠道、连接及冷却仍会限制实际数量。';
+  if (controlNote) controlNote.textContent = pooled
+    ? 'Cookie 池已启用，按有效会话与每会话任务上限独立调度。运行模式、实例并发上限和自动调节带宽目标暂不生效；关闭池后恢复原设置。'
+    : throughput.value === 'auto'
+    ? '自动调节：依据媒体下载吞吐、资源压力和渠道状态，在实例并发上限内调整并发。'
+    : '自定义：保持设定的实例并发上限；启动间隔、渠道、连接及冷却仍会限制实际数量。';
   if (methods.includes('downmp3')) notes.push(`downmp3 ${qualityLabel(state.config?.downmp3_quality, 'downmp3')}，转换等待上限 ${state.config?.downmp3_timeout ?? 300} 秒。`);
   if (methods.includes('yt5s')) notes.push(`yt5s ${qualityLabel(state.config?.yt5s_quality, 'yt5s')}，浏览器并发 ${state.config?.yt5s_browser_count ?? 2}。${tools && (!tools.yt5s_browser || !tools.yt5s_display) ? '当前缺少浏览器或显示环境。' : '可能需要网站验证。'}`);
   if (methods.includes('yt1d')) notes.push(`yt1d ${qualityLabel(state.config?.yt1d_quality, 'yt1d')}，验证 / 转换每阶段等待上限 ${state.config?.yt1d_timeout ?? 180} 秒，与 yt5s 共享 ${state.config?.yt5s_browser_count ?? 2} 个浏览器名额，可能需要网站验证。`);
@@ -766,7 +775,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     }
     const status = state.status;
     if (!status) return;
-    $('#database-backend').textContent = `${failed.length ? '部分状态暂未更新' : status.database === 'mysql' ? 'MySQL 最近请求成功' : 'SQLite 测试模式'} · ${status.worker_count} 个下载进程 · 素材按页查询`;
+    $('#database-backend').textContent = `${failed.length ? '部分状态暂未更新' : status.database === 'mysql' ? 'MySQL 最近请求成功' : 'SQLite 测试模式'} · ${status.concurrency?.mode === 'cookie_pool' ? 'Cookie 池独立调度' : `${status.worker_count} 个下载进程`} · 素材按页查询`;
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
     $('#worker-status').hidden = !paused.length;
@@ -1114,6 +1123,7 @@ async function loadCookieProfiles() {
   if (state.config) {
     state.config.youtube_cookie = data.cookie_path;
     state.config.youtube_cookie_pool = data.items.filter(item => item.pooled).map(item => item.id);
+    renderDownloadMethod();
   }
   const poolEnabled = $('#youtube-cookie-pool-enabled');
   const poolStatus = $('#youtube-cookie-pool-status');
@@ -1132,7 +1142,7 @@ async function loadCookieProfiles() {
     const sessions = data.pool.effective_sessions ?? data.pool.effective_accounts;
     note.textContent = `${data.items.filter(item => item.pooled).length} 份 Cookie · ${sessions} 个核心会话 · Google 账号身份未核验。` +
       (data.pool.halted ? `会话池已停止：${data.pool.reason}` :
-      `每会话先运行 1 个任务，预热后最多 2 个，启动间隔至少 60 秒。不同会话不等于不同账号，也不代表独立源站额度。点击“使用此 Cookie”会关闭会话池。`);
+      `Cookie 池独立调度：当前会话容量 ${data.pool.capacity_summary.capacity}，每会话预热后最多 ${data.pool.session_limit} 个任务；不使用运行模式与实例并发上限。可在“Cookie 与登录”的高级设置中修改。启动间隔与冷却继续生效。不同会话不代表独立源站额度。点击“使用此 Cookie”会关闭会话池。`);
     if (data.pool.halted) {
       const recover = document.createElement('button');
       recover.type = 'button';
@@ -1178,7 +1188,7 @@ async function loadCookieProfiles() {
       const policy = document.createElement('p');
       policy.className = 'micro-copy cookie-profile-status';
       const cooldown = Math.max(0, Math.ceil((account.cooldown_until || 0) - Date.now() / 1000));
-      policy.textContent = `会话调度：并发上限 ${account.limit || 1}，启动间隔至少 ${account.interval || 60} 秒，成功 ${account.successes || 0} 次` +
+      policy.textContent = `会话调度：设置上限 ${account.configured_limit || data.pool.session_limit}，实际生效上限 ${account.limit || 1}，启动间隔至少 ${account.interval || 60} 秒，成功 ${account.successes || 0} 次` +
         (cooldown ? `，冷却剩余约 ${Math.ceil(cooldown / 60)} 分钟` : '') +
         (account.shared_with ? '；与其他文件属于同一会话，合并并发和请求额度' : '') +
         (account.unavailable ? '；Cookie 文件需重新检测' : '');
@@ -1460,6 +1470,7 @@ $('#settings-form').addEventListener('submit', event => {
       $('#settings-save-state').textContent = '当前实例设置已保存，后续领取的视频使用新策略；正在执行的视频保持本次配置。';
       toast('设置已保存。');
       await refresh();
+      if ('worker_count' in data || 'youtube_cookie_session_limit' in data) await loadCookieProfiles();
     } catch (error) {
       $('#settings-save-state').textContent = settingsDirty || providerDraft
         ? `保存失败：${error.message || '请求失败，请稍后重试。'}；修改已保留，请重试保存。`

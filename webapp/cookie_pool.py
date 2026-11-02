@@ -13,7 +13,7 @@ import time
 from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.channel_scheduler import ChannelScheduler, throttle_details, error_traits
 from webapp.cookie_profiles import CookieProfiles
-from webapp.throughput import PipelineBusy
+from webapp.throughput import MAX_TRANSFERS, PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 
 
@@ -60,27 +60,35 @@ def credential_key(data):
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
 
 
+def session_limit(config, state):
+    """Pool concurrency depends only on session configuration and warmup."""
+    configured = max(1, min(64, int(config.get('youtube_cookie_session_limit', 2))))
+    return configured if state.get('limit', 1) > 1 else 1
+
+
 def capacity_summary(snapshot, stamp=None):
     """Public capacity estimate, never evidence of independent Google accounts."""
     stamp = time.time() if stamp is None else stamp
     sessions = [a for a in snapshot['accounts'] if not a.get('shared_with') and not a.get('unavailable')]
-    capacities = [(a, min(2, max(1, int(a.get('limit', 1))))) for a in sessions]
+    capacities = [(a, max(1, int(a.get('limit', 1)))) for a in sessions]
     capacity = sum(limit for a, limit in capacities if a.get('cooldown_until', 0) <= stamp)
+    capacity = min(capacity, MAX_TRANSFERS)
     active = sum(a.get('active', 0) for a in sessions)
     next_starts = [max(snapshot.get('next_at', 0), a.get('next_at', 0), a.get('cooldown_until', 0), stamp)
                    for a, limit in capacities if a.get('active', 0) < limit]
     blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
     capacity = 0 if blocked else capacity
-    warmup = sum(1 for _, limit in capacities if limit < 2)
+    warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
     reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if blocked else
               '没有可用的 Cookie 会话' if not sessions else
               'Cookie 会话正在冷却' if not capacity else
               f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
-              f"当前容量 {capacity}，{warmup} 个会话尚未完成预热" if warmup else
-              f'Cookie 核心会话当前容量为 {capacity}')
+              f"当前容量 {capacity}，{warmup} 个会话仍在预热；池独立调度" if warmup else
+              f'Cookie 核心会话当前容量为 {capacity}，池独立调度')
     intervals = [int(a.get('interval', 60)) for a, _ in capacities if a.get('interval')]
     return {'known': True, 'sampled_at': stamp, 'configured_files': snapshot.get('configured_files', len(snapshot['accounts'])),
             'effective_sessions': len(sessions), 'unavailable_files': sum(bool(a.get('unavailable')) for a in snapshot['accounts']),
+            'execution_limit': MAX_TRANSFERS, 'session_limit': snapshot.get('session_limit'),
             'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
             'min_interval': min(intervals) if intervals else None,
             'halted': blocked, 'reason': reason,
@@ -118,6 +126,11 @@ class CookiePool:
             global_state = self.router._state(db, self.global_scope)
             accounts = [{'id': identity, **self.router._state(db, scope),
                          'active': self.router._active(db, scope, stamp)} for identity, _, scope in self.accounts]
+            configured = int(self.config.get('youtube_cookie_session_limit', 2))
+            for account in accounts:
+                warming = account.get('limit', 1) < 2
+                account.update(limit=session_limit(self.config, account),
+                               configured_limit=configured, warming=warming)
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
@@ -128,6 +141,7 @@ class CookiePool:
                     'next_at': global_state.get('next_at', 0),
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
                     'configured_files': len(self.config.get('youtube_cookie_pool', [])),
+                    'execution_limit': MAX_TRANSFERS, 'session_limit': configured,
                     'accounts': accounts + self.unavailable}
             result['capacity_summary'] = capacity_summary(result, stamp)
             return result
@@ -166,20 +180,22 @@ class CookiePool:
                     'halt_kind': gate.get('halt_kind'), 'message': halt_message(gate, previous=True)})
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp
+            states = [(identity, path, scope, router._state(db, scope), router._active(db, scope, stamp))
+                      for identity, path, scope in self.accounts]
+            capacity = min(MAX_TRANSFERS, sum(session_limit(self.config, state)
+                for _, _, _, state, _ in states if state.get('cooldown_until', 0) <= stamp))
             candidates, delays = [], []
-            for identity, path, scope in self.accounts:
-                state = router._state(db, scope)
-                active = router._active(db, scope, stamp)
+            for identity, path, scope, state, active in states:
                 if max(state.get('next_at', 0), state.get('cooldown_until', 0)) > stamp:
                     delays.append(max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp)
                     continue
-                cap = min(2, max(1, state.get('limit', 1)))
+                cap = session_limit(self.config, state)
                 if active < cap:
                     candidates.append((active, state.get('last_start', 0), identity, path, scope, state, cap))
             if not candidates:
                 return None, min(delays, default=10)
             _, _, identity, path, scope, state, cap = min(candidates, key=lambda x: x[:3])
-            token, delay = router._admit(db, stamp, [(scope, cap, 1)])
+            token, delay = router._admit(db, stamp, [(self.global_scope, capacity, 1), (scope, cap, 1)])
             if not token:
                 return None, delay
             # Preserve the permit policy written by _admit.
@@ -196,6 +212,7 @@ class CookiePool:
             # own 30s/45s lease.  With three mature sessions this allows at
             # most six starts per minute while each session remains at its
             # individual interval.
+            gate = router._state(db, self.global_scope)
             gate['next_at'] = stamp + max(10, 30 / len(self.accounts))
             router._save(db, self.global_scope, gate)
             return (identity, path, scope, token), 0
@@ -258,6 +275,8 @@ class CookiePool:
                 state['first_success'] = state.get('first_success') or stamp
                 state['successes'] = state.get('successes', 0) + 1
                 if state['streak'] >= 5 and stamp - state['first_success'] >= 600:
+                    # Keep the legacy warmup marker; session_limit() applies
+                    # the current per-session configuration after warmup.
                     state['limit'] = 2
                     # The first stable window only moves to 45s.  A mature
                     # session (20 clean completions over at least 30 minutes)

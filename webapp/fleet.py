@@ -30,6 +30,7 @@ LOCAL_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_co
 LOCAL_FIELDS.add('youtube_throttle_cooldown')
 LOCAL_FIELDS.add('youtube_sleep_preset')
 LOCAL_FIELDS.add('youtube_cookie_pool')
+LOCAL_FIELDS.add('youtube_cookie_session_limit')
 from webapp.youtube_pacing import PACING_FIELDS
 LOCAL_FIELDS |= PACING_FIELDS
 ONLINE_SECONDS = 45

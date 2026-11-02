@@ -519,7 +519,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 if result['state'] != 'valid':
                     return jsonify(error='账号池登录检查未全部通过，拦截保持有效。', auth=result), 409
             pool.clear_halt_after_checks()
-        return jsonify(message='账号池已通过检查并解除拦截，每账号重新从 1 个任务预热。请手动恢复下载；源站冷却保持有效。')
+        return jsonify(message='账号池已通过检查并解除拦截，会话重新从 1 个任务预热，池独立调度。请手动恢复下载；源站冷却保持有效。')
 
     @app.post('/api/youtube/cookies')
     def add_youtube_cookie():

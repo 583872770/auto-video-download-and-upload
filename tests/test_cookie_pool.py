@@ -1,5 +1,6 @@
 """Fenced account admission, duplicate credentials and conservative feedback."""
 from pathlib import Path
+from contextlib import ExitStack
 import tempfile
 import time
 import unittest
@@ -27,7 +28,8 @@ class CookiePoolTests(unittest.TestCase):
         self.store = TaskStore(self.base / 'state')
         self.profiles = CookieProfiles(self.base, self.store)
         self.ids = [self.profiles.add(str(i), COOKIE.replace(b'TEST_SECRET', str(i).encode()))['id'] for i in range(3)]
-        self.config = {'download_method': 'yt_dlp', 'youtube_cookie_pool': self.ids, 'youtube_start_interval': 60}
+        self.config = {'download_method': 'yt_dlp', 'youtube_cookie_pool': self.ids,
+                       'youtube_start_interval': 60, 'worker_count': 3}
 
     def pool(self, config=None):
         task = self.store.create('download', {'base': str(self.base), 'urls': ['https://youtu.be/00000000001']})
@@ -64,16 +66,72 @@ class CookiePoolTests(unittest.TestCase):
     def test_duplicate_credentials_share_one_account(self):
         duplicate = self.profiles.add('copy', self.profiles.require(self.ids[0]).read_bytes() +
             b'.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tDIFFERENT_AUXILIARY_COOKIE\n')['id']
-        pool = self.pool({**self.config, 'youtube_cookie_pool': [self.ids[0], duplicate]})
+        pool = self.pool({**self.config, 'worker_count': 1, 'youtube_cookie_pool': [self.ids[0], duplicate]})
         self.assertEqual(len(pool.accounts), 1)
         self.assertEqual(pool.status()['effective_accounts'], 1)
         self.assertEqual(next(a for a in pool.status()['accounts'] if a['id']==duplicate)['shared_with'], self.ids[0])
         with pool.assignment():
             self.ungate(pool, accounts=True)
-            second = self.pool({**self.config, 'youtube_cookie_pool': [duplicate]})
+            second = self.pool({**self.config, 'worker_count': 1, 'youtube_cookie_pool': [duplicate]})
             with self.assertRaises(PipelineBusy):
                 with second.assignment():
                     self.fail('Duplicate Cookie bypassed per-account cap')
+
+    def test_pool_ignores_instance_concurrency_and_mode_but_preserves_warmup(self):
+        config = {**self.config, 'youtube_cookie_pool': self.ids[:2],
+                  'worker_count': 1, 'throughput_mode': 'auto', 'youtube_cookie_session_limit': 3}
+        pool = self.pool(config)
+        before = pool.status()
+        self.assertEqual(before['session_limit'], 3)
+        self.assertEqual(before['capacity_summary']['capacity'], 2)
+        self.assertEqual([a['limit'] for a in before['accounts']], [1, 1])
+        def warm(db, stamp):
+            for _, _, scope in pool.accounts:
+                state = pool.router._state(db, scope)
+                state.update(limit=2, streak=5, first_success=stamp - 601)
+                pool.router._save(db, scope, state)
+        pool.router.transaction_call(warm)
+        for mode in ('auto', 'manual'):
+            for workers in (1, 64):
+                status = self.pool({**config, 'worker_count': workers, 'throughput_mode': mode}).status()
+                self.assertEqual(status['capacity_summary']['capacity'], 6)
+                self.assertEqual([a['limit'] for a in status['accounts']], [3, 3])
+        with ExitStack() as stack:
+            for _ in range(6):
+                stack.enter_context(self.pool(config).assignment())
+                self.ungate(pool, accounts=True)
+            self.assertEqual(sorted(a['active'] for a in pool.status()['accounts']), [3, 3])
+            with self.assertRaises(PipelineBusy):
+                with self.pool(config).assignment():
+                    self.fail('Exceeded pool capacity')
+        self.assertEqual(sum(a['active'] for a in pool.status()['accounts']), 0)
+        with self.store.connect() as db:
+            self.assertEqual(len(db.execute(select(download_permits)).all()), 0)
+
+    def test_configured_session_limit_applies_after_warmup_independent_of_instance_total(self):
+        config = {**self.config, 'worker_count': 6, 'youtube_cookie_session_limit': 4}
+        pool = self.pool(config)
+        def warmed(db, stamp):
+            for _, _, scope in pool.accounts:
+                state = pool.router._state(db, scope)
+                state['limit'] = 2  # Persisted warmup marker from existing deployments.
+                pool.router._save(db, scope, state)
+        pool.router.transaction_call(warmed)
+        status = pool.status()
+        self.assertEqual([a['limit'] for a in status['accounts']], [4, 4, 4])
+        self.assertEqual(status['capacity_summary']['capacity'], 12)
+        reduced = self.pool({**config, 'worker_count': 2}).status()
+        self.assertEqual([a['limit'] for a in reduced['accounts']], [4, 4, 4])
+        self.assertEqual(reduced['capacity_summary']['capacity'], 12)
+
+    def test_cooling_session_lowers_pool_capacity_without_inflating_healthy_sessions(self):
+        config = {**self.config, 'worker_count': 6, 'youtube_cookie_session_limit': 1}
+        pool = self.pool(config)
+        pool.outcome(pool.accounts[0][2], RuntimeError('Read timed out'))
+        status = pool.status()
+        self.assertFalse(status['halted'])
+        self.assertEqual(status['capacity_summary']['capacity'], 2)
+        self.assertEqual([a['limit'] for a in status['accounts'][1:]], [1, 1])
 
     def test_warmup_requires_success_count_and_elapsed_time(self):
         pool = self.pool()
@@ -91,6 +149,7 @@ class CookiePoolTests(unittest.TestCase):
         error = RuntimeError('timeout'); error.retryable = True
         pool.outcome(scope, error)
         result = pool.status()['accounts'][0]
+        self.assertTrue(result['warming'])
         self.assertEqual(result['limit'], 1)
         self.assertEqual(result['interval'], 120)
 
@@ -163,12 +222,13 @@ class CookiePoolTests(unittest.TestCase):
             with self.pool().assignment():
                 self.fail('Pool selected another account after invalid login')
 
-    def test_plain_transfer_timeout_reduces_capacity(self):
+    def test_plain_transfer_timeout_resets_warmup_and_cools_session(self):
         pool = self.pool()
         scope = pool.accounts[0][2]
         pool.outcome(scope, RuntimeError('Read timed out'))
         account = pool.status()['accounts'][0]
-        self.assertEqual(account['limit'], 1)
+        self.assertTrue(account['warming'])
+        self.assertGreater(account['cooldown_until'], time.time())
         self.assertEqual(account['interval'], 120)
 
     def test_recovery_preserves_cooldown_then_restarts_warmup(self):
@@ -208,6 +268,11 @@ class CookiePoolTests(unittest.TestCase):
 
     def test_validation_rejects_unknown_ids_and_provider_fallback(self):
         validate_settings(self.config)
+        for bad in (0, 65, True, 1.5, 'invalid'):
+            with self.assertRaises(ValueError):
+                validate_settings({**self.config, 'youtube_cookie_session_limit': bad})
+        self.assertEqual(validate_settings({**self.config, 'youtube_cookie_session_limit': '8'})[
+            'youtube_cookie_session_limit'], 8)
         for bad in ([None], ['../secret'], [self.ids[0], self.ids[0]], 'all'):
             with self.assertRaises(ValueError):
                 validate_settings({**self.config, 'youtube_cookie_pool': bad})

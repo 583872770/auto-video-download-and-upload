@@ -1,11 +1,11 @@
 ﻿<section class="panel settings-panel concurrency-control-card">
   <div class="panel-heading concurrency-card-heading">
-    <div><span class="section-kicker">CONCURRENCY CONTROL</span><h2>运行模式与并发上限</h2><p class="panel-subtitle">先决定并发如何调节，再设置实例级上限。系统仍会根据 Cookie 会话、渠道额度、连接预算和风控状态自动收紧。</p></div>
+    <div><span class="section-kicker">CONCURRENCY CONTROL</span><h2>运行模式与并发上限</h2><p class="panel-subtitle">以下设置用于非 Cookie 池模式。启用 Cookie 池后按会话容量独立调度；渠道额度、连接预算和风控状态仍生效。</p></div>
     <span class="scope-badge">当前实例</span>
   </div>
   <div class="concurrency-mode-grid">
     <label>运行模式<select name="throughput_mode"><option value="manual">自定义</option><option value="auto">自动调节</option></select><small>自定义按固定并发执行；自动调节会在上限内根据吞吐、资源和等待情况探索。</small></label>
-    <label>实例并发上限<input name="worker_count" type="number" min="1" max="64" required><small>自定义模式为下载进程数；自动模式为传输上限，并允许少量准备任务。</small></label>
+    <label>实例并发上限<input name="worker_count" type="number" min="1" max="64" required><small>自定义模式为下载进程数；自动模式为传输上限，并允许少量准备任务。启用 Cookie 池时不使用此值，关闭池后恢复使用。</small></label>
     <label>公网下载带宽目标（Mbps）<input name="bandwidth_mbps" type="number" min="0" max="100000" required><small>仅自动调节使用；0 表示不设目标，按资源和渠道状态运行。</small></label>
   </div>
   <p id="control-mode-note" class="settings-category-note" role="status"></p>
