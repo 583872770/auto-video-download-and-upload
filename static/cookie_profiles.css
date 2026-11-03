@@ -32,6 +32,11 @@
 #youtube-cookie-list{padding:0 17px}
 #youtube-cookie-list>.micro-copy:first-child{margin:0 0 2px;padding:10px 12px;border-radius:6px;background:#f8faf5}
 .cookie-list-note{margin:0;padding:11px 17px 15px;border-top:1px solid var(--line)}
+.cookie-export-guide{margin:0 17px 15px;padding:11px 12px;border:1px solid #e7eadf;border-radius:7px;background:#fafcf7;color:#68755d;font-size:10px;line-height:1.8}
+.cookie-export-guide summary{cursor:pointer;font-weight:600;color:#4f6247}
+.cookie-export-guide ol{margin:9px 0 6px;padding-left:19px}
+.cookie-export-guide p{margin:6px 0 0;color:#8a957c}
+.cookie-export-guide code{font-family:Consolas,monospace;color:#68755d}
 .cookie-profile-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}
 .cookie-profile-row:first-of-type{border-top:0}
 .cookie-profile-row>input[type=checkbox]{width:15px;height:15px;margin:0;accent-color:var(--green)}
@@ -74,3 +79,10 @@
   .cookie-pool-actions .micro-copy{min-width:0}
   .cookie-profile-row{grid-template-columns:auto minmax(0,1fr) auto}
 }
+.cookie-pool-explanation,.cookie-account-notices{margin:14px 0;padding:16px;border:1px solid #e4b565;border-radius:12px;background:#fff8e8;color:#684514;line-height:1.7}
+.cookie-pool-explanation p,.cookie-account-notices p{margin:6px 0}
+.cookie-account-notice{margin:12px 0;padding:12px 14px;border-left:4px solid #c87916;background:#fff;border-radius:6px;overflow-wrap:anywhere}
+.cookie-account-notice.recovery{border-color:#2875ba;background:#f0f7ff;color:#214f78}
+.cookie-profile-row.cookie-cooling{border:1px solid #e4b565;background:#fff8e8}
+.cookie-profile-row.cookie-recovery{border:1px solid #96bedf;background:#f0f7ff}
+.cookie-session-status{font-weight:600;line-height:1.6;color:#805319}

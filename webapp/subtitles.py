@@ -36,6 +36,14 @@ def run_subtitles(store, payload, report):
         return {'message': '视频文件已移除，字幕补下载已跳过。', 'skipped': True}
     if config.get('storage_mode') == 'test':
         return {'message': '测试模式不保留字幕。', 'skipped': True}
+    if config.get('youtube_cookie_pool') and not payload.get('_subtitle_pool_admitted'):
+        from webapp.cookie_pool import CookiePool
+        pool = CookiePool(store, config, payload['base'], payload.get('_task_id'))
+        # Sidecars must use the original video's account and share its cooling,
+        # permits and start interval. A subtitle is not a successful video.
+        with pool.assignment(config.get('_cookie_pool_selected'), count_success=False) as selected:
+            return run_subtitles(store, {**payload, 'config': selected,
+                '_subtitle_pool_admitted': True}, report)
     scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=payload['base'])
     scope = 'subtitles:youtube-origin'
     token = None
@@ -85,13 +93,15 @@ def run_subtitles(store, payload, report):
         account_limit = (YouTubeAccountLimited(str(error))
                          if 'your account has been rate-limited' in str(error).lower() else None)
         failure = account_limit or error
-        evidence = failure_evidence(failure, phase='subtitles')
+        evidence = failure_evidence(failure, phase='subtitles', source='youtube',
+            profile_id=config.get('_cookie_pool_selected'),
+            profile_name=config.get('_cookie_pool_profile_name'))
         policy = recovery_policy(evidence, config)
         status, delay = throttle_details(failure)
         if account_limit or scheduler.youtube_pacing and status in (429, 503):
             scheduler.outcome(scheduler.channels[0], success=False, error=failure, phase='subtitles')
             delay = max(delay or 0, getattr(failure, 'retry_after', 0))
-        if scheduler.enabled and (account_limit or status in (429, 503)):
+        if scheduler.enabled and policy.targets != ('session',) and (account_limit or status in (429, 503)):
             def cool(db, stamp):
                 state = scheduler._state(db, scope)
                 state.update(cooldown_until=max(state.get('cooldown_until', 0),

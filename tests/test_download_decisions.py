@@ -64,45 +64,44 @@ class DownloadDecisionTests(unittest.TestCase):
             context = read_context(db, [('local', self.config)], self.now)
         return diagnose(self.config, 'local', [], rate, context, self.now, paused=True)
 
-    def test_http_429_is_temporary_one_incident_with_shared_deadline(self):
+    def test_attributed_429_does_not_cool_global_resources(self):
         error = RuntimeError('HTTP Error 429: Too Many Requests')
         pool, router = self.apply_failure(error, phase='subtitles')
-        gate = self.state(router, pool.global_scope)
-        pacing = self.state(router, router.youtube_pacing.instance_scope)
-        shared = self.state(router, 'quota:yt_dlp')
-        self.assertFalse(gate.get('halted', False))
-        self.assertEqual(pacing['interval_reason_code'], 'request_limit')
-        self.assertNotIn('last_limit_at', pacing)
-        self.assertEqual({s['cooldown_until'] for s in (gate, pacing, shared)}, {self.now + 300})
-        for state in (gate, pacing, shared):
-            self.assertEqual(state['last_decision']['incident_id'], failure_evidence(error).incident_id)
+        for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp',
+                      router.youtube_pacing.instance_scope, router.youtube_pacing.session_scope):
+            self.assertFalse(self.state(router, scope).get('cooldown_until'))
+        scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
+        state = self.state(router, scope)
+        self.assertEqual(state['cooldown_until'], self.now + 300)
+        self.assertEqual(state['last_decision']['incident_id'], failure_evidence(error).incident_id)
         diagnostic = self.diagnostic(pool)
         self.assertFalse(diagnostic['decisions']['manual_required'])
         self.assertEqual(len(diagnostic['decisions']['history']), 1)
         self.assertEqual(diagnostic['decisions']['history'][0]['failure']['phase'], 'subtitles')
-        self.assertGreaterEqual(len(diagnostic['decisions']['history'][0]['effects']), 3)
-        with self.assertRaises(PipelineBusy):
-            with self.pool().assignment():
-                self.fail('Must not select another identity during shared pool cooling')
-        self.now += 301
-        with self.pool().assignment():
-            pass
+        self.assertEqual(len(diagnostic['decisions']['history'][0]['effects']), 1)
+        self.now += 31
+        with self.pool().assignment() as selected:
+            self.assertNotEqual(selected['_cookie_pool_selected'], failure_evidence(error).profile_id)
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(download_permits)).all(), [])
 
-    def test_explicit_account_limit_survives_restart_and_cooldown_expiry(self):
-        pool, router = self.apply_failure(YouTubeAccountLimited('Your account has been rate-limited'))
-        before = self.state(router, pool.global_scope)
-        self.assertTrue(before['halted'])
+    def test_explicit_account_limit_survives_restart_then_recovers_automatically(self):
+        error = YouTubeAccountLimited('Your account has been rate-limited')
+        pool, router = self.apply_failure(error)
+        limited_id = failure_evidence(error).profile_id
+        scope = next(scope for i, _, scope in pool.accounts if i == limited_id)
+        before = self.state(router, scope)
+        self.assertEqual(before['cooldown_until'], self.now + 3600)
         self.assertIsNone(before['last_decision']['failure']['http_status'])
-        self.now += 3601
-        with self.assertRaises(YouTubeAuthRequired) as stopped:
-            with self.pool().assignment():
-                self.fail('Historical account halt must not issue a new request')
-        self.assertEqual(failure_evidence(stopped.exception).kind, 'local_halt')
-        self.assertEqual(before['decisions'], self.state(router, pool.global_scope)['decisions'])
+        self.now += 31
+        with self.pool().assignment() as selected:
+            self.assertNotEqual(selected['_cookie_pool_selected'], limited_id)
+        self.now += 3600
+        with self.pool().assignment(limited_id):
+            recovering = next(s for s in pool.status()['session_states'] if s['id'] == limited_id)
+            self.assertEqual((recovering['state'], recovering['limit'], recovering['interval']), ('recovery', 1, 180))
         value = self.diagnostic(pool)
-        self.assertTrue(value['decisions']['manual_required'])
+        self.assertFalse(value['decisions']['manual_required'])
         self.assertEqual(len(value['decisions']['history']), 1)
 
     def test_duplicate_feedback_and_late_success_do_not_erase_backoff(self):
@@ -116,7 +115,7 @@ class DownloadDecisionTests(unittest.TestCase):
         self.now += 1
         router.outcome(router.channels[0], success=True, size=100, elapsed=1)
         pool.outcome(scope, None)
-        self.assertEqual(self.state(router, 'channel:yt_dlp')['cooldown_until'], before['cooldown_until'])
+        self.assertFalse(self.state(router, 'channel:yt_dlp').get('cooldown_until'))
         self.assertEqual(self.state(router, scope), account)
 
     def test_task_diagnostics_use_structured_kind_instead_of_message_guess(self):
@@ -159,21 +158,21 @@ class DownloadDecisionTests(unittest.TestCase):
         self.assertEqual(value['longest_wait_until'], self.now + 600)
 
     def test_ordinary_request_limit_never_clears_a_previous_manual_halt(self):
-        pool, router = self.apply_failure(YouTubeAccountLimited('Your account has been rate-limited'))
+        pool, router = self.apply_failure(YouTubeAuthRequired({'state': 'verification_required', 'message': 'Login rejected'}))
         before = self.state(router, pool.global_scope)
-        pool.outcome(pool.accounts[1][2], RuntimeError('HTTP Error 429'))
+        pool.outcome(pool.accounts[1][2], YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
         after = self.state(router, pool.global_scope)
         self.assertTrue(after['halted'])
-        self.assertEqual(after['halt_kind'], 'account_rate_limit')
+        self.assertEqual(after['halt_kind'], 'authentication_required')
         self.assertGreaterEqual(after['cooldown_until'], before['cooldown_until'])
 
     def test_original_halt_evidence_survives_bounded_recent_history(self):
-        error = YouTubeAccountLimited('Your account has been rate-limited')
+        error = YouTubeAuthRequired({'state': 'verification_required', 'message': 'Login rejected'})
         pool, router = self.apply_failure(error)
         identity = failure_evidence(error).incident_id
         for _ in range(10):
             self.now += 1
-            pool.outcome(pool.accounts[1][2], RuntimeError('HTTP Error 429'))
+            pool.outcome(pool.accounts[1][2], YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
         gate = self.state(router, pool.global_scope)
         self.assertEqual(len(gate['decisions']), 8)
         value = self.diagnostic(pool)
@@ -195,6 +194,26 @@ class DownloadDecisionTests(unittest.TestCase):
         self.assertEqual((saved['status'], saved['attempts']), ('queued', 0))
         self.assertEqual(saved['progress']['last_failure']['kind'], 'account_rate_limit')
         self.assertIsNone(saved['progress']['last_failure']['http_status'])
+
+    def test_worker_attributed_pool_limit_preserves_task_and_continues_next_job(self):
+        from web_worker import drain
+        self.store.set_runtime({**self.config, 'min_free_gb': 0})
+        self.store.set_downloads_paused(False)
+        jobs = [self.store.create('download', dict(base=str(self.root), urls=[url],
+            config={**self.config, 'path': 'videos', 'min_free_gb': 0})) for url in
+            ('https://youtu.be/00000000001', 'https://youtu.be/00000000002')]
+        error = YouTubeAccountLimited('Your account has been rate-limited')
+        failure_evidence(error, profile_id=self.config['youtube_cookie_pool'][0], profile_name='Account A')
+        with patch('web_worker.TaskStore', return_value=self.store), patch('web_worker.execute',
+                side_effect=[error, {'message': 'healthy account completed', 'file_count': 1}]) as execute:
+            drain(self.store.directory, 0, 'download')
+        first, second = [self.store.get(job['id']) for job in jobs]
+        self.assertFalse(self.store.downloads_paused())
+        self.assertEqual((first['status'], first['attempts']), ('queued', 0))
+        self.assertEqual(first['progress']['retry_reason'], 'youtube_session_rate_limit')
+        self.assertEqual(first['progress']['last_failure']['profile_name'], 'Account A')
+        self.assertEqual(second['status'], 'succeeded')
+        self.assertEqual(execute.call_count, 2)
 
     def test_worker_retries_typed_http_429_without_message_matching(self):
         from web_worker import drain
@@ -234,9 +253,55 @@ assert(!html.includes('HTTP 429'));
 const failure = failureEvidenceHTML({kind:'account_rate_limit',phase:'resolve',source:'youtube',http_status:null,evidence:'message',message:'<img src=x onerror=alert(1)>'});
 assert(failure.includes('HTTP 状态未记录'));
 assert(!failure.includes('<img'));
+const pool = {available_sessions:1,cooling_sessions:1,sessions:[{name:'<img src=x onerror=alert(1)>',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:data.time+3600}]};
+const accounts = cookieAccountNoticesHTML(pool, data.time);
+assert(accounts.includes('其他账号继续调度'));
+assert(accounts.includes('180 秒'));
+assert(accounts.includes('冷却中不发送下载、字幕或登录检测请求'));
+assert(accounts.includes('data-capacity-deadline'));
+assert(!accounts.includes('<img'));
+pool.available_sessions = 0;
+assert(cookieAccountNoticesHTML(pool, data.time).includes('无需手动恢复'));
+assert(cookieAccountNoticesHTML(pool, data.time, false).includes('当前状态待确认'));
+pool.cooling_sessions = 0;
+pool.available_sessions = 1;
+pool.sessions[0] = {name:'Account A',state:'recovery',limit:1,interval:180,recovery_successes:2,cooldown_kind:'account_rate_limit'};
+assert(cookieAccountNoticesHTML(pool, data.time).includes('本轮连续成功 2 次'));
 data.time -= 60;
 assert(decisionExplanationHTML(data, 'main').includes('摘要已过期'));
 """
         process = subprocess.run(['node', '-e', program, json.dumps(dict(time=self.now, online=True, decisions=result))],
                                  capture_output=True, text=True)
         self.assertEqual(process.returncode, 0, process.stderr)
+
+    def test_node_cookie_status_refresh_preserves_unsaved_pool_selection(self):
+        program = r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const live = {innerHTML:''}, policy = {textContent:''}, check = {textContent:'检测登录',disabled:false};
+const selection = {checked:false}, classes = new Set();
+const row = {dataset:{cookieProfileRow:'a'},classList:{toggle:(name,on)=>on?classes.add(name):classes.delete(name)},
+  querySelector:selector=>({'[data-cookie-session-status]':policy,'[data-cookie-login-check]':check}[selector])};
+global.$ = ()=>live;
+global.document = {querySelectorAll:selector=>{assert.equal(selector,'[data-cookie-profile-row]'); return [row];}};
+global.cookieAccountNoticesHTML = ()=>'<p>Account A cooling</p>';
+global.failureKindNames = {account_rate_limit:'明确账号限流'};
+const source = fs.readFileSync('static/app.js','utf8');
+vm.runInThisContext(source.slice(source.indexOf('function updateCookiePoolLive('),source.indexOf('let cookiePoolPolling')));
+const session = {id:'a',name:'Account A',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:Date.now()/1000+3600,limit:0,interval:180};
+const data = {pool:{accounts:[{id:'a',configured_limit:3}],session_states:[session],capacity_summary:{}}};
+updateCookiePoolLive(data);
+assert(check.disabled);
+assert(classes.has('cookie-cooling'));
+assert(policy.textContent.includes('明确账号限流'));
+assert(policy.textContent.includes('当前最多 0 个任务'));
+assert.equal(selection.checked,false);
+session.state = 'recovery'; session.limit = 1; session.recovery_successes = 2;
+updateCookiePoolLive(data);
+assert(!check.disabled);
+assert(!classes.has('cookie-cooling'));
+assert(classes.has('cookie-recovery'));
+assert(policy.textContent.includes('本轮连续成功 2 次'));
+assert.equal(selection.checked,false);
+"""
+        result = subprocess.run(['node', '-e', program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)

@@ -27,6 +27,7 @@ DEFAULTS = {
     'subtitle_mode': 'optional', 'subtitle_languages': 'en,zh-Hans,zh-Hant',
     'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4, 'builtin_connection_limit': 0,
     'youtube_source_address': '', 'youtube_start_interval': 3, 'youtube_cookie_fallback': False,
+    'youtube_cookie_usage': 'auto',
     'youtube_throttle_cooldown': 300,
     'youtube_sleep_preset': True,
     'youtube_cookie_pool': [],
@@ -47,6 +48,7 @@ DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
 DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
 DOWNLOAD_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
+DOWNLOAD_FIELDS.add('youtube_cookie_usage')
 DOWNLOAD_FIELDS.add('youtube_sleep_preset')
 DOWNLOAD_FIELDS.add('youtube_throttle_cooldown')
 DOWNLOAD_FIELDS.add('youtube_cookie_pool')
@@ -104,6 +106,8 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
+    if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
+        raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
     if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):
         raise ValueError('YouTube 请求节奏请选择固定间隔或渐进调速。')
     pool = config.get('youtube_cookie_pool', [])

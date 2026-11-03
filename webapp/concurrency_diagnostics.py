@@ -64,6 +64,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'cooldown_until': pool_gate.get('cooldown_until', 0), 'halted_at': pool_gate.get('halted_at'),
             'halt_kind': pool_gate.get('halt_kind'), 'decisions': pool_gate.get('decisions', []),
             'halt_decision': pool_gate.get('halt_decision'),
+            'limited_profile_id': pool_gate.get('limited_profile_id'),
+            'limited_profile_name': pool_gate.get('limited_profile_name'),
             'reason': 'Cookie 池沿用已保存的停止状态，需检查后人工恢复；本次读取未向源站发起请求。'
                       if pool_gate.get('halted') else 'Cookie 池正在临时冷却，到期后重新检查准入。'}
     requested = cookie_pool['capacity'] if pooled else int(config.get('worker_count', 1))

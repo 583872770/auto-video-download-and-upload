@@ -341,7 +341,7 @@ function renderStatus() {
   renderDownloadMethod();
   $$('[data-youtube-status]').forEach(element => {
     const auth = state.status.youtube?.auth;
-    element.textContent = auth?.state === 'valid' ? 'YouTube 登录已验证' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
+    element.textContent = auth?.state === 'valid' ? 'YouTube 登录已验证' : auth?.state === 'rate_limited' ? 'YouTube 请求限流 · 不代表登录失效' : !state.status.youtube?.saved ? '尚未登录 YouTube' : auth?.state === 'unchecked' ? 'Cookie 已保存 · 待检测登录' : '登录检查未通过';
   });
   const auth = state.status.youtube?.auth;
   $('#youtube-auth-status').textContent = auth?.message || '供 yt-dlp 任务使用；其他下载器不需要此 Cookie。';
@@ -1118,6 +1118,44 @@ async function runButton(button, operation) {
   try { await operation(); } catch (error) { toast(error.message || '请求失败，请稍后重试。', true); }
   finally { button.disabled = false; }
 }
+function updateCookiePoolLive(data) {
+  const pool = data.pool;
+  const live = $('#youtube-cookie-pool-live');
+  if (live) live.innerHTML = cookieAccountNoticesHTML(pool?.capacity_summary, Date.now() / 1000);
+  for (const row of document.querySelectorAll('[data-cookie-profile-row]')) {
+    const account = pool?.accounts.find(a => a.id === row.dataset.cookieProfileRow);
+    const session = pool?.session_states?.find(s => s.id === (account?.shared_with || account?.id));
+    row.classList.toggle('cookie-cooling', session?.state === 'cooldown');
+    row.classList.toggle('cookie-recovery', session?.state === 'recovery');
+    const policy = row.querySelector('[data-cookie-session-status]');
+    if (policy && account) {
+      policy.textContent = account.unavailable ? 'Cookie 文件不可用，请更新。' :
+        `${session?.state === 'cooldown' ? '冷却中 · 暂停新请求' : session?.state === 'recovery' ? '低频恢复中' : '可参与调度'}：设置上限 ${account.configured_limit || pool.session_limit}，当前最多 ${session?.limit ?? account.limit ?? 1} 个任务，启动间隔至少 ${session?.interval || account.interval || 60} 秒。` +
+        (session?.state === 'cooldown' ? `原因：${failureKindNames[session.cooldown_kind] || '临时故障'}；恢复检查时间 ${new Date(session.cooldown_until * 1000).toLocaleString()}；其他健康账号继续。` : '') +
+        (session?.state === 'recovery' ? `本轮连续成功 ${session.recovery_successes} 次，达标后自动恢复设置并发。` : '') +
+        (account.shared_with ? ` 与「${session?.name || '同账号文件'}」共享并发、间隔和冷却。` : '');
+    }
+    const check = row.querySelector('[data-cookie-login-check]');
+    if (check && check.textContent === '检测登录') {
+      check.disabled = session?.state === 'cooldown';
+      check.title = check.disabled ? pool.halted
+        ? '池仍有人工拦截；冷却结束后须按提示检查并解除，不会自动恢复。'
+        : '该账号冷却中，暂不发送登录检测请求；到期自动低频恢复。' : '';
+    }
+  }
+}
+let cookiePoolPolling = false;
+setInterval(async () => {
+  if (location.hash !== '#settings' || document.hidden || cookiePoolPolling) return;
+  cookiePoolPolling = true;
+  const instanceId = state.instanceId;
+  try {
+    const data = await api('/api/youtube/cookies');
+    if (state.instanceId === instanceId && location.hash === '#settings') updateCookiePoolLive(data);
+  }
+  catch (_) { const live = $('#youtube-cookie-pool-live'); if (live) live.textContent = '账号状态刷新失败，请重新打开设置查看最新状态。'; }
+  finally { cookiePoolPolling = false; }
+}, 10000);
 async function loadCookieProfiles() {
   const data = await api('/api/youtube/cookies');
   if (state.config) {
@@ -1140,8 +1178,8 @@ async function loadCookieProfiles() {
   list.append(note);
   if (data.pool) {
     const sessions = data.pool.effective_sessions ?? data.pool.effective_accounts;
-    note.textContent = `${data.items.filter(item => item.pooled).length} 份 Cookie · ${sessions} 个核心会话 · Google 账号身份未核验。` +
-      (data.pool.halted ? `会话池已停止：${data.pool.reason}` :
+    note.textContent = `${data.items.filter(item => item.pooled).length} 份 Cookie · ${sessions} 个核心会话 · 按本地名称 / 核心凭据合并，未核验真实 Google 账号身份。` +
+      (data.pool.halted ? `会话池已停止：${data.pool.reason}${data.pool.limited_profile_name ? `；触发账号：${data.pool.limited_profile_name}` : ''}` :
       `Cookie 池独立调度：当前会话容量 ${data.pool.capacity_summary.capacity}，每会话预热后最多 ${data.pool.session_limit} 个任务；不使用运行模式与实例并发上限。可在“Cookie 与登录”的高级设置中修改。启动间隔与冷却继续生效。不同会话不代表独立源站额度。点击“使用此 Cookie”会关闭会话池。`);
     if (data.pool.halted) {
       const recover = document.createElement('button');
@@ -1159,6 +1197,7 @@ async function loadCookieProfiles() {
   for (const item of data.items) {
     const row = document.createElement('div');
     row.className = 'cookie-profile-row';
+    row.dataset.cookieProfileRow = item.id;
     const details = document.createElement('div');
     details.className = 'cookie-profile-details';
     const name = document.createElement('strong');
@@ -1167,7 +1206,7 @@ async function loadCookieProfiles() {
     status.className = 'micro-copy cookie-profile-status';
     const renderStatus = auth => {
       if (!auth) { status.textContent = '尚未检测登录'; return; }
-      const labels = { valid: '登录有效', not_logged_in: '未登录', invalid: 'Cookie 无效或过期',
+      const labels = { valid: '登录有效', rate_limited: 'HTTP 429 请求限流', not_logged_in: '未登录', invalid: 'Cookie 无效或过期',
         missing: 'Cookie 文件缺失', verification_required: '需要额外验证 / 出口受限',
         network_error: '网络异常，无法确认', unconfirmed: '尚未确认登录', checking: '检测进行中' };
       const expired = auth.expires_at && auth.expires_at * 1000 <= Date.now();
@@ -1184,18 +1223,14 @@ async function loadCookieProfiles() {
     poolCheck.title = '加入 Cookie 账号池';
     poolCheck.setAttribute('aria-label', `加入账号池：${item.name}`);
     if (item.pooled) {
-      const account = data.pool?.accounts.find(value => value.id === item.id) || {};
       const policy = document.createElement('p');
-      policy.className = 'micro-copy cookie-profile-status';
-      const cooldown = Math.max(0, Math.ceil((account.cooldown_until || 0) - Date.now() / 1000));
-      policy.textContent = `会话调度：设置上限 ${account.configured_limit || data.pool.session_limit}，实际生效上限 ${account.limit || 1}，启动间隔至少 ${account.interval || 60} 秒，成功 ${account.successes || 0} 次` +
-        (cooldown ? `，冷却剩余约 ${Math.ceil(cooldown / 60)} 分钟` : '') +
-        (account.shared_with ? '；与其他文件属于同一会话，合并并发和请求额度' : '') +
-        (account.unavailable ? '；Cookie 文件需重新检测' : '');
+      policy.className = 'cookie-session-status';
+      policy.dataset.cookieSessionStatus = '';
       details.append(policy);
     }
     const check = document.createElement('button');
     check.type = 'button';
+    check.dataset.cookieLoginCheck = '';
     check.className = 'button button-white';
     check.textContent = '检测登录';
     check.setAttribute('aria-label', `检测登录：${item.name}`);
@@ -1244,6 +1279,7 @@ async function loadCookieProfiles() {
     row.append(poolCheck, details, check, select, remove);
     list.append(row);
   }
+  updateCookiePoolLive(data);
 }
 $('#youtube-cookie-pool-save').addEventListener('click', event => runButton(event.currentTarget, async () => {
   const enabled = $('#youtube-cookie-pool-enabled').checked;

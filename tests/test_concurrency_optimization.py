@@ -109,6 +109,41 @@ class TransactionTests(unittest.TestCase):
 
 
 class SubtitleTests(unittest.TestCase):
+    def test_pool_subtitle_limit_cools_only_original_account_and_blocks_new_requests(self):
+        import yt_dlp
+        from web_worker import execute
+        from webapp.cookie_profiles import CookieProfiles
+        from webapp.cookie_pool import CookiePool
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.downloads import YouTubeAccountLimited
+        from webapp.throughput import PipelineBusy
+        profiles = CookieProfiles(self.root, self.store)
+        ids = [profiles.add(str(i), (f'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-{i}\n').encode())['id']
+               for i in range(2)]
+        self.config.update(youtube_cookie_pool=ids, _cookie_pool_selected=ids[0],
+                           youtube_pacing_mode='adaptive', youtube_start_interval=0)
+        parent, child = self.queue()
+        with patch.object(yt_dlp.YoutubeDL, 'download', side_effect=RuntimeError(
+                'Your account has been rate-limited')) as download:
+            with self.assertRaises(YouTubeAccountLimited) as caught:
+                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
+            self.assertEqual(download.call_count, 1)
+        pool = CookiePool(self.store, self.config, self.root, child['id'])
+        snapshot = pool.status()
+        self.assertFalse(snapshot['halted'])
+        self.assertEqual(snapshot['capacity_summary']['capacity'], 1)
+        self.assertEqual(caught.exception._download_evidence.profile_id, ids[0])
+        scheduler = ChannelScheduler(self.store, self.config, child['id'])
+        with self.store.connect() as db:
+            self.assertFalse(scheduler._state(db, 'subtitles:youtube-origin').get('cooldown_until'))
+            self.assertFalse(scheduler._state(db, 'youtube-pacing:instance:local').get('cooldown_until'))
+            self.assertEqual(db.execute(select(download_permits)).all(), [])
+        with patch.object(yt_dlp.YoutubeDL, 'download') as download:
+            with self.assertRaises(PipelineBusy):
+                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
+            download.assert_not_called()
+        self.assertTrue(self.video.is_file())
+
     def test_adaptive_subtitle_account_limit_stops_upstream_and_releases_permits(self):
         import yt_dlp
         from web_worker import execute

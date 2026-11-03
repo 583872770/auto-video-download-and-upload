@@ -340,6 +340,17 @@ class ChannelScheduler:
                     permits.c.resource == _key('route-probe:' + self.instance)))
         self.transaction_call(prepare)
 
+    def _check_cookie_cooldown(self, db, stamp):
+        scope = self.config.get('_cookie_pool_scope')
+        if not scope or not scope.startswith('youtube-account:'):
+            return
+        until = self._state(db, scope).get('cooldown_until', 0)
+        if until > stamp:
+            name = self.config.get('_cookie_pool_profile_name', self.config.get('_cookie_pool_selected'))
+            error = PipelineBusy(f'账号「{name}」正在冷却，已保留任务等待；其他健康账号继续。')
+            error.retry_after = max(2, min(60, until - stamp))
+            raise error
+
     def wait_youtube_start(self, channel, on_wait=None):
         """Space video starts across processes without holding DB connections asleep.
 
@@ -347,7 +358,10 @@ class ChannelScheduler:
         shared by this instance even when its proxy node changes.
         """
         if self.youtube_pacing and channel.adapter == 'yt_dlp':
-            delay, reason = self.transaction_call(lambda db, stamp: self.youtube_pacing.reserve(db, stamp, channel))
+            def paced(db, stamp):
+                self._check_cookie_cooldown(db, stamp)
+                return self.youtube_pacing.reserve(db, stamp, channel)
+            delay, reason = self.transaction_call(paced)
             if delay:
                 if on_wait:
                     on_wait()
@@ -365,6 +379,7 @@ class ChannelScheduler:
         if not self.enabled or channel.adapter != 'yt_dlp' or interval <= 0:
             return
         def reserve(db, stamp):
+            self._check_cookie_cooldown(db, stamp)
             if not self._owned(db, stamp):
                 from webapp.downloads import DownloadLeaseLost
                 raise DownloadLeaseLost('请求节奏等待期间任务租约已失效。')
@@ -415,7 +430,10 @@ class ChannelScheduler:
             # Waiting owners must see a controller limit change immediately;
             # capturing the old limit until timeout caused needless re-parses.
             current = (transfer_requirements() if phase == 'transfer' else requirements) + backend
-            token, delay = self.transaction_call(lambda db, stamp: self._admit(db, stamp, current))
+            def admit(db, stamp):
+                self._check_cookie_cooldown(db, stamp)
+                return self._admit(db, stamp, current)
+            token, delay = self.transaction_call(admit)
             if token:
                 break
             if on_wait:
@@ -439,6 +457,10 @@ class ChannelScheduler:
             profile_id=self.config.get('_cookie_pool_selected'),
             profile_name=self.config.get('_cookie_pool_profile_name')) if error else None
         policy = recovery_policy(failure, self.config, youtube=channel.adapter == 'yt_dlp') if failure else None
+        if (failure and policy.targets == ('session',) and channel.adapter == 'yt_dlp'):
+            # CookiePool owns this account's cooldown. Neither channel health,
+            # shared quotas nor instance pacing should block unrelated accounts.
+            return
         if not success and local_failure(error):
             return
         status, delay = (failure.http_status, policy.delay) if failure else (None, None)

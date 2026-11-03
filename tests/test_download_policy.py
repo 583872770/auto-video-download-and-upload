@@ -7,6 +7,19 @@ from webapp.youtube_auth import YouTubeAuthRequired
 
 
 class FailureEvidenceTests(unittest.TestCase):
+    def test_only_attributed_pool_limits_are_isolated(self):
+        config = {'youtube_cookie_pool': ['one'], 'youtube_throttle_cooldown': 300}
+        unknown = failure_evidence(YouTubeAccountLimited('Your account has been rate-limited'))
+        self.assertTrue(recovery_policy(unknown, config).manual)
+        for error, expected in ((YouTubeAccountLimited('limited'), 3600),
+                                (RuntimeError('HTTP Error 429'), 720)):
+            error.headers = {'Retry-After': '720'}
+            evidence = failure_evidence(error, profile_id='one', profile_name='Account A')
+            policy = recovery_policy(evidence, config)
+            self.assertEqual((policy.action, policy.delay, policy.manual, policy.targets),
+                             ('cooldown', expected, False, ('session',)))
+        self.assertTrue(recovery_policy(evidence, {}).targets != ('session',))
+
     def test_account_limit_does_not_manufacture_http_status(self):
         error = YouTubeAccountLimited('Your account has been rate-limited')
         value = failure_evidence(error, phase='resolve', source='youtube')

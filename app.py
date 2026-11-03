@@ -312,8 +312,19 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def login_busy(error):
         return jsonify(error=str(error)), 409
 
+    from webapp.throughput import PipelineBusy
+
+    @app.errorhandler(PipelineBusy)
+    def pipeline_busy(error):
+        return jsonify(error=str(error), retry_after=getattr(error, 'retry_after', 10)), 409
+
     @app.errorhandler(YouTubeAuthRequired)
     def youtube_auth_required(error):
+        from webapp.download_policy import failure_evidence, recovery_policy
+        failure = failure_evidence(error)
+        if recovery_policy(failure, settings()[0]).targets == ('session',):
+            return jsonify(error=str(error), auth=error.result, failure=failure.public(),
+                           message='仅该账号请求冷却，其他健康账号继续，实例未暂停。'), 409
         youtube_auth.block(error.result)
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
@@ -338,6 +349,17 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         if 'yt_dlp' not in methods:
             return None
         if not is_youtube(urls):
+            return None
+        if config.get('youtube_cookie_pool') and not force:
+            # Each admitted account is checked by its worker. The selected
+            # legacy/default Cookie may be cooling while other accounts work.
+            return None
+        # In on-demand mode public videos start anonymously.  The worker will
+        # retry once with the selected Cookie only when yt-dlp reports that
+        # authentication is required.  Explicit checks from the settings page
+        # still call this function with force=True and therefore remain useful.
+        if (config.get('youtube_cookie_usage', 'auto') in ('auto', 'never')
+                and not config.get('youtube_cookie_pool') and not force):
             return None
         options = {'force': force or len(methods) > 1}
         if config.get('proxy_mode') == 'clash':
@@ -855,7 +877,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         elif 'yt_dlp' in methods:
             from webapp.environment import require_native_environment
             require_native_environment(config)
-        if 'yt_dlp' in methods and is_youtube(urls):
+        if ('yt_dlp' in methods and is_youtube(urls) and not config.get('youtube_cookie_pool')
+                and config.get('youtube_cookie_usage', 'auto') == 'always'):
             stage('checking_login')
             youtube_auth.require(config, base, force=True, **(
                 {'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
@@ -1000,7 +1023,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         elif 'yt_dlp' in methods:
             from webapp.environment import require_native_environment
             require_native_environment(config)
-        if 'yt_dlp' in methods:
+        if ('yt_dlp' in methods and not config.get('youtube_cookie_pool') and
+                config.get('youtube_cookie_usage', 'auto') == 'always'):
             youtube_auth.require(config, base, force=True)
 
     from webapp.jobs import register_jobs
@@ -1019,7 +1043,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         if upcoming:
             config, base = settings()
             verify_youtube(config, base,
-                [upcoming.url] if upcoming.url else ['https://www.youtube.com/'], force=True)
+                [upcoming.url] if upcoming.url else ['https://www.youtube.com/'],
+                force=not config.get('youtube_cookie_pool') and config.get('youtube_cookie_usage', 'auto') == 'always')
         youtube_auth.clear_block()
 
     app.extensions['execution_control'].prepare_resume = prepare_system_resume

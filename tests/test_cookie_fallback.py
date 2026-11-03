@@ -19,7 +19,7 @@ class CookieFallbackTests(unittest.TestCase):
         self.cookie.write_bytes(self.original)
         self.payload = {'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=u71MaudlmOc'],
                         'config': {'path': 'videos', 'proxy_mode': 'direct', 'throughput_mode': 'manual',
-                                   'youtube_cookie_fallback': True,
+                                   'youtube_cookie_fallback': True, 'youtube_cookie_usage': 'always',
                                    'youtube_cookie': str(self.cookie)}}
 
     def test_cookie_unavailable_retries_once_without_mutating_uploaded_cookie_or_double_counting(self):
@@ -158,6 +158,75 @@ class CookieFallbackTests(unittest.TestCase):
                         execute('download', self.payload)
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(self.cookie.read_bytes(), self.original)
+
+
+class CookieUsageTests(unittest.TestCase):
+    setUp = CookieFallbackTests.setUp
+
+    def test_public_content_starts_anonymously_without_auth_preflight(self):
+        from webapp.store import TaskStore
+        self.payload['config']['youtube_cookie_usage'] = 'auto'
+        store = TaskStore(self.root / 'state')
+        self.addCleanup(store.db.engine.dispose)
+        calls = []
+        def download(downloader, urls):
+            calls.append(bool(downloader.params.get('cookiefile')))
+            return 0
+        with patch.object(yt_dlp.YoutubeDL, 'download', download), patch('webapp.youtube_auth.probe') as probe:
+            execute('download', self.payload, store=store)
+            probe.assert_not_called()
+        self.assertEqual(calls, [False])
+
+    def test_login_required_retries_once_and_never_cycles_back_to_anonymous(self):
+        self.payload['config']['youtube_cookie_usage'] = 'auto'
+        for second in ('success', 'Video unavailable'):
+            with self.subTest(second=second):
+                calls = []
+                def download(downloader, urls):
+                    calls.append(bool(downloader.params.get('cookiefile')))
+                    if len(calls) == 1:
+                        downloader.report_error('Sign in to watch this video')
+                        return 1
+                    if second == 'success':
+                        return 0
+                    downloader.report_error(second)
+                    return 1
+                meter = Mock(resolve_seconds=0)
+                with patch.object(yt_dlp.YoutubeDL, 'download', download), patch('webapp.download_metrics.meter_for', return_value=meter):
+                    if second == 'success':
+                        execute('download', self.payload)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            execute('download', self.payload)
+                self.assertEqual(calls, [False, True])
+                meter.begin.assert_called_once()
+
+    def test_bot_challenge_does_not_trigger_cookie_retry(self):
+        self.payload['config']['youtube_cookie_usage'] = 'auto'
+        calls = []
+        def download(downloader, urls):
+            calls.append(bool(downloader.params.get('cookiefile')))
+            downloader.report_error("Sign in to confirm you're not a bot")
+            return 1
+        with patch.object(yt_dlp.YoutubeDL, 'download', download):
+            with self.assertRaises(RuntimeError):
+                execute('download', self.payload)
+        self.assertEqual(calls, [False])
+
+    def test_never_mode_does_not_read_cookie_or_check_login(self):
+        from webapp.store import TaskStore
+        self.payload['config']['youtube_cookie_usage'] = 'never'
+        self.cookie.write_text('invalid cookie file', encoding='utf-8')
+        store = TaskStore(self.root / 'state')
+        self.addCleanup(store.db.engine.dispose)
+        calls = []
+        def download(downloader, urls):
+            calls.append(bool(downloader.params.get('cookiefile')))
+            return 0
+        with patch.object(yt_dlp.YoutubeDL, 'download', download), patch('webapp.youtube_auth.probe') as probe:
+            execute('download', self.payload, store=store)
+            probe.assert_not_called()
+        self.assertEqual(calls, [False])
 
 
 if __name__ == '__main__':

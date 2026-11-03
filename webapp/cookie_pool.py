@@ -1,13 +1,14 @@
 """Single-instance Cookie admission with fenced permits and conservative pacing.
 
-No retry changes identities. Explicit account limits or verification halt the
-whole pool; content failures do not lower unrelated accounts' capacity.
+Account limits cool only the affected account. Verification still requires
+manual handling; content failures do not lower unrelated accounts' capacity.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
 import random
+import re
 import time
 
 from Utils.youtube_login import parse_youtube_cookie_file
@@ -42,6 +43,8 @@ def halt_message(state, *, previous=False):
     stamp = state.get('halted_at')
     if isinstance(stamp, (int, float)) and 0 < stamp < 253402300800:
         message += '原停止时间：' + datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec='seconds') + '。'
+    if state.get('limited_profile_name'):
+        message += '触发账号：' + str(state['limited_profile_name']) + '。'
     return message + '请在停止实例后检查全部账号并解除拦截；冷却到期不会自动恢复。'
 
 
@@ -62,10 +65,35 @@ def credential_key(data):
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
 
 
+def account_group_key(name, data):
+    """Return a durable local group for repeated exports of one account."""
+    label = ' '.join(str(name or '').split())
+    label = re.sub(r'\s*[·•]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*$', '', label).strip()
+    generic = {'cookies.txt', 'cookie.txt', '原有 cookie（上传 / 浏览器登录）'}
+    if label and label.casefold() not in generic and not label.startswith('浏览器登录 '):
+        return 'named:' + hashlib.sha256(label.casefold().encode('utf-8')).hexdigest()
+    return 'credential:' + credential_key(data)
+
+
 def session_limit(config, state):
     """Pool concurrency depends only on session configuration and warmup."""
     configured = max(1, min(64, int(config.get('youtube_cookie_session_limit', 2))))
-    return configured if state.get('limit', 1) > 1 else 1
+    return configured if state.get('limit', 1) > 1 and not state.get('recovery_mode') else 1
+
+
+def session_view(identity, name, state, config, stamp):
+    cooling = state.get('cooldown_until', 0) > stamp
+    recovery = bool(state.get('recovery_mode'))
+    return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
+        cooldown_kind=state.get('cooldown_kind'), cooldown_until=state.get('cooldown_until', 0),
+        limited_at=state.get('limited_at'), limited_count=state.get('limited_count', 0),
+        recovery_started_at=state.get('recovery_started_at', 0),
+        recovery_successes=state.get('recovery_successes', 0),
+        interval=max(int(config.get('youtube_start_interval', 60)),
+                     180 if recovery and state.get('recovery_successes', 0) < 3 else 120 if recovery else 30,
+                     state.get('interval', 60)),
+        limit=0 if cooling else session_limit(config, state),
+        configured_limit=int(config.get('youtube_cookie_session_limit', 2)))
 
 
 def capacity_summary(snapshot, stamp=None):
@@ -81,10 +109,15 @@ def capacity_summary(snapshot, stamp=None):
     blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
     capacity = 0 if blocked else capacity
     warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
+    session_states = snapshot.get('session_states', [])
+    cooling_sessions = [s for s in session_states if s['state'] == 'cooldown']
+    recovery_sessions = [s for s in session_states if s['state'] == 'recovery']
     reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if snapshot.get('halted') else
               'Cookie 会话池临时冷却，到期后重新准入检查' if snapshot.get('cooldown_until', 0) > stamp else
               '没有可用的 Cookie 会话' if not sessions else
-              'Cookie 会话正在冷却' if not capacity else
+              '全部账号正在冷却，自动等待最早到期的账号；无需手动恢复' if not capacity else
+              f'{len(cooling_sessions)} 个账号冷却，其他 {len(sessions) - len(cooling_sessions)} 个账号继续调度；冷却后自动低频恢复'
+              if cooling_sessions else
               f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
               f"当前容量 {capacity}，{warmup} 个会话仍在预热；池独立调度" if warmup else
               f'Cookie 核心会话当前容量为 {capacity}，池独立调度')
@@ -94,15 +127,20 @@ def capacity_summary(snapshot, stamp=None):
             'execution_limit': MAX_TRANSFERS, 'session_limit': snapshot.get('session_limit'),
             'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
             'min_interval': min(intervals) if intervals else None,
+            'sessions': session_states, 'cooling_sessions': len(cooling_sessions),
+            'available_sessions': len(sessions) - len(cooling_sessions),
+            'recovery_sessions': len(recovery_sessions),
             'halted': bool(snapshot.get('halted')), 'cooling': snapshot.get('cooldown_until', 0) > stamp,
             'cooldown_until': snapshot.get('cooldown_until', 0),
             'halted_at': snapshot.get('halted_at'), 'halt_kind': snapshot.get('halt_kind'),
             'halt_decision': snapshot.get('halt_decision'),
+            'limited_profile_id': snapshot.get('limited_profile_id'),
+            'limited_profile_name': snapshot.get('limited_profile_name'),
             'decisions': sorted([*snapshot.get('decisions', []),
                 *(r for a in sessions for r in a.get('decisions', []))],
                 key=lambda r: r.get('time', 0))[-8:], 'reason': reason,
-            'session_restrictions': [dict(scope='Cookie 核心会话', action='cooldown',
-                until=a['cooldown_until'], manual=False) for a in sessions if a.get('cooldown_until', 0) > stamp],
+            'session_restrictions': [dict(scope='Cookie：' + s['name'], action='cooldown',
+                until=s['cooldown_until'], manual=False, reason=s['cooldown_kind']) for s in cooling_sessions],
             'next_start_at': min(next_starts) if next_starts and not blocked else None}
 
 
@@ -114,22 +152,41 @@ class CookiePool:
         self.accounts = []
         self.unavailable = []
         self.aliases = {}
+        self.profile_names = {}
         seen = {}
         for identity in config.get('youtube_cookie_pool', []):
             try:
                 target = profiles.require(identity)
-                key = credential_key(target.read_bytes())
+                item = next((value for value in profiles.items() if value['id'] == identity), None)
+                data = target.read_bytes()
+                group_key = account_group_key(item.get('name') if item else '', data)
+                credential = 'credential:' + credential_key(data)
             except (ValueError, OSError):
                 if strict:
                     raise YouTubeAuthRequired({'state': 'invalid',
                         'message': '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
                 self.unavailable.append({'id': identity, 'unavailable': True})
                 continue
-            if key not in seen:
+            def resolve_group(db, stamp):
+                alias_scope = 'youtube-account-alias:' + credential
+                alias = self.router._state(db, alias_scope)
+                if not alias.get('group'):
+                    alias['group'] = group_key
+                    self.router._save(db, alias_scope, alias)
+                return alias['group']
+            # Persist the association: selecting a differently named export on
+            # its own must not create a new cooldown or concurrency budget.
+            group_key = self.router.transaction_call(resolve_group)
+            canonical = next((seen[key] for key in (group_key, credential) if key in seen), None)
+            if canonical is None:
+                key = group_key
                 self.accounts.append((identity, target, 'youtube-account:' + key))
-                seen[key] = identity
+                self.profile_names[identity] = item.get('name', identity) if item else identity
+                seen[group_key] = identity
+                seen[credential] = identity
             else:
-                self.aliases[identity] = seen[key]
+                self.aliases[identity] = canonical
+                self.profile_names[identity] = item.get('name', identity) if item else identity
         self.global_scope = 'youtube-cookie-pool:' + self.router.instance
 
     def status(self):
@@ -145,17 +202,21 @@ class CookiePool:
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
+            views = [session_view(a['id'], self.profile_names.get(a['id'], a['id']), a, self.config, stamp)
+                     for a in accounts if not a.get('shared_with')]
             result = {'halted': bool(global_state.get('halted')),
                     'reason': halt_message(global_state) if global_state.get('halted') else None,
                     'halted_at': global_state.get('halted_at'), 'halt_kind': global_state.get('halt_kind'),
                     'halt_decision': global_state.get('halt_decision'),
+                    'limited_profile_id': global_state.get('limited_profile_id'),
+                    'limited_profile_name': global_state.get('limited_profile_name'),
                     'decisions': global_state.get('decisions', []),
                     'cooldown_until': global_state.get('cooldown_until', 0),
                     'next_at': global_state.get('next_at', 0),
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
                     'configured_files': len(self.config.get('youtube_cookie_pool', [])),
                     'execution_limit': MAX_TRANSFERS, 'session_limit': configured,
-                    'accounts': accounts + self.unavailable}
+                    'accounts': accounts + self.unavailable, 'session_states': views}
             result['capacity_summary'] = capacity_summary(result, stamp)
             return result
         return self.router.transaction_call(read)
@@ -175,12 +236,13 @@ class CookiePool:
                 state.update(limit=1, streak=0, first_success=0)
                 self.router._save(db, scope, state)
             gate = self.router._state(db, self.global_scope)
-            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None, halt_decision=None)
+            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None, halt_decision=None,
+                        limited_profile_id=None, limited_profile_name=None)
             self.router._save(db, self.global_scope, gate)
         self.router.transaction_call(clear)
 
     @contextmanager
-    def assignment(self):
+    def assignment(self, profile_id=None, *, count_success=True):
         router = self.router
         if not router.enabled or not self.accounts:
             raise ValueError('Cookie 账号池必须通过下载队列执行，且至少选择一个账号。')
@@ -201,6 +263,8 @@ class CookiePool:
                 for _, _, _, state, _ in states if state.get('cooldown_until', 0) <= stamp))
             candidates, delays = [], []
             for identity, path, scope, state, active in states:
+                if profile_id and identity != self.aliases.get(profile_id, profile_id):
+                    continue
                 if max(state.get('next_at', 0), state.get('cooldown_until', 0)) > stamp:
                     delays.append(max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp)
                     continue
@@ -215,10 +279,13 @@ class CookiePool:
                 return None, delay
             # Preserve the permit policy written by _admit.
             state = router._state(db, scope)
+            if state.get('recovery_mode') and not state.get('recovery_started_at'):
+                state.update(recovery_started_at=stamp, recovery_successes=0)
             # Keep the persisted per-account backoff.  Stable accounts may
             # reach the mature 30s floor, while a fresh account always starts
             # at the conservative 60s interval.
-            interval = max(30, state.get('interval', max(60, int(self.config.get('youtube_start_interval', 60)))))
+            interval = max(30, int(self.config.get('youtube_start_interval', 60)),
+                           state.get('interval', 60))
             jitter = min(10, max(2, interval * .2))
             state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, jitter))
             router._save(db, scope, state)
@@ -230,29 +297,36 @@ class CookiePool:
             gate = router._state(db, self.global_scope)
             gate['next_at'] = stamp + max(10, 30 / len(self.accounts))
             router._save(db, self.global_scope, gate)
-            return (identity, path, scope, token), 0
+            return (identity, path, scope, token, stamp), 0
 
         selected, delay = router.transaction_call(reserve)
         if not selected:
             error = PipelineBusy('Cookie 账号池正在按账号并发及请求间隔等待。')
             error.retry_after = max(2, min(60, delay))
             raise error
-        identity, path, scope, token = selected
+        identity, path, scope, token, admitted_at = selected
         error = None
+        completed = False
         try:
-            yield {**self.config, 'youtube_cookie': str(path), '_cookie_pool_selected': identity}
+            yield {**self.config, 'youtube_cookie': str(path), '_cookie_pool_selected': identity,
+                   '_cookie_pool_profile_name': self.profile_names.get(identity, identity),
+                   '_cookie_pool_scope': scope, '_cookie_pool_admitted_at': admitted_at}
+            completed = True
         except BaseException as failure:
             error = failure
             raise
         finally:
             try:
-                self.outcome(scope, error)
+                if error or completed and count_success:
+                    self.outcome(scope, error, admitted_at=admitted_at)
             finally:
                 router._release(token)
 
-    def outcome(self, scope, error):
+    def outcome(self, scope, error, *, admitted_at=None):
+        profile_id = next((identity for identity, _, resource in self.accounts if resource == scope), None)
         failure = failure_evidence(error, source='youtube', task_id=self.router.task_id,
-            profile_id=next((identity for identity, _, resource in self.accounts if resource == scope), None)) if error else None
+            profile_id=profile_id,
+            profile_name=self.profile_names.get(profile_id, profile_id)) if error else None
         policy = recovery_policy(failure, self.config) if failure else None
         if failure and policy.action == 'none':
             return
@@ -264,16 +338,27 @@ class CookiePool:
             if failure:
                 until = cooldown_deadline(error, stamp, max(policy.delay, getattr(error, 'retry_after', 0) or 0))
                 state.update(limit=1, streak=0, first_success=0,
+                             cooldown_kind=failure.kind,
                              interval=min(600, max(120, state.get('interval', 60) * 2)),
                              cooldown_until=max(state.get('cooldown_until', 0), until))
-                remember_decision(state, failure, layer='session', scope='当前 Cookie 核心会话',
+                if state.get('recovery_mode'):
+                    state.update(recovery_started_at=0, recovery_successes=0,
+                                 interval=max(180, state['interval']))
+                if failure.kind in ('account_rate_limit', 'request_rate_limit'):
+                    state.update(cooldown_kind=failure.kind, limited_at=stamp,
+                                 limited_count=state.get('limited_count', 0) + 1,
+                                 recovery_mode=True, recovery_started_at=0, recovery_successes=0,
+                                 interval=max(180, state['interval']), recovery_interval_floor=120)
+                remember_decision(state, failure, layer='session', scope='Cookie：' + self.profile_names.get(profile_id, profile_id),
                     action=policy.action, until=until, manual=policy.manual, stamp=stamp)
             if failure and 'pool' in policy.targets:
                 gate = self.router._state(db, self.global_scope)
                 gate['cooldown_until'] = max(gate.get('cooldown_until', 0), until)
                 first_halt = policy.manual and not gate.get('halted')
                 if first_halt:
-                    gate.update(halted=True, halt_kind=failure.kind, halted_at=stamp)
+                    gate.update(halted=True, halt_kind=failure.kind, halted_at=stamp,
+                                limited_profile_id=failure.profile_id,
+                                limited_profile_name=failure.profile_name)
                     gate['reason'] = halt_message(gate)
                 decision = remember_decision(gate, failure, layer='pool', scope='当前实例 Cookie 池',
                     action=policy.action, until=gate['cooldown_until'], manual=policy.manual, stamp=stamp)
@@ -283,6 +368,20 @@ class CookiePool:
             elif not failure:
                 # A task already in flight cannot undo a newer failure's backoff.
                 if state.get('cooldown_until', 0) > stamp:
+                    return
+                if admitted_at is not None and admitted_at < state.get('limited_at', 0):
+                    return
+                if state.get('recovery_mode'):
+                    since = state.get('recovery_started_at', 0)
+                    if not since:
+                        return  # No recovery task has been admitted yet.
+                    state['recovery_successes'] = state.get('recovery_successes', 0) + 1
+                    successes = state['recovery_successes']
+                    if successes >= 3 and stamp - since >= 600:
+                        state['interval'] = max(120, int(self.config.get('youtube_start_interval', 60)))
+                    if successes >= 5 and stamp - since >= 1800:
+                        state.update(recovery_mode=False, limit=2, streak=successes, first_success=since)
+                    self.router._save(db, scope, state)
                     return
                 state['streak'] = state.get('streak', 0) + 1
                 state['first_success'] = state.get('first_success') or stamp
@@ -298,6 +397,7 @@ class CookiePool:
                              if state['successes'] >= 20 and stamp - state['first_success'] >= 1800
                              else STABLE_ACCOUNT_INTERVAL)
                     step = 15 if floor == MATURE_ACCOUNT_INTERVAL else 5
-                    state['interval'] = max(floor, state.get('interval', 60) - step)
+                    state['interval'] = max(floor, state.get('recovery_interval_floor', 0),
+                                            state.get('interval', 60) - step)
             self.router._save(db, scope, state)
         self.router.transaction_call(record)

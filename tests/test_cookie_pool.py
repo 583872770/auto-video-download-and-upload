@@ -35,7 +35,7 @@ class CookiePoolTests(unittest.TestCase):
         task = self.store.create('download', {'base': str(self.base), 'urls': ['https://youtu.be/00000000001']})
         with self.store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(
-                status='running', worker_id=self.store.owner, lease_until=time.time() + 300))
+                status='running', worker_id=self.store.owner, lease_until=time.time() + 86400))
         return CookiePool(self.store, config or self.config, self.base, task['id'])
 
     def ungate(self, pool, accounts=False):
@@ -153,17 +153,21 @@ class CookiePoolTests(unittest.TestCase):
         self.assertEqual(result['limit'], 1)
         self.assertEqual(result['interval'], 120)
 
-    def test_limit_halts_all_accounts_and_never_switches_on_failure(self):
+    def test_account_limit_cools_only_selected_account(self):
         pool = self.pool()
         with self.assertRaises(YouTubeAccountLimited):
-            with pool.assignment():
+            with pool.assignment() as selected:
+                limited_id = selected['_cookie_pool_selected']
                 raise YouTubeAccountLimited('Your account has been rate-limited')
-        self.assertTrue(pool.status()['halted'])
-        self.assertEqual(pool.status()['halt_kind'], 'account_rate_limit')
-        with self.assertRaises(YouTubeAuthRequired):
-            with self.pool().assignment():
-                self.fail('Pool switched identity after account limit')
-        self.assertGreater(max(a.get('cooldown_until', 0) for a in pool.status()['accounts']), time.time() + 3500)
+        status = pool.status()
+        self.assertFalse(status['halted'])
+        self.assertEqual(status['capacity_summary']['capacity'], 2)
+        session = next(s for s in status['session_states'] if s['id'] == limited_id)
+        self.assertEqual(session['cooldown_kind'], 'account_rate_limit')
+        self.assertGreater(session['cooldown_until'], time.time() + 3500)
+        self.ungate(pool)
+        with self.pool().assignment() as healthy:
+            self.assertNotEqual(healthy['_cookie_pool_selected'], limited_id)
 
     def test_expired_legacy_halt_is_replayed_without_new_admission_or_throttle(self):
         pool = self.pool()
@@ -201,13 +205,15 @@ class CookiePoolTests(unittest.TestCase):
         status = pool.status()
         self.assertFalse(status['halted'])
         self.assertIsNone(status['halt_kind'])
-        self.assertTrue(status['capacity_summary']['cooling'])
-        self.assertEqual(status['capacity_summary']['capacity'], 0)
-        self.assertEqual(status['decisions'][-1]['failure']['kind'], 'request_rate_limit')
-        self.assertEqual(status['decisions'][-1]['failure']['http_status'], 429)
-        with self.assertRaises(PipelineBusy):
-            with self.pool().assignment():
-                self.fail('Temporary pool cooling must prevent identity switching')
+        self.assertFalse(status['capacity_summary']['cooling'])
+        self.assertEqual(status['capacity_summary']['capacity'], 2)
+        session = status['session_states'][0]
+        self.assertEqual(session['cooldown_kind'], 'request_rate_limit')
+        decision = status['accounts'][0]['decisions'][-1]
+        self.assertEqual(decision['failure']['http_status'], 429)
+        self.assertFalse(decision['manual'])
+        with self.pool().assignment() as healthy:
+            self.assertNotEqual(healthy['_cookie_pool_selected'], session['id'])
 
     def test_content_error_does_not_poison_other_accounts(self):
         pool = self.pool()
@@ -215,6 +221,132 @@ class CookiePoolTests(unittest.TestCase):
         pool.outcome(scope, RuntimeError('Requested format is not available'))
         self.assertFalse(pool.status()['halted'])
         self.assertNotIn('cooldown_until', pool.status()['accounts'][0])
+
+    def test_all_cooling_waits_and_recovers_after_restart_without_manual_resume(self):
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        for _, _, scope in pool.accounts:
+            pool.outcome(scope, YouTubeAccountLimited('limited'))
+        snapshot = pool.status()
+        self.assertFalse(snapshot['halted'])
+        self.assertEqual(snapshot['capacity_summary']['capacity'], 0)
+        self.assertEqual(snapshot['capacity_summary']['cooling_sessions'], 3)
+        self.assertIn('自动等待', snapshot['capacity_summary']['reason'])
+        with self.assertRaises(PipelineBusy):
+            with pool.assignment():
+                self.fail('Cooling account admitted')
+        restarted = self.pool()
+        now += 3601
+        restarted.router.clock = lambda db: now
+        with restarted.assignment() as selected:
+            self.assertIn(selected['_cookie_pool_selected'], self.ids)
+        self.assertFalse(restarted.status()['halted'])
+
+    def test_automatic_recovery_requires_success_count_and_observation_windows(self):
+        pool = self.pool({**self.config, 'youtube_cookie_session_limit': 4})
+        now = time.time()
+        pool.router.clock = lambda db: now
+        identity, _, scope = pool.accounts[0]
+        pool.outcome(scope, YouTubeAccountLimited('limited'))
+        now += 3601
+        first = now
+        for offset in (0, 200, 601):
+            now = first + offset
+            with pool.assignment(identity):
+                state = next(s for s in pool.status()['session_states'] if s['id'] == identity)
+                self.assertEqual(state['limit'], 1)
+                self.assertGreaterEqual(state['interval'], 180)
+        state = pool.status()['session_states'][0]
+        self.assertEqual((state['state'], state['interval'], state['recovery_successes']), ('recovery', 120, 3))
+        now = first + 800
+        with pool.assignment(identity):
+            pass
+        self.assertEqual(pool.status()['session_states'][0]['limit'], 1)
+        now = first + 1801
+        with pool.assignment(identity):
+            pass
+        state = pool.status()['session_states'][0]
+        self.assertEqual((state['state'], state['limit'], state['interval']), ('ready', 4, 120))
+        # Normal success cannot subsequently remove the post-limit floor.
+        for _ in range(25):
+            now += 150
+            pool.outcome(scope, None)
+        self.assertEqual(pool.status()['session_states'][0]['interval'], 120)
+
+    def test_late_success_and_transient_error_cannot_skip_recovery(self):
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        identity, _, scope = pool.accounts[0]
+        pool.outcome(scope, YouTubeAccountLimited('limited'))
+        original = pool.status()['accounts'][0]
+        now += 3601
+        pool.outcome(scope, None, admitted_at=now - 4000)
+        self.assertEqual(pool.status()['accounts'][0], original)
+        with pool.assignment(identity):
+            pass
+        self.assertEqual(pool.status()['accounts'][0]['recovery_successes'], 1)
+        now += 200
+        pool.outcome(scope, RuntimeError('Read timed out'))
+        state = pool.status()['accounts'][0]
+        self.assertEqual((state['recovery_successes'], state['recovery_started_at']), (0, 0))
+        now += 3601
+        pool.outcome(scope, YouTubeAccountLimited('limited again'))
+        state = pool.status()['accounts'][0]
+        self.assertEqual(state['limited_count'], 2)
+        self.assertGreaterEqual(state['cooldown_until'], now + 3600)
+
+    def test_renamed_duplicate_cannot_bypass_account_cooldown_or_login_check(self):
+        from webapp.youtube_auth import YouTubeAuth
+        pool = self.pool()
+        identity, _, scope = pool.accounts[0]
+        duplicate = self.profiles.add('Other name', self.profiles.require(identity).read_bytes())['id']
+        pool.outcome(scope, YouTubeAccountLimited('limited'))
+        config = {**self.config, 'youtube_cookie_pool': [duplicate]}
+        renamed = self.pool(config)
+        self.assertEqual(renamed.accounts[0][2], scope)
+        with self.assertRaises(PipelineBusy):
+            with renamed.assignment():
+                self.fail('Renamed account bypassed cooldown')
+        with patch('webapp.youtube_auth.probe') as probe:
+            with self.assertRaises(PipelineBusy):
+                YouTubeAuth(self.store).check_profile(duplicate, config, self.base, force=True)
+            probe.assert_not_called()
+
+    def test_admitted_task_checks_new_cooldown_before_starting_next_phase(self):
+        for pacing_mode in ('manual', 'adaptive'):
+            with self.subTest(pacing_mode=pacing_mode):
+                pool = self.pool({**self.config, 'youtube_pacing_mode': pacing_mode})
+                self.ungate(pool, accounts=True)
+                with pool.assignment(count_success=False) as selected:
+                    router = CookiePool(self.store, selected, self.base, pool.router.task_id).router
+                    # Another in-flight task reports the account limit while
+                    # this task is waiting for its next request/transfer phase.
+                    pool.outcome(selected['_cookie_pool_scope'], YouTubeAccountLimited('limited'))
+                    with self.assertRaises(PipelineBusy):
+                        router.wait_youtube_start(router.channels[0])
+                    with self.assertRaises(PipelineBusy):
+                        with router.permit(router.channels[0], 'resolve', timeout=0):
+                            self.fail('Cooling task started resolution')
+                    with self.assertRaises(PipelineBusy):
+                        with router.permit(router.channels[0], 'transfer', timeout=0):
+                            self.fail('Cooling task started a new transfer')
+
+    def test_skipped_video_does_not_count_towards_recovery(self):
+        from web_worker import execute
+        pool = self.pool({**self.config, 'path': 'videos', 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        def recovering(db, stamp):
+            for _, _, scope in pool.accounts:
+                state = pool.router._state(db, scope)
+                state.update(recovery_mode=True, recovery_started_at=stamp - 2000,
+                             recovery_successes=4, interval=180)
+                pool.router._save(db, scope, state)
+        pool.router.transaction_call(recovering)
+        with patch('web_worker._execute', return_value={'skipped': True}):
+            execute('download', {'base': str(self.base), 'config': pool.config,
+                'urls': ['https://youtu.be/00000000001']}, store=self.store, task_id=pool.router.task_id)
+        self.assertTrue(all(a['recovery_successes'] == 4 for a in pool.status()['accounts']))
 
     def test_invalid_login_halts_pool_instead_of_trying_another_account(self):
         pool = self.pool()
@@ -243,7 +375,7 @@ class CookiePoolTests(unittest.TestCase):
         pool.outcome(scope, YouTubeAccountLimited('Your account has been rate-limited'))
         with self.assertRaises(ValueError):
             pool.clear_halt_after_checks()
-        self.assertTrue(pool.status()['halted'])
+        self.assertFalse(pool.status()['halted'])
         def expire(db, stamp):
             state = pool.router._state(db, scope)
             state['cooldown_until'] = stamp - 1

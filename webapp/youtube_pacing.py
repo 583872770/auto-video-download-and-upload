@@ -10,10 +10,12 @@ CLEAN_WINDOW = 6 * 3600
 
 
 def session_scope(config, base, instance):
+    if config.get('_cookie_pool_scope', '').startswith('youtube-account:'):
+        return 'youtube-pacing:session:' + config['_cookie_pool_scope'].removeprefix('youtube-account:')
     # Re-exported files with identical core credentials share one budget.
     # Different session keys do not prove different Google account identities.
     if base is not None and config.get('youtube_cookie'):
-        from webapp.cookie_pool import credential_key
+        from webapp.cookie_pool import account_group_key, credential_key
         path = Path(config['youtube_cookie'])
         if not path.is_absolute():
             path = Path(base) / path
@@ -23,6 +25,11 @@ def session_scope(config, base, instance):
             from webapp.youtube_auth import YouTubeAuthRequired
             raise YouTubeAuthRequired({'state': 'invalid',
                 'message': 'Cookie 文件缺失或无有效登录凭据，请检测并更新后再启动。'}) from None
+        # Cookie-pool assignments provide the profile label selected by the
+        # pool. Repeated exports with changed cookie values then share the same
+        # pacing budget as their core account session.
+        if config.get('_cookie_pool_profile_name'):
+            key = account_group_key(config['_cookie_pool_profile_name'], path.read_bytes())
         return 'youtube-pacing:session:' + key
     return 'youtube-pacing:instance:' + instance
 

@@ -103,7 +103,10 @@ def build_ydl_options(config, base):
         options['proxy'] = config['_resolved_clash_proxy']
     if config.get('download_method', 'yt_dlp') in ('yt5s', 'downmp3', 'yt1d', 'bergung'):
         options.update(format='best', writesubtitles=False, writeautomaticsub=False, ignoreerrors=False)
-    elif config.get('youtube_cookie'):
+    elif (config.get('youtube_cookie')
+          and (config.get('youtube_cookie_usage', 'auto') != 'never' or config.get('_cookie_pool_selected'))
+          and (config.get('youtube_cookie_usage', 'auto') != 'auto'
+               or config.get('_use_youtube_cookie') or config.get('_cookie_pool_selected'))):
         cookie = resolve_path(base, config['youtube_cookie'])
         if not cookie.is_file():
             raise FileNotFoundError(f'YouTube Cookie 文件不存在：{cookie}')

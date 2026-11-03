@@ -28,6 +28,64 @@ class CookieProfileTests(unittest.TestCase):
             db.execute(cookie_profiles.update().where(cookie_profiles.c.id == identity).values(
                 content=content.decode()))
 
+    def test_cooling_account_is_named_and_login_check_sends_no_network_request(self):
+        from webapp.cookie_pool import CookiePool
+        from webapp.downloads import YouTubeAccountLimited
+        first = self.add('Account A').json['item']['id']
+        second = self.add('Account B', COOKIE.replace(b'PRIVATE_COOKIE_VALUE', b'OTHER_FIXTURE')).json['item']['id']
+        config = yaml.safe_load(self.config.read_text())
+        config.update(youtube_cookie_pool=[first, second], download_methods=['yt_dlp'])
+        self.config.write_text(yaml.safe_dump(config), encoding='utf-8')
+        pool = CookiePool(self.store, config, self.root, None)
+        pool.outcome(pool.accounts[0][2], YouTubeAccountLimited('limited'))
+        with patch('webapp.youtube_auth.probe') as probe:
+            result = self.action('check', first)
+            probe.assert_not_called()
+        self.assertEqual(result.status_code, 409, result.json)
+        self.assertIn('Account A', result.json['error'])
+        self.assertGreater(result.json['retry_after'], 3500)
+        snapshot = self.client.get('/api/youtube/cookies').json['pool']
+        self.assertEqual(snapshot['session_states'][0]['name'], 'Account A')
+        self.assertEqual(snapshot['session_states'][0]['state'], 'cooldown')
+        self.assertEqual(snapshot['capacity_summary']['available_sessions'], 1)
+        self.assertFalse(snapshot['halted'])
+
+    def test_manual_login_check_http_429_is_not_an_entire_pool_authentication_halt(self):
+        from webapp.youtube_auth import ProbeResult
+        first = self.add('Account A').json['item']['id']
+        second = self.add('Account B', COOKIE.replace(b'PRIVATE_COOKIE_VALUE', b'OTHER_FIXTURE')).json['item']['id']
+        config = yaml.safe_load(self.config.read_text())
+        config.update(youtube_cookie_pool=[first, second], download_methods=['yt_dlp'])
+        self.config.write_text(yaml.safe_dump(config), encoding='utf-8')
+        with patch('webapp.youtube_auth.probe', return_value=ProbeResult('rate_limited', 'HTTP 429',
+                http_status=429, retry_after=720)) as probe:
+            result = self.action('check', first)
+            self.assertEqual(result.status_code, 200, result.json)
+            self.assertEqual(result.json['auth']['http_status'], 429)
+            self.assertEqual(self.action('check', first).status_code, 409)
+            probe.assert_called_once()
+        snapshot = self.client.get('/api/youtube/cookies').json['pool']
+        self.assertFalse(snapshot['halted'])
+        self.assertEqual(snapshot['capacity_summary']['available_sessions'], 1)
+        self.assertEqual(snapshot['session_states'][0]['cooldown_kind'], 'request_rate_limit')
+
+    def test_current_account_check_http_429_keeps_pool_and_queue_running(self):
+        from webapp.youtube_auth import ProbeResult
+        first = self.add('Account A').json['item']['id']
+        second = self.add('Account B', COOKIE.replace(b'PRIVATE_COOKIE_VALUE', b'OTHER_FIXTURE')).json['item']['id']
+        config = yaml.safe_load(self.config.read_text())
+        config.update(youtube_cookie_pool=[first, second], download_methods=['yt_dlp'])
+        self.config.write_text(yaml.safe_dump(config), encoding='utf-8')
+        self.store.set_downloads_paused(False)
+        with patch('webapp.youtube_auth.probe', return_value=ProbeResult('rate_limited', 'HTTP 429', http_status=429)):
+            result = self.client.post('/api/youtube/auth/check', json={}, headers=self.headers)
+        self.assertEqual(result.status_code, 409, result.json)
+        self.assertEqual(result.json['failure']['profile_name'], 'Account A')
+        self.assertFalse(self.store.downloads_paused())
+        snapshot = self.client.get('/api/youtube/cookies').json['pool']
+        self.assertFalse(snapshot['halted'])
+        self.assertEqual(snapshot['capacity_summary']['available_sessions'], 1)
+
     def test_blank_name_defaults_to_filename(self):
         for name in ('', '   '):
             response = self.add(name)

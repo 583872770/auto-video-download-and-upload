@@ -147,6 +147,11 @@ class RecoveryPolicy:
 
 
 def recovery_policy(failure, config, *, youtube=True):
+    if (youtube and config.get('youtube_cookie_pool') and failure.profile_id
+            and failure.kind in ('account_rate_limit', 'request_rate_limit')):
+        delay = max(3600 if failure.kind == 'account_rate_limit' else
+                    int(config.get('youtube_throttle_cooldown', 300)), failure.retry_after or 0)
+        return RecoveryPolicy('cooldown', delay, False, ('session',))
     if failure.kind in ('account_rate_limit', 'authentication_required', 'verification_required'):
         targets = ('pool', 'session', 'execution')
         if failure.kind == 'account_rate_limit':

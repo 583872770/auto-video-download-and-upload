@@ -27,7 +27,9 @@ class YouTubeAuthRequired(RuntimeError):
     def __init__(self, result):
         self.result = result
         # Missing login evidence and an unavailable check are different failures.
-        self.retryable = result['state'] in ('network_error', 'unconfirmed', 'checking')
+        self.http_status = result.get('http_status')
+        self.retry_after = result.get('retry_after') or 0
+        self.retryable = self.http_status == 429 or result['state'] in ('network_error', 'unconfirmed', 'checking')
         self.connection_failure = result['state'] == 'network_error'
         super().__init__(result['message'])
 
@@ -63,6 +65,14 @@ class SourceHTTPSHandler(HTTPSHandler):
         return self.do_open(connection, request, context=self._context)
 
 
+class ProbeResult(tuple):
+    """Keep the two-value probe API while retaining actual HTTP evidence."""
+    def __new__(cls, state, message, *, http_status=None, retry_after=None):
+        value = super().__new__(cls, (state, message))
+        value.http_status, value.retry_after = http_status, retry_after
+        return value
+
+
 def probe(cookie_data, proxy, *, source_address=''):
     # Load from the checked bytes, not a path that may change mid-request.
     import tempfile
@@ -87,10 +97,15 @@ def probe(cookie_data, proxy, *, source_address=''):
                 if len(data) > 4 * 1024 * 1024:
                     return 'unconfirmed', 'YouTube 返回内容异常，尚未确认登录，请稍后重新检测。'
         except HTTPError as error:
+            from webapp.download_policy import retry_after
+            delay = retry_after((error.headers or {}).get('Retry-After'))
             error.close()
             if error.code == 401:
                 return 'not_logged_in', 'YouTube 未认可当前 Cookie，请重新登录或上传新的 Cookie。'
-            if error.code in (403, 429):
+            if error.code == 429:
+                return ProbeResult('rate_limited', 'YouTube 登录检测收到 HTTP 429，请等待请求冷却；这不等于登录失效。',
+                                   http_status=429, retry_after=delay)
+            if error.code == 403:
                 return 'verification_required', '当前节点被 YouTube 限制或要求额外验证，请检查节点后重新检测。'
             from webapp.diagnostics import event
             event('youtube_auth_probe_unavailable', http_status=error.code, proxy_configured=bool(proxy))
@@ -164,8 +179,10 @@ class YouTubeAuth:
         from webapp.cookie_profiles import CookieProfiles
         target = CookieProfiles(base, self.store).require(identity)
         fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
-        result = self.check({**config, 'youtube_cookie': str(target)}, base,
+        result = self.check({**config, 'youtube_cookie': str(target), '_cookie_pool_selected': identity}, base,
                             publish_latest=False, **options)
+        if result.get('http_status') == 429:
+            self._limit_error({**config, '_cookie_pool_selected': identity}, base, result)
         self._write('youtube_profile:' + identity, {'fingerprint': fingerprint, 'auth': result})
         return result
 
@@ -182,6 +199,24 @@ class YouTubeAuth:
         return None
 
     def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True):
+        if config.get('youtube_cookie_pool'):
+            from webapp.cookie_pool import CookiePool
+            from webapp.throughput import PipelineBusy
+            pool = CookiePool(self.store, config, base, None, strict=False)
+            selected = config.get('_cookie_pool_selected')
+            target = Path(config.get('youtube_cookie') or '')
+            if not target.is_absolute():
+                target = Path(base) / target
+            identity = selected or next((i for i, path, _ in pool.accounts
+                if path.resolve() == target.resolve()), None)
+            if identity is None and target.stem in pool.aliases:
+                identity = target.stem
+            identity = pool.aliases.get(identity, identity)
+            session = next((s for s in pool.status()['session_states'] if s['id'] == identity), None)
+            if session and session['state'] == 'cooldown':
+                error = PipelineBusy(f'账号「{session["name"]}」正在冷却，暂不发送登录检测请求；到期自动低频恢复。')
+                error.retry_after = max(1, session['cooldown_until'] - time.time())
+                raise error
         # Library checks must not overwrite the selected account's live status.
         def publish(result):
             if publish_latest:
@@ -236,7 +271,10 @@ class YouTubeAuth:
                         publish(cached)
                         return cached
                     try:
-                        state, message = probe(data, proxy, **({'source_address': source} if source else {}))
+                        checked = probe(data, proxy, **({'source_address': source} if source else {}))
+                        state, message = checked
+                        if getattr(checked, 'http_status', None):
+                            result.update(http_status=checked.http_status, retry_after=checked.retry_after)
                     except Exception:
                         # A failed preflight must never become thousands of failed videos.
                         state, message = 'unconfirmed', '登录检测未完成，请检查网络和 Cookie 文件后重新检测。'
@@ -252,10 +290,30 @@ class YouTubeAuth:
                 return result
             time.sleep(0.1)
 
+    def _limit_error(self, config, base, result):
+        error = YouTubeAuthRequired(result)
+        if result.get('http_status'):
+            from webapp.download_policy import failure_evidence
+            failure_evidence(error, source='youtube', phase='auth')
+        if result.get('http_status') == 429 and config.get('youtube_cookie_pool'):
+            from webapp.cookie_pool import CookiePool
+            pool = CookiePool(self.store, config, base, None, strict=False)
+            identity = config.get('_cookie_pool_selected')
+            target = resolve_path(base, config.get('youtube_cookie') or '').resolve()
+            if not identity:
+                identity = next((i for i, path, _ in pool.accounts if path.resolve() == target), None)
+                if identity is None and target.stem in pool.aliases:
+                    identity = target.stem
+            scope = next((scope for i, _, scope in pool.accounts
+                          if i == pool.aliases.get(identity, identity)), None)
+            if scope:
+                pool.outcome(scope, error)
+        return error
+
     def require(self, config, base, **options):
         result = self.check(config, base, **options)
         if result['state'] != 'valid':
-            raise YouTubeAuthRequired(result)
+            raise self._limit_error(config, base, result)
         return result
 
     def reject(self, message, *, request_mode='authenticated', node=''):

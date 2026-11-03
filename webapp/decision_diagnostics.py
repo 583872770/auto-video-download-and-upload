@@ -76,7 +76,8 @@ def explain(states, channels, pool, pacing, stamp, *, paused=False, running=0):
             cooldown_complete=not any(r['until'] > stamp and r['action'] in ('halt', 'cooldown') for r in restrictions),
             instructions='先停止实例并等待当前任务结束；冷却到期后检测全部池成员并解除拦截，再手动恢复。'
                          if manual and pool else '处理记录中的故障并等待冷却结束，再检查并手动恢复实例。'
-                         if manual else '临时冷却到期后重新检查资源准入；到期不保证源站已恢复。'))
+                         if manual else '仅冷却受影响账号，其他健康账号继续；全部账号冷却则自动等待。到期自动单任务低频恢复，无需手动恢复；仍受共享预算约束，到期不保证源站已恢复。'
+                         if pool and pool.get('cooling_sessions') else '临时冷却到期后重新检查资源准入；到期不保证源站已恢复。'))
 
 
 def _incident(incidents, record):

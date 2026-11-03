@@ -45,7 +45,7 @@ class AuthParserTests(unittest.TestCase):
 
     def test_network_restrictions_are_not_reported_as_cookie_expiry(self):
         for failure, state in [(URLError('http://user:PRIVATE@host'), 'network_error'),
-                               (HTTPError('https://youtube.com/', 429, 'PRIVATE', {}, None), 'verification_required')]:
+                               (HTTPError('https://youtube.com/', 429, 'PRIVATE', {}, None), 'rate_limited')]:
             opener = Mock()
             opener.open.side_effect = failure
             with patch('webapp.youtube_auth.build_opener', return_value=opener):
@@ -81,6 +81,13 @@ class AuthParserTests(unittest.TestCase):
 
 
 class AuthContract:
+    def setUp(self):
+        super().setUp()
+        # These are the explicit always-authenticated preflight contracts.
+        # The default on-demand mode has separate anonymous-first coverage.
+        response = self.client.put('/api/config', json={'youtube_cookie_usage': 'always'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+
     def cookie(self, content=COOKIE):
         result = self.client.post('/api/youtube/cookie', data={'cookie': (BytesIO(content), 'cookies.txt')}, headers=self.headers)
         self.assertEqual(result.status_code, 201, result.json)

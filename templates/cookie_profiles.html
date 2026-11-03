@@ -16,11 +16,23 @@
       <button id="youtube-cookie-pool-save" class="button button-white" type="button">保存账号池</button>
       <span id="youtube-cookie-pool-status" class="micro-copy">选择至少 2 份 Cookie；仅支持单独使用 yt-dlp。</span>
     </div>
+    <div class="cookie-pool-explanation"><strong>一个账号限流，只暂停这个账号</strong><p>明确账号限流：休息至少 1 小时，其他健康账号继续；全部账号冷却时队列自动等待，无需手动恢复。HTTP 429 单独按配置冷却，默认 300 秒；源站要求更长则延长。</p><p>冷却结束自动低频恢复：先单任务、至少 180 秒间隔 → 连续成功 3 次且观察满 10 分钟后至少 120 秒 → 成功 5 次且观察满 30 分钟后恢复设置的会话并发，间隔仍至少 120 秒。再次限流重新冷却。</p><p>同账号重复导出共享限制；冷却中不发下载、字幕或登录检测请求。登录有效不代表没有限流。登录失效、验证码和旧版本人工拦截仍需按提示处理。</p></div>
+    <div id="youtube-cookie-pool-live" aria-live="polite"></div>
   </div>
   <div class="cookie-list-card">
     <div class="cookie-list-heading"><h4>已保存的 Cookie</h4><span class="micro-copy">可逐项检测登录、切换当前使用项</span></div>
     <div id="youtube-cookie-list" role="status" aria-live="polite">正在读取已保存 Cookie…</div>
     <p class="micro-copy cookie-list-note">检测使用当前实例的代理 / IPv6 出口，不切换账号、不恢复任务。出口变化或出现验证码、限流、Video unavailable 后，请重新检测并降低并发。</p>
+    <details class="cookie-export-guide">
+      <summary>官方推荐的 YouTube Cookie 导出方式</summary>
+      <ol>
+        <li>打开新的无痕 / 私密窗口，只保留一个 YouTube 标签页并完成登录。</li>
+        <li>在同一标签页打开 <code>https://www.youtube.com/robots.txt</code>。</li>
+        <li>导出 <code>youtube.com</code> 的 Netscape Cookie 文件并上传。</li>
+        <li>导出后立即关闭这个无痕窗口，不要再次打开这段会话；关闭窗口不等于退出账号。</li>
+      </ol>
+      <p>不要用 <code>--cookies COOKIEFILE --cookies-from-browser BROWSER</code> 导出这段无痕会话。官方说明该方式会读取普通浏览器 Cookie，拿不到无痕 YouTube 会话。</p>
+    </details>
   </div>
   <div id="youtube-cookie-form" class="cookie-upload-card">
     <div class="cookie-card-heading"><div><h4>新增 Cookie</h4><p class="micro-copy">导出 YouTube 的 Netscape Cookie 文件后上传；名称留空时自动使用文件名。</p></div></div>

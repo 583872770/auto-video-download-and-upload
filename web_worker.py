@@ -98,7 +98,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 from webapp.cookie_pool import CookiePool
                 pool = CookiePool(store, prepared, payload['base'], task_id)
                 report({'stage': 'waiting_cookie'})
-                with pool.assignment() as selected:
+                with pool.assignment(count_success=False) as selected:
                     cookie_profile_id = selected['_cookie_pool_selected']
                     cookie_profile_name = cookie_profile_id
                     try:
@@ -117,6 +117,9 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                           source_address=selected.get('youtube_source_address', ''), identity_retry=False)
                     result = _execute(action, {**payload, 'config': selected}, report,
                                       rotation_completed, store, worker_slot)
+                    if not result.get('skipped') and result.get('file_count', 0) > 0:
+                        pool.outcome(selected['_cookie_pool_scope'], None,
+                                     admitted_at=selected['_cookie_pool_admitted_at'])
             else:
                 result = _execute(action, payload, report, rotation_completed, store, worker_slot)
             if result.get('file_count'):
@@ -309,7 +312,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         if 'downmp3' in methods:
             from webapp.environment import require_downmp3_environment
             require_downmp3_environment()
-        if store and youtube and 'yt_dlp' in methods:
+        use_cookie = (config.get('youtube_cookie_usage', 'auto') == 'always'
+                      or config.get('_cookie_pool_selected'))
+        if store and youtube and 'yt_dlp' in methods and use_cookie:
             progress.state.update(stage='checking_login')
             progress.save(force=True)
             auth = YouTubeAuth(store)
@@ -510,7 +515,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                         transfer_seconds += time.monotonic() - started
 
         transfer_seconds = 0
-        def attempt(channel, addresses, *, without_cookies=False):
+        def attempt(channel, addresses, *, without_cookies=False, cookie_retry=False):
             nonlocal failure, failure_phase, transfer_seconds
             # Each provider needs its own error collector and Cookie policy.
             failure = DownloadFailure()
@@ -518,10 +523,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             transfer_seconds = 0
             provider = channel.adapter
             provider_config = execution_config(config, channel)
-            if not without_cookies:
+            if not cookie_retry:
                 meter.begin(channel)
-            options = build_ydl_options(provider_config, base)
-            if without_cookies:
+            options = build_ydl_options({**provider_config, '_use_youtube_cookie': not without_cookies}, base)
+            if (without_cookies or (config.get('youtube_cookie_usage', 'auto') == 'never'
+                                    and not config.get('_cookie_pool_selected'))):
                 options.pop('cookiefile', None)
             transfer_count = runtime_limits(config, store.directory if store else base / '.cache')['transfers']
             fragment_budget = fragment_connection_budget(config, channel.connection_limit, transfer_count)
@@ -569,7 +575,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 # for public videos. Try once with a fresh anonymous cookie jar,
                 # before any media was received, on the same provider and proxy.
                 if (not config.get('youtube_cookie_fallback', False)
-                        or without_cookies or provider != 'yt_dlp' or not youtube or len(addresses) != 1
+                        or cookie_retry or without_cookies or provider != 'yt_dlp' or not youtube or len(addresses) != 1
                         or not options.get('cookiefile') or output_files or progress.streams
                         or progress.state.get('downloaded_bytes') or failure.cookie_rejected
                         or 'your account has been rate-limited' in failure.message(error).lower()
@@ -578,6 +584,31 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 print('当前 Cookie 会话返回 Video unavailable；使用同一节点不带 Cookie 重试一次。已上传的 Cookie 保持不变。', flush=True)
                 event('youtube_cookie_fallback', provider=provider, reason='video_unavailable',
                       node_changed=False, cookie_file_preserved=True)
+                return True
+
+            def retry_with_cookies(error=None):
+                # On-demand mode deliberately starts public videos anonymously.
+                # If the extractor says that this video needs an account, retry
+                # once with the selected Cookie before publishing a login error.
+                if (not without_cookies or provider != 'yt_dlp' or not youtube
+                        or cookie_retry or config.get('_cookie_pool_selected')
+                        or not config.get('youtube_cookie')
+                        or config.get('youtube_cookie_usage', 'auto') != 'auto'
+                        or output_files or progress.streams or progress.state.get('downloaded_bytes')):
+                    return False
+                text = failure.message(error).lower()
+                challenge_text = text + ' ' + ' '.join([str(error or ''), *failure.errors]).lower()
+                if any(marker in challenge_text for marker in ('bot', 'captcha', '机器人', '验证码')):
+                    return False
+                markers = ('sign in to confirm', 'sign in to watch', 'login required',
+                           'log in to watch', 'age-restricted', 'members-only',
+                           'private video',
+                           '需要登录', '要求登录', '仅限会员', '私密')
+                if not any(marker in text for marker in markers):
+                    return False
+                print('当前视频需要登录，使用已选 Cookie 重试一次。', flush=True)
+                event('youtube_cookie_on_demand', provider=provider, reason='authentication_required',
+                      cookie_file_preserved=True)
                 return True
 
             def wait_request():
@@ -653,7 +684,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                                     failed = downloader.download(addresses)
             except yt_dlp.utils.DownloadError as error:
                 if retry_without_cookies(error):
-                    return attempt(channel, addresses, without_cookies=True)
+                    return attempt(channel, addresses, without_cookies=True, cookie_retry=True)
+                if retry_with_cookies(error):
+                    return attempt(channel, addresses, without_cookies=False, cookie_retry=True)
                 if store and youtube and provider == 'yt_dlp' and (failure.cookie_rejected or '要求登录验证' in failure.message(error)):
                     raise YouTubeAuthRequired(reject_auth(failure.message(error))) from error
                 raise failure.as_error(error) from error
@@ -661,7 +694,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 raise YouTubeAuthRequired(reject_auth(failure.message()))
             if failed:
                 if retry_without_cookies():
-                    return attempt(channel, addresses, without_cookies=True)
+                    return attempt(channel, addresses, without_cookies=True, cookie_retry=True)
+                if retry_with_cookies():
+                    return attempt(channel, addresses, without_cookies=False, cookie_retry=True)
                 cause = getattr(downloader, 'http_range_error', None)
                 raise failure.as_error(cause) from cause
             return downloader.skipped
@@ -670,6 +705,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         used_fallback = False
 
         def record_route(channel, **outcome):
+            error = outcome.get('error')
+            if error and config.get('_cookie_pool_selected'):
+                value = failure_evidence(error)
+                if value.kind in ('account_rate_limit', 'request_rate_limit'):
+                    return  # A session limit is not evidence that this route failed.
             if route_health:
                 try:
                     route_health.record(config['_resolved_clash_node'], route_key(channel), **outcome)
@@ -708,7 +748,10 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                         YouTubeAuth(store).require(config, base, **(
                             {'proxy': snapshot['proxy'], 'node': snapshot['node']}
                             if config.get('proxy_mode') == 'clash' else {}))
-                    skipped_any |= attempt(channel, addresses)
+                    skipped_any |= attempt(channel, addresses,
+                        without_cookies=(config.get('youtube_cookie_usage', 'auto') == 'auto'
+                                         and not config.get('_cookie_pool_selected')
+                                         and provider == 'yt_dlp' and youtube))
                     scheduler.outcome(channel, success=True, elapsed=time.monotonic() - provider_started,
                                       size=sum(output_files.values()) - before_bytes,
                                       resolve_elapsed=meter.resolve_seconds, transfer_elapsed=transfer_seconds)
@@ -901,6 +944,18 @@ def drain(directory, slot=0, role='all'):
                 from webapp.execution import isolate_download_failure
                 failure = failure_evidence(error)
                 policy = recovery_policy(failure, {**runtime, **config})
+                if policy.targets == ('session',):
+                    wait = '至少一小时' if failure.kind == 'account_rate_limit' else f'至少 {int(policy.delay)} 秒'
+                    reason = (f'账号「{failure.profile_name or failure.profile_id}」限流，'
+                              f'仅该账号冷却{wait}，其他 Cookie 继续执行；冷却后自动以单任务、低频恢复。')
+                    store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
+                        'speed': None, 'eta': None, 'retry_delay_seconds': 30,
+                        'retry_reason': 'youtube_session_rate_limit'}, store.owner)
+                    store.release(task['id'], store.owner, reason, delay=30)
+                    event('attempt_released', reason='youtube_session_rate_limit', retry_after=30,
+                          instance_paused=False, **error_details(error))
+                    print(reason, flush=True)
+                    return False
                 delay = max(policy.delay, getattr(error, 'retry_after', 0) or 0,
                             getattr(error, '_download_recovery_delay', 0))
                 reason = ('YouTube 明确提示账号被限流，实例已停止领取，任务保留。'
@@ -913,6 +968,7 @@ def drain(directory, slot=0, role='all'):
                 event('attempt_released', reason='youtube_account_rate_limit',
                       retry_after=delay, instance_paused=True, **error_details(error))
                 print(reason, flush=True)
+                return True
             # Redirect OS handles too, so FFmpeg stderr and Python logs stay together.
             sys.stdout.flush()
             sys.stderr.flush()
@@ -967,8 +1023,13 @@ def drain(directory, slot=0, role='all'):
                     break
                 except YouTubeAuthRequired as error:
                     record_failure(error)
+                    failure = failure_evidence(error)
+                    if recovery_policy(failure, {**runtime, **config}).targets == ('session',):
+                        stop_for_account_limit(error)
+                        continue
                     if error.retryable:
-                        retry_after = 30
+                        retry_after = (recovery_policy(failure, {**runtime, **config}).delay
+                                       if failure.kind == 'request_rate_limit' else 30)
                         message = f'{error} 任务将在 {retry_after} 秒后自动重试，实例继续运行。'
                         store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
                             'speed': None, 'eta': None, 'retry_delay_seconds': retry_after,
@@ -989,14 +1050,16 @@ def drain(directory, slot=0, role='all'):
                     break
                 except YouTubeAccountLimited as error:
                     record_failure(error)
-                    stop_for_account_limit(error)
-                    break
+                    if stop_for_account_limit(error):
+                        break
+                    continue
                 except BaseException as error:
                     record_failure(error)
                     failure = failure_evidence(error)
                     if failure.kind == 'account_rate_limit':
-                        stop_for_account_limit(error)
-                        break
+                        if stop_for_account_limit(error):
+                            break
+                        continue
                     if failure.kind in ('authentication_required', 'verification_required'):
                         from webapp.execution import isolate_download_failure
                         isolate_download_failure(store, error)
