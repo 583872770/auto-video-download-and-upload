@@ -328,7 +328,15 @@ class CookiePool:
             profile_id=profile_id,
             profile_name=self.profile_names.get(profile_id, profile_id)) if error else None
         policy = recovery_policy(failure, self.config) if failure else None
+        from webapp.youtube_cookie_history import record as record_cookie_event
         if failure and policy.action == 'none':
+            # Content-specific failures do not alter pacing, but remain visible
+            # in the per-Cookie timeline for diagnosis.
+            record_cookie_event(self.router.store, profile_id=profile_id,
+                profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
+                phase=failure.phase, kind=failure.kind, message=failure.message,
+                incident_id=failure.incident_id, http_status=failure.http_status,
+                retry_after=failure.retry_after, task_id=failure.task_id)
             return
 
         def record(db, stamp):
@@ -336,6 +344,9 @@ class CookiePool:
             if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
                 return
             if failure:
+                previous_interval = int(state.get('interval', 60))
+                previous_state = ('recovery' if state.get('recovery_mode') else
+                                  'cooldown' if state.get('cooldown_until', 0) > stamp else 'ready')
                 until = cooldown_deadline(error, stamp, max(policy.delay, getattr(error, 'retry_after', 0) or 0))
                 state.update(limit=1, streak=0, first_success=0,
                              cooldown_kind=failure.kind,
@@ -351,6 +362,16 @@ class CookiePool:
                                  interval=max(180, state['interval']), recovery_interval_floor=120)
                 remember_decision(state, failure, layer='session', scope='Cookie：' + self.profile_names.get(profile_id, profile_id),
                     action=policy.action, until=until, manual=policy.manual, stamp=stamp)
+                record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                    profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
+                    phase=failure.phase, kind=failure.kind, message=failure.message,
+                    incident_id=failure.incident_id, http_status=failure.http_status,
+                    retry_after=failure.retry_after, task_id=failure.task_id,
+                    previous_interval=previous_interval, new_interval=int(state.get('interval', previous_interval)),
+                    previous_state=previous_state,
+                    new_state='recovery' if state.get('recovery_mode') else 'cooldown',
+                    cooldown_until=state.get('cooldown_until'),
+                    metadata={'action': policy.action, 'targets': policy.targets})
             if failure and 'pool' in policy.targets:
                 gate = self.router._state(db, self.global_scope)
                 gate['cooldown_until'] = max(gate.get('cooldown_until', 0), until)
@@ -378,9 +399,25 @@ class CookiePool:
                     state['recovery_successes'] = state.get('recovery_successes', 0) + 1
                     successes = state['recovery_successes']
                     if successes >= 3 and stamp - since >= 600:
+                        previous_interval = int(state.get('interval', 180))
                         state['interval'] = max(120, int(self.config.get('youtube_start_interval', 60)))
+                        if state['interval'] != previous_interval:
+                            record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                                profile_name=self.profile_names.get(profile_id, profile_id),
+                                event_type='interval_change', phase='recovery', kind='stable_success',
+                                message='恢复观察达到 3 次成功并持续 10 分钟，降低启动间隔。',
+                                previous_interval=previous_interval, new_interval=state['interval'],
+                                previous_state='recovery', new_state='recovery',
+                                metadata={'recovery_successes': successes})
                     if successes >= 5 and stamp - since >= 1800:
                         state.update(recovery_mode=False, limit=2, streak=successes, first_success=since)
+                        record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                            profile_name=self.profile_names.get(profile_id, profile_id), event_type='recovery',
+                            phase='recovery', kind='stable_success',
+                            message='恢复观察达到 5 次成功并持续 30 分钟，恢复设置的并发。',
+                            previous_state='recovery', new_state='ready',
+                            new_interval=int(state.get('interval', 120)),
+                            metadata={'recovery_successes': successes})
                     self.router._save(db, scope, state)
                     return
                 state['streak'] = state.get('streak', 0) + 1
@@ -397,7 +434,16 @@ class CookiePool:
                              if state['successes'] >= 20 and stamp - state['first_success'] >= 1800
                              else STABLE_ACCOUNT_INTERVAL)
                     step = 15 if floor == MATURE_ACCOUNT_INTERVAL else 5
+                    previous_interval = int(state.get('interval', 60))
                     state['interval'] = max(floor, state.get('recovery_interval_floor', 0),
                                             state.get('interval', 60) - step)
+                    if state['interval'] != previous_interval:
+                        record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                            profile_name=self.profile_names.get(profile_id, profile_id),
+                            event_type='interval_change', phase='success', kind='stable_success',
+                            message='连续稳定完成任务，逐步缩短启动间隔。',
+                            previous_interval=previous_interval, new_interval=state['interval'],
+                            previous_state='ready', new_state='ready',
+                            metadata={'successes': state['successes'], 'streak': state['streak']})
             self.router._save(db, scope, state)
         self.router.transaction_call(record)

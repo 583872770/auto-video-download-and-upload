@@ -44,4 +44,10 @@
     <p id="youtube-cookie-error" class="task-error" role="alert" hidden></p>
     <div class="cookie-upload-footer"><span class="micro-copy">上传后首份会自动启用；已有当前 Cookie 时不会覆盖。</span><button id="youtube-cookie-submit" class="button button-dark" type="button"><svg><use href="#i-upload"/></svg>上传并保存</button></div>
   </div>
+  <dialog id="youtube-cookie-timeline-dialog" class="cookie-timeline-dialog" aria-labelledby="youtube-cookie-timeline-title">
+    <div class="dialog-heading"><div><span class="section-kicker">YOUTUBE / COOKIE HISTORY</span><h2 id="youtube-cookie-timeline-title">Cookie 事件时间线</h2></div><button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+    <p id="youtube-cookie-timeline-summary" class="micro-copy"></p>
+    <div class="cookie-timeline-filters"><label>时间范围<select id="youtube-cookie-timeline-range"><option value="86400">最近 24 小时</option><option value="604800" selected>最近 7 天</option><option value="2592000">最近 30 天</option><option value="0">全部</option></select></label><label class="timeline-check"><input id="youtube-cookie-timeline-changes" type="checkbox">只看间隔变化</label></div>
+    <div id="youtube-cookie-timeline-list" class="cookie-timeline-list" aria-live="polite">正在读取记录…</div>
+  </dialog>
 </section>

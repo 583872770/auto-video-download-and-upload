@@ -72,6 +72,23 @@ cookie_profiles = Table('youtube_cookie_profiles', metadata,
     Column('created_at', String(40), nullable=False),
     Column('deleted', Integer, nullable=False, server_default='0'))
 
+# Durable, secret-free audit trail for Cookie authentication, cooldown and
+# adaptive pacing decisions.  Cookie values are never stored here.
+youtube_cookie_events = Table('youtube_cookie_events', metadata,
+    Column('id', String(32), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
+    Column('scope', String(128), nullable=False), Column('profile_id', String(32)),
+    Column('profile_name', String(80)), Column('incident_id', String(32)),
+    Column('event_type', String(32), nullable=False), Column('phase', String(32)),
+    Column('kind', String(64)), Column('message', Text, nullable=False),
+    Column('http_status', Integer), Column('retry_after', Float),
+    Column('occurred_at', Float, nullable=False), Column('previous_interval', Integer),
+    Column('new_interval', Integer), Column('previous_state', String(32)),
+    Column('new_state', String(32)), Column('cooldown_until', Float),
+    Column('task_id', String(32)), Column('metadata', Text, nullable=False))
+Index('ix_youtube_cookie_events_profile_time', youtube_cookie_events.c.profile_id,
+      youtube_cookie_events.c.occurred_at)
+Index('ix_youtube_cookie_events_incident', youtube_cookie_events.c.incident_id)
+
 download_resources = Table('download_resources', metadata,
     Column('key', String(64), primary_key=True), Column('state', Text, nullable=False))
 download_permits = Table('download_permits', metadata,

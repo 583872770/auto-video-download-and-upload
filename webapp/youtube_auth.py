@@ -177,10 +177,18 @@ class YouTubeAuth:
 
     def check_profile(self, identity, config, base, **options):
         from webapp.cookie_profiles import CookieProfiles
-        target = CookieProfiles(base, self.store).require(identity)
+        profiles = CookieProfiles(base, self.store)
+        target = profiles.require(identity)
+        profile = next((item for item in profiles.items() if item['id'] == identity), None)
         fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
         result = self.check({**config, 'youtube_cookie': str(target), '_cookie_pool_selected': identity}, base,
                             publish_latest=False, **options)
+        from webapp.youtube_cookie_history import record as record_cookie_event
+        record_cookie_event(self.store, profile_id=identity,
+            profile_name=profile.get('name') if profile else identity, event_type='auth_check', phase='auth',
+            kind=result.get('state'), message=result.get('message', ''),
+            http_status=result.get('http_status'), retry_after=result.get('retry_after'),
+            metadata={'connection': result.get('connection', '')})
         if result.get('http_status') == 429:
             self._limit_error({**config, '_cookie_pool_selected': identity}, base, result)
         self._write('youtube_profile:' + identity, {'fingerprint': fingerprint, 'auth': result})

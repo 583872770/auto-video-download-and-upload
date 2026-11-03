@@ -1132,7 +1132,7 @@ function updateCookiePoolLive(data) {
       policy.textContent = account.unavailable ? 'Cookie 文件不可用，请更新。' :
         `${session?.state === 'cooldown' ? '冷却中 · 暂停新请求' : session?.state === 'recovery' ? '低频恢复中' : '可参与调度'}：设置上限 ${account.configured_limit || pool.session_limit}，当前最多 ${session?.limit ?? account.limit ?? 1} 个任务，启动间隔至少 ${session?.interval || account.interval || 60} 秒。` +
         (session?.state === 'cooldown' ? `原因：${failureKindNames[session.cooldown_kind] || '临时故障'}；恢复检查时间 ${new Date(session.cooldown_until * 1000).toLocaleString()}；其他健康账号继续。` : '') +
-        (session?.state === 'recovery' ? `本轮连续成功 ${session.recovery_successes} 次，达标后自动恢复设置并发。` : '') +
+        (session?.state === 'recovery' ? `启动间隔延长原因：${failureKindNames[session.cooldown_kind] || '此前故障'}；本轮连续成功 ${session.recovery_successes} 次，达标后自动恢复设置并发。` : '') +
         (account.shared_with ? ` 与「${session?.name || '同账号文件'}」共享并发、间隔和冷却。` : '');
     }
     const check = row.querySelector('[data-cookie-login-check]');
@@ -1228,6 +1228,21 @@ async function loadCookieProfiles() {
       policy.dataset.cookieSessionStatus = '';
       details.append(policy);
     }
+    if (item.session && !item.pooled) {
+      const pacing = document.createElement('p');
+      pacing.className = 'cookie-session-status';
+      const stateName = item.session.state === 'cooldown' ? '冷却中' : item.session.state === 'recovery' ? '低频恢复中' : '可参与调度';
+      pacing.textContent = `${stateName} · 当前启动间隔至少 ${item.session.interval || 60} 秒` +
+        (item.session.cooldown_until > Date.now() / 1000 ? ` · 冷却截止 ${new Date(item.session.cooldown_until * 1000).toLocaleString()}` : '') +
+        (item.session.recovery_mode ? ` · 恢复成功 ${item.session.recovery_successes || 0} 次` : '');
+      details.append(pacing);
+    }
+    if (item.latest_event) {
+      const latest = document.createElement('p');
+      latest.className = 'micro-copy cookie-profile-latest';
+      latest.textContent = `最近事件：${new Date(item.latest_event.occurred_at * 1000).toLocaleString()} · ${item.latest_event.message || item.latest_event.kind || '已记录'}`;
+      details.append(latest);
+    }
     const check = document.createElement('button');
     check.type = 'button';
     check.dataset.cookieLoginCheck = '';
@@ -1247,6 +1262,11 @@ async function loadCookieProfiles() {
         throw error;
       } finally { check.textContent = '检测登录'; }
     }));
+    const timeline = document.createElement('button');
+    timeline.type = 'button';
+    timeline.className = 'button button-white';
+    timeline.textContent = '查看记录';
+    timeline.addEventListener('click', () => openCookieTimeline(item));
     const select = document.createElement('button');
     select.type = 'button';
     select.className = 'button button-white';
@@ -1276,11 +1296,56 @@ async function loadCookieProfiles() {
       await loadCookieProfiles();
       await refresh();
     }));
-    row.append(poolCheck, details, check, select, remove);
+    row.append(poolCheck, details, check, timeline, select, remove);
     list.append(row);
   }
   updateCookiePoolLive(data);
 }
+async function openCookieTimeline(item) {
+  const dialog = $('#youtube-cookie-timeline-dialog');
+  const list = $('#youtube-cookie-timeline-list');
+  const summary = $('#youtube-cookie-timeline-summary');
+  if (!dialog || !list) return;
+  dialog.dataset.profileId = item.id;
+  $('#youtube-cookie-timeline-title').textContent = `${item.name} · 事件时间线`;
+  summary.textContent = item.session
+    ? `当前启动间隔至少 ${item.session.interval || 60} 秒。${item.session.state === 'cooldown' ? '当前由账号冷却控制。' : item.session.state === 'recovery' ? '当前由低频恢复策略控制。' : '当前可参与调度。'}`
+    : '该 Cookie 尚未加入账号池，以下记录主要来自登录检测。';
+  list.textContent = '正在读取记录…';
+  dialog.showModal();
+  await refreshCookieTimeline();
+}
+async function refreshCookieTimeline() {
+  const dialog = $('#youtube-cookie-timeline-dialog');
+  const list = $('#youtube-cookie-timeline-list');
+  if (!dialog || !list || !dialog.dataset.profileId) return;
+  const range = Number($('#youtube-cookie-timeline-range')?.value || 604800);
+  const changes = $('#youtube-cookie-timeline-changes')?.checked;
+  const query = range ? `?from=${(Date.now() / 1000 - range).toFixed(3)}${changes ? '&only_interval_changes=1' : ''}` : (changes ? '?only_interval_changes=1' : '');
+  try {
+    const data = await api(`/api/youtube/cookies/${encodeURIComponent(dialog.dataset.profileId)}/timeline${query}`);
+    list.replaceChildren();
+    if (!data.events.length) { list.textContent = '当前筛选范围内没有记录。'; return; }
+    for (const event of data.events) {
+      const article = document.createElement('article');
+      article.className = `cookie-timeline-event ${event.event_type === 'failure' ? 'failure' : 'change'}`;
+      const heading = document.createElement('h4');
+      heading.textContent = `${new Date(event.occurred_at * 1000).toLocaleString()} · ${event.event_type === 'interval_change' ? '启动间隔调整' : event.event_type === 'auth_check' ? '登录检测' : event.event_type === 'recovery' ? '恢复进度' : '错误事件'}`;
+      const message = document.createElement('p'); message.textContent = event.message || event.kind || '';
+      article.append(heading, message);
+      const meta = [];
+      if (event.kind) meta.push(`类型：${event.kind}`);
+      if (event.phase) meta.push(`阶段：${event.phase}`);
+      if (event.http_status) meta.push(`HTTP ${event.http_status}`);
+      if (event.previous_interval != null && event.new_interval != null && event.previous_interval !== event.new_interval) meta.push(`启动间隔：${event.previous_interval} 秒 → ${event.new_interval} 秒`);
+      if (event.cooldown_until) meta.push(`冷却截止：${new Date(event.cooldown_until * 1000).toLocaleString()}`);
+      const small = document.createElement('small'); small.textContent = meta.join(' · '); article.append(small);
+      list.append(article);
+    }
+  } catch (error) { list.textContent = `读取记录失败：${error.message}`; }
+}
+$('#youtube-cookie-timeline-range')?.addEventListener('change', refreshCookieTimeline);
+$('#youtube-cookie-timeline-changes')?.addEventListener('change', refreshCookieTimeline);
 $('#youtube-cookie-pool-save').addEventListener('click', event => runButton(event.currentTarget, async () => {
   const enabled = $('#youtube-cookie-pool-enabled').checked;
   const ids = enabled ? $$('[data-cookie-pool-id]:checked').map(input => input.dataset.cookiePoolId) : [];

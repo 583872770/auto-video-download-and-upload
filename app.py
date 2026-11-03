@@ -482,6 +482,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.get('/api/youtube/cookies')
     def list_youtube_cookies():
         from webapp.cookie_profiles import CookieProfiles
+        from webapp.youtube_cookie_history import list_events
         with settings_lock:
             config, base = settings()
             profiles = CookieProfiles(base, store)
@@ -503,6 +504,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if config.get('youtube_cookie_pool'):
                 from webapp.cookie_pool import CookiePool
                 pool_status = CookiePool(store, config, base, None, strict=False).status()
+            sessions = {row['id']: row for row in (pool_status or {}).get('session_states', [])}
+            for item in items:
+                item['session'] = sessions.get(item['id'])
+                recent = list_events(store, item['id'], limit=1)
+                item['latest_event'] = recent[0] if recent else None
         return jsonify(items=items, pool=pool_status, cookie_path=config.get('youtube_cookie', ''),
                        custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
 
@@ -518,6 +524,29 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 options.update(proxy=snapshot['proxy'], node=snapshot['node'])
             result = youtube_auth.check_profile(identity, config, base, **options)
         return jsonify(auth=result, message=result['message'])
+
+    @app.get('/api/youtube/cookies/<identity>/timeline')
+    def youtube_cookie_timeline(identity):
+        """Return bounded, secret-free history for one saved Cookie profile."""
+        from webapp.cookie_profiles import CookieProfiles
+        from webapp.youtube_cookie_history import list_events
+        with settings_lock:
+            config, base = settings()
+            profile = next((item for item in CookieProfiles(base, store).items() if item['id'] == identity), None)
+            if profile is None:
+                raise ValueError('Cookie 配置不存在。')
+            def number(name):
+                value = request.args.get(name)
+                try:
+                    return float(value) if value not in (None, '') else None
+                except ValueError:
+                    return None
+            events = list_events(store, identity, since=number('from'), until=number('to'),
+                kind=request.args.get('kind'), phase=request.args.get('phase'),
+                event_type=request.args.get('event_type'),
+                only_interval_changes=request.args.get('only_interval_changes') in ('1', 'true', 'yes'),
+                limit=request.args.get('limit', 100))
+        return jsonify(profile=profile, events=events)
 
     @app.post('/api/youtube/cookies/pool/recover')
     def recover_youtube_cookie_pool():

@@ -78,6 +78,20 @@ class YouTubePacing:
         self.instance_scope = 'youtube-pacing:instance:' + scheduler.instance
         self.session_scope = session_scope(self.config, base, scheduler.instance)
         self.scopes = list(dict.fromkeys((self.instance_scope, self.session_scope)))
+        self.history_profile_id = self.config.get('_cookie_pool_selected')
+        self.history_profile_name = self.config.get('_cookie_pool_profile_name')
+        if not self.history_profile_id and base is not None and self.config.get('youtube_cookie'):
+            try:
+                from webapp.cookie_profiles import CookieProfiles
+                target = Path(self.config['youtube_cookie'])
+                if not target.is_absolute():
+                    target = Path(base) / target
+                item = next((value for value in CookieProfiles(base, scheduler.store).items()
+                             if value['id'] == target.stem), None)
+                if item:
+                    self.history_profile_id, self.history_profile_name = item['id'], item['name']
+            except (OSError, ValueError):
+                pass
 
     def _states(self, db, stamp, channel):
         legacy = self.router._state(db, 'quota:' + channel.quota_group)
@@ -135,6 +149,7 @@ class YouTubePacing:
 
     def outcome(self, db, stamp, channel, *, success, size, failure, delay, error=None):
         rows = self._states(db, stamp, channel)
+        from webapp.youtube_cookie_history import record as record_cookie_event
         account_limit = bool(failure and failure.kind == 'account_rate_limit')
         request_limit = bool(failure and failure.kind == 'request_rate_limit')
         if account_limit:
@@ -157,27 +172,52 @@ class YouTubePacing:
                 if state.get('last_limit_at', 0) <= stamp - DAY:
                     strikes = 1
                 delay = max(delay or 0, min(21600, 3600 * 2 ** min(3, strikes - 1)))
+                previous_interval = int(state.get('interval', 60))
                 state.update(strikes=strikes, last_limit_at=stamp,
                              interval_reason_code='account_limit',
                              interval=min(600, max(120, state['interval'] if same_incident else state['interval'] * 2)),
                              cooldown_until=max(state.get('cooldown_until', 0), cooldown_deadline(error, stamp, delay)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp,
                              wait_reason='账号或源站正在冷却')
+                if self.history_profile_id:
+                    record_cookie_event(self.router.store, db=db, profile_id=self.history_profile_id,
+                        profile_name=self.history_profile_name, event_type='pacing_failure', phase=failure.phase,
+                        kind=failure.kind, message=failure.message, incident_id=failure.incident_id,
+                        http_status=failure.http_status, retry_after=failure.retry_after,
+                        previous_interval=previous_interval, new_interval=int(state['interval']),
+                        previous_state='ready', new_state='cooldown', cooldown_until=state.get('cooldown_until'),
+                        task_id=failure.task_id, scope='youtube-pacing:' + self.session_scope)
             elif request_limit or failure and failure.kind == 'transient_failure':
+                previous_interval = int(state.get('interval', 60))
                 state.update(interval=min(600, max(90, math.ceil(state['interval'] * 1.5))),
                              interval_reason_code='request_limit' if request_limit else 'transient_error',
                              cooldown_until=max(state.get('cooldown_until', 0), cooldown_deadline(error, stamp, delay)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
+                if self.history_profile_id:
+                    record_cookie_event(self.router.store, db=db, profile_id=self.history_profile_id,
+                        profile_name=self.history_profile_name, event_type='pacing_failure', phase=failure.phase,
+                        kind=failure.kind, message=failure.message, incident_id=failure.incident_id,
+                        http_status=failure.http_status, retry_after=failure.retry_after,
+                        previous_interval=previous_interval, new_interval=int(state['interval']),
+                        previous_state='ready', new_state='cooldown', cooldown_until=state.get('cooldown_until'),
+                        task_id=failure.task_id, scope='youtube-pacing:' + self.session_scope)
             elif success and size > 0 and state.get('cooldown_until', 0) <= stamp:
                 state['clean_successes'] = state.get('clean_successes', 0) + 1
                 # Require sustained verified completions, then at most one
                 # five-second step per two hours. Skips never warm the policy.
                 if (state['clean_successes'] >= 100 and stamp - state['clean_since'] >= CLEAN_WINDOW
                         and stamp - state.get('last_adjust_at', state['clean_since']) >= 7200):
+                    previous_interval = int(state.get('interval', 60))
                     state['interval'] = max(int(self.config.get('youtube_start_interval', 45)),
                                             state['interval'] - 5)
                     state['interval_reason_code'] = 'stable_success'
                     state['last_adjust_at'] = stamp
+                    if self.history_profile_id and state['interval'] != previous_interval:
+                        record_cookie_event(self.router.store, db=db, profile_id=self.history_profile_id,
+                            profile_name=self.history_profile_name, event_type='interval_change', phase='pacing',
+                            kind='stable_success', message='连续稳定完成任务，逐步缩短启动间隔。',
+                            previous_interval=previous_interval, new_interval=int(state['interval']),
+                            previous_state='ready', new_state='ready', scope='youtube-pacing:' + self.session_scope)
             if failure and (account_limit or request_limit or failure.kind == 'transient_failure'):
                 remember_decision(state, failure, layer='pacing', scope='实例与登录会话启动节奏',
                     action='cooldown', until=state.get('cooldown_until', 0), stamp=stamp)
