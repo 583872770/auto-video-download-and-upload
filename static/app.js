@@ -1467,7 +1467,7 @@ $('#copy-logs').addEventListener('click', async () => {
 function markSettingsDirty() {
   settingsDirty = true;
   renderYouTubePacingRuntime();
-  $('#settings-save-state').textContent = '有未保存的设置，保存后生效';
+  $('#settings-save-state').textContent = '有未保存的设置。普通策略在后续领取或重试的视频生效；并发和资源保护按周期调整。修改直连源地址需先停止当前实例并等待相关任务结束。';
   renderStrategySaveState(); renderDownloadControl();
 }
 $('#settings-form').addEventListener('input', markSettingsDirty);
@@ -1503,7 +1503,7 @@ $('#settings-form').addEventListener('submit', event => {
       if (instance !== state.instanceId) throw new Error('核对期间所选实例发生变化，请返回原实例确认设置');
       settingsDirty = false; providerDraft = null;
       fillConfig(saved);
-      $('#settings-save-state').textContent = '当前实例设置已保存，后续领取的视频使用新策略；正在执行的视频保持本次配置。';
+      $('#settings-save-state').textContent = '当前实例设置已保存。后续领取或重试的视频使用新策略，当前视频的下载策略和保存位置保持原配置；并发、磁盘保护和日志清理按调度或检查周期调整。';
       toast('设置已保存。');
       await refresh();
       if ('worker_count' in data || 'youtube_cookie_session_limit' in data) await loadCookieProfiles();
