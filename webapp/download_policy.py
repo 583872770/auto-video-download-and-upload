@@ -95,7 +95,9 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
                 isinstance(c, OSError) and c.errno in (5, 13, 28, 30, 122) for c in chain)
     transient = any(bool(getattr(c, 'retryable', False)) or isinstance(c, (TimeoutError, ConnectionError))
                     or type(c).__name__ == 'WebsiteTimeoutError' for c in chain)
-    if result.get('source') == 'cookie_pool_halted':
+    if any(type(c).__name__ == 'OSSUploadError' for c in chain):
+        kind, source, phase = 'storage_failure', 'oss', 'upload'
+    elif result.get('source') == 'cookie_pool_halted':
         kind, source, evidence = 'local_halt', 'local', 'local_state'
     elif local:
         kind, source, evidence = 'local_resource', 'local', 'typed_exception'
@@ -122,7 +124,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         kind = 'transient_failure'
     else:
         kind = 'unknown'
-    retryable = kind in ('request_rate_limit', 'transient_failure')
+    retryable = kind in ('request_rate_limit', 'transient_failure') or kind == 'storage_failure' and transient
     value = FailureEvidence(uuid.uuid4().hex, time.time(), source or 'unknown', phase or 'unknown', kind,
                             status, evidence, delay, retryable, safe_text(str(error))[:1000],
                             task_id, profile_id, safe_text(profile_name)[:80] if profile_name else None)

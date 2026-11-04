@@ -84,6 +84,20 @@ class CookieProfiles:
                 name='原有 Cookie（上传 / 浏览器登录）', content=data.decode('utf-8-sig'),
                 created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(), deleted=0), ['scope', 'id']))
 
+    def export(self, identity):
+        """Read the saved credential without touching its disposable cache."""
+        self.path(identity)  # Validate the profile ID, never accept a file path.
+        with self.store.connect() as db:
+            row = db.execute(select(table.c.name, table.c.content).where(
+                self._where(identity) & (table.c.deleted == 0))).mappings().first()
+        if row is None:
+            raise ValueError('Cookie 配置不存在。')
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '_', row['name']).strip(' .')[:80]
+        if name.lower().endswith('.txt'):
+            name = name[:-4]
+        filename = f'{name or "youtube-cookie"}-{identity[:8]}.txt'
+        return filename, row['content'].encode('utf-8')
+
     def require(self, identity):
         target = self.path(identity)
         with self.store.connect() as db:

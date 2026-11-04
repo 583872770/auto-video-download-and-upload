@@ -81,7 +81,10 @@ async function api(path, options = {}) {
     headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetch(path, { ...options, headers });
+  const { responseType, ...fetchOptions } = options;
+  const response = await fetch(path, { ...fetchOptions, headers });
+  if (responseType === 'file' && response.ok && !response.redirected
+      && response.headers.get('Content-Disposition')?.toLowerCase().startsWith('attachment')) return response;
   const raw = await response.text();
   let data;
   try {
@@ -164,6 +167,7 @@ function progressLabel(task) {
     if (task.status === 'succeeded') return task.result?.skipped ? '字幕任务已跳过' : '字幕任务已处理';
     if (task.status === 'interrupted') return '字幕任务已中断 · 视频已保留';
     if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '字幕等待退避重试' : '字幕排队中 · 独立限速';
+    if (task.progress?.stage === 'uploading_oss') return '正在同步字幕到阿里云 OSS';
     return task.progress?.stage === 'disk_wait' ? '字幕等待临时空间' : '正在补下载字幕 · 视频已完成';
   }
   if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待启动';
@@ -174,6 +178,7 @@ function progressLabel(task) {
   if (task.status === 'succeeded') return task.result?.test_mode ? '测试完成 · 文件已删除' : task.result?.skipped ? '已下载过 · 已跳过' : '下载完成';
   const stage = task.progress?.stage;
   if (stage === 'preparing_workspace') return '准备保存目录';
+  if (stage === 'uploading_oss') return '正在上传阿里云 OSS';
   if (stage === 'disk_wait') return '等待磁盘空间或临时文件预算';
   if (stage === 'preparing_proxy') return '准备代理节点';
   if (stage === 'requesting_api') return 'downmp3 · 提交转换请求';
@@ -192,6 +197,7 @@ function progressVisualState(task) {
   if (task.status === 'queued') return { className: 'queued', order: 80, label: taskPaused(task) ? '等待启动' : '排队中' };
   const stage = task.progress?.stage || '';
   if (stage === 'downloading') return { className: 'transferring', order: 0, label: '正在传输' };
+  if (stage === 'uploading_oss') return { className: 'finalizing', order: 30, label: '上传 OSS' };
   if (stage === 'processing' || stage === 'cleaning') return { className: 'finalizing', order: 30, label: stage === 'cleaning' ? '正在清理' : '合并 / 处理' };
   if (stage.startsWith('waiting_') || stage === 'disk_wait' || stage === 'switching_provider') {
     const labels = { waiting_request: '等待请求', waiting_cookie: '等待 Cookie', waiting_transfer: '等待传输', waiting_resolver: '等待解析', waiting_browser: '等待浏览器', waiting_verification: '等待验证', waiting_api_conversion: '等待转换', disk_wait: '等待空间', switching_provider: '切换渠道' };
@@ -208,7 +214,10 @@ function downloadProgress(task) {
   const queued = task.status === 'queued';
   const stopped = task.status === 'queued' && data.stage === 'paused';
   const converting = active && data.stage === 'waiting_api_conversion';
-  const measured = converting ? data.provider_percent : data.percent;
+  const uploading = data.stage === 'uploading_oss';
+  const transferred = uploading ? data.oss_uploaded_bytes : data.downloaded_bytes;
+  const total = uploading ? data.oss_total_bytes : data.total_bytes;
+  const measured = uploading ? (total > 0 ? 100 * (transferred || 0) / total : null) : converting ? data.provider_percent : data.percent;
   const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(measured) ? Math.max(0, Math.min(100, measured)) : null;
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待网站转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
@@ -221,7 +230,7 @@ function downloadProgress(task) {
   const methods = data.selected_download_methods;
   const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}下载方式：${escapeHTML(methods.map(method => providerNames[method] || method).join('、'))}${queued ? '；下次启动处理时使用该实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">实例设置：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
   const cookie = active && data.cookie_profile_name ? `<span class="active-cookie-metric">Cookie <b>${escapeHTML(data.cookie_profile_name)}</b></span>` : '';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : queued ? '上次已下载' : '已下载'} <b>${data.downloaded_bytes ? bytes(data.downloaded_bytes) : '—'}</b>${data.total_bytes ? ` / ${bytes(data.total_bytes)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : uploading ? '上传' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : uploading ? '当前文件已上传' : queued ? '上次已下载' : '已下载'} <b>${Number.isFinite(transferred) ? bytes(transferred) : '—'}</b>${total ? ` / ${bytes(total)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${uploading && data.oss_object ? `<p class="micro-copy">OSS 对象：${escapeHTML(data.oss_object)}</p>` : ''}${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
@@ -591,11 +600,18 @@ function channelSignature(entries) {
 }
 function settingsValue(key, value) {
   if (key === 'download_channels') return channelSignature(value || []);
+  if (key === 'oss_endpoint') {
+    const endpoint = String(value ?? '').trim().replace(/\/+$/, '');
+    return endpoint && !endpoint.includes('://') ? `https://${endpoint}` : endpoint;
+  }
+  if (key === 'oss_prefix') return String(value ?? '').replace(/^\/+|\/+$/g, '');
   if ($(`#settings-form [name="${key}"]`)?.type === 'number') return String(Number(value));
   return Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
 }
 function unconfirmedSettings(data, config) {
-  return Object.keys(data).filter(key => settingsValue(key, data[key]) !== settingsValue(key, config[key]));
+  return Object.keys(data).filter(key => ['oss_access_key_secret', 'oss_security_token'].includes(key)
+    ? !!data[key] && !config[key + '_configured']
+    : settingsValue(key, data[key]) !== settingsValue(key, config[key]));
 }
 function renderChannelPerformance(rate) {
   $('#channel-performance').textContent = rate ? `媒体接收 ${rate.media_receive_mbps ?? '—'} Mbps · 校验成品 ${rate.verified_mbps ?? '—'} Mbps（滚动窗口） · ${rate.reason || '等待采样'}` : '等待实例资源采样。';
@@ -716,11 +732,20 @@ for (const id of ['download-method']) {
 }
 function renderStorageSettings() {
   const test = $('#storage-mode').value === 'test';
+  const oss = $('#storage-mode').value === 'oss';
+  $$('[data-oss-storage]').forEach(panel => {
+    panel.hidden = !oss;
+    $$('input', panel).forEach(input => { input.disabled = !oss; });
+  });
+  for (const key of ['oss_access_key_secret', 'oss_security_token']) {
+    const input = $(`[name="${key}"]`);
+    if (input) input.placeholder = state.config?.[key + '_configured'] ? '已保存，留空保持不变' : '未保存，可填写或使用环境变量';
+  }
   $$('[data-local-storage]').forEach(label => {
     label.hidden = test;
     $('input', label).disabled = test;
   });
-  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。此模式只作用于当前实例后续领取的视频。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。此模式只作用于当前实例后续领取的视频。';
+  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。此模式只作用于当前实例后续领取的视频。' : oss ? '视频与配套文件上传到阿里云 OSS，同时保留本地副本；请在“存储与清理”填写 OSS 参数。上传成功后任务才算完成。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。此模式只作用于当前实例后续领取的视频。';
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
 const refreshedAt = {};
@@ -951,7 +976,7 @@ function instancePolicyText(policy) {
   const methods = (policy.download_methods || (policy.download_method==='yt5s_fallback'?['yt5s','yt_dlp']:[policy.download_method || 'yt_dlp'])).map(method => providerNames[method] || method).join(auto ? '、' : ' → ');
   const qualities = {yt5s:policy.yt5s_quality, downmp3:policy.downmp3_quality, yt1d:policy.yt1d_quality, bergung:policy.bergung_quality};
   const quality = Object.entries(qualities).filter(([method]) => (policy.download_methods || [policy.download_method]).includes(method)).map(([method,value]) => `${method} ${!value || value==='best'?'最高画质':value+'p'}`).join(' / ');
-  return `${auto ? '自动调度下载方式' : '下载方式尝试顺序'}：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':'保存成品'}`;
+  return `${auto ? '自动调度下载方式' : '下载方式尝试顺序'}：${methods}${quality?' · '+quality:''} · ${policy.storage_mode==='test'?'测试模式，完成后删除文件':policy.storage_mode==='oss'?'阿里云 OSS + 本地副本':'保存成品'}`;
 }
 function downloadPolicyText() {
   if (!state.config) return '正在读取当前实例策略…';
@@ -1156,6 +1181,30 @@ setInterval(async () => {
   catch (_) { const live = $('#youtube-cookie-pool-live'); if (live) live.textContent = '账号状态刷新失败，请重新打开设置查看最新状态。'; }
   finally { cookiePoolPolling = false; }
 }, 10000);
+async function exportCookieProfile(item) {
+  const response = await api('/api/youtube/cookies/export', {
+    method: 'POST', body: { id: item.id }, responseType: 'file',
+  });
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const plain = disposition.match(/filename="((?:[^"\\]|\\.)*)"|filename=([^;]+)/i);
+  let filename = `youtube-cookie-${item.id}.txt`;
+  if (encoded) {
+    try { filename = decodeURIComponent(encoded[1]); } catch { /* Keep the safe fallback name. */ }
+  } else if (plain) filename = (plain[1] ?? plain[2]).replace(/\\(.)/g, '$1').trim();
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  try {
+    document.body.append(link);
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  toast('Cookie 已导出。');
+}
 async function loadCookieProfiles() {
   const data = await api('/api/youtube/cookies');
   if (state.config) {
@@ -1267,6 +1316,12 @@ async function loadCookieProfiles() {
     timeline.className = 'button button-white';
     timeline.textContent = '查看记录';
     timeline.addEventListener('click', () => openCookieTimeline(item));
+    const exportButton = document.createElement('button');
+    exportButton.type = 'button';
+    exportButton.className = 'button button-white';
+    exportButton.textContent = '导出';
+    exportButton.setAttribute('aria-label', `导出 ${item.name}`);
+    exportButton.addEventListener('click', () => runButton(exportButton, () => exportCookieProfile(item)));
     const select = document.createElement('button');
     select.type = 'button';
     select.className = 'button button-white';
@@ -1296,7 +1351,7 @@ async function loadCookieProfiles() {
       await loadCookieProfiles();
       await refresh();
     }));
-    row.append(poolCheck, details, check, timeline, select, remove);
+    row.append(poolCheck, details, check, timeline, exportButton, select, remove);
     list.append(row);
   }
   updateCookiePoolLive(data);

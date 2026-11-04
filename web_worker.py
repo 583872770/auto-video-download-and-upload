@@ -74,7 +74,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             lease.check(estimate * (2 if value.get('download_method') == 'yt_dlp' else 1))
         else:
             lease.check()
-        last_progress.update(value, storage_mode='test' if workspace.test_mode else 'local')
+        last_progress.update(value, storage_mode=config.get('storage_mode', 'local'))
         if report_progress:
             report_progress(dict(last_progress))
 
@@ -220,6 +220,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         from webapp.throughput import PipelineBusy, automatic as automatic_throughput, runtime_limits, transfer_slot
         route_health = None
         test_mode = config.get('storage_mode') == 'test'
+        oss_mode = config.get('storage_mode') == 'oss'
+        from Utils.oss_storage import archive_key
+        oss_storage = None
+        if oss_mode:
+            from Utils.oss_storage import OSSStorage
+            if payload.get('_business_job'):
+                config = {**config, '_oss_namespace': 'jobs/' + payload['_business_job'] + '/' + payload['_task_id']}
+            oss_storage = OSSStorage(config)
         if store and not payload.get('_execution_settings') and not config.get('_cookie_pool_selected'):
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
@@ -231,7 +239,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         if store and not test_mode:
             from webapp.store import source_identity
             video_id, _ = source_identity(urls[0])
-            if len(urls) == 1 and video_id and store.archive_has('youtube ' + video_id, **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})):
+            if len(urls) == 1 and video_id and store.archive_has(archive_key(config, 'youtube ' + video_id), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})):
                 progress.state.update(stage='skipped', title=video_id, percent=100)
                 progress.save(force=True)
                 return {'message': '已下载过，跳过重复下载。', 'skipped': True}
@@ -334,6 +342,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             progress.state.update(stage='extracting')
             progress.save(force=True)
         output_files, existing_files, current_video = {}, set(), {}
+        deferred_files, deferred_archives = {}, {}
+        oss_objects = []
         billable_bytes = 0
         subtitle_files = {}
         catalog = None
@@ -368,9 +378,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     if path not in existing_files and str(path) not in output_files:
                         path.unlink(missing_ok=True)
                     raise
-            if catalog and not payload.get('_business_job'):
+            if catalog and not payload.get('_business_job') and not oss_mode:
                 catalog.index_file(path, video_directory(config, base))
-            if path in existing_files or str(path) in output_files:
+            if (path in existing_files and not oss_mode) or str(path) in output_files:
                 return
             size = path.stat().st_size
             output_files[str(path)] = size
@@ -386,7 +396,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     stream.flush()
                     os.fsync(stream.fileno())
                 temporary.replace(receipt)
-            if store and payload.get('_task_id'):
+            if oss_mode:
+                deferred_files[str(path)] = dict(current_video)
+            if store and payload.get('_task_id') and not oss_mode:
                 if store.statistics.record_file(payload['_task_id'], path,
                         current_video.get('id', ''), current_video.get('title', progress.state.get('title', '')),
                         test_mode=test_mode):
@@ -454,7 +466,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             def in_download_archive(self, info_dict):
                 if test_mode:
                     return False
-                archived = store.archive_has(self._make_archive_id(info_dict), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})) if store else super().in_download_archive(info_dict)
+                archived = store.archive_has(archive_key(config, self._make_archive_id(info_dict)), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})) if store else (False if oss_mode else super().in_download_archive(info_dict))
                 if archived:
                     self.skipped = True
                     progress.state.update(stage='skipped', title=str(info_dict.get('title') or info_dict.get('id') or ''),
@@ -464,6 +476,11 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
             def record_download_archive(self, info_dict):
                 if test_mode:
+                    return
+                if oss_mode:
+                    identity = self._make_archive_id(info_dict)
+                    if identity:
+                        deferred_archives[identity] = info_dict.get('filepath') or info_dict.get('_filename')
                     return
                 if store:
                     identity = self._make_archive_id(info_dict)
@@ -818,14 +835,41 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                           reason=reason, node_changed=False)
                 finally:
                     assignment.close()
+        # Cloud delivery is outside provider/account health accounting. An OSS
+        # error must not try a different YouTube provider or mark a Cookie bad.
+        if oss_storage:
+            from Utils.config import video_directory
+            for filename in output_files:
+                objects = oss_storage.upload_video(filename, video_directory(config, base),
+                    lambda value: (progress.state.update(value), progress.save(force=True)))
+                oss_objects.extend(objects)
+            # Commit delivery and deduplication only after ALL final files have
+            # reached OSS. Failed attempts retain local files for the next try.
+            for filename, info in deferred_files.items():
+                path = Path(filename)
+                if catalog:
+                    catalog.index_file(path, Path(config['_job_media_root']) if payload.get('_business_job')
+                                       else video_directory(config, base))
+                if store and payload.get('_task_id') and store.statistics.record_file(payload['_task_id'], path,
+                        info.get('id', ''), info.get('title', '')):
+                    billable_bytes += output_files[filename]
+            if store:
+                for identity, path in deferred_archives.items():
+                    store.archive_add(archive_key(config, identity), path,
+                        **({'job_id': payload['_business_job']} if payload.get('_business_job') else {}))
         skipped = not output_files and ((skipped_any and not progress.streams) or bool(existing_files))
-        return {'message': '已下载过，跳过重复下载。' if skipped else '下载任务完成，请在素材库检查视频与封面。',
+        return {'message': '已下载过，跳过重复下载。' if skipped else
+                f'OSS 上传完成：{len(oss_objects)} 个文件已保存至 {config["oss_bucket"]}，本地副本已保留。' if oss_mode else
+                '下载任务完成，请在素材库检查视频与封面。',
                 '_subtitle_jobs': [{'base': str(base), 'config': dict(config), 'video_file': path,
                     'urls': ['https://www.youtube.com/watch?v=' + identity]} for path, identity in subtitle_files.items()
                     if store and re.fullmatch(r'[A-Za-z0-9_-]{11}', identity)],
                 'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
                 'billable_bytes': billable_bytes, 'download_method': progress.state['download_method'],
                 'channel_id': progress.state.get('channel_id'),
+                'storage_mode': config.get('storage_mode', 'local'),
+                'oss_bucket': config.get('oss_bucket', '') if oss_mode else '',
+                'oss_objects': oss_objects,
                 'fallback_used': used_fallback}
     raise ValueError('当前 Web 服务只支持 YouTube 下载、导入、索引和环境检查。')
 

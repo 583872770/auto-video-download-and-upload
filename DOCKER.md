@@ -88,7 +88,7 @@ docker compose -f compose.remote-mysql.yaml up -d --build app
 ```
 
 首次使用在页面上传 YouTube Netscape Cookie 文件，然后检测登录；需要代理时，在“代理与节点”中导入订阅，选择节点并设置自动轮换。
-原有 Cookie 校验、批量进度、停止/继续、并行下载和三种保存选项沿用现有功能，其中网盘仍为待开发。
+原有 Cookie 校验、批量进度、停止/继续和并行下载沿用现有功能。保存方式支持指定目录、阿里云 OSS（保留本地副本）和测试模式，OSS 配置见 [OSS.md](OSS.md)。
 
 ## 服务与持久化
 

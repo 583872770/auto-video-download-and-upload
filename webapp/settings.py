@@ -11,6 +11,7 @@ PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': '
 
 import yaml
 from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
+from Utils.oss_storage import OSS_DEFAULTS, OSS_FIELDS, validate_oss
 
 DEFAULTS = {
     'path': 'videos', 'dir': '', 'url': '', 'proxy': '', 'proxy_mode': 'manual', 'youtube_cookie': '',
@@ -37,6 +38,7 @@ DEFAULTS = {
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
     **DISK_DEFAULTS,
+    **OSS_DEFAULTS,
 }
 DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
                    'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
@@ -44,6 +46,7 @@ DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie'
                    'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
                    'bergung_quality', 'bergung_timeout'}
 DOWNLOAD_FIELDS |= DISK_FIELDS
+DOWNLOAD_FIELDS |= OSS_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
 DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
@@ -141,6 +144,8 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('字幕语言请填写最多 8 个语言代码，用逗号分隔，例如 en,zh-Hans。')
     from Utils.download_storage import storage_mode
     storage_mode(config)
+    if config.get('storage_mode') == 'oss':
+        validate_oss(config)
     if config.get('throughput_mode', 'manual') not in ('manual', 'auto'):
         raise ValueError('吞吐调节请选择手动或自动。')
     if config.get('download_method', 'yt_dlp') not in (*PROVIDERS, 'yt5s_fallback'):

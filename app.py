@@ -4,6 +4,7 @@ if __name__ == '__main__':
 
 import argparse
 import importlib.util
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -213,6 +214,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             config = selected_configuration(fleet, config)
         editable = {key: config.get(key, default) for key, default in DEFAULTS.items()}
         editable['download_methods'] = download_methods(config)
+        from Utils.oss_storage import public_oss_config, OSS_SECRETS
+        editable = public_oss_config(editable)
+        for key in OSS_SECRETS:
+            editable[key + '_configured'] = bool(config.get(key) or config.get(key + '_configured'))
         return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)))
 
     @app.put('/api/config')
@@ -234,7 +239,10 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode', 'youtube_source_address')):
                 if store.download_connection_busy():
                     return jsonify(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
-            config.update(data)
+            from Utils.oss_storage import OSS_SECRETS
+            # Blank secret fields mean keep the saved credential. Never send
+            # credentials back to the browser to populate password controls.
+            config.update({k: v for k, v in data.items() if k not in OSS_SECRETS or v})
             if 'download_methods' in data:
                 config['download_method'] = download_methods(config)[0]
             elif 'download_method' in data:
@@ -511,6 +519,16 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 item['latest_event'] = recent[0] if recent else None
         return jsonify(items=items, pool=pool_status, cookie_path=config.get('youtube_cookie', ''),
                        custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
+
+    @app.post('/api/youtube/cookies/export')
+    def export_youtube_cookie():
+        from webapp.cookie_profiles import CookieProfiles
+        identity = body().get('id')
+        with settings_lock:
+            _, base = settings()
+            filename, data = CookieProfiles(base, store).export(identity)
+        return send_file(BytesIO(data), mimetype='text/plain', as_attachment=True,
+                         download_name=filename, conditional=False, etag=False)
 
     @app.post('/api/youtube/cookies/check')
     def check_youtube_cookie_profile():

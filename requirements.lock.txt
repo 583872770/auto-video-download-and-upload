@@ -9,6 +9,13 @@ Jinja2==3.1.6
 MarkupSafe==3.0.4
 waitress==3.0.2
 psutil==7.2.2
+oss2==2.19.1
+aliyun-python-sdk-core==2.16.1
+aliyun-python-sdk-kms==2.16.5
+crcmod==1.7
+jmespath==1.1.0
+pycryptodome==4.3.0
+six==1.17.0
 SQLAlchemy==2.1.6
 PyMySQL==1.1.2
 cryptography==50.0.2

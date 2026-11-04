@@ -328,6 +328,8 @@ class CookiePool:
             profile_id=profile_id,
             profile_name=self.profile_names.get(profile_id, profile_id)) if error else None
         policy = recovery_policy(failure, self.config) if failure else None
+        if failure and failure.source == 'oss':
+            return  # Storage delivery never changes YouTube session health.
         from webapp.youtube_cookie_history import record as record_cookie_event
         if failure and policy.action == 'none':
             # Content-specific failures do not alter pacing, but remain visible

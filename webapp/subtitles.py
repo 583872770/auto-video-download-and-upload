@@ -87,8 +87,18 @@ def run_subtitles(store, payload, report):
                     failed = downloader.download(payload['urls'])
                     if failed:
                         raise RuntimeError('字幕补下载失败，视频已保留。')
+            if config.get('storage_mode') == 'oss':
+                from Utils.oss_storage import OSSStorage
+                from Utils.config import video_directory
+                objects = OSSStorage(config).upload_video(video, video_directory(config, payload['base']),
+                                                         report, include_video=False)
+                return {'message': '字幕补下载已完成，配套文件已同步到 OSS。', 'video_preserved': True,
+                        'oss_bucket': config['oss_bucket'], 'oss_objects': objects}
             return {'message': '字幕补下载已完成；源视频没有所选语言时不生成字幕。', 'video_preserved': True}
     except Exception as error:
+        from Utils.oss_storage import OSSUploadError
+        if isinstance(error, OSSUploadError):
+            raise  # OSS failures must not cool subtitle/YouTube resources.
         from webapp.downloads import YouTubeAccountLimited
         account_limit = (YouTubeAccountLimited(str(error))
                          if 'your account has been rate-limited' in str(error).lower() else None)

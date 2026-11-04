@@ -8,8 +8,8 @@ import uuid
 def storage_mode(config):
     mode = config.get('storage_mode', 'local')
     if mode == 'cloud':
-        raise ValueError('指定网盘保存暂未开发，请选择指定目录或测试模式。')
-    if mode not in ('local', 'test'):
+        raise ValueError('指定网盘保存暂未开发，请选择指定目录、阿里云 OSS 或测试模式。')
+    if mode not in ('local', 'test', 'oss'):
         raise ValueError('请选择有效的视频保存方式。')
     return mode
 

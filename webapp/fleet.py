@@ -24,6 +24,8 @@ LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', '
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}
 LOCAL_FIELDS |= DISK_FIELDS
+from Utils.oss_storage import OSS_FIELDS
+LOCAL_FIELDS |= OSS_FIELDS
 LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
 LOCAL_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}

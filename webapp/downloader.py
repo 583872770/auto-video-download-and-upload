@@ -54,7 +54,7 @@ def build_ydl_options(config, base):
     options = {
         'format': config.get('download_format') or 'bestvideo*+bestaudio/best',
         'format_sort': ['res', 'fps'],
-        'download_archive': None if test_mode else str(resolve_path(base, 'videos.txt')),
+        'download_archive': None if test_mode or config.get('storage_mode') == 'oss' else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
         'outtmpl': output_template(config, base),
@@ -147,6 +147,10 @@ def main(argv=None):
         if args.proxy is not None:
             config['proxy'] = args.proxy
             config['proxy_mode'] = 'manual'
+        if config.get('storage_mode') == 'oss' and not args.simulate:
+            from web_worker import execute
+            execute('download', {'config': config, 'base': str(base), 'urls': urls})
+            return 0
         from Utils.download_storage import DownloadWorkspace
         workspace = DownloadWorkspace(config, base / '.cache')
         try:

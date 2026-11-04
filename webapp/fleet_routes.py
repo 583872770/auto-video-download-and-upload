@@ -65,7 +65,10 @@ def selected_configuration(fleet, config):
     if not selected_id() or selected_id() == fleet.id:
         return config
     local = rpc(fleet, selected_id(), '/api/config')['config']
-    return {**config, **{k: local[k] for k in LOCAL_FIELDS | POLICY_FIELDS if k in local}}
+    from Utils.oss_storage import OSS_DEFAULTS, OSS_SECRETS
+    return {**config, **{k: local[k] for k in LOCAL_FIELDS | POLICY_FIELDS if k in local},
+            **{k: local.get(k, default) for k, default in OSS_DEFAULTS.items()},
+            **{k + '_configured': local.get(k + '_configured', False) for k in OSS_SECRETS}}
 
 
 def update_configuration(fleet, data):

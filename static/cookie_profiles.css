@@ -37,7 +37,7 @@
 .cookie-export-guide ol{margin:9px 0 6px;padding-left:19px}
 .cookie-export-guide p{margin:6px 0 0;color:#8a957c}
 .cookie-export-guide code{font-family:Consolas,monospace;color:#68755d}
-.cookie-profile-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto auto;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}
+.cookie-profile-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto auto auto;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}
 .cookie-profile-row:first-of-type{border-top:0}
 .cookie-profile-row>input[type=checkbox]{width:15px;height:15px;margin:0;accent-color:var(--green)}
 .cookie-profile-details{min-width:0;overflow-wrap:anywhere}
