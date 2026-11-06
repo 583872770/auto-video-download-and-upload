@@ -958,6 +958,8 @@ def drain(directory, slot=0, role='all'):
                     store.import_archive(base)
             store.worker_status(store.owner, name, 'running', task['id'])
             heartbeat_stop = threading.Event()
+            from webapp.lease_guard import LeaseGuard
+            lease_guard = LeaseGuard(heartbeat_stop)
             lease_deadline = [time.monotonic() + 45]
 
             def abandon(reason):
@@ -968,12 +970,12 @@ def drain(directory, slot=0, role='all'):
                 finally:
                     os._exit(2)
 
-            def heartbeat(task_id=task['id'], stop=heartbeat_stop, deadline=lease_deadline):
+            def heartbeat(task_id=task['id'], stop=heartbeat_stop, deadline=lease_deadline, guard=lease_guard):
                 last_error = 0
                 while not stop.wait(10):
                     try:
                         renewal_started = time.monotonic()
-                        owned = store.heartbeat(task_id, store.owner)
+                        owned = guard.renew(store.heartbeat, task_id, store.owner)
                         if stop.is_set():
                             return
                         if not owned:
@@ -1020,7 +1022,7 @@ def drain(directory, slot=0, role='all'):
                     store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
                         'speed': None, 'eta': None, 'retry_delay_seconds': 30,
                         'retry_reason': 'youtube_session_rate_limit'}, store.owner)
-                    store.release(task['id'], store.owner, reason, delay=30)
+                    lease_guard.settle(store.release, task['id'], store.owner, reason, delay=30)
                     event('attempt_released', reason='youtube_session_rate_limit', retry_after=30,
                           instance_paused=False, **error_details(error))
                     print(reason, flush=True)
@@ -1033,7 +1035,7 @@ def drain(directory, slot=0, role='all'):
                 store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
                     'speed': None, 'eta': None, 'retry_delay_seconds': delay,
                     'retry_reason': 'youtube_account_rate_limit'}, store.owner)
-                store.release(task['id'], store.owner, reason, delay=delay)
+                lease_guard.settle(store.release, task['id'], store.owner, reason, delay=delay)
                 event('attempt_released', reason='youtube_account_rate_limit',
                       retry_after=delay, instance_paused=True, **error_details(error))
                 print(reason, flush=True)
@@ -1063,7 +1065,7 @@ def drain(directory, slot=0, role='all'):
                         print(f'任务执行完成。传输数据：{format_bytes(transferred)}；文件大小：{format_bytes(output_bytes)}。', flush=True)
                     else:
                         print('任务执行完成。', flush=True)
-                    committed = store.finish(task['id'], result=result, worker_id=store.owner)
+                    committed = lease_guard.settle(store.finish, task['id'], result=result, worker_id=store.owner)
                     event('attempt_end', outcome='succeeded' if committed else 'lease_lost',
                           elapsed_seconds=round(time.monotonic() - started, 3),
                           test_mode=bool(result.get('test_mode')), skipped=bool(result.get('skipped')),
@@ -1073,7 +1075,7 @@ def drain(directory, slot=0, role='all'):
                     if start_ticket:
                         start_ticket.finish(error.retry_after)
                     record_failure(error)
-                    store.release(task['id'], store.owner, str(error), delay=error.retry_after)
+                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=error.retry_after)
                     worker_delay = max(2, min(60, error.retry_after))
                     next_claim_after = time.monotonic() + worker_delay
                     event('attempt_released', reason='pipeline_backpressure', message=str(error),
@@ -1081,7 +1083,7 @@ def drain(directory, slot=0, role='all'):
                     continue
                 except DiskPressure as error:
                     resource_wait = str(error)
-                    store.release(task['id'], store.owner, str(error), delay=60, resource=True)
+                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=60, resource=True)
                     store.worker_status(store.owner, name, 'disk_wait', message=str(error))
                     print(f'磁盘资源等待：{error}', flush=True)
                     event('attempt_released', reason='disk_pressure', message=str(error), **error_details(error))
@@ -1089,7 +1091,7 @@ def drain(directory, slot=0, role='all'):
                 except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
                     from webapp.execution import isolate_download_failure
                     isolate_download_failure(store, error)
-                    store.release(task['id'], store.owner, str(error), delay=0)
+                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)
                     print(f'下载环境检查未通过，本机停止领取，任务运行意愿保留：{error}', flush=True)
                     event('attempt_released', reason='environment_required', **error_details(error))
                     break
@@ -1106,7 +1108,7 @@ def drain(directory, slot=0, role='all'):
                         store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
                             'speed': None, 'eta': None, 'retry_delay_seconds': retry_after,
                             'retry_reason': 'youtube_auth_check_unavailable'}, store.owner)
-                        store.release(task['id'], store.owner, message, delay=retry_after)
+                        lease_guard.settle(store.release, task['id'], store.owner, message, delay=retry_after)
                         print(message, flush=True)
                         event('attempt_released', reason='youtube_auth_check_unavailable',
                               auth_state=error.result['state'], retry_after=retry_after, **error_details(error))
@@ -1116,7 +1118,7 @@ def drain(directory, slot=0, role='all'):
                     isolate_download_failure(store, error)
                     if not store.fleet:
                         YouTubeAuth(store).block(error.result)
-                    store.release(task['id'], store.owner, str(error), delay=0)
+                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)
                     print(f'登录检查未通过，队列已停止，任务保留：{error}', flush=True)
                     event('attempt_released', reason='authentication_required', **error_details(error))
                     break
@@ -1135,12 +1137,12 @@ def drain(directory, slot=0, role='all'):
                     if failure.kind in ('authentication_required', 'verification_required'):
                         from webapp.execution import isolate_download_failure
                         isolate_download_failure(store, error)
-                        store.release(task['id'], store.owner, str(error), delay=0)
+                        lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)
                         event('attempt_released', reason='authentication_required', **error_details(error))
                         break
                     if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
                         resource_wait = '磁盘空间或配额不足，等待释放空间。'
-                        store.release(task['id'], store.owner, resource_wait, delay=60, resource=True)
+                        lease_guard.settle(store.release, task['id'], store.owner, resource_wait, delay=60, resource=True)
                         store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
                         event('attempt_released', reason='disk_full', **error_details(error))
                         break
@@ -1151,7 +1153,7 @@ def drain(directory, slot=0, role='all'):
                     server_delay = max(getattr(error, '_download_recovery_delay', policy.delay),
                         failure.retry_after or 0, getattr(error, 'retry_after', 0) or 0) or None
                     transient = failure.retryable
-                    store.finish(task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
+                    lease_guard.settle(store.finish, task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])
                     event('attempt_end', outcome=current['status'] if current else 'unknown',
                           failed_stage=last_progress.get('stage'),

@@ -15,7 +15,7 @@ from webapp.downloader import build_ydl_options
 from webapp.downloads import DownloadLeaseLost, DownloadFailure, YouTubeAccountLimited
 from webapp.settings import validate_settings
 from webapp.store import TaskStore
-from webapp.youtube_auth import YouTubeAuth, SourceHTTPSHandler
+from webapp.youtube_auth import YouTubeAuth, ProbeResult, SourceHTTPSHandler
 import hashlib
 import json
 
@@ -88,6 +88,23 @@ class YouTubePolicyTests(unittest.TestCase):
         auth.block(result)
         self.assertTrue(self.store.downloads_paused())
         self.assertEqual(auth.status()['request_mode'], 'anonymous_fallback')
+
+    def test_preflight_evidence_survives_cache_and_workbench_lookup(self):
+        from webapp.risk_diagnostics import read_auth, observed
+        auth = YouTubeAuth(self.store)
+        for evidence, title in [({'http_status': 403}, 'HTTP 403'),
+                                ({'verification_reason': 'redirect'}, '跳转到了其他页面')]:
+            with self.subTest(evidence=evidence):
+                checked = ProbeResult('verification_required', 'fixture', **evidence)
+                with patch('webapp.youtube_auth.probe', return_value=checked):
+                    auth.check({'youtube_cookie': 'cookies.txt', 'proxy_mode': 'direct'}, self.root, force=True)
+                with self.store.connect() as db:
+                    saved = read_auth(db, ['local'], standalone=True)['local']
+                for key, value in evidence.items():
+                    self.assertEqual(saved[key], value)
+                fact = next(f for f in observed({'download_method': 'yt_dlp'}, {}, saved, time.time())
+                            if f['code'] == 'bot_check')
+                self.assertIn(title, fact['title'])
 
     def test_independent_workers_share_start_interval_and_wait_outside_transaction(self):
         second = TaskStore(self.root / 'other', self.store.db.engine.url.render_as_string(hide_password=False))

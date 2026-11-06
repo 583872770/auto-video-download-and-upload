@@ -228,6 +228,37 @@ class DiagnosticWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['log_warning'], 'fixture disk warning')
 
+    def test_incomplete_download_retries_with_backoff_and_stops_at_attempt_limit(self):
+        from web_worker import drain
+        from webapp.downloads import DownloadFailure
+
+        task = self.store.create('download', {'config': {'download_method': 'yt_dlp', 'path': 'videos'},
+            'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
+        def fail(action, payload, report, **kwargs):
+            report({'stage': 'downloading'})
+            failure = DownloadFailure()
+            failure.error('[download] Got error: 215403 bytes read, 9758503 more expected. Giving up after 2 retries')
+            raise failure.as_error()
+        with process_diagnostics(self.store.directory, 0), patch('web_worker.execute', side_effect=fail), \
+                patch('web_worker.os.dup2'), patch('builtins.print'), patch('web_worker.traceback.print_exc'):
+            drain(self.store.directory)
+        row = self.store.get(task['id'])
+        self.assertEqual(row['status'], 'queued')
+        self.assertGreaterEqual(row['available_at'] - time.time(), 50)
+        self.assertEqual(row['progress']['last_failure']['kind'], 'transient_failure')
+        self.assertIsNone(row['progress']['last_failure']['http_status'])
+        from sqlalchemy import update
+        from webapp.database import tasks
+        with self.store.connect() as db:
+            db.execute(update(tasks).where(tasks.c.id == task['id']).values(
+                available_at=0, attempts=row['max_attempts'] - 1))
+        with patch('web_worker.execute', side_effect=fail), patch('web_worker.os.dup2'), \
+                patch('builtins.print'), patch('web_worker.traceback.print_exc'):
+            drain(self.store.directory)
+        row = self.store.get(task['id'])
+        self.assertEqual(row['status'], 'failed')
+        self.assertEqual(row['attempts'], row['max_attempts'])
+
     def test_reading_missing_or_pruned_logs_does_not_recreate_empty_shards(self):
         task = self.store.create('check', {'config': {}, 'base': str(self.root)})
         root = self.store.directory / 'logs'

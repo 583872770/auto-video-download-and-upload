@@ -1,4 +1,5 @@
 import unittest
+from http.client import IncompleteRead
 
 from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline
 from webapp.downloads import YouTubeAccountLimited
@@ -77,6 +78,36 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertEqual(cooldown_deadline(error, 100, 300), 400)
         self.assertEqual(cooldown_deadline(error, 120, 300), 400)
         self.assertEqual(cooldown_deadline(error, 120, 600), 700)
+
+    def test_incomplete_response_survives_downloader_message_wrapping(self):
+        from webapp.downloads import DownloadFailure
+        from yt_dlp.networking.exceptions import IncompleteRead as YtdlpIncompleteRead
+
+        failure = DownloadFailure()
+        failure.error('[download] Got error: 215403 bytes read, 9758503 more expected. Giving up after 2 retries')
+        for error in (failure.as_error(), IncompleteRead(b'partial', 9758503),
+                      YtdlpIncompleteRead(215403, 9758503), YtdlpIncompleteRead(215403)):
+            with self.subTest(error=type(error).__name__):
+                value = failure_evidence(error, phase='transfer', source='youtube')
+                self.assertEqual(value.kind, 'transient_failure')
+                self.assertTrue(value.retryable)
+                self.assertIsNone(value.http_status)
+                policy = recovery_policy(value, {})
+                self.assertEqual((policy.action, policy.delay, policy.manual), ('cooldown', 60, False))
+
+    def test_partial_response_does_not_override_restrictions_or_local_failures(self):
+        detail = '215403 bytes read, 9758503 more expected'
+        for error, expected in (
+                (RuntimeError('HTTP Error 403: Forbidden; ' + detail), 'access_denied'),
+                (RuntimeError('HTTP Error 429: Too Many Requests; ' + detail), 'request_rate_limit'),
+                (RuntimeError('Requested format is not available; ' + detail), 'content_restriction'),
+                (RuntimeError('Sign in to confirm you are not a bot; ' + detail), 'verification_required'),
+                (PipelineBusy(detail), 'local_resource')):
+            with self.subTest(expected=expected):
+                self.assertEqual(failure_evidence(error).kind, expected)
+        value = failure_evidence(RuntimeError('failure https://example.test/215403 bytes?token=read'))
+        self.assertEqual(value.kind, 'unknown')
+        self.assertIsNone(value.http_status)
 
     def test_suppressed_exception_context_is_not_evidence(self):
         error = RuntimeError('unrelated')

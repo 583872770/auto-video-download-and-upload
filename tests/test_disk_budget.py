@@ -118,6 +118,27 @@ class DiskBudgetTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.budget = DiskBudget(self.root, {'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
 
+    def test_stale_subtitle_cache_is_reclaimed_after_worker_exits(self):
+        cache = self.budget.runtime / 'cache' / 'worker-subtitles'
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / 'leftover.tmp').write_bytes(b'partial subtitle')
+        old = time.time() - 7200
+        os.utime(cache, (old, old))
+        with file_lock(self.root / 'worker-subtitles.lock') as owned:
+            self.assertTrue(owned)
+            self.budget._clean_diagnostics(grace=3600)
+            self.assertTrue(cache.exists(), 'live subtitle worker owns its cache')
+        self.budget._clean_diagnostics(grace=3600)
+        self.assertFalse(cache.exists())
+
+    def test_recent_subtitle_cache_is_preserved(self):
+        cache = self.budget.runtime / 'cache' / 'worker-subtitles'
+        cache.mkdir(parents=True, exist_ok=True)
+        leftover = cache / 'leftover.tmp'
+        leftover.write_bytes(b'recent subtitle')
+        self.budget._clean_diagnostics(grace=3600)
+        self.assertTrue(leftover.exists())
+
     def test_rejected_lock_contender_does_not_inspect_or_initialize_locked_file(self):
         path = self.root / 'first-use.lock'
         original = Path.stat

@@ -67,9 +67,10 @@ class SourceHTTPSHandler(HTTPSHandler):
 
 class ProbeResult(tuple):
     """Keep the two-value probe API while retaining actual HTTP evidence."""
-    def __new__(cls, state, message, *, http_status=None, retry_after=None):
+    def __new__(cls, state, message, *, http_status=None, retry_after=None, verification_reason=None):
         value = super().__new__(cls, (state, message))
         value.http_status, value.retry_after = http_status, retry_after
+        value.verification_reason = verification_reason
         return value
 
 
@@ -92,7 +93,8 @@ def probe(cookie_data, proxy, *, source_address=''):
             with opener.open(request, timeout=15) as response:
                 host = (urlsplit(response.geturl()).hostname or '').lower()
                 if host not in ('www.youtube.com', 'youtube.com'):
-                    return 'verification_required', 'YouTube 要求登录或额外验证，请使用当前节点完成浏览器登录后重试。'
+                    return ProbeResult('verification_required', '登录检查跳转到了 YouTube 以外的页面，请在当前出口的浏览器中查看提示后重新检测。',
+                                       verification_reason='redirect')
                 data = response.read(4 * 1024 * 1024 + 1)
                 if len(data) > 4 * 1024 * 1024:
                     return 'unconfirmed', 'YouTube 返回内容异常，尚未确认登录，请稍后重新检测。'
@@ -106,7 +108,8 @@ def probe(cookie_data, proxy, *, source_address=''):
                 return ProbeResult('rate_limited', 'YouTube 登录检测收到 HTTP 429，请等待请求冷却；这不等于登录失效。',
                                    http_status=429, retry_after=delay)
             if error.code == 403:
-                return 'verification_required', '当前节点被 YouTube 限制或要求额外验证，请检查节点后重新检测。'
+                return ProbeResult('verification_required', 'YouTube 登录检查返回 HTTP 403（拒绝访问），具体原因尚未确认，请在当前出口检查后重新检测。',
+                                   http_status=403, retry_after=delay)
             from webapp.diagnostics import event
             event('youtube_auth_probe_unavailable', http_status=error.code, proxy_configured=bool(proxy))
             return 'network_error', f'YouTube 登录检测暂时不可用（HTTP {error.code}），尚不能判断 Cookie 是否有效。'
@@ -320,6 +323,8 @@ class YouTubeAuth:
                         state, message = checked
                         if getattr(checked, 'http_status', None):
                             result.update(http_status=checked.http_status, retry_after=checked.retry_after)
+                        if getattr(checked, 'verification_reason', None):
+                            result['verification_reason'] = checked.verification_reason
                     except Exception:
                         # A failed preflight must never become thousands of failed videos.
                         state, message = 'unconfirmed', '登录检测未完成，请检查网络和 Cookie 文件后重新检测。'

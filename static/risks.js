@@ -27,8 +27,8 @@ function riskFactsHTML(data, compact = false) {
   return visible.map(fact => {
     const guide = riskByCode.get(fact.code) || riskByCode.get('unknown');
     if (!guide) return '';
-    const checked = ['auth_missing', 'auth_unknown', 'auth_valid', 'bot_check'].includes(fact.code) && data.auth_checked_at ? ` 检查记录：${new Date(data.auth_checked_at * 1000).toLocaleString('zh-CN')}。` : '';
-    return `<div class="capacity-notice ${fact.severity === 'warning' ? 'warning' : 'info'}" data-risk-code="${escapeHTML(guide.code)}"><span class="capacity-notice-icon" aria-hidden="true">${fact.severity === 'warning' ? '!' : 'i'}</span><div><strong>${escapeHTML(guide.title)}</strong><p>${escapeHTML(fact.detail + checked)}</p>${compact ? '' : `<p><b>影响：</b>${escapeHTML(guide.impact)} <b>恢复：</b>${escapeHTML(guide.recovery)}</p><p><b>操作：</b>${escapeHTML(guide.action)}</p>`}</div><a href="${escapeHTML(guide.href)}">前往查看 ↗</a></div>`;
+    const checked = ['auth_missing', 'auth_unknown', 'auth_valid', 'bot_check'].includes(fact.code) && data.auth_checked_at ? ` ${fact.code === 'bot_check' ? '失败记录时间' : '检查记录'}：${new Date(data.auth_checked_at * 1000).toLocaleString('zh-CN')}。` : '';
+    return `<div class="capacity-notice ${fact.severity === 'warning' ? 'warning' : 'info'}" data-risk-code="${escapeHTML(guide.code)}"><span class="capacity-notice-icon" aria-hidden="true">${fact.severity === 'warning' ? '!' : 'i'}</span><div><strong>${escapeHTML(fact.title || guide.title)}</strong><p>${escapeHTML(fact.detail)}</p>${fact.evidence ? `<p>${escapeHTML(fact.evidence)}</p>` : ''}${fact.record_note ? `<p>${escapeHTML(fact.record_note + checked)}</p>` : checked ? `<p>${escapeHTML(checked.trim())}</p>` : ''}${compact ? '' : `<p><b>说明：</b>${escapeHTML(fact.impact || guide.impact)}</p><p><b>下一步：</b>${escapeHTML(fact.recovery || guide.recovery)} ${escapeHTML(fact.action || guide.action)}</p>`}</div><a href="${escapeHTML(guide.href)}">前往查看 ↗</a></div>`;
   }).join('');
 }
 

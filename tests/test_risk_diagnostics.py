@@ -79,6 +79,28 @@ class RiskDiagnosticsTests(unittest.TestCase):
             self.assertNotIn('telemetry', [v['code'] for v in values])
             self.assertTrue(any('无法确认' in v['detail'] for v in values))
 
+    def test_verification_notice_distinguishes_recorded_causes(self):
+        cases = [
+            ({'source': 'download', 'request_mode': 'anonymous_fallback'},
+             '不带 Cookie 重试时遇到机器人验证', 'Video unavailable'),
+            ({'http_status': 403}, '登录检查被 YouTube 拒绝（HTTP 403）', 'HTTP 403'),
+            ({'verification_reason': 'redirect'}, '登录检查跳转到了其他页面', 'YouTube 以外'),
+            ({'source': 'download'}, '下载时登录或验证未通过', '下载器记录'),
+            ({}, '上次登录或访问验证未通过', '没有记录具体触发经过'),
+        ]
+        for fields, title, detail in cases:
+            with self.subTest(fields=fields):
+                facts = observed({'download_method': 'yt_dlp'}, {},
+                                 {'state': 'verification_required', **fields}, time.time())
+                fact = next(f for f in facts if f['code'] == 'bot_check')
+                self.assertEqual(fact['title'], title)
+                self.assertIn(detail, fact['detail'])
+                self.assertIn('历史记录', fact['record_note'])
+                self.assertIn('重新检测', fact['action'])
+                self.assertIn('HTTP 状态：403' if fields.get('http_status') == 403 else 'HTTP 状态：未记录',
+                              fact['evidence'])
+                self.assertNotIn('Cloudflare', json.dumps(fact, ensure_ascii=False))
+
     def test_all_codes_have_impact_recovery_action_and_no_secret_echo(self):
         codes = [row['code'] for row in GUIDE]
         self.assertEqual(len(codes), len(set(codes)))
@@ -102,6 +124,31 @@ class RiskDiagnosticsTests(unittest.TestCase):
                         'checked_at':123, 'expires_at':456, 'message':'secret'})))
                     result = read_auth(db, ['node', 'other'])
                 self.assertEqual(result, {'node':{'state':'valid','checked_at':123,'expires_at':456}})
+            finally:
+                store.db.engine.dispose()
+
+    def test_saved_anonymous_failure_reaches_workbench_without_losing_attribution(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = TaskStore(root)
+            try:
+                saved = {'state': 'verification_required', 'checked_at': 1793936259,
+                         'source': 'download', 'request_mode': 'anonymous_fallback',
+                         'message': 'SECRET', 'node': 'SECRET', 'connection': 'SECRET',
+                         'cookie': 'SECRET'}
+                with store.connect() as db:
+                    db.execute(settings.insert().values(key='youtube_auth_latest', value=json.dumps(saved)))
+                    auth = read_auth(db, ['local'], standalone=True)['local']
+                facts = observed({'download_method': 'yt_dlp'}, {}, auth, time.time())
+                fact = next(f for f in facts if f['code'] == 'bot_check')
+                self.assertIn('不带 Cookie 重试', fact['title'])
+                self.assertIn('不能证明', fact['impact'])
+                self.assertIn('未记录', fact['evidence'])
+                self.assertNotIn('SECRET', json.dumps({'auth': auth, 'facts': facts}))
+                # A later successful check replaces the historical warning.
+                auth.update(state='valid', expires_at=time.time()+300)
+                facts = observed({'download_method': 'yt_dlp'}, {}, auth, time.time())
+                self.assertNotIn('bot_check', [f['code'] for f in facts])
+                self.assertIn('auth_valid', [f['code'] for f in facts])
             finally:
                 store.db.engine.dispose()
 

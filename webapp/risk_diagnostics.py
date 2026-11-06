@@ -21,7 +21,7 @@ GUIDE = [
     entry('http_503', '上游限流与验证', 'HTTP 503 / 5xx：服务暂不可用', '可能是服务负载、临时故障或验证页面；503 不一定是限流。', '遵守 Retry-After；无此信息时按本系统退避策略重试，不保证上游何时恢复。', '查看任务阶段，等待后重试；连续失败时检查服务状态。'),
     entry('http_403', '上游限流与验证', 'HTTP 401 / 403：请求被拒绝', '登录、访问权限、签名链接到期、地区限制及出口策略均可能导致拒绝，状态码不能单独确定原因。', '只有明确的临时错误才自动重试；访问权限或登录问题通常需要人工处理。', '用同一下载出口和账号确认源视频可播放，检查 Cookie、系统时间及错误详情。'),
     entry('http_404', '上游限流与验证', 'HTTP 404 / 410：请求资源不存在或已失效', '可能是视频、媒体分片、临时链接或第三方接口不存在，不能只看状态码就认定源视频被删除。', '临时链接可能需要重新解析；固定接口或内容缺失通常需要人工核对。', '查看发生阶段和请求服务，确认原视频仍可访问，再检查渠道接口。'),
-    entry('bot_check', '上游限流与验证', '源站要求额外验证 / 机器人检测', '可能影响当前入口或当前出口；自动重试不保证能通过验证。', '需要时由用户在当前出口的浏览器中完成验证，再重新检测或重试。', '查看登录或网页验证窗口，降低请求频率；系统不会自动绕过验证码。'),
+    entry('bot_check', '上游限流与验证', '登录或访问验证未通过', '登录检查被拒绝、页面跳转或下载器要求机器人验证，都会产生此类记录；请查看具体失败经过。', '用该实例的同一网络出口打开原视频，按页面提示完成登录或验证。', '重新检测登录，通过后再按实例当前状态恢复下载或重试任务。'),
     entry('quota', '上游限流与验证', '第三方配额、每日额度或接口限制', '额度可能按账号、出口或后端共享；多个入口域名也可能共用配额。', '仅在服务返回明确时间时可判断重置时间，否则需要查看服务说明。', '检查服务配额与授权；提高本机并发不会增加第三方额度。'),
     entry('auth_missing', '登录与视频权限', 'Cookie 缺失、无效或未登录', '使用 yt-dlp 的实例可能无法通过开始前登录检查；不代表源视频已删除。', '登录成功并重新检测后，恢复受影响实例；第三方渠道有各自访问条件。', '在对应实例上传有效 Cookie 或使用登录窗口。'),
     entry('auth_unknown', '登录与视频权限', '登录状态未确认或验证已过期', '网络、TLS、页面变化或检测过期会使状态未知，不能直接判定 Cookie 失效。', '开始前或下次领取时重新检测；检测暂时不可用时会退避。', '检查下载出口和网络，在当前实例重新检测登录。'),
@@ -132,6 +132,9 @@ def read_auth(db, identities, *, standalone=False):
             value = json.loads(raw)
             if isinstance(value, dict):
                 result[keys[key]] = {k: value.get(k) for k in ('state', 'checked_at', 'expires_at')}
+                # Keep only structured evidence; messages and connection metadata may contain secrets.
+                result[keys[key]].update({k: value[k] for k in
+                    ('source', 'request_mode', 'verification_reason', 'http_status') if k in value})
         except (ValueError, TypeError):
             pass
     return result
@@ -164,6 +167,39 @@ def local_health(directory, config, clash_directory=None):
     return result
 
 
+def verification_notice(auth):
+    """Explain the recorded failure without guessing a cause from the shared auth state."""
+    if auth.get('request_mode') == 'anonymous_fallback':
+        title = '不带 Cookie 重试时遇到机器人验证'
+        detail = ('带 Cookie 下载时提示“视频不可用”（Video unavailable）；'
+                  '随后在同一网络出口不带 Cookie 重试，YouTube 要求机器人验证。')
+        impact = '验证发生在不带 Cookie 的重试中，这不能证明已上传的 Cookie 失效。'
+    elif auth.get('http_status') == 403:
+        title = '登录检查被 YouTube 拒绝（HTTP 403）'
+        detail = '检查登录状态时，YouTube 返回了 HTTP 403（拒绝访问）。'
+        impact = '403 只说明这次请求被拒绝，尚未确认具体原因，也不代表已经出现验证码。'
+    elif auth.get('verification_reason') == 'redirect':
+        title = '登录检查跳转到了其他页面'
+        detail = '检查登录状态时，请求被跳转到 YouTube 以外的页面，未能确认登录成功。'
+        impact = '页面跳转不等于已确认机器人验证，需要在浏览器中查看实际提示。'
+    elif auth.get('source') == 'download':
+        title = '下载时登录或验证未通过'
+        detail = '下载器记录了登录凭据被拒绝或需要登录验证，具体原因需结合该任务的错误详情确认。'
+        impact = '这次下载未通过登录或验证；该分类本身不能说明是否返回了 403。'
+    else:
+        title = '上次登录或访问验证未通过'
+        detail = '已保存的记录只标记了“需要额外验证”，没有记录具体触发经过。'
+        impact = '现有记录不足以区分请求被拒绝、登录跳转和机器人验证。'
+    status = auth.get('http_status')
+    evidence = (f'HTTP 状态：{status}。' if type(status) is int and 100 <= status <= 599 else
+                'HTTP 状态：未记录，无法确认当时是否返回 403。')
+    return dict(code='bot_check', severity='warning', title=title, detail=detail,
+                evidence=evidence, impact=impact,
+                recovery='用该实例的同一网络出口打开原视频，按页面提示完成登录或验证。',
+                action='回到系统重新检测登录；通过后，再按实例当前状态恢复下载或重试任务。',
+                record_note='这是上次失败的历史记录，不代表当前仍受限；重新检测后更新。')
+
+
 def observed(config, diagnostic, auth, stamp, *, error=''):
     """Facts supplement admission notices; missing evidence is explicitly unknown."""
     from webapp.settings import download_methods
@@ -181,10 +217,7 @@ def observed(config, diagnostic, auth, stamp, *, error=''):
         if state in ('missing', 'invalid', 'not_logged_in'):
             add('auth_missing', '最近一次登录检查未通过；这是登录检查结果，不是对全部视频可用性的判断。', 'warning')
         elif state == 'verification_required':
-            detail = ('下载中的匿名重试要求验证；这不能证明上传的 Cookie 已失效，请在同一出口重新检查。'
-                      if auth.get('request_mode') == 'anonymous_fallback' else
-                      '最近一次请求要求额外验证或遇到访问限制；请在同一出口确认，不能据此认定 Cloudflare 验证或 IP 被封。')
-            add('bot_check', detail, 'warning')
+            result.append(verification_notice(auth))
         elif state != 'valid' or expired:
             add('auth_unknown', '登录检测未完成、不可用或结果过期；页面未实时探测源站。')
             if state == 'network_error':

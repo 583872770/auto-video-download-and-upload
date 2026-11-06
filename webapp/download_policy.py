@@ -5,10 +5,13 @@ sanitized and carry one incident ID across exception wrappers and scheduler laye
 """
 from dataclasses import asdict, dataclass, replace
 from email.utils import parsedate_to_datetime
+from http.client import IncompleteRead
 import math
 import re
 import time
 import uuid
+
+from yt_dlp.networking.exceptions import IncompleteRead as YtdlpIncompleteRead
 
 from webapp.diagnostics import safe_text
 
@@ -95,6 +98,11 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
                 isinstance(c, OSError) and c.errno in (5, 13, 28, 30, 122) for c in chain)
     transient = any(bool(getattr(c, 'retryable', False)) or isinstance(c, (TimeoutError, ConnectionError))
                     or type(c).__name__ == 'WebsiteTimeoutError' for c in chain)
+    # yt-dlp may flatten IncompleteRead into its terminal error message before
+    # returning a failure code. Match its byte-count diagnostic as well as the
+    # original exception; a partial response is not a permanent content error.
+    incomplete_read = any(isinstance(c, (IncompleteRead, YtdlpIncompleteRead)) for c in chain) or bool(re.search(
+        r'\b\d+ bytes read,\s*\d+ more expected\b', lower))
     if any(type(c).__name__ == 'OSSUploadError' for c in chain):
         kind, source, phase = 'storage_failure', 'oss', 'upload'
     elif result.get('source') == 'cookie_pool_halted':
@@ -117,7 +125,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         kind = 'verification_required'
     elif status in (401, 403):
         kind = 'access_denied'
-    elif status in (408, 500, 502, 503, 504) or transient or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
+    elif status in (408, 500, 502, 503, 504) or transient or incomplete_read or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
             'timed out', 'timeout', 'connection reset', 'connection refused', 'name resolution',
             'connection aborted', 'temporary failure', 'sslerror', 'ssleoferror', 'network is unreachable',
             'remote end closed connection', 'err_connection_', 'err_proxy_connection_', 'err_tunnel_connection_')):

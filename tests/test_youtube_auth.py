@@ -79,6 +79,31 @@ class AuthParserTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE', diagnostic)
                 self.assertNotIn('TEST_ONLY_COOKIE_SECRET', diagnostic)
 
+    def test_probe_403_preserves_status_without_claiming_robot_detection(self):
+        opener = Mock()
+        opener.open.side_effect = HTTPError('https://youtube.com/?token=PRIVATE', 403, 'PRIVATE', {}, None)
+        with patch('webapp.youtube_auth.build_opener', return_value=opener):
+            result = probe(COOKIE, '')
+        self.assertEqual(result[0], 'verification_required')
+        self.assertEqual(result.http_status, 403)
+        self.assertIn('具体原因尚未确认', result[1])
+        self.assertNotIn('PRIVATE', result[1])
+        self.assertNotIn('机器人', result[1])
+
+    def test_probe_redirect_is_distinct_from_a_recorded_403(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.geturl.return_value = 'https://accounts.google.com/?token=PRIVATE'
+        opener = Mock()
+        opener.open.return_value = response
+        with patch('webapp.youtube_auth.build_opener', return_value=opener):
+            result = probe(COOKIE, '')
+        self.assertEqual(result[0], 'verification_required')
+        self.assertEqual(result.verification_reason, 'redirect')
+        self.assertIsNone(result.http_status)
+        self.assertNotIn('PRIVATE', result[1])
+
 
 class AuthContract:
     def setUp(self):
