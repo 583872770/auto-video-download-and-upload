@@ -35,7 +35,7 @@ youtube_cookie_fallback: false
 fragment_concurrency: 1
 ```
 
-开启前停止实例、等待当前下载结束，逐份检测登录。`youtube_cookie` 也需指向池中一份有效文件，供现有启动检查使用。每会话任务上限可在页面保存，作用于后续领取任务。例如两个未冷却核心会话、会话设置值 3 时，预热前总容量 2，全部预热后总容量 6；无论实例并发设为 1 还是 20，运行模式选择自动还是自定义，池容量都相同。若两份文件属于同一核心会话，则合并为一个会话，预热前 1、预热后 3。
+开启前停止实例、等待当前下载结束，逐份检测登录。启动检查按去重后的账号池选择未冷却会话验证；当前选中的 `youtube_cookie` 正在冷却时，会检查池中其他可用会话。全部账号或整个池正在自动冷却时，允许启动并由调度器等待到期，恢复节奏沿用原记录；人工拦截仍拒绝启动。单账号的手动登录检测仍禁止向冷却账号发送请求。每会话任务上限可在页面保存，作用于后续领取任务。例如两个未冷却核心会话、会话设置值 3 时，预热前总容量 2，全部预热后总容量 6；无论实例并发设为 1 还是 20，运行模式选择自动还是自定义，池容量都相同。若两份文件属于同一核心会话，则合并为一个会话，预热前 1、预热后 3。
 
 「Cookie 账号管理」会标出账号池成员。池中的文件禁止直接删除。停止实例后点击「使用此 Cookie」会关闭账号池，切回单 Cookie；限流和冷却不会因此清除。
 
@@ -65,6 +65,6 @@ yt-dlp 需要文件输入，使用时会在原路径生成权限受限的缓存�
 
 ## 验证
 
-`python -m unittest tests.test_cookie_pool tests.test_cookie_profiles tests.test_youtube_auth tests.test_channel_scheduler tests.test_fleet`
+`python -m unittest tests.test_pool_startup tests.test_cookie_pool tests.test_cookie_profiles tests.test_youtube_auth tests.test_channel_scheduler tests.test_fleet`
 
 测试涵盖并发许可、共享请求节奏、重复凭据去重、租约失效、预热、退避、账号限流隔离与自动恢复、账号状态隔离与管理端权限。页面验证：`python scripts/verify_cookie_profiles_ui.py`。

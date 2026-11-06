@@ -228,10 +228,11 @@ def check_instance(app, fleet, policy):
     snapshot = app.extensions['clash'].snapshot() if config.get('proxy_mode') == 'clash' else None
     if 'yt_dlp' in methods:
         auth = YouTubeAuth(fleet.store)
-        result = auth.check(config, base, force=True, **({'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
-        if result['state'] != 'valid':
+        result = auth.check_startup(config, base, force=True, **({'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
+        if result['state'] not in ('valid', 'waiting'):
             return {'error': result['message']}, 409
-        auth.clear_block()
+        if result['state'] == 'valid':
+            auth.clear_block()
     import shutil
     from pathlib import Path
     workspace = DownloadWorkspace(config, fleet.store.directory)

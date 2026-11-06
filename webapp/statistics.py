@@ -1,5 +1,5 @@
 ﻿"""Transactional session totals and a ledger of completed video files."""
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -125,10 +125,52 @@ class DownloadStatistics:
         from webapp.fleet import database_time
         end = (datetime.fromisoformat(row['ended_at']).timestamp() if row['ended_at']
                else database_time(db, self.db.mysql))
-        elapsed = max(0, end - datetime.fromisoformat(row['started_at']).timestamp())
+        started = datetime.fromisoformat(row['started_at']).timestamp()
+        elapsed = max(0, end - started)
         value = describe(row)
         return {**value, 'elapsed_seconds': round(elapsed, 3),
-                'output_mbps': round(value['downloaded_file_bytes'] * 8 / elapsed / 1e6, 2) if elapsed > 0 else None}
+                'output_mbps': round(value['downloaded_file_bytes'] * 8 / elapsed / 1e6, 2) if elapsed > 0 else None,
+                **self.output_history(db, identity, started, end)}
+
+    def output_history(self, db, identity, started, end):
+        """Rebuild recent rates from durable completed-file ledgers, including tests."""
+        first_minute = int(end // 60) * 60 - 29 * 60
+        recent_start = max(started, end - 600)
+        recent_seconds = max(0, end - recent_start)
+        recent_bytes = 0
+        points = []
+        for index in range(30):
+            begin = first_minute + index * 60
+            elapsed = max(0, min(end, begin + 60) - max(started, begin))
+            points.append(dict(start_at=begin, end_at=begin + 60, elapsed_seconds=round(elapsed, 3),
+                               file_bytes=0, file_count=0, output_mbps=None, partial=elapsed < 60))
+        # ISO timestamps may use different UTC offsets. Use a loose date bound
+        # for SQL, then compare actual instants in Python (never string order).
+        lower = max(started, min(first_minute, recent_start))
+        date_bound = (datetime.fromtimestamp(lower, timezone.utc) - timedelta(days=1)).date().isoformat()
+        for ledger in (deliveries, test_files):
+            rows = db.execute(select(ledger.c.created_at, ledger.c.size).where(
+                ledger.c.session_id == identity, ledger.c.created_at >= date_bound))
+            for created, size in rows:
+                try:
+                    completed = datetime.fromisoformat(created).timestamp()
+                except (ValueError, TypeError, OverflowError):
+                    continue
+                if not started <= completed <= end:
+                    continue
+                if completed > end - 600:
+                    recent_bytes += size
+                index = int(completed // 60) - first_minute // 60
+                if 0 <= index < len(points):
+                    points[index]['file_bytes'] += size
+                    points[index]['file_count'] += 1
+        for point in points:
+            seconds = point['elapsed_seconds']
+            if seconds > 0:
+                point['output_mbps'] = round(point['file_bytes'] * 8 / seconds / 1e6, 2)
+        return dict(output_recent_mbps=round(recent_bytes * 8 / recent_seconds / 1e6, 2) if recent_seconds else None,
+                    output_recent_seconds=round(recent_seconds, 3), output_recent_file_bytes_exact=str(recent_bytes),
+                    output_history=dict(as_of=end, interval_seconds=60, points=points))
 
     def ensure_session(self, db, instance_id=None):
         scope = self._scope(instance_id)

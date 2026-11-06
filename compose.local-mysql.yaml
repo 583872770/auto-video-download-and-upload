@@ -13,9 +13,12 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
       MYSQL_USER: ${MYSQL_USER:-video}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   mysql:
     image: mysql:8.4
@@ -30,6 +33,7 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_bin
+      - --innodb-buffer-pool-size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-2G}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -45,6 +49,22 @@ services:
       start_period: 30s
       retries: 30
     stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 384m
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     logging:
       driver: json-file
       options:

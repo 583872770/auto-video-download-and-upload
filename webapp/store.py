@@ -26,6 +26,9 @@ class TaskStore:
         self.database = self.directory / 'tasks.sqlite3'
         self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}'
         self.fleet = None
+        from webapp.progress_cache import ProgressCache
+        self.progress_cache = ProgressCache(self.db.url)
+        self._progress_checkpoints = {}
         from webapp.modes import single_state
         self.single = single_state(self.directory)
         runtime = self.directory / 'fleet-runtime.json'
@@ -49,6 +52,10 @@ class TaskStore:
         payload = json.loads(task.pop('payload'))
         task['result'] = json.loads(task['result']) if task.get('result') else None
         task['progress'] = json.loads(task['progress']) if task.get('progress') else None
+        live = self.progress_cache.read(task)
+        if live:
+            task['progress'] = live['progress']
+            task['progress_updated_at'] = live['updated_at']
         url = task.get('url') or (payload.get('urls') or [None])[0]
         task.update(batch_id=task.get('batch_id') or payload.get('batch_id'), url=url,
                     video_id=task.get('video_id') or source_identity(url)[0])
@@ -146,9 +153,19 @@ class TaskStore:
             urls = [p['urls'][0] for p in payloads if p.get('batch_id') in managed]
             for offset in range(0, len(urls), 1000):
                 video_ids = [source_identity(url)[0] for url in urls[offset:offset+1000]]
-                for old in db.execute(select(tasks).where(tasks.c.batch_id.in_(managed), tasks.c.action == 'download',
-                        or_(tasks.c.video_id.in_(video_ids),tasks.c.url.in_(urls[offset:offset+1000]))).with_for_update()).mappings():
-                    existing[(old['batch_id'], old['video_id'] or old['url'])] = old
+                # An OR across video/url indexes made MySQL scan and lock most
+                # of the batch. Keep both legacy URL and canonical-ID matches,
+                # using their respective indexes and only restoration fields.
+                columns = (tasks.c.id, tasks.c.batch_id, tasks.c.video_id, tasks.c.url,
+                           tasks.c.action, tasks.c.status, tasks.c.finished_at, tasks.c.attempts)
+                for condition, index_name in (
+                        (tasks.c.video_id.in_(video_ids), 'ix_tasks_video'),
+                        (tasks.c.url.in_(urls[offset:offset+1000]), 'ix_tasks_url_prefix')):
+                    query = select(*columns).where(tasks.c.batch_id.in_(managed),
+                        tasks.c.action == 'download', condition).with_hint(
+                            tasks, 'FORCE INDEX (' + index_name + ')', dialect_name='mysql')
+                    for old in db.execute(query.with_for_update()).mappings():
+                        existing[(old['batch_id'], old['video_id'] or old['url'])] = old
             accepted_payloads = []
             for payload in payloads:
                 key = (payload.get('batch_id'), source_identity(payload['urls'][0])[0] or payload['urls'][0])
@@ -845,9 +862,11 @@ class TaskStore:
                 self.statistics.settle(db, instance_id=row.get('instance_id'))
 
     def update_progress(self, task_id, progress, worker_id=None):
-        statement = tasks.update().where(tasks.c.id == task_id)
+        if worker_id and self.progress_cache.enabled:
+            progress = {**progress, '_reported_at': time.time()}
+        criteria = [tasks.c.id == task_id]
         if worker_id:
-            statement = statement.where(tasks.c.worker_id == worker_id, tasks.c.status == 'running')
+            criteria.extend((tasks.c.worker_id == worker_id, tasks.c.status == 'running'))
         values = {'progress': json.dumps(progress, ensure_ascii=False)}
         if progress.get('title'):
             values['title'] = str(progress['title']).casefold()
@@ -855,8 +874,28 @@ class TaskStore:
             if self.fleet and worker_id:
                 if self.fleet.row(db)['boot_id'] != self.fleet.boot_id:
                     return False
-                statement = statement.where(tasks.c.lease_until > self.fleet.clock(db))
-            return db.execute(statement.values(**values)).rowcount > 0
+                criteria.append(tasks.c.lease_until > self.fleet.clock(db))
+            checkpoint = None
+            if worker_id and self.progress_cache.enabled:
+                # MVCC ownership reads do not wait for task row write locks.
+                # Never let Redis authorize execution or bypass stop/lease checks.
+                row = db.execute(select(tasks.c.id, tasks.c.status, tasks.c.worker_id,
+                    tasks.c.started_at, tasks.c.attempts, tasks.c.lease_until).where(
+                        *criteria)).mappings().first()
+                if not row:
+                    return False
+                if self.progress_cache.publish(row, progress):
+                    checkpoint = (worker_id, row['started_at'], row['attempts'],
+                                  progress.get('stage'), progress.get('download_method'))
+                    previous = self._progress_checkpoints.get(task_id)
+                    if previous and previous[0] == checkpoint and time.monotonic() - previous[1] < 5:
+                        return True
+            updated = db.execute(tasks.update().where(*criteria).values(**values)).rowcount > 0
+            if updated and checkpoint:
+                if len(self._progress_checkpoints) >= 256:
+                    self._progress_checkpoints.clear()
+                self._progress_checkpoints[task_id] = (checkpoint, time.monotonic())
+            return updated
 
     def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False, retry_after=None):
         from webapp.db_retry import transaction_retry
@@ -889,7 +928,8 @@ class TaskStore:
             delay = min(300, 5 * 2 ** max(0, row['attempts'] - 1))
             delay = max(delay, min(86400, retry_after or 0)) + random.uniform(0, delay * .2)
             status = 'queued' if retry else 'failed' if error else 'succeeded'
-            progress = json.loads(row['progress']) if row['progress'] else {}
+            live = self.progress_cache.read(row)
+            progress = live['progress'] if live else json.loads(row['progress']) if row['progress'] else {}
             if progress:
                 progress.update(stage='retrying' if retry else 'failed' if error else
                                 'skipped' if (result or {}).get('skipped') else 'completed', speed=None, eta=None)

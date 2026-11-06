@@ -60,7 +60,7 @@
         {% include 'workflow_strip.html' %}
         <div class="stats-grid download-dashboard">
           <article class="stat-card"><div class="stat-label">所选任务 · 待下载视频</div><div class="stat-number"><span id="stat-active">0</span><small>个</small></div><div class="stat-foot" id="active-caption">选择任务后查看待下载视频</div></article>
-          <article class="stat-card stat-card-with-help"><div class="stat-label"><span>成品产出速度（本次会话平均）</span><span class="metric-help-wrap"><button type="button" class="metric-help-button" aria-label="查看成品产出速度计算说明" aria-describedby="stat-output-speed-tip">?</button><span id="stat-output-speed-tip" class="metric-tooltip" role="tooltip">正在读取计算口径…</span></span></div><div class="stat-number"><span id="stat-output-speed">—</span><small>Mbps</small></div><div class="stat-foot" id="stat-output-speed-foot">暂无当前会话</div></article>
+          <article class="stat-card stat-card-with-help"><div class="stat-label"><span>成品产出速度（本次会话平均）</span><span class="metric-help-wrap"><button type="button" class="metric-help-button" aria-label="查看成品产出速度计算说明" aria-describedby="stat-output-speed-tip">?</button><span id="stat-output-speed-tip" class="metric-tooltip" role="tooltip">正在读取计算口径…</span></span></div><div class="stat-number"><span id="stat-output-speed">—</span><small>Mbps</small></div><div class="output-recent"><span>近 10 分钟平均</span><strong id="stat-output-recent">—</strong><small>Mbps</small></div><div class="stat-foot" id="stat-output-speed-foot">暂无当前会话</div></article>
           <article class="stat-card"><div class="stat-label">当前实例 · 总传输速度</div><div class="stat-number"><span id="stat-speed">—</span><small id="stat-speed-unit"></small></div><div class="stat-foot" id="speed-caption">等待实例状态</div></article>
           <article class="stat-card"><div class="stat-label">所选任务 · 已交付文件</div><div class="stat-number"><span id="stat-complete">0</span><small>个</small></div><div class="stat-foot">本任务在全部实例的计费成品</div></article>
 
@@ -69,6 +69,16 @@
         </div>
 
 
+        <section class="panel output-chart-panel" aria-labelledby="output-chart-title">
+          <div class="panel-heading"><div><h2 id="output-chart-title">成品产出趋势</h2><p class="panel-subtitle">当前实例 · 最近 30 分钟 · 每分钟平均速度</p></div><span class="output-chart-legend"><i></i>成品产出 · Mbps</span></div>
+          <div id="output-chart-empty" class="output-chart-empty">暂无当前会话，启动后显示每分钟的成品产出。</div>
+          <div id="output-chart-content" hidden>
+            <div class="output-chart-plot"><div id="output-chart-y" class="output-chart-y" aria-hidden="true"></div><div class="output-chart-grid" aria-hidden="true"><i></i><i></i><i></i></div><svg class="output-chart-line" viewBox="0 0 1000 140" preserveAspectRatio="none" aria-hidden="true"><path id="output-chart-line-complete"/><path id="output-chart-line-current" class="is-current"/></svg><div id="output-chart-points" class="output-chart-points" role="group" aria-label="每分钟成品产出速度折线图，选择数据点查看具体数值"></div></div>
+            <div id="output-chart-x" class="output-chart-x" aria-hidden="true"></div>
+            <p id="output-chart-detail" class="output-chart-detail"></p>
+          </div>
+          <p class="output-chart-note">按成品完成登记时间统计，含计费与测试产出。末端虚线表示本分钟仍在累计；悬停、点按或用键盘选择数据点查看详情。</p>
+        </section>
         <p id="worker-status" class="clash-notice" hidden></p>
         <div class="workbench-grid"><section class="panel download-console" aria-labelledby="download-console-title">
           <div class="panel-heading"><div><h2 id="download-console-title">任务与下载控制</h2><p class="panel-subtitle">使用当前实例策略，操作仅影响当前实例。</p></div><span class="scope-badge">当前实例</span></div>

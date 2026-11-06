@@ -141,6 +141,26 @@ dialog{border:1px solid #dce2d1;border-radius:13px;padding:27px;width:min(510px,
 .subscription-form{display:flex;flex-direction:column;gap:10px}.subscription-form .field-label{margin-top:5px}.subscription-form .micro-copy{margin:0;line-height:1.8}.subscription-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 6px}.subscription-actions .text-button{white-space:nowrap}.subscription-form>#clash-import{align-self:flex-start}
 @media(max-width:650px){.download-console .download-job-picker,.selected-job-summary{margin-left:17px;margin-right:17px}.selected-job-counts{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.download-dashboard .stat-foot{font-size:9px}.download-dashboard .stat-number{font-size:25px}.system-download-control{padding:17px}.download-queue-controls>.button{width:100%}}
 
+/* Completed-file output, rolling average and minute history. */
+.output-recent{display:flex;align-items:baseline;gap:5px;margin:0 0 11px;padding-top:10px;border-top:1px solid var(--line);font-size:10px;color:var(--muted)}
+.output-recent strong{margin-left:auto;font-size:16px;font-weight:650;color:#527343;font-variant-numeric:tabular-nums}.output-recent small{font-size:9px}
+.output-chart-panel{margin:0 0 22px;padding-bottom:16px}.output-chart-panel .panel-heading{align-items:flex-start;gap:12px;flex-wrap:wrap;padding-bottom:15px}
+.output-chart-legend{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px;white-space:nowrap}.output-chart-legend i{width:18px;height:2px;background:#739551}
+.output-chart-plot{position:relative;height:142px;margin:0 24px 0 60px}
+.output-chart-y{position:absolute;left:-40px;top:-6px;bottom:-5px;width:30px;display:flex;flex-direction:column;justify-content:space-between;text-align:right;font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+.output-chart-grid{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;pointer-events:none}.output-chart-grid i{border-top:1px dashed #dfe6d7;width:100%}
+.output-chart-line{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}.output-chart-line path{fill:none;stroke:#739551;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}.output-chart-line path.is-current{stroke-dasharray:5 4;stroke:#95aa7e}
+.output-chart-points{position:absolute;inset:0;display:grid;grid-template-columns:repeat(30,minmax(0,1fr));align-items:stretch}
+.output-chart-point{position:relative;min-width:0;border:0;padding:0;background:transparent;cursor:pointer;touch-action:manipulation}
+.output-chart-point span{position:absolute;left:50%;width:6px;height:6px;border:1px solid #fff;border-radius:50%;background:#739551;transform:translate(-50%,-50%);pointer-events:none}
+.output-chart-point.is-current span{width:8px;height:8px;background:#fff;border:2px solid #739551}
+.output-chart-point.is-empty span{display:none}
+.output-chart-point:hover,.output-chart-point[aria-pressed=true]{background:#789e5210}.output-chart-point:hover span,.output-chart-point[aria-pressed=true] span{width:9px;height:9px;background:#52783a;box-shadow:0 0 0 3px #88a66f33}
+.output-chart-point:focus-visible{outline:1px dashed #66874c;outline-offset:1px}
+.output-chart-x{display:flex;justify-content:space-between;margin:10px 24px 0 60px;font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+.output-chart-detail{margin:15px 24px 8px 60px;min-height:16px;font-size:11px;line-height:1.7;color:#506745;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.output-chart-note{margin:10px 24px 0;color:var(--muted);font-size:10px;line-height:1.8}.output-chart-empty{margin:0 24px;padding:28px 14px;text-align:center;background:#f8faf5;border:1px dashed #dfe6d7;border-radius:7px;font-size:12px;color:var(--muted)}
+@media(max-width:650px){.output-chart-plot{height:120px;margin-left:47px;margin-right:17px}.output-chart-point span{width:4px;height:4px}.output-chart-x{margin-left:47px;margin-right:17px}.output-chart-detail{margin-left:17px;margin-right:17px;font-size:10px}.output-chart-note{margin-left:17px;margin-right:17px}.output-chart-empty{margin-left:17px;margin-right:17px}.output-recent{font-size:9px;gap:3px}.output-recent strong{font-size:14px}}
 /* Output throughput explanation */
 .stat-card-with-help{position:relative}
 .stat-card-with-help .stat-label{gap:7px}

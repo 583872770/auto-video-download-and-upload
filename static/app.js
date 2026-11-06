@@ -291,17 +291,96 @@ function renderOutputSpeed() {
   const value = session?.output_mbps;
   element.textContent = value === null || value === undefined || !Number.isFinite(Number(value))
     ? '—' : Number(value).toFixed(2);
+  const recent = session?.output_recent_mbps;
+  $('#stat-output-recent').textContent = recent === null || recent === undefined || !Number.isFinite(Number(recent))
+    ? '—' : Number(recent).toFixed(2);
   const tip = $('#stat-output-speed-tip');
   if (tip) {
     const elapsed = Number(session?.elapsed_seconds || 0);
     const detail = session
       ? `本次会话 #${session.seq}：计费大小 ${decimalGB(session.file_bytes_exact)} + 测试大小 ${decimalGB(session.test_file_bytes_exact)}；会话用时 ${etaText(elapsed)}。`
       : '当前实例暂无进行中的下载会话；启动后开始统计。';
-    tip.innerHTML = `<strong>计算口径</strong><span>本次会话平均速度 =（计费成品字节数 + 测试成品字节数）× 8 ÷ 会话用时（秒）÷ 1,000,000，单位 Mbps。</span><span>${escapeHTML(detail)}</span><span>用时从本次实例会话启动算起，包含解析、等待和重试。大小只累计已完成登记的成品；已删除的测试文件仍计入产出，不计费。重新启动实例后按新会话统计。</span>`;
+    tip.innerHTML = `<strong>计算口径</strong><span>本次会话平均速度 =（计费成品字节数 + 测试成品字节数）× 8 ÷ 会话用时（秒）÷ 1,000,000，单位 Mbps。</span><span>近 10 分钟平均只累计最近 600 秒完成登记的成品；会话不足 10 分钟时，除以实际会话时长。没有成品产出的等待时间也计入。</span><span>${escapeHTML(detail)}</span><span>用时包含解析、等待和重试。已删除的测试文件仍计入产出，不计费。重新启动实例后按新会话统计。</span>`;
   }
   const foot = $('#stat-output-speed-foot');
   if (foot) foot.textContent = session
-    ? `计费 + 测试 · 本次用时 ${etaText(Number(session.elapsed_seconds || 0))}` : '暂无当前会话';
+    ? `本次用时 ${etaText(Number(session.elapsed_seconds || 0))}${Number(session.output_recent_seconds) < 600 ? ` · 近均按 ${etaText(Number(session.output_recent_seconds || 0))}` : ' · 含计费与测试'}` : '暂无当前会话';
+  renderOutputChart(session);
+}
+
+let outputChartSelection = null;
+let outputChartSession = null;
+const outputChartTime = value => new Date(value * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false});
+function renderOutputChart(session) {
+  const chart = $('#output-chart-points');
+  if (!chart) return;
+  const history = session?.output_history;
+  const points = history?.points || [];
+  $('#output-chart-content').hidden = !points.length;
+  $('#output-chart-empty').hidden = !!points.length;
+  if (session?.id !== outputChartSession) { outputChartSelection = null; outputChartSession = session?.id; }
+  if (!points.length) return;
+  const peak = Math.max(0, ...points.map(point => Number(point.output_mbps) || 0));
+  const magnitude = 10 ** Math.floor(Math.log10(peak || 1));
+  const scale = Math.max(1, Math.ceil(peak / magnitude / 2) * magnitude * 2);
+  const tick = value => value >= 10 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, '');
+  $('#output-chart-y').innerHTML = `<span>${tick(scale)}</span><span>${tick(scale / 2)}</span><span>0</span>`;
+  const signature = `${session.id}:${points[0].start_at}`;
+  if (chart.dataset.window !== signature) {
+    const hadFocus = chart.contains(document.activeElement);
+    chart.replaceChildren(...points.map(point => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'output-chart-point'; button.dataset.start = point.start_at;
+      button.innerHTML = '<span></span>';
+      return button;
+    }));
+    chart.dataset.window = signature;
+    if (hadFocus) [...chart.children].find(button => Number(button.dataset.start) === outputChartSelection)?.focus();
+  }
+  let line = '', currentLine = '', previous = null;
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index], button = chart.children[index];
+    const available = point.output_mbps !== null;
+    const current = index === points.length - 1;
+    button.classList.toggle('is-empty', !available);
+    button.classList.toggle('is-current', current);
+    const height = available ? point.output_mbps / scale : 0;
+    button.firstElementChild.style.top = `${(1 - height) * 100}%`;
+    const coordinates = `${((index + .5) / points.length * 1000).toFixed(2)},${((1 - height) * 140).toFixed(2)}`;
+    if (!available) previous = null;
+    else {
+      if (current && previous) currentLine = `M${previous} L${coordinates}`;
+      else line += `${previous ? ' L' : ' M'}${coordinates}`;
+      previous = coordinates;
+    }
+    button.setAttribute('aria-label', outputChartDescription(point, current));
+    button.setAttribute('aria-pressed', String(Number(button.dataset.start) === outputChartSelection));
+  }
+  $('#output-chart-line-complete').setAttribute('d', line.trim());
+  $('#output-chart-line-current').setAttribute('d', currentLine);
+  $('#output-chart-x').innerHTML = [points[0], points[14], points[29]].map(point => `<span>${outputChartTime(point.start_at)}</span>`).join('');
+  renderOutputChartDetail();
+}
+function outputChartDescription(point, current) {
+  const period = `${outputChartTime(point.start_at)}–${outputChartTime(point.end_at)}`;
+  return point.output_mbps === null ? `${period} · 会话尚未开始或正在计时` :
+    `${period} · ${Number(point.output_mbps).toFixed(2)} Mbps · ${point.file_count} 个成品 · ${bytes(point.file_bytes)}${current ? ' · 本分钟累计中' : ''}${point.partial ? ` · 按实际 ${Number(point.elapsed_seconds).toFixed(0)} 秒计算` : ''}`;
+}
+function renderOutputChartDetail() {
+  const points = state.workbench?.session?.output_history?.points || [];
+  if (!points.length) return;
+  const index = points.findIndex(point => point.start_at === outputChartSelection);
+  const selected = index < 0 ? points.length - 1 : index;
+  $('#output-chart-detail').textContent = outputChartDescription(points[selected], selected === points.length - 1);
+  $$('.output-chart-point').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.start) === points[selected].start_at)));
+}
+for (const eventName of ['pointerover', 'focusin', 'click']) {
+  $('#output-chart-points')?.addEventListener(eventName, event => {
+    const button = event.target.closest('.output-chart-point');
+    if (!button) return;
+    outputChartSelection = Number(button.dataset.start);
+    renderOutputChartDetail();
+  });
 }
 document.addEventListener('click', event => {
   const help = event.target.closest('.metric-help-button');

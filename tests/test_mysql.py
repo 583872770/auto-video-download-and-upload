@@ -21,11 +21,11 @@ from sqlalchemy.exc import DataError, OperationalError
 from sqlalchemy.pool import NullPool
 
 from app import create_app
-from tests import test_controls, test_scale, test_fleet, test_hot_policy
+from tests import test_controls, test_scale, test_fleet, test_hot_policy, test_jobs
 from tests.test_storage import StorageContract
 from tests.test_task_views import TaskViewContract
 from tests.test_youtube_auth import AuthContract
-from webapp.database import batches, imports, reservations, tasks
+from webapp.database import batches, imports, reservations, tasks, settings
 
 
 class MySQLFixture:
@@ -68,6 +68,18 @@ class MySQLFixture:
         self.catalog = self.app.extensions['media_catalog']
 
 
+class MySQLJobTests(MySQLFixture, test_jobs.JobTests):
+    def setUp(self):
+        MySQLFixture.setUp(self)
+        self.store.fleet = None
+        with self.store.connect() as db:
+            db.execute(settings.delete().where(settings.c.key == 'fleet_enabled'))
+        response = self.client.put('/api/config', json={'download_methods': ['downmp3']}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        config, base = self.app.extensions['settings_func']()
+        self.store.set_download_settings(config, base, self.root / 'clash')
+
+
 class MySQLFleetTests(MySQLFixture, test_fleet.FleetTests):
     def setUp(self):
         MySQLFixture.setUp(self)
@@ -83,6 +95,15 @@ class MySQLHotPolicyTests(MySQLFixture, test_hot_policy.FleetHotPolicyTests):
 
 
 class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
+    def setUp(self):
+        MySQLFixture.setUp(self)
+        # These inherited contracts exercise the standalone queue. MySQL apps
+        # now initialize a paused fleet by default; fleet admission has its own
+        # MySQLFleetTests. Keep the same execution mode as the SQLite contract.
+        self.store.fleet = None
+        with self.store.connect() as db:
+            db.execute(settings.delete().where(settings.c.key == 'fleet_enabled'))
+
     def test_deadlock_retry_rolls_back_counters_and_attempts(self):
         from pymysql.err import OperationalError as MySQLError
         task = self.store.create('download', {'config': {}, 'base': str(self.root)})

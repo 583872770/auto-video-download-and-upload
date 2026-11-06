@@ -11,7 +11,7 @@ import random
 import time
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from webapp.channels import backend_key, group_caps, observed_group, registry
@@ -87,7 +87,8 @@ class ChannelScheduler:
             # Independent of fleet_budget: browser and transfer waits never hold
             # up task claims or task heartbeats.
             key = _key('router-v1')
-            self.store.db.ensure(db, resources, {'key': key, 'state': '{}'})
+            if db.execute(select(resources.c.key).where(resources.c.key == key)).first() is None:
+                self.store.db.ensure(db, resources, {'key': key, 'state': '{}'})
             db.execute(select(resources.c.key).where(resources.c.key == key).with_for_update()).first()
             yield db, self.clock(db)
 
@@ -146,12 +147,29 @@ class ChannelScheduler:
                 return None, 2
         token = uuid.uuid4().hex
         for scope, cap, units in requirements:
-            # Clean abandoned rows using the same task fence as admission.
-            valid = select(tasks.c.id).where(tasks.c.status == 'running', tasks.c.lease_until > stamp)
-            db.execute(permits.delete().where(permits.c.resource == _key(scope), permits.c.task_id.not_in(valid)))
+            state = self._state(db, scope)
+            if stamp - state.get('permit_cleanup_at', 0) >= 30:
+                self._cleanup_permits(db, scope, stamp)
+                state['permit_cleanup_at'] = stamp
+                self._save(db, scope, state)
             db.execute(permits.insert().values(token=token, resource=_key(scope), task_id=self.task_id,
                                                owner=self.store.owner, units=units))
         return token, 0
+
+    def _cleanup_permits(self, db, scope, stamp):
+        # A DELETE containing a task subquery takes task record locks in MySQL.
+        # An importer can then block this transaction while it owns router-v1.
+        # Select stale immutable permit IDs with an ordinary MVCC read, then
+        # delete only those IDs. Admission still counts live owner-fenced tasks.
+        stale = db.execute(select(permits.c.token).select_from(permits.outerjoin(
+            tasks, tasks.c.id == permits.c.task_id)).where(
+                permits.c.resource == _key(scope), or_(tasks.c.id.is_(None),
+                    tasks.c.status != 'running', tasks.c.worker_id.is_(None),
+                    tasks.c.worker_id != permits.c.owner, tasks.c.lease_until.is_(None),
+                    tasks.c.lease_until <= stamp)).limit(256)).scalars().all()
+        if stale:
+            db.execute(permits.delete().where(permits.c.resource == _key(scope),
+                                             permits.c.token.in_(stale)))
 
     def _release(self, token):
         def release(db, stamp):

@@ -40,6 +40,31 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
         with self.first.connect() as db:
             self.assertEqual(db.execute(select(download_permits)).all(), [])
 
+    def test_locked_task_does_not_block_other_admissions_or_permit_cleanup(self):
+        first, second = self.scheduler(), self.scheduler(self.second)
+        scope = 'regression-import-row-lock'
+        token, _ = first.transaction_call(lambda db, stamp: first._admit(db, stamp, [(scope, 8, 1)]))
+        first.transaction_call(lambda db, stamp: first._save(db, scope, {'permit_cleanup_at': 0}))
+        blocker = self.first.db.engine.connect()
+        transaction = blocker.begin()
+        blocker.execute(select(tasks.c.id).where(tasks.c.id == first.task_id).with_for_update()).first()
+        try:
+            with ThreadPoolExecutor(1) as pool:
+                future = pool.submit(second.transaction_call,
+                    lambda db, stamp: second._admit(db, stamp, [(scope, 8, 1)]))
+                try:
+                    admitted, _ = future.result(timeout=2)
+                    self.assertTrue(admitted)
+                finally:
+                    transaction.rollback()
+                    blocker.close()
+            second._release(admitted)
+        finally:
+            if transaction.is_active:
+                transaction.rollback()
+                blocker.close()
+            first._release(token)
+
     def test_completion_deadlock_rolls_back_subtitle_enqueue_and_counters(self):
         job = self.first.create('download', {'base': str(self.root), 'config': {},
                                'urls': ['https://youtu.be/jNQXAC9IVRw']})
@@ -47,8 +72,8 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
                    'video_file': str(self.root / 'video.mp4'), 'urls': ['https://youtu.be/jNQXAC9IVRw']}]}
         settle = self.first.statistics.settle
         calls = []
-        def deadlock(db):
-            settle(db)
+        def deadlock(db, **kwargs):
+            settle(db, **kwargs)
             calls.append(1)
             if len(calls) == 1:
                 raise OperationalError('fixture', {}, Exception(1213, 'Deadlock'))

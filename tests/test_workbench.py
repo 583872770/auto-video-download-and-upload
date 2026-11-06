@@ -46,7 +46,8 @@ class WorkbenchFleetTests(unittest.TestCase):
         for name, size, testing in [('billable.mp4', 1_000_000, False), ('test.mp4', 2_000_000, True)]:
             path = self.root / name
             path.write_bytes(b'x' * size)
-            self.assertTrue(self.a.statistics.record_file(task['id'], path, test_mode=testing))
+            with patch('webapp.statistics.stamp', return_value=datetime.fromtimestamp(now - 1, timezone.utc).isoformat()):
+                self.assertTrue(self.a.statistics.record_file(task['id'], path, test_mode=testing))
             if testing:
                 path.unlink()
         with patch('webapp.fleet.database_time', return_value=now):
@@ -58,9 +59,12 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertEqual(alpha['test_file_bytes_exact'], '2000000')
         self.assertEqual(alpha['downloaded_file_bytes_exact'], '3000000')
         self.assertEqual(alpha['output_mbps'], 1.2)
+        self.assertEqual(alpha['output_recent_mbps'], 1.2)
+        self.assertEqual(alpha['output_recent_file_bytes_exact'], '3000000')
         self.assertNotEqual(beta['id'], identity)
         self.assertEqual(beta['downloaded_file_bytes'], 0)
         self.assertEqual(beta['output_mbps'], 0)
+        self.assertEqual(beta['output_recent_mbps'], 0)
         # Previewing another job must not switch the executor's session totals.
         preview = self.client.get('/api/jobs/workbench?job_id=' + self.status('beta')['job']['id'],
             headers={'X-Instance-ID': 'alpha'}).json

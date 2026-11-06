@@ -139,6 +139,24 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.detail(a)['importing'], 0)
         self.assertFalse(self.store.heartbeat(old['id'], self.store.owner))
 
+    def test_bulk_import_restores_removed_completed_video_without_losing_attempts(self):
+        identity = self.create()
+        self.control(identity, 'start')
+        task = self.store.claim(self.store.owner)
+        self.assertTrue(self.store.finish(task['id'], result={}, worker_id=self.store.owner))
+        completed = self.store.get(task['id'])
+        response = self.client.post(f'/api/jobs/{identity}/videos/remove', json={
+            'clear': True, 'scope': 'all', 'confirmation': 'List A'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        imported = self.import_file(identity, b'npNnbj46_ik\n')
+        result = run_import(self.store, imported['payload'], lambda _: None)
+        self.assertEqual(result['added'], 1)
+        restored = self.store.get(task['id'])
+        self.assertEqual(restored['status'], 'succeeded')
+        self.assertEqual(restored['attempts'], completed['attempts'])
+        self.assertEqual(restored['finished_at'], completed['finished_at'])
+        self.assertEqual(self.detail(identity)['total'], 1)
+
     def test_settings_exports_archive_and_deleted_bills_are_independent(self):
         a, b = self.create(price='1'), self.create('List B', price='2')
         response = self.client.put('/api/jobs/' + a, json={'customer': 'Changed', 'name': 'New label',

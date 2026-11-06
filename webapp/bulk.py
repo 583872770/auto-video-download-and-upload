@@ -9,7 +9,7 @@ from sqlalchemy import select
 from webapp.database import imports
 from webapp.settings import urls_from
 
-CHUNK = 2000
+CHUNK = 500
 REPORT_INTERVAL = 1.0
 MAX_LINE = 16384
 

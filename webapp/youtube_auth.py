@@ -206,6 +206,43 @@ class YouTubeAuth:
                 return saved['auth']
         return None
 
+    def check_startup(self, config, base, **options):
+        """Check an available pool session without bypassing account cooldowns."""
+        if not config.get('youtube_cookie_pool'):
+            return self.check(config, base, **options)
+        from webapp.cookie_pool import CookiePool
+        from webapp.throughput import PipelineBusy
+
+        pool = CookiePool(self.store, config, base, None)
+
+        def waiting(status):
+            if status['halted']:
+                return {'state': 'blocked', 'message': status['reason'], 'source': 'cookie_pool_halted'}
+            sessions = status['session_states']
+            if status['cooldown_until'] > time.time() or (
+                    sessions and all(s['state'] == 'cooldown' for s in sessions)):
+                until = max(status['cooldown_until'], min((s['cooldown_until'] for s in sessions), default=0))
+                return {'state': 'waiting', 'message': '账号池正在冷却，启动后自动等待，到期按低频恢复。',
+                        'cooldown_until': until}
+            return None
+
+        status = pool.status()
+        blocked = waiting(status)
+        if blocked:
+            return blocked
+        result = {'state': 'missing', 'message': '账号池没有可用会话，请检查 Cookie 配置。'}
+        for session in status['session_states']:
+            if session['state'] == 'cooldown':
+                continue
+            try:
+                result = self.check_profile(session['id'], config, base, **options)
+            except PipelineBusy:
+                # Another task may start cooling this account after our snapshot.
+                continue
+            if result['state'] == 'valid':
+                return {**result, 'profile_id': session['id']}
+        return waiting(pool.status()) or result
+
     def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True):
         if config.get('youtube_cookie_pool'):
             from webapp.cookie_pool import CookiePool
