@@ -28,6 +28,7 @@ from Utils.oss_storage import OSS_FIELDS
 LOCAL_FIELDS |= OSS_FIELDS
 LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
+LOCAL_FIELDS.add('postprocess_limit')
 LOCAL_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
 LOCAL_FIELDS.add('youtube_cookie_usage')
 LOCAL_FIELDS.add('youtube_throttle_cooldown')
@@ -267,10 +268,13 @@ class Fleet:
             counts = dict(running)
             by_instance = {}
             current_tasks = {}
-            for task in db.execute(select(tasks.c.id, tasks.c.instance_id, tasks.c.batch_id,
-                    tasks.c.video_id, tasks.c.title, tasks.c.progress).where(
-                    tasks.c.action == 'download', tasks.c.status == 'running').order_by(tasks.c.seq)).mappings():
-                progress = json.loads(task['progress']) if task['progress'] else {}
+            active = list(db.execute(select(tasks.c.id, tasks.c.instance_id, tasks.c.batch_id,
+                    tasks.c.video_id, tasks.c.title, tasks.c.progress, tasks.c.status,
+                    tasks.c.worker_id, tasks.c.started_at, tasks.c.attempts, tasks.c.lease_until).where(
+                    tasks.c.action == 'download', tasks.c.status == 'running').order_by(tasks.c.seq)).mappings())
+            live = self.store.progress_cache.read_many(active)
+            for task in active:
+                progress = live[task['id']]['progress'] if task['id'] in live else json.loads(task['progress'] or '{}')
                 by_instance.setdefault(task['instance_id'], []).append(progress)
                 current_tasks.setdefault(task['instance_id'], []).append({
                     key: task[key] for key in ('id', 'batch_id', 'video_id', 'title')} | {'progress': progress})
@@ -290,7 +294,9 @@ class Fleet:
                 result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
                     'online': row['heartbeat'] > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
-                    'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading'),
+                    'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading' and
+                        (not p.get('_reported_at') or stamp-p['_reported_at'] <= 10) and
+                        (not p.get('last_bytes_at') or stamp-p['last_bytes_at'] <= 10)),
                     'worker_count': config.get('worker_count', 1), 'yt5s_browser_count': config.get('yt5s_browser_count', 2),
                     'throughput': local.get('throughput'),
                     'directory': local.get('directory', ''),

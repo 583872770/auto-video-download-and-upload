@@ -15,6 +15,7 @@
   <div class="concurrency-resource-grid">
     <label data-provider-setting="yt5s yt1d bergung">浏览器并发数<input name="yt5s_browser_count" type="number" min="1" max="16" required><small>yt5s、yt1d、Bergung 共享。默认 2；浏览器名额不足时，增加实例并发不会加快解析。</small></label>
     <label>分片并发数<input name="fragment_concurrency" type="number" min="1" max="16" required><small>默认 4；控制分片媒体及 yt-dlp 普通 HTTP 视频的分块并行。每个任务分别计算，受连接预算限制；设为 1 时顺序下载，不支持并行的源自动回退。</small></label>
+    <label>本地后处理并发<input name="postprocess_limit" type="number" min="1" max="8" required><small>默认 2，供当前实例的合并、搬移和媒体校验共用。后续任务生效；等待期间保留任务心跳和磁盘保护。</small></label>
   </div>
 </section>
 {% include 'channel_settings.html' %}

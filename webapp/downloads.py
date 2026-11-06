@@ -1,5 +1,5 @@
 ﻿"""Structured yt-dlp progress persisted independently of terminal output."""
-from collections import deque
+from collections import deque, Counter
 import math
 import re
 import time
@@ -49,9 +49,15 @@ class DownloadFailure:
     def __init__(self):
         self.cookie_rejected = False
         self.errors = []
+        self.warnings = Counter()
 
     def warning(self, message):
-        if 'account cookies are no longer valid' in str(message).lower():
+        text = str(message).lower()
+        category = ('invalid_session' if 'account cookies are no longer valid' in text else
+                    'drm_formats_skipped' if 'drm protected' in text and 'skipped' in text else
+                    'signature_challenge' if 'signature' in text or 'challenge' in text else 'other')
+        self.warnings[category] += 1
+        if category == 'invalid_session':
             self.cookie_rejected = True
 
     def error(self, message):
@@ -134,6 +140,8 @@ class DownloadProgress:
         downloaded = number(event.get('downloaded_bytes'))
         if downloaded is None:
             downloaded = previous.get('downloaded', 0)
+        if downloaded > previous.get('downloaded', 0):
+            self.state['last_bytes_at'] = time.time()
         total = number(event.get('total_bytes')) or number(event.get('total_bytes_estimate'))
         finished = event.get('status') == 'finished'
         # Some downloaders omit speed on progress events. Measure only new bytes

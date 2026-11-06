@@ -77,12 +77,20 @@ function toast(message, error = false) {
 async function api(path, options = {}) {
   const headers = { 'X-CSRF-Token': csrf, ...options.headers };
   if (state.instanceId && !Object.hasOwn(headers, 'X-Instance-ID')) headers['X-Instance-ID'] = state.instanceId;
-  if (options.body && !(options.body instanceof FormData)) {
+  const { responseType, timeoutMs, signal, ...fetchOptions } = options;
+  if (fetchOptions.body && !(fetchOptions.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
-    options.body = JSON.stringify(options.body);
+    fetchOptions.body = JSON.stringify(fetchOptions.body);
   }
-  const { responseType, ...fetchOptions } = options;
-  const response = await fetch(path, { ...fetchOptions, headers });
+  const reading = ['GET', 'HEAD'].includes((fetchOptions.method || 'GET').toUpperCase());
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')),
+    timeoutMs ?? (responseType === 'file' ? 120000 : reading ? 12000 : 90000));
+  try {
+    const response = await fetch(path, { ...fetchOptions, headers, signal: controller.signal });
   if (responseType === 'file' && response.ok && !response.redirected
       && response.headers.get('Content-Disposition')?.toLowerCase().startsWith('attachment')) return response;
   const raw = await response.text();
@@ -98,6 +106,17 @@ async function api(path, options = {}) {
   if (response.status === 401) { location.assign('/login'); throw new Error('请先登录管理账户。'); }
   if (!response.ok) { const error = new Error(data.error || `请求失败（${response.status}）`); error.status = response.status; throw error; }
   return data;
+  } catch (error) {
+    if (controller.signal.aborted && controller.signal.reason?.name === 'TimeoutError') {
+      const failure = new Error(reading ? '读取超时，稍后自动重试；当前显示上次成功的数据。' : '操作等待超时，结果尚未确认，请刷新查看后再操作。');
+      failure.name = 'TimeoutError';
+      throw failure;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
 }
 function setView(name) {
   if (!viewNames[name]) return;
@@ -188,7 +207,7 @@ function progressLabel(task) {
   if (stage === 'switching_provider') return `正在切换到 ${providerNames[task.progress?.download_method] || '下一个下载器'}`;
   const browserStages = { waiting_browser: '等待浏览器名额', starting_browser: '启动浏览器', connecting_browser: '连接浏览器', opening_site: '打开网页', waiting_site_form: '等待网页输入框', submitting_site: '提交视频链接', waiting_verification: '等待网站验证', converting: '网站正在转换' };
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
-  return { waiting_request: '\u7b49\u5f85 YouTube \u8bf7\u6c42\u95f4\u9694', checking_environment: '检查下载环境', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
+  return { waiting_request: '\u7b49\u5f85 YouTube \u8bf7\u6c42\u95f4\u9694', checking_environment: '检查下载环境', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', waiting_processing: '等待本地后处理名额', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
 function progressVisualState(task) {
   if (task.status === 'failed') return { className: 'failed', order: 90, label: '失败' };
@@ -200,13 +219,32 @@ function progressVisualState(task) {
   if (stage === 'uploading_oss') return { className: 'finalizing', order: 30, label: '上传 OSS' };
   if (stage === 'processing' || stage === 'cleaning') return { className: 'finalizing', order: 30, label: stage === 'cleaning' ? '正在清理' : '合并 / 处理' };
   if (stage.startsWith('waiting_') || stage === 'disk_wait' || stage === 'switching_provider') {
-    const labels = { waiting_request: '等待请求', waiting_cookie: '等待 Cookie', waiting_transfer: '等待传输', waiting_resolver: '等待解析', waiting_browser: '等待浏览器', waiting_verification: '等待验证', waiting_api_conversion: '等待转换', disk_wait: '等待空间', switching_provider: '切换渠道' };
+    const labels = { waiting_request: '等待请求', waiting_cookie: '等待 Cookie', waiting_transfer: '等待传输', waiting_processing: '等待后处理', waiting_resolver: '等待解析', waiting_browser: '等待浏览器', waiting_verification: '等待验证', waiting_api_conversion: '等待转换', disk_wait: '等待空间', switching_provider: '切换渠道' };
     return { className: 'waiting', order: 20, label: labels[stage] || '等待资源' };
   }
   if (stage === 'extracting' || stage === 'checking_environment' || stage === 'checking_login' || stage === 'preparing_workspace' || stage === 'preparing_proxy') {
     return { className: 'preparing', order: 10, label: stage === 'extracting' ? '正在解析' : '准备中' };
   }
   return { className: 'preparing', order: 15, label: '处理中' };
+}
+function liveTransferSpeed(task) {
+  const p = task.progress || {};
+  if (task.status !== 'running' || !['downloading', 'uploading_oss'].includes(p.stage)) return null;
+  const stamp = task.progress_updated_at || p._reported_at;
+  const bytesAt = p.stage === 'uploading_oss' ? p.oss_last_bytes_at : p.last_bytes_at;
+  if ((stamp && Date.now() / 1000 - stamp > 10) || (bytesAt && Date.now() / 1000 - bytesAt > 10)) return null;
+  return Number.isFinite(p.speed) && p.speed >= 0 ? p.speed : null;
+}
+function progressFreshness(task) {
+  if (task.status !== 'running') return '';
+  const p = task.progress || {}, now = Date.now() / 1000;
+  const stamp = task.progress_updated_at || p._reported_at;
+  const bytesAt = p.stage === 'uploading_oss' ? p.oss_last_bytes_at : p.last_bytes_at;
+  const facts = [];
+  if (stamp) facts.push(`进度更新于 ${etaText(Math.max(0, now - stamp))}前`);
+  if (bytesAt) facts.push(`字节变化于 ${etaText(Math.max(0, now - bytesAt))}前`);
+  if (task.lease_until) facts.push(task.lease_until > now ? '执行心跳租约有效' : '执行租约待确认');
+  return facts.length ? `<p class="micro-copy progress-freshness">${facts.join(' · ')}</p>` : '';
 }
 function downloadProgress(task) {
   const data = task.progress || {};
@@ -221,7 +259,7 @@ function downloadProgress(task) {
   const percentage = task.status === 'queued' && !stopped ? 0 : task.status === 'succeeded' ? 100 : Number.isFinite(measured) ? Math.max(0, Math.min(100, measured)) : null;
   const label = task.status === 'queued' && !stopped ? '等待开始' : percentage === null ? (converting ? '等待网站转换' : '大小未知') : `${converting ? '转换 ' : ''}${percentage.toFixed(1)}%`;
   const importing = task.action === 'import';
-  const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : Number.isFinite(data.speed) ? `${bytes(data.speed)}/s` : data.stage === 'downloading' ? '计算中…' : '—';
+  const speed = !active ? '—' : importing && Number.isFinite(data.records_per_second) ? `${data.records_per_second.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 条/秒` : liveTransferSpeed(task) !== null ? `${bytes(liveTransferSpeed(task))}/s` : data.stage === 'downloading' ? '计算中…' : '—';
   const provider = providerNames[data.download_method] || '';
   const stageSeconds = active && data.stage_started_at ? Math.max(0, Date.now() / 1000 - data.stage_started_at) : null;
   const slowest = Object.entries(data.stage_seconds || {}).filter(([stage]) => !active || stage !== data.stage).sort((a, b) => b[1] - a[1])[0];
@@ -230,7 +268,7 @@ function downloadProgress(task) {
   const methods = data.selected_download_methods;
   const policy = Array.isArray(methods) && methods.length ? `<p class="micro-copy execution-policy">${queued ? '上次' : '本次'}下载方式：${escapeHTML(methods.map(method => providerNames[method] || method).join('、'))}${queued ? '；下次启动处理时使用该实例的最新设置。' : ''}${task.instance_id && fleetEnabled ? ` <a href="/?instance_id=${encodeURIComponent(task.instance_id)}#settings">实例设置：${escapeHTML(instanceName(task.instance_id))} ↗</a>` : ''}</p>` : '';
   const cookie = active && data.cookie_profile_name ? `<span class="active-cookie-metric">Cookie <b>${escapeHTML(data.cookie_profile_name)}</b></span>` : '';
-  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : uploading ? '上传' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : uploading ? '当前文件已上传' : queued ? '上次已下载' : '已下载'} <b>${Number.isFinite(transferred) ? bytes(transferred) : '—'}</b>${total ? ` / ${bytes(total)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${uploading && data.oss_object ? `<p class="micro-copy">OSS 对象：${escapeHTML(data.oss_object)}</p>` : ''}${policy}${timing}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
+  return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : uploading ? '上传' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : uploading ? '当前文件已上传' : queued ? '上次已下载' : '已下载'} <b>${Number.isFinite(transferred) ? bytes(transferred) : '—'}</b>${total ? ` / ${bytes(total)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${uploading && data.oss_object ? `<p class="micro-copy">OSS 对象：${escapeHTML(data.oss_object)}</p>` : ''}${policy}${timing}${progressFreshness(task)}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
 function renderBatches() {
   const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
@@ -274,9 +312,9 @@ function decimalGB(value) {
 function renderWorkbenchSpeed() {
   const workbench = state.workbench;
   const transfers = (workbench?.active_tasks || []).filter(task => task.status === 'running' && task.progress?.stage === 'downloading');
-  const measured = transfers.filter(task => Number.isFinite(task.progress.speed) && task.progress.speed >= 0);
+  const measured = transfers.filter(task => liveTransferSpeed(task) !== null);
   const available = workbench && workbench.online !== false;
-  const rate = measured.reduce((sum, task) => sum + task.progress.speed, 0);
+  const rate = measured.reduce((sum, task) => sum + liveTransferSpeed(task), 0);
   const known = available && (!transfers.length || measured.length);
   const [value, unit] = known ? bytes(rate).split(' ') : ['—', ''];
   $('#stat-speed').textContent = value;
@@ -828,38 +866,10 @@ function renderStorageSettings() {
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
 const refreshedAt = {};
-async function refresh({ poll = false, viewChanged = false } = {}) {
-  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
-  if (state.polling) {
-    if (!poll || viewChanged) state.refreshQueued = true;
-    return;
-  }
-  state.polling = true;
-  const instance = state.instanceId;
-  try {
-    const view = location.hash.slice(1) || 'overview';
-    const stamp = Date.now();
-    const due = (name, visible, interval) => !poll || (visible && (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
-    const requests = {
-      media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
-      tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
-      status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
-      clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
-      overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
-    };
-    const pendingRequests = Object.entries(requests).filter(([, path]) => path);
-    const results = await Promise.allSettled(pendingRequests.map(async ([name, path]) => [name, await api(path)]));
-    if (instance !== state.instanceId) { state.refreshQueued = true; return; }
-    const entries = results.filter(result => result.status === 'fulfilled').map(result => result.value);
-    const failed = results.filter(result => result.status === 'rejected');
-    const warning = $('#connection-warning');
-    warning.hidden = !failed.length;
-    if (failed.length) {
-      warning.textContent = `部分状态暂时无法更新：${failed[0].reason.message}。当前保留上次成功数据，请勿把旧状态当作实时状态。`;
-      $('#database-health').textContent = failed.some(result => result.reason.status === 503) ? '数据库：连接异常' : '数据库：状态未更新';
-    }
-    const data = Object.fromEntries(entries);
-    for (const [name] of entries) refreshedAt[name] = stamp;
+const refreshInFlight = new Map();
+const refreshFailures = {};
+let refreshFailureInstance;
+function applyRefreshData(data) {
     const { media, tasks, clash, overview } = data;
     const mediaBefore = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]);
     if (overview) { state.overview = overview; state.counts = overview.counts; }
@@ -871,7 +881,6 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     if (tasks || overview || data.status) renderTasks();
     if (clash) renderClash();
     if (data.status) { renderDownloadControl(); renderStatus(); }
-    if (failed.length) $('#database-health').textContent = failed.some(result => result.reason.status === 503) ? '数据库：连接异常' : '部分状态暂未更新，请查看上方提示';
     renderPagination();
     if (media) {
       $('#media-directory').textContent = media.directory;
@@ -879,11 +888,72 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     }
     const status = state.status;
     if (!status) return;
-    $('#database-backend').textContent = `${failed.length ? '部分状态暂未更新' : status.database === 'mysql' ? 'MySQL 最近请求成功' : 'SQLite 测试模式'} · ${status.concurrency?.mode === 'cookie_pool' ? 'Cookie 池独立调度' : `${status.worker_count} 个下载进程`} · 素材按页查询`;
+    $('#database-backend').textContent = `${status.database === 'mysql' ? 'MySQL 最近请求成功' : 'SQLite 测试模式'} · ${status.concurrency?.mode === 'cookie_pool' ? 'Cookie 池独立调度' : `${status.worker_count} 个下载进程`} · 素材按页查询`;
+    const cache = status.concurrency?.local_health?.progress_cache;
+    if (cache?.enabled) $('#database-backend').textContent += cache.backoff_seconds > 0 ? ' · 进度缓存已回退数据库' : ' · 进度缓存已启用';
     const workers = status.workers || [];
     const paused = workers.filter(worker => worker.state === 'paused');
     $('#worker-status').hidden = !paused.length;
     $('#worker-status').textContent = paused.map(worker => worker.message).join('；');
+
+}
+async function refresh({ poll = false, viewChanged = false } = {}) {
+  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
+  state.polling = true;
+  const instance = state.instanceId;
+  if (refreshFailureInstance !== instance) {
+    refreshFailureInstance = instance;
+    for (const name of Object.keys(refreshFailures)) delete refreshFailures[name];
+    for (const name of Object.keys(refreshedAt)) delete refreshedAt[name];
+  }
+  try {
+    const view = location.hash.slice(1) || 'overview';
+    const stamp = Date.now();
+    const due = (name, visible, interval) => !poll || (visible &&
+      (viewChanged || stamp >= (refreshFailures[name]?.nextAt || 0)) &&
+      (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
+    const requests = {
+      media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
+      tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
+      status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
+      clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
+      overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
+    };
+    await Promise.allSettled(Object.entries(requests).filter(([name, path]) => {
+      if (!path) return false;
+      const previous = refreshInFlight.get(name);
+      if (previous && previous.instance === instance && previous.path === path) return false;
+      previous?.controller.abort();
+      return true;
+    }).map(async ([name, path]) => {
+      const ticket = { instance, path, controller: new AbortController() };
+      refreshInFlight.set(name, ticket);
+      try {
+        const value = await api(path, { signal: ticket.controller.signal });
+        if (instance !== state.instanceId || refreshInFlight.get(name) !== ticket) return;
+        refreshedAt[name] = Date.now();
+        delete refreshFailures[name];
+        if (!['media', 'tasks', 'clash'].includes(name) || view === (location.hash.slice(1) || 'overview')) {
+          applyRefreshData({ [name]: value });
+        }
+      } catch (error) {
+        if (instance === state.instanceId && refreshInFlight.get(name) === ticket && error.name !== 'AbortError') {
+          const failures = (refreshFailures[name]?.failures || 0) + 1;
+          refreshFailures[name] = { failures, nextAt: Date.now() + Math.min(30000, 2000 * 2 ** Math.min(failures - 1, 4)), error };
+        }
+        throw error;
+      } finally {
+        if (refreshInFlight.get(name) === ticket) refreshInFlight.delete(name);
+      }
+    }));
+    if (instance !== state.instanceId) { state.refreshQueued = true; return; }
+    const failed = Object.values(refreshFailures);
+    const warning = $('#connection-warning');
+    warning.hidden = !failed.length;
+    if (failed.length) {
+      warning.textContent = `部分状态暂时无法更新：${failed[0].error.message} 当前保留上次成功数据。`;
+      $('#database-health').textContent = failed.some(item => item.error.status === 503) ? '数据库：连接异常' : '部分状态等待更新';
+    }
     if (state.selectedTask && $('#task-dialog').open) await updateTaskDetail();
   } finally {
     state.polling = false;
@@ -893,6 +963,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     }
   }
 }
+
 document.addEventListener('viewchange', () => {
   if (state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
 });
@@ -937,12 +1008,19 @@ async function loadDownloadJobs(more = false) {
   } finally { if (ticket === jobsSearchEpoch) $('#download-jobs-more').disabled = false; }
 }
 let executionPolling = false;
+let executionRetryAt = 0;
+let executionFailures = 0;
 let workbenchEpoch = 0;
 async function refreshExecution() {
-  if (executionPolling || document.hidden) return;
+  if (executionPolling || document.hidden || Date.now() < executionRetryAt) return;
   executionPolling = true;
   try {
     await refreshSelectedJob();
+    executionFailures = 0; executionRetryAt = 0;
+  } catch (error) {
+    executionFailures += 1;
+    executionRetryAt = Date.now() + Math.min(30000, 2000 * 2 ** Math.min(executionFailures - 1, 4));
+    throw error;
   } finally { executionPolling = false; }
 }
 setInterval(() => {

@@ -72,8 +72,8 @@ document.getElementById('instance-logs-open')?.addEventListener('click', async e
   button.disabled = true;
   const content = document.getElementById('instance-logs-content');
   try {
-    const result = await api('/api/disk/logs');
-    content.textContent = result.text || '暂无实例日志。';
+    const result = await api('/api/disk/logs?scope=current');
+    content.textContent = result.text || '本次启动后暂无保留的实例日志。';
   } catch (error) {
     content.textContent = `读取实例日志失败：${error.message}`;
   } finally {

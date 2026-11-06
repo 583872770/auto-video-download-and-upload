@@ -144,6 +144,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 last_progress.update(stage='cleaning', speed=None, eta=None)
                 if report_progress:
                     report_progress(dict(last_progress))
+                cleanup_started = time.monotonic()
         except BaseException:
             receipt = lease.path / '.completed-files.json'
             if workspace.test_mode and receipt.exists() and store:
@@ -154,6 +155,9 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             raise
     if workspace.test_mode:
         deleted = not workspace.directory.exists()
+        result['local_cleanup_seconds'] = round(time.monotonic() - cleanup_started, 3)
+        event('local_cleanup_end', elapsed_seconds=result['local_cleanup_seconds'],
+              files_deleted=deleted, file_bytes=result.get('file_bytes', 0))
         result.update(message=('测试下载完成，临时文件已删除，仅保留任务记录和统计。' if deleted else
                               '测试下载完成，统计已保留；临时文件清理待重试。'),
                       test_mode=True, files_deleted=deleted, skipped=False)
@@ -369,7 +373,9 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             if progress.state.get('download_method') in ('downmp3', 'yt1d', 'bergung'):
                 from webapp.yt5s import verify_media
                 try:
-                    verified = verify_media(path)
+                    with local_processing(payload.get('_disk_state') or (store.directory if store else base / '.cache'),
+                            config, progress, 'verify_media', size=path.stat().st_size):
+                        verified = verify_media(path)
                     streams = verified.get('streams', [])
                     video = next((stream for stream in streams if stream.get('codec_type') == 'video'), {})
                     event('media_verified', provider=progress.state.get('download_method'), video_id=current_video.get('id', ''),
@@ -422,9 +428,15 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
         elif automatic:
             print(f'按优先级尝试：{method_label}；成功后不再尝试后续下载器。', flush=True)
         from webapp.parallel_http import ParallelYoutubeDL, fragment_connection_budget, transfer_connection_units
+        from webapp.local_processing import local_processing
 
         class ReportingDownloader(ParallelYoutubeDL):
             skipped = False
+
+            def run_pp(self, pp, infodict):
+                with local_processing(payload.get('_disk_state') or (store.directory if store else base / '.cache'),
+                        config, progress, type(pp).__name__):
+                    return super().run_pp(pp, infodict)
 
             def to_screen(self, message, *args, **kwargs):
                 if str(message).startswith('[download] Sleeping '):
@@ -435,6 +447,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
 
             def report_warning(self, message, *args, **kwargs):
                 failure.warning(message)
+                progress.state['warning_counts'] = dict(failure.warnings)
                 if (config.get('_cookie_pool_selected') or config.get('youtube_pacing_mode') == 'adaptive') and failure.cookie_rejected:
                     # Stop at the first invalid-session warning, before yt-dlp
                     # falls back to more clients or downloads anonymously.
@@ -786,6 +799,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     output_bytes = sum(output_files.values()) - before_bytes
                     print(f'{PROVIDERS[provider]} 完成：传输 {format_bytes(transferred)}，生成文件 {format_bytes(output_bytes)}。', flush=True)
                     event('provider_end', provider=provider, outcome='completed',
+                          warning_counts=dict(failure.warnings),
                           transferred_bytes=transferred, output_bytes=output_bytes,
                           elapsed_seconds=round(time.monotonic() - provider_started, 3))
                     break
@@ -809,6 +823,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     meter.finish(False, upstream_failure=phase == 'transfer' and status in (429, 503))
                     record_route(channel, error=error)
                     event('provider_end', provider=provider, outcome='failed',
+                          warning_counts=dict(failure.warnings),
                           transferred_bytes=progress.state.get('downloaded_bytes', 0),
                           stage=progress.state.get('stage'),
                           elapsed_seconds=round(time.monotonic() - provider_started, 3),

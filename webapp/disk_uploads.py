@@ -23,7 +23,9 @@ class UploadStream:
         needed = self.length + len(value)
         if needed > self.maximum:
             raise RequestEntityTooLarge('上传文件超过本实例允许的大小。')
-        self.lease.check(needed, force=True)
+        # Lease checks are throttled, but reserve more before crossing the
+        # byte allowance and still recheck disk pressure at least every second.
+        self.lease.check(needed)
         count = self.stream.write(value)
         self.length += count
         return count
@@ -68,7 +70,7 @@ def save_import(source, path, store, config):
                 length += len(chunk)
                 if length > maximum:
                     raise RequestEntityTooLarge('导入文件超过本实例上传上限。')
-                lease.check(length, force=True)
+                lease.check(length)
                 target.write(chunk)
         if not length:
             raise BadRequest('导入文件不能为空。')

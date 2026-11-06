@@ -4,10 +4,15 @@ import os
 from pathlib import Path
 import re
 import time
+from collections import deque
+from contextlib import nullcontext
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 OSS_DEFAULTS = {'oss_endpoint': '', 'oss_bucket': '', 'oss_prefix': 'videos',
-                'oss_access_key_id': '', 'oss_access_key_secret': '', 'oss_security_token': ''}
+                'oss_access_key_id': '', 'oss_access_key_secret': '', 'oss_security_token': '',
+                'oss_upload_threads': 2, 'oss_part_size_mb': 8, 'oss_upload_limit': 2}
+OSS_INTEGER_FIELDS = {'oss_upload_threads': (1, 8), 'oss_part_size_mb': (4, 64), 'oss_upload_limit': (1, 8)}
 OSS_FIELDS = set(OSS_DEFAULTS)
 OSS_SECRETS = {'oss_access_key_secret', 'oss_security_token'}
 
@@ -25,10 +30,15 @@ def credentials(config):
 
 
 def validate_oss(config):
-    for key in OSS_FIELDS:
+    for key in OSS_FIELDS - OSS_INTEGER_FIELDS.keys():
         value = config.get(key, OSS_DEFAULTS[key])
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')
+    for key, (low, high) in OSS_INTEGER_FIELDS.items():
+        value = config.get(key, OSS_DEFAULTS[key])
+        if isinstance(value, bool) or not str(value).isdigit() or not low <= int(value) <= high:
+            raise ValueError(f'{key} 必须为 {low}～{high} 的整数。')
+        config[key] = int(value)
     endpoint = str(config.get('oss_endpoint', '')).strip().rstrip('/')
     if endpoint and '://' not in endpoint:
         endpoint = 'https://' + endpoint
@@ -95,7 +105,13 @@ class OSSStorage:
             key = '/'.join(filter(None, (self.prefix, path.relative_to(root).as_posix())))
             if len(key.encode('utf-8')) > 1023:
                 raise OSSUploadError('OSS 对象名称超过 1023 字节，请缩短目录或对象前缀。')
-            self._upload(path, key, report)
+            from webapp.local_processing import local_processing
+            state = {}
+            status = SimpleNamespace(state=state, save=lambda force=False: report(dict(state)) if report else None)
+            guard = local_processing(self.config['_disk_state'], self.config, status, 'oss_upload',
+                size=path.stat().st_size, resource='oss-upload-slots', limit=self.config['oss_upload_limit']) if self.config.get('_disk_state') else nullcontext()
+            with guard:
+                self._upload(path, key, report)
             uploaded.append({'key': key, 'size': path.stat().st_size})
         return uploaded
 
@@ -103,21 +119,38 @@ class OSSStorage:
         import oss2
         size = path.stat().st_size
         last_report = [0.0]
+        samples = deque(maxlen=8)
+        last_bytes = [0, None]
+        started = time.monotonic()
         def progress(consumed, total):
             now = time.monotonic()
+            if consumed < last_bytes[0] or consumed == 0:
+                last_bytes[:] = [0, None]
+            if consumed > last_bytes[0]:
+                last_bytes[:] = [consumed, time.time()]
+            if not samples or consumed < samples[-1][1] or consumed == 0:
+                samples.clear()
+            if not samples or now-samples[-1][0] >= .25 or consumed == total:
+                samples.append((now, consumed))
+            elapsed = now - samples[0][0]
+            speed = (consumed-samples[0][1])/elapsed if elapsed >= .5 else None
             if report and (consumed in (0, total) or now - last_report[0] >= 1):
                 last_report[0] = now
                 report({'stage': 'uploading_oss', 'oss_uploaded_bytes': consumed,
-                        'oss_total_bytes': total, 'oss_object': key, 'speed': None, 'eta': None})
+                        'oss_total_bytes': total, 'oss_object': key, 'speed': speed,
+                        'oss_last_bytes_at': last_bytes[1], 'eta': (total-consumed)/speed if speed else None})
         for attempt in range(3):
             try:
                 progress(0, size)
                 oss2.resumable_upload(self.bucket, key, str(path),
-                    multipart_threshold=16 * 1024**2, part_size=8 * 1024**2,
-                    num_threads=2, progress_callback=progress)
+                    multipart_threshold=16 * 1024**2, part_size=self.config['oss_part_size_mb'] * 1024**2,
+                    num_threads=self.config['oss_upload_threads'], progress_callback=progress)
                 if self.bucket.head_object(key).content_length != size:
                     raise OSSUploadError('OSS 远端文件大小校验失败，本地文件已保留。')
                 progress(size, size)
+                from webapp.diagnostics import event
+                event('oss_file_uploaded', file_bytes=size, elapsed_seconds=round(time.monotonic()-started, 3),
+                      attempts=attempt+1, threads=self.config['oss_upload_threads'], part_size_mb=self.config['oss_part_size_mb'])
                 return
             except (oss2.exceptions.OssError, OSSUploadError) as error:
                 status = getattr(error, 'status', None)

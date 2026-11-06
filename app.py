@@ -300,6 +300,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             concurrency['subtitles'] = subtitle_summary(db, stamp, identity)
             from webapp.risk_diagnostics import observed, local_health
             concurrency['local_health'] = local_health(store.directory, config, exts['clash'].directory)
+            concurrency['local_health']['progress_cache'] = store.progress_cache.health()
             concurrency['risks'] = observed(config, concurrency, youtube['auth'], stamp,
                 error=fleet.row(db)['error'] if fleet else '')
             concurrency['auth_checked_at'] = youtube['auth'].get('checked_at')

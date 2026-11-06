@@ -22,6 +22,9 @@
   <label>Endpoint<input name="oss_endpoint" placeholder="https://oss-cn-hangzhou.aliyuncs.com" autocomplete="off"><small>填写 Bucket 所在地域的 OSS Endpoint，不填写 Bucket 域名。支持 -internal 内网地址。</small></label>
   <label>Bucket 名称<input name="oss_bucket" placeholder="my-video-bucket" autocomplete="off"></label>
   <label>对象前缀<input name="oss_prefix" placeholder="videos"><small>对象路径为“前缀 / 视频相对路径”。多个实例建议使用不同前缀，避免同名文件覆盖。</small></label>
+  <label>OSS 上传文件并发<input name="oss_upload_limit" type="number" min="1" max="8" required><small>默认 2，限制当前实例同时上传的文件数。</small></label>
+  <label>每文件上传线程<input name="oss_upload_threads" type="number" min="1" max="8" required><small>默认 2；总线程数还受同时上传文件数影响。</small></label>
+  <label>OSS 分片大小（MiB）<input name="oss_part_size_mb" type="number" min="4" max="64" required><small>默认 8；保留断点续传、CRC 和远端大小校验。</small></label>
   <label>AccessKey ID<input name="oss_access_key_id" autocomplete="off"><small>也可在下载实例设置 OSS_ACCESS_KEY_ID 环境变量。</small></label>
   <label>AccessKey Secret<input name="oss_access_key_secret" type="password" autocomplete="new-password"><small>留空保留已保存密钥，也可使用 OSS_ACCESS_KEY_SECRET 环境变量。</small></label>
   <label>STS Security Token（可选）<input name="oss_security_token" type="password" autocomplete="new-password"><small>仅使用临时凭据时填写，也可设置 OSS_SECURITY_TOKEN 环境变量。留空保留现有值。</small></label>

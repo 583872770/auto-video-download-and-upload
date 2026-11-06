@@ -50,6 +50,7 @@ Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq,
 Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, tasks.c.seq,
       mysql_length={'finished_at': 40})
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
+Index('ix_tasks_batch_ready', tasks.c.batch_id, tasks.c.status, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
 Index('ix_tasks_url_prefix', tasks.c.batch_id, tasks.c.url, mysql_length={'url': 128})
 Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
@@ -193,9 +194,11 @@ deliveries = Table('download_deliveries', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
-    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
+    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False),
+    Column('created_epoch', Float))
 Index('ix_deliveries_session', deliveries.c.session_id, deliveries.c.seq)
 Index('ix_deliveries_task_seq', deliveries.c.task_id, deliveries.c.seq)
+Index('ix_deliveries_time', deliveries.c.session_id, deliveries.c.created_epoch)
 
 # Separate ledgers keep deleted test files out of delivery billing and avoid
 # altering existing task/delivery tables during upgrades with large queues.
@@ -203,9 +206,11 @@ test_files = Table('download_test_files', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
-    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False))
+    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False),
+    Column('created_epoch', Float))
 Index('ix_test_files_session', test_files.c.session_id, test_files.c.seq)
 Index('ix_test_files_task_seq', test_files.c.task_id, test_files.c.seq)
+Index('ix_test_files_time', test_files.c.session_id, test_files.c.created_epoch)
 test_totals = Table('download_test_totals', metadata,
     Column('session_id', String(32), primary_key=True),
     Column('test_file_count', BigInteger, nullable=False, server_default='0'),

@@ -18,6 +18,8 @@ from webapp.database import (Database, archive, batches, counters, download_list
                              rotations, settings, snapshots, tasks, workers, job_profiles, job_imports, job_removed)
 from webapp.store_utils import now, source_identity
 
+_LIVE_UNSET = object()
+
 
 class TaskStore:
     def __init__(self, directory, database_url=None, *, startup_report=None):
@@ -45,14 +47,15 @@ class TaskStore:
     def connect(self):
         return self.db.engine.begin()
 
-    def decode(self, row, private=False, db=None):
+    def decode(self, row, private=False, db=None, *, live=_LIVE_UNSET):
         if row is None:
             return None
         task = dict(row)
         payload = json.loads(task.pop('payload'))
         task['result'] = json.loads(task['result']) if task.get('result') else None
         task['progress'] = json.loads(task['progress']) if task.get('progress') else None
-        live = self.progress_cache.read(task)
+        if live is _LIVE_UNSET:
+            live = self.progress_cache.read(task)
         if live:
             task['progress'] = live['progress']
             task['progress_updated_at'] = live['updated_at']
@@ -70,6 +73,11 @@ class TaskStore:
                 payload = {**json.loads(saved), **payload}
             task['payload'] = payload
         return task
+
+    def decode_many(self, rows):
+        rows = list(rows)
+        values = self.progress_cache.read_many(rows)
+        return [self.decode(row, live=values.get(row['id'])) for row in rows]
 
     def _counter(self, db, scope, status, delta):
         db.execute(self.db.upsert(counters, dict(scope=scope, status=status, value=delta),
@@ -285,7 +293,7 @@ class TaskStore:
                 last = rows[limit - 1]
                 next_cursor = ('h.' + base64.urlsafe_b64encode(json.dumps([last['finished_at'], last['seq']]).encode()).decode()
                                if finished_only else str(last['seq']))
-            return {'items': [self.decode(row) for row in rows[:limit]],
+            return {'items': self.decode_many(rows[:limit]),
                     'next_cursor': next_cursor}
 
     def list(self, limit=100, actions=None):
@@ -418,7 +426,7 @@ class TaskStore:
                         and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
                     if role == 'download' and (job := self.workbench_job(db)):
                         statement = statement.where(tasks.c.batch_id == job).order_by(tasks.c.seq)
-                        statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_seq)', dialect_name='mysql')
+                        statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_ready)', dialect_name='mysql')
                 count = len(db.execute(statement).all())
                 if count:
                     counts[role] = count
@@ -751,7 +759,7 @@ class TaskStore:
                 row = db.execute(self._locked(check, skip=True)).mappings().first()
             if workbench_download:
                 statement = statement.where(tasks.c.action == 'download', tasks.c.batch_id == workbench_download)
-                statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_seq)', dialect_name='mysql')
+                statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_ready)', dialect_name='mysql')
             ordering = (tasks.c.seq,) if workbench_download else (tasks.c.available_at, tasks.c.seq)
             if row is None:
                 row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
@@ -862,7 +870,7 @@ class TaskStore:
                 self.statistics.settle(db, instance_id=row.get('instance_id'))
 
     def update_progress(self, task_id, progress, worker_id=None):
-        if worker_id and self.progress_cache.enabled:
+        if worker_id:
             progress = {**progress, '_reported_at': time.time()}
         criteria = [tasks.c.id == task_id]
         if worker_id:

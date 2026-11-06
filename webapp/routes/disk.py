@@ -1,5 +1,5 @@
 """Disk and diagnostics routes."""
-from flask import Blueprint, current_app, jsonify
+from flask import Blueprint, current_app, jsonify, request
 
 bp = Blueprint('disk', __name__, url_prefix='/api/disk')
 
@@ -27,7 +27,9 @@ def instance_logs():
     from webapp.diagnostics import read_runtime_logs
 
     store = current_app.extensions['task_store']
-    return jsonify(text=read_runtime_logs(store.directory))
+    import psutil
+    since = psutil.Process().create_time() if request.args.get('scope') == 'current' else None
+    return jsonify(text=read_runtime_logs(store.directory, since=since), since=since)
 
 
 @bp.post('/cleanup')

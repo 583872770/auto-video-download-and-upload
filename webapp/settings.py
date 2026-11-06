@@ -34,6 +34,7 @@ DEFAULTS = {
     'youtube_cookie_pool': [],
     'youtube_cookie_session_limit': 2,
     'youtube_pacing_mode': 'manual', 'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200,
+    'postprocess_limit': 2,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
     'yt1d_quality': 'best', 'yt1d_timeout': 180,
     'bergung_quality': 'best', 'bergung_timeout': 180,
@@ -46,6 +47,7 @@ DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie'
                    'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
                    'bergung_quality', 'bergung_timeout'}
 DOWNLOAD_FIELDS |= DISK_FIELDS
+DOWNLOAD_FIELDS.add('postprocess_limit')
 DOWNLOAD_FIELDS |= OSS_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
@@ -65,6 +67,9 @@ INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_fr
 INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
                        for key in DISK_FIELDS})
 INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
+INTEGER_FIELDS['postprocess_limit'] = (1, 8)
+from Utils.oss_storage import OSS_INTEGER_FIELDS
+INTEGER_FIELDS.update(OSS_INTEGER_FIELDS)
 INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
 INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))

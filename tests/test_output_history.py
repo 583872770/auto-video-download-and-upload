@@ -54,6 +54,20 @@ class OutputHistoryTests(unittest.TestCase):
         self.assertEqual(points[-1]['file_count'], 1)
         self.assertEqual(points[-3]['output_mbps'], 0)
 
+    def test_epoch_and_legacy_writers_mix_without_double_counting(self):
+        from sqlalchemy import select
+        self.add(-20, 12_000_000)
+        self.add(-40, 18_000_000, testing=True, zone=timezone(timedelta(hours=14)))
+        with self.store.connect() as db:
+            db.execute(deliveries.update().values(created_epoch=self.end-20))
+        self.assertEqual(self.current()['output_recent_file_bytes_exact'], '30000000')
+        self.store.statistics._history_cache.clear()
+        from webapp.migrations import _completed_file_times
+        _completed_file_times(self.store.db.engine)
+        self.assertEqual(self.current()['output_recent_file_bytes_exact'], '30000000')
+        with self.store.connect() as db:
+            self.assertEqual(db.execute(select(test_files.c.created_epoch)).scalar_one(), self.end-40)
+
     def test_short_session_uses_actual_time_and_marks_before_start_as_unavailable(self):
         identity = self.session('beta', 20)
         self.add(-21, 100_000_000, identity=identity)

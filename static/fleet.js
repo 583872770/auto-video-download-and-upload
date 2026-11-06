@@ -28,7 +28,8 @@ function instanceCurrentTasks(item) {
   const videos = item.current_tasks || [];
   return `<div class="fleet-current-tasks"><h3>视频处理进度</h3>${videos.length ? videos.map(video => {
     const progress = video.progress || {};
-    return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${Number.isFinite(progress.speed) ? ' · '+bytes(progress.speed)+'/s' : ''}</p>`;
+    const speed = liveTransferSpeed({ status: 'running', progress });
+    return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${speed !== null ? ' · '+bytes(speed)+'/s' : ''}</p>`;
   }).join('') : '<p class="micro-copy">当前没有正在处理的视频。</p>'}</div>`;
 }
 function instanceLive(item) {
@@ -66,10 +67,20 @@ function instanceCard(item, expanded) {
     <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>${item.concurrency?.mode === 'cookie_pool' ? '实例并发（池模式不生效）' : item.throughput?.mode === 'auto' ? '传输并发上限' : '视频处理并发上限'}<input name="worker_count" type="number" min="1" max="64" value="${item.worker_count}"${item.concurrency?.mode === 'cookie_pool' ? ' disabled' : ''} required></label><label>浏览器并发上限<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>最低剩余磁盘空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">并发上限不等于当前处理数量。降低并发后，正在处理的视频会继续完成；离线实例重新连接后才会处理停止指令。</p></details>
   </form></article>`;
 }
-async function loadFleet() {
-  if (!fleetEnabled) return;
+let fleetLoading = false;
+let fleetRetryAt = 0;
+let fleetFailures = 0;
+let fleetStructureKey = '';
+async function loadFleet({ poll = false } = {}) {
+  if (!fleetEnabled || fleetLoading || (poll && Date.now() < fleetRetryAt)) return;
+  fleetLoading = true;
+  const requestedInstance = state.instanceId;
+  try {
   const data = await api('/api/instances');
+  if (requestedInstance !== state.instanceId) return;
+  fleetFailures = 0;
   state.fleet = data;
+  const view = location.hash.slice(1) || 'overview';
   const workers = data.items.filter(item => ['worker', 'hybrid'].includes(item.role));
   const previous = state.instanceId;
   const hadConfig = !!state.config;
@@ -78,8 +89,8 @@ async function loadFleet() {
   }
   if (state.instanceId !== previous && lastStartedJobId !== null) await resetWorkbench();
   if (state.instanceId !== previous && typeof refreshDisk==='function') refreshDisk();
-  renderFleetJob();
-  renderDownloadControl();
+  if (view === 'instances') renderFleetJob();
+  if (view === 'overview') renderDownloadControl();
   if (state.instanceId && state.instanceId !== previous && hadConfig && !settingsDirty) {
     resetPage('media'); state.media = []; state.mediaTotal = 0; state.mediaDirectory = '';
     const instance = state.instanceId;
@@ -93,9 +104,16 @@ async function loadFleet() {
   selector.value = state.instanceId || '';
   if (workers.length) renderInstanceScope();
   else $('#fleet-selection-note').textContent = '还没有下载实例，请启动服务并检查数据库连接。';
+  if (view !== 'instances') {
+    if (['overview', 'settings'].includes(view)) renderConcurrency();
+    return;
+  }
   const monitor=[['在线实例',`${workers.filter(item=>item.online).length} / ${workers.length}`],['处理中视频',workers.reduce((sum,item)=>sum+Number(item.running||0),0)],['总传输速度',bytes(workers.reduce((sum,item)=>sum+Number(item.online?item.speed||0:0),0))+'/s'],['异常实例',workers.filter(item=>!item.online||item.error).length]];
   $('#fleet-monitor-summary').innerHTML=monitor.map(([label,value])=>`<div class="monitor-metric"><span>${label}</span><strong>${escapeHTML(value)}</strong></div>`).join('');
-  if (!state.fleetControlBusy && !state.fleetFormDirty && !document.activeElement?.matches('#instances-view input')) {
+  const structure = JSON.stringify(workers.map(item => [item.id, item.name, item.role, item.host, item.directory, item.worker_count, item.yt5s_browser_count, item.min_free_gb, item.concurrency?.mode, item.throughput?.mode]));
+  if (!state.fleetFormDirty && document.activeElement !== $('#fleet-global-limit')) $('#fleet-global-limit').value = data.global_limit;
+  if (structure !== fleetStructureKey && !state.fleetControlBusy && !state.fleetFormDirty && !document.activeElement?.matches('#instances-view input')) {
+    fleetStructureKey = structure;
     $('#fleet-global-limit').value = data.global_limit;
     const expanded=new Set($$('[data-instance-options][open]').map(node=>node.dataset.instanceOptions));
     $('#fleet-instances').innerHTML = workers.length ? workers.map(item=>instanceCard(item,expanded.has(item.id))).join('') : emptyState('还没有下载实例', '在其他机器启动服务，连接同一个 MySQL 后会自动注册。');
@@ -111,6 +129,15 @@ async function loadFleet() {
   }
   syncInstanceControls();
   renderConcurrency();
+  } catch (error) {
+    fleetFailures += 1;
+    fleetRetryAt = Date.now() + Math.min(30000, 2000 * 2 ** Math.min(fleetFailures - 1, 4));
+    $('#fleet-selection-note').textContent = '实例状态暂未更新，请等待连接恢复。';
+    throw error;
+  } finally {
+    fleetLoading = false;
+    if (state.fleet && !fleetFailures) fleetRetryAt = Date.now() + (location.hash === '#instances' ? 2000 : 5000);
+  }
 }
 async function initializeFleet() {
   if (!fleetEnabled) return;
@@ -125,6 +152,7 @@ async function initializeFleet() {
   }
   $('#instances-view').addEventListener('input', () => { state.fleetFormDirty = true; });
   await loadFleet();
+  document.addEventListener('viewchange', () => loadFleet().catch(() => {}));
   $('#fleet-selection').addEventListener('change', async event => {
     if (queueControlBusy || clashBusy) { event.target.value = state.instanceId || ''; return; }
     if (settingsDirty || providerDraft || downloadMethodBusy) {
@@ -191,6 +219,5 @@ async function initializeFleet() {
       refresh().catch(error => toast(error.message, true));
     }
   });
-  document.addEventListener('viewchange', event => { if (event.detail==='instances') loadFleet().catch(error => toast(error.message,true)); });
-  setInterval(() => { if (!document.hidden) loadFleet().catch(() => {}); }, 2000);
+  setInterval(() => { if (!document.hidden) loadFleet({ poll: true }).catch(() => {}); }, 2000);
 }

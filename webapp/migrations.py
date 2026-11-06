@@ -5,7 +5,7 @@ its version is recorded. Large queue tables are never rewritten here.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, bindparam
 
 from webapp.database import deliveries, download_lists, job_profiles, schema_migrations, test_files
 
@@ -91,10 +91,39 @@ def _optimize_indexes(engine):
             db.exec_driver_sql('CREATE INDEX ix_reservations_source ON download_reservations (`key`)')
 
 
+def _completed_file_times(engine):
+    # Only the completed-file ledgers are backfilled. Never rewrite queued tasks.
+    for table in (deliveries, test_files):
+        if 'created_epoch' not in {c['name'] for c in inspect(engine).get_columns(table.name)}:
+            with engine.begin() as db:
+                db.exec_driver_sql('ALTER TABLE ' + table.name + ' ADD COLUMN created_epoch DOUBLE')
+        cursor = -1
+        while True:
+            with engine.begin() as db:
+                rows = db.execute(select(table.c.id, table.c.seq, table.c.created_at).where(
+                    table.c.created_epoch.is_(None), table.c.seq > cursor).order_by(table.c.seq).limit(500)).all()
+                if not rows:
+                    break
+                values = []
+                for identity, seq, created in rows:
+                    try:
+                        epoch = datetime.fromisoformat(created).timestamp()
+                    except (ValueError, TypeError, OverflowError):
+                        epoch = 0  # Invalid legacy timestamps were already ignored.
+                    values.append({'file_id': identity, 'file_epoch': epoch})
+                db.execute(table.update().where(table.c.id == bindparam('file_id')).values(
+                    created_epoch=bindparam('file_epoch')), values)
+                cursor = rows[-1].seq
+        for index in table.indexes:
+            if index.name.endswith('_time'):
+                index.create(engine, checkfirst=True)
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
-         ('20261030_optimize_indexes', _optimize_indexes))
+         ('20261030_optimize_indexes', _optimize_indexes),
+         ('20261106_completed_file_times', _completed_file_times))
 
 
 def upgrade(engine):

@@ -130,7 +130,7 @@ def runtime_log(directory, slot='supervisor', config=None):
                       warning_path=root / 'log-write-warning.json')
 
 
-def read_runtime_logs(directory):
+def read_runtime_logs(directory, *, since=None):
     from pathlib import Path
     from webapp.disk_budget import safe_path
     root = Path(directory).resolve()
@@ -142,7 +142,23 @@ def read_runtime_logs(directory):
             with path.open('rb') as stream:
                 stream.seek(max(0, path.stat().st_size - 3072))
                 data = stream.read(3072)
-            sections.append(f'--- {slot} ---\n' + safe_text(data.decode('utf-8', errors='replace')))
+            text = data.decode('utf-8', errors='replace')
+            if since is not None:
+                lines, include = [], False
+                for line in text.splitlines():
+                    match = re.match(r'^(\d{4}-\d\d-\d\dT\S+)\s', line)
+                    try:
+                        structured = line[8:] if line.startswith('[event] ') else line
+                        timestamp = match[1] if match else json.loads(structured).get('time') if structured.startswith('{') else None
+                        if timestamp:
+                            include = datetime.fromisoformat(timestamp).timestamp() >= since
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                    if include:
+                        lines.append(line)
+                text = '\n'.join(lines)
+            if text:
+                sections.append(f'--- {slot} ---\n' + safe_text(text))
         except (OSError, ValueError):
             continue
     return '\n\n'.join(sections)

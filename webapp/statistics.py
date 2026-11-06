@@ -72,6 +72,9 @@ def charge(size, price, unit):
 class DownloadStatistics:
     def __init__(self, store):
         self.store, self.db = store, store.db
+        from webapp.read_cache import ReadCache
+        self._history_cache = ReadCache(ttl=3)
+        self._dashboard_cache = ReadCache(ttl=2)
         from webapp.statistics_methods import MethodStatistics
         self.methods = MethodStatistics(store)
 
@@ -105,6 +108,9 @@ class DownloadStatistics:
         return json.loads(value) if value else {'price': '0', 'unit': 'GB'}
 
     def dashboard(self):
+        return self._dashboard_cache.read('totals', self._dashboard)
+
+    def _dashboard(self):
         with self.store.connect() as db:
             sizes = db.execute(select(func.coalesce(func.sum(sessions.c.file_count), 0).label('file_count'),
                 func.coalesce(func.sum(sessions.c.file_bytes), 0).label('file_bytes'))).mappings().one()
@@ -133,6 +139,10 @@ class DownloadStatistics:
                 **self.output_history(db, identity, started, end)}
 
     def output_history(self, db, identity, started, end):
+        return self._history_cache.read((identity, started, int(end // 3)),
+            lambda: self._output_history(db, identity, started, end))
+
+    def _output_history(self, db, identity, started, end):
         """Rebuild recent rates from durable completed-file ledgers, including tests."""
         first_minute = int(end // 60) * 60 - 29 * 60
         recent_start = max(started, end - 600)
@@ -149,13 +159,20 @@ class DownloadStatistics:
         lower = max(started, min(first_minute, recent_start))
         date_bound = (datetime.fromtimestamp(lower, timezone.utc) - timedelta(days=1)).date().isoformat()
         for ledger in (deliveries, test_files):
-            rows = db.execute(select(ledger.c.created_at, ledger.c.size).where(
-                ledger.c.session_id == identity, ledger.c.created_at >= date_bound))
-            for created, size in rows:
+            rows = list(db.execute(select(ledger.c.created_epoch, ledger.c.size).where(
+                ledger.c.session_id == identity, ledger.c.created_epoch >= lower,
+                ledger.c.created_epoch <= end)))
+            # Older writers can still publish ISO-only rows during an upgrade.
+            legacy = db.execute(select(ledger.c.created_at, ledger.c.size).where(
+                ledger.c.session_id == identity, ledger.c.created_epoch.is_(None),
+                ledger.c.created_at >= date_bound))
+            for created, size in legacy:
                 try:
                     completed = datetime.fromisoformat(created).timestamp()
                 except (ValueError, TypeError, OverflowError):
                     continue
+                rows.append((completed, size))
+            for completed, size in rows:
                 if not started <= completed <= end:
                     continue
                 if completed > end - 600:
@@ -332,9 +349,11 @@ class DownloadStatistics:
             self._active(db, task.get('instance_id'))
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
                 return False
+            completed_at = stamp()
             db.execute(ledger.insert().values(id=identity, seq=self.db.sequence(db, 'download_test_file' if test_mode else 'download_delivery'),
                 session_id=session_id, task_id=task_id, video_id=video_id or task.get('video_id'),
-                title=str(title or video_id or task.get('video_id') or path.stem), path=str(path), size=size, created_at=stamp()))
+                title=str(title or video_id or task.get('video_id') or path.stem), path=str(path), size=size,
+                created_at=completed_at, created_epoch=datetime.fromisoformat(completed_at).timestamp()))
             if test_mode:
                 self.db.ensure(db, test_totals, {'session_id': session_id, 'test_file_count': 0, 'test_file_bytes': 0})
                 db.execute(test_totals.update().where(test_totals.c.session_id == session_id).values(
@@ -349,6 +368,8 @@ class DownloadStatistics:
                 prefix = 'test_file' if test_mode else 'file'
                 self.store._counter(db, scope, prefix + '_count', 1)
                 self.store._counter(db, scope, prefix + '_bytes', size)
+        self._history_cache.clear()
+        self._dashboard_cache.clear()
         return True
 
     def session_rows(self, db, cursor=None, query='', limit=21):

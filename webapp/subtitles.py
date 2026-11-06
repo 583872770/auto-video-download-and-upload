@@ -14,18 +14,29 @@ from webapp.throughput import PipelineBusy
 from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline, remember_decision
 
 
+from webapp.read_cache import ReadCache
+
+_summaries = ReadCache(ttl=3)
+
+
 def summary(db, stamp, identity):
+    counts = _summaries.read((db.engine, identity), lambda: _counts(db, identity))
+    # Only historical counts are cached; deadlines remain current.
+    key = hashlib.sha256(b'subtitles:youtube-origin').hexdigest()
+    from sqlalchemy import select
+    from webapp.database import download_resources
+    state = json.loads(db.execute(select(download_resources.c.state).where(download_resources.c.key == key)).scalar_one_or_none() or '{}')
+    return {**counts, 'cooldown_seconds': max(0, math.ceil(state.get('cooldown_until', 0)-stamp)),
+        'cooldown_status': state.get('cooldown_status') if state.get('cooldown_until', 0) > stamp else None,
+        'interval_seconds': max(0, math.ceil(state.get('next_at', 0)-stamp))}
+
+
+def _counts(db, identity):
     from sqlalchemy import func, or_, select
     from webapp.database import tasks
     values = {status: int(count) for status, count in db.execute(select(tasks.c.status, func.count()).where(
         tasks.c.action == 'subtitles', or_(tasks.c.target_instance_id == identity, tasks.c.instance_id == identity)
     ).group_by(tasks.c.status))}
-    key = hashlib.sha256(b'subtitles:youtube-origin').hexdigest()
-    from webapp.database import download_resources
-    state = json.loads(db.execute(select(download_resources.c.state).where(download_resources.c.key == key)).scalar_one_or_none() or '{}')
-    values['cooldown_seconds'] = max(0, math.ceil(state.get('cooldown_until', 0)-stamp))
-    values['cooldown_status'] = state.get('cooldown_status') if values['cooldown_seconds'] else None
-    values['interval_seconds'] = max(0, math.ceil(state.get('next_at', 0)-stamp))
     return values
 
 
@@ -90,8 +101,12 @@ def run_subtitles(store, payload, report):
             if config.get('storage_mode') == 'oss':
                 from Utils.oss_storage import OSSStorage
                 from Utils.config import video_directory
+                config['_disk_state'] = str(store.directory)
+                def upload_progress(value):
+                    lease.check()
+                    report(value)
                 objects = OSSStorage(config).upload_video(video, video_directory(config, payload['base']),
-                                                         report, include_video=False)
+                                                         upload_progress, include_video=False)
                 return {'message': '字幕补下载已完成，配套文件已同步到 OSS。', 'video_preserved': True,
                         'oss_bucket': config['oss_bucket'], 'oss_objects': objects}
             return {'message': '字幕补下载已完成；源视频没有所选语言时不生成字幕。', 'video_preserved': True}

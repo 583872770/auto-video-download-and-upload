@@ -50,9 +50,9 @@ class Workbench:
             selected = db.execute(select(settings.c.value).where(
                 settings.c.key == 'workbench_job:' + identity)).scalar_one_or_none()
             # Legacy global selections are intentionally not inherited by a new instance.
-            active = [self.store.decode(task) for task in db.execute(select(tasks).where(
+            active = self.store.decode_many(db.execute(select(tasks).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
-                tasks.c.status == 'running').order_by(tasks.c.seq).limit(100)).mappings()]
+                tasks.c.status == 'running').order_by(tasks.c.seq).limit(100)).mappings())
             running = db.execute(select(func.count()).select_from(tasks).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
                 tasks.c.status == 'running')).scalar_one()
