@@ -39,7 +39,8 @@ def worker_lock(path):
         yield acquired
 
 
-def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None):
+def execute(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None,
+            start_ticket=None):
     if action == 'subtitles':
         payload = {**payload, '_task_id': task_id}
     if store and action == 'download':
@@ -99,6 +100,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 pool = CookiePool(store, prepared, payload['base'], task_id)
                 report({'stage': 'waiting_cookie'})
                 with pool.assignment(count_success=False) as selected:
+                    if start_ticket:
+                        start_ticket.finish(selected['_cookie_pool_next_at'] - selected['_cookie_pool_admitted_at'])
                     cookie_profile_id = selected['_cookie_pool_selected']
                     cookie_profile_name = cookie_profile_id
                     try:
@@ -121,6 +124,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                         pool.outcome(selected['_cookie_pool_scope'], None,
                                      admitted_at=selected['_cookie_pool_admitted_at'])
             else:
+                if start_ticket:
+                    start_ticket.finish(0)
                 result = _execute(action, payload, report, rotation_completed, store, worker_slot)
             if result.get('file_count'):
                 try:
@@ -893,6 +898,8 @@ def drain(directory, slot=0, role='all'):
         actions = ('subtitles',) if role == 'subtitles' else ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index', 'subtitles') if role == 'regular' else None
         next_claim_after = 0
+        from webapp.download_start_gate import DownloadStartGate
+        start_gate = DownloadStartGate(store.directory)
         while True:
             remaining = next_claim_after - time.monotonic()
             if remaining > 0:
@@ -901,8 +908,11 @@ def drain(directory, slot=0, role='all'):
                 # No task lease or DB transaction is held during this wait.
                 time.sleep(min(1, remaining))
                 continue
-            task = store.claim(store.owner, actions=actions, exclude=exclude)
+            task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
             if not task:
+                if waiting_start:
+                    time.sleep(1)  # No task lease, DB transaction or workspace held.
+                    continue
                 break
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
@@ -1030,7 +1040,8 @@ def drain(directory, slot=0, role='all'):
                     event('attempt_start', action=task['action'], policy_version=task.get('policy_version'))
                     result = execute(task['action'], task['payload'],
                                      report,
-                                     rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'])
+                                     rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'],
+                                     **({'start_ticket': start_ticket} if start_ticket else {}))
                     if task['action'] == 'download':
                         transferred = last_progress.get('downloaded_bytes', 0)
                         output_bytes = result.get('file_bytes', 0)
@@ -1044,6 +1055,8 @@ def drain(directory, slot=0, role='all'):
                           file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
                           stage_seconds=last_progress.get('stage_seconds', {}))
                 except PipelineBusy as error:
+                    if start_ticket:
+                        start_ticket.finish(error.retry_after)
                     record_failure(error)
                     store.release(task['id'], store.owner, str(error), delay=error.retry_after)
                     worker_delay = max(2, min(60, error.retry_after))
@@ -1138,6 +1151,8 @@ def drain(directory, slot=0, role='all'):
                     if not isinstance(error, Exception):
                         raise
                 finally:
+                    if start_ticket:
+                        start_ticket.finish()
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)
                     if watchdog_thread:

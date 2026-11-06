@@ -7,6 +7,7 @@ const failureKindNames = {
   account_rate_limit: '明确账号限流', request_rate_limit: '请求限流',
   authentication_required: '登录检查未通过', verification_required: '需要额外验证',
   access_denied: '请求被拒绝', content_restriction: '视频权限或格式限制',
+  repeated_http_403: '多个不同视频连续返回 HTTP 403，保护性暂停',
   transient_failure: '暂时性故障', local_halt: '沿用本地停止状态',
   local_resource: '本地资源或执行条件限制', unknown: '证据不足，尚未分类',
 };

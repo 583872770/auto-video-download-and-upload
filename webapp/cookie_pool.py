@@ -13,7 +13,7 @@ import time
 
 from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.channel_scheduler import ChannelScheduler
-from webapp.download_policy import (failure_evidence, recovery_policy, cooldown_deadline, remember_decision)
+from webapp.download_policy import (RecoveryPolicy, failure_evidence, recovery_policy, cooldown_deadline, remember_decision)
 from webapp.cookie_profiles import CookieProfiles
 from webapp.throughput import MAX_TRANSFERS, PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
@@ -25,6 +25,9 @@ from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 # YouTube requests and is restored by any timeout/throttle outcome below.
 MATURE_ACCOUNT_INTERVAL = 30
 STABLE_ACCOUNT_INTERVAL = 45
+DENIED_WINDOW = 15 * 60
+DENIED_THRESHOLD = 3
+DENIED_COOLDOWN = 15 * 60
 
 
 def halt_message(state, *, previous=False):
@@ -86,6 +89,8 @@ def session_view(identity, name, state, config, stamp):
     recovery = bool(state.get('recovery_mode'))
     return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
         cooldown_kind=state.get('cooldown_kind'), cooldown_until=state.get('cooldown_until', 0),
+        last_failure_at=state.get('last_failure_at', 0),
+        denied_count=len(state.get('denied_tasks', [])),
         limited_at=state.get('limited_at'), limited_count=state.get('limited_count', 0),
         recovery_started_at=state.get('recovery_started_at', 0),
         recovery_successes=state.get('recovery_successes', 0),
@@ -310,7 +315,8 @@ class CookiePool:
         try:
             yield {**self.config, 'youtube_cookie': str(path), '_cookie_pool_selected': identity,
                    '_cookie_pool_profile_name': self.profile_names.get(identity, identity),
-                   '_cookie_pool_scope': scope, '_cookie_pool_admitted_at': admitted_at}
+                   '_cookie_pool_scope': scope, '_cookie_pool_admitted_at': admitted_at,
+                   '_cookie_pool_next_at': admitted_at + max(10, 30 / len(self.accounts))}
             completed = True
         except BaseException as failure:
             error = failure
@@ -330,8 +336,10 @@ class CookiePool:
         policy = recovery_policy(failure, self.config) if failure else None
         if failure and failure.source == 'oss':
             return  # Storage delivery never changes YouTube session health.
+        denied = bool(failure and failure.kind == 'access_denied' and failure.http_status == 403
+                      and failure.source == 'youtube' and failure.phase == 'transfer' and failure.task_id)
         from webapp.youtube_cookie_history import record as record_cookie_event
-        if failure and policy.action == 'none':
+        if failure and policy.action == 'none' and not denied:
             # Content-specific failures do not alter pacing, but remain visible
             # in the per-Cookie timeline for diagnosis.
             record_cookie_event(self.router.store, profile_id=profile_id,
@@ -342,28 +350,54 @@ class CookiePool:
             return
 
         def record(db, stamp):
+            current_policy = policy
             state = self.router._state(db, scope)
             if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
                 return
+            if denied:
+                recent = [row for row in state.get('denied_tasks', []) if row['time'] >= stamp - DENIED_WINDOW]
+                if any(row['task'] == failure.task_id for row in recent):
+                    return  # Multiple wrappers/reports of one task are not new failures.
+                recent.append(dict(task=failure.task_id, time=stamp))
+                state.update(denied_tasks=recent[-20:], last_failure_at=stamp)
+                # Results of work admitted before a newer protection event must
+                # not extend that event's cooldown or trigger recovery probes.
+                late = admitted_at is not None and admitted_at < state.get('limited_at', 0)
+                if not late and (len(recent) >= DENIED_THRESHOLD or state.get('recovery_mode')):
+                    strikes = min(3, state.get('denied_cooldowns', 0) + 1)
+                    state['denied_cooldowns'] = strikes
+                    current_policy = RecoveryPolicy('cooldown',
+                                                    max(DENIED_COOLDOWN * 2 ** (strikes - 1), failure.retry_after or 0),
+                                                    targets=('session',))
+                else:
+                    record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                        profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
+                        phase=failure.phase, kind=failure.kind, message=failure.message,
+                        incident_id=failure.incident_id, http_status=failure.http_status,
+                        retry_after=failure.retry_after, task_id=failure.task_id,
+                        metadata={'action': 'record', 'distinct_failed_tasks': len(recent)})
+                    self.router._save(db, scope, state)
+                    return
             if failure:
                 previous_interval = int(state.get('interval', 60))
                 previous_state = ('recovery' if state.get('recovery_mode') else
                                   'cooldown' if state.get('cooldown_until', 0) > stamp else 'ready')
-                until = cooldown_deadline(error, stamp, max(policy.delay, getattr(error, 'retry_after', 0) or 0))
+                until = cooldown_deadline(error, stamp, max(current_policy.delay, getattr(error, 'retry_after', 0) or 0))
                 state.update(limit=1, streak=0, first_success=0,
-                             cooldown_kind=failure.kind,
+                             cooldown_kind='repeated_http_403' if denied else failure.kind,
+                             last_failure_at=stamp,
                              interval=min(600, max(120, state.get('interval', 60) * 2)),
                              cooldown_until=max(state.get('cooldown_until', 0), until))
                 if state.get('recovery_mode'):
                     state.update(recovery_started_at=0, recovery_successes=0,
                                  interval=max(180, state['interval']))
-                if failure.kind in ('account_rate_limit', 'request_rate_limit'):
-                    state.update(cooldown_kind=failure.kind, limited_at=stamp,
+                if denied or failure.kind in ('account_rate_limit', 'request_rate_limit'):
+                    state.update(limited_at=stamp,
                                  limited_count=state.get('limited_count', 0) + 1,
                                  recovery_mode=True, recovery_started_at=0, recovery_successes=0,
                                  interval=max(180, state['interval']), recovery_interval_floor=120)
                 remember_decision(state, failure, layer='session', scope='Cookie：' + self.profile_names.get(profile_id, profile_id),
-                    action=policy.action, until=until, manual=policy.manual, stamp=stamp)
+                    action=current_policy.action, until=until, manual=current_policy.manual, stamp=stamp)
                 record_cookie_event(self.router.store, db=db, profile_id=profile_id,
                     profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
                     phase=failure.phase, kind=failure.kind, message=failure.message,
@@ -373,18 +407,19 @@ class CookiePool:
                     previous_state=previous_state,
                     new_state='recovery' if state.get('recovery_mode') else 'cooldown',
                     cooldown_until=state.get('cooldown_until'),
-                    metadata={'action': policy.action, 'targets': policy.targets})
-            if failure and 'pool' in policy.targets:
+                    metadata={'action': current_policy.action, 'targets': current_policy.targets,
+                              'distinct_failed_tasks': len(state.get('denied_tasks', [])) if denied else None})
+            if failure and 'pool' in current_policy.targets:
                 gate = self.router._state(db, self.global_scope)
                 gate['cooldown_until'] = max(gate.get('cooldown_until', 0), until)
-                first_halt = policy.manual and not gate.get('halted')
+                first_halt = current_policy.manual and not gate.get('halted')
                 if first_halt:
                     gate.update(halted=True, halt_kind=failure.kind, halted_at=stamp,
                                 limited_profile_id=failure.profile_id,
                                 limited_profile_name=failure.profile_name)
                     gate['reason'] = halt_message(gate)
                 decision = remember_decision(gate, failure, layer='pool', scope='当前实例 Cookie 池',
-                    action=policy.action, until=gate['cooldown_until'], manual=policy.manual, stamp=stamp)
+                    action=current_policy.action, until=gate['cooldown_until'], manual=current_policy.manual, stamp=stamp)
                 if first_halt:
                     gate['halt_decision'] = decision
                 self.router._save(db, self.global_scope, gate)
@@ -394,6 +429,8 @@ class CookiePool:
                     return
                 if admitted_at is not None and admitted_at < state.get('limited_at', 0):
                     return
+                if admitted_at is not None and admitted_at >= state.get('last_failure_at', 0):
+                    state['denied_tasks'] = []
                 if state.get('recovery_mode'):
                     since = state.get('recovery_started_at', 0)
                     if not since:
@@ -412,7 +449,8 @@ class CookiePool:
                                 previous_state='recovery', new_state='recovery',
                                 metadata={'recovery_successes': successes})
                     if successes >= 5 and stamp - since >= 1800:
-                        state.update(recovery_mode=False, limit=2, streak=successes, first_success=since)
+                        state.update(recovery_mode=False, limit=2, streak=successes, first_success=since,
+                                     denied_cooldowns=0)
                         record_cookie_event(self.router.store, db=db, profile_id=profile_id,
                             profile_name=self.profile_names.get(profile_id, profile_id), event_type='recovery',
                             phase='recovery', kind='stable_success',

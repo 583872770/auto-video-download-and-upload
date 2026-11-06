@@ -222,6 +222,114 @@ class CookiePoolTests(unittest.TestCase):
         self.assertFalse(pool.status()['halted'])
         self.assertNotIn('cooldown_until', pool.status()['accounts'][0])
 
+    def denied(self, pool, number, *, admitted_at=None):
+        from webapp.download_policy import failure_evidence
+        error = RuntimeError('HTTP Error 403: Forbidden')
+        failure_evidence(error, source='youtube', phase='transfer', task_id=f'{number:032x}')
+        pool.outcome(pool.accounts[0][2], error, admitted_at=admitted_at)
+        return error
+
+    def test_three_distinct_transfer_403s_cool_only_one_session_and_survive_restart(self):
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        for number in (1, 1, 2):
+            self.denied(pool, number)
+        self.assertEqual(pool.status()['capacity_summary']['cooling_sessions'], 0)
+        self.denied(pool, 3)
+        status = self.pool().status()
+        self.assertFalse(status['halted'])
+        self.assertEqual(status['capacity_summary']['capacity'], 2)
+        affected = status['session_states'][0]
+        self.assertEqual(affected['cooldown_kind'], 'repeated_http_403')
+        self.assertEqual(affected['denied_count'], 3)
+        self.assertAlmostEqual(affected['cooldown_until'], now + 900)
+        self.assertEqual(affected['last_failure_at'], now)
+        self.denied(pool, 3)  # Different wrapper/incident, same failed task.
+        self.assertEqual(pool.status()['accounts'][0]['denied_cooldowns'], 1)
+        with self.pool().assignment() as selected:
+            self.assertNotEqual(selected['_cookie_pool_selected'], self.ids[0])
+
+    def test_403_window_success_and_late_results_do_not_spuriously_trip_or_clear(self):
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        self.denied(pool, 1)
+        now += 901
+        self.denied(pool, 2)
+        self.assertEqual(pool.status()['session_states'][0]['denied_count'], 1)
+        pool.outcome(pool.accounts[0][2], None, admitted_at=now + 1)
+        self.denied(pool, 3)
+        self.denied(pool, 4)
+        self.assertEqual(pool.status()['capacity_summary']['cooling_sessions'], 0)
+        self.denied(pool, 5)
+        protected = pool.status()['accounts'][0]
+        pool.outcome(pool.accounts[0][2], None, admitted_at=now - 1)
+        self.assertEqual(pool.status()['accounts'][0], protected)
+        self.denied(pool, 6, admitted_at=now - 1)
+        after = pool.status()['accounts'][0]
+        self.assertEqual(after['cooldown_until'], protected['cooldown_until'])
+        self.assertEqual(after['denied_cooldowns'], 1)
+
+    def test_recovery_403_extends_pause_and_never_changes_other_sessions(self):
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        for number in (1, 2, 3):
+            self.denied(pool, number)
+        healthy = pool.status()['accounts'][1:]
+        for number, wait in ((4, 1800), (5, 3600), (6, 3600)):
+            now = pool.status()['accounts'][0]['cooldown_until'] + 1
+            with pool.assignment(self.ids[0], count_success=False):
+                view = pool.status()['session_states'][0]
+                self.assertEqual((view['state'], view['limit']), ('recovery', 1))
+                self.assertGreaterEqual(view['interval'], 180)
+            self.denied(pool, number, admitted_at=now)
+            state = pool.status()['accounts'][0]
+            self.assertEqual(state['cooldown_until'], now + wait)
+            self.assertEqual(state['recovery_successes'], 0)
+            self.assertEqual(pool.status()['accounts'][1:], healthy)
+        self.assertFalse(pool.status()['halted'])
+
+    def test_403_guard_ignores_other_sources_and_phases(self):
+        from webapp.download_policy import failure_evidence
+        pool = self.pool()
+        for source, phase in (('oss', 'transfer'), ('youtube', 'resolve')):
+            for number in range(3):
+                error = RuntimeError('HTTP Error 403: Forbidden')
+                failure_evidence(error, source=source, phase=phase, task_id=f'{number:032x}')
+                pool.outcome(pool.accounts[0][2], error)
+        self.assertEqual(pool.status()['capacity_summary']['cooling_sessions'], 0)
+
+    def test_403_protection_respects_longer_server_retry_after_header(self):
+        from webapp.download_policy import failure_evidence
+        pool = self.pool()
+        now = time.time()
+        pool.router.clock = lambda db: now
+        self.denied(pool, 1)
+        self.denied(pool, 2)
+        error = RuntimeError('HTTP Error 403: Forbidden')
+        error.headers = {'Retry-After': '7200'}
+        failure_evidence(error, source='youtube', phase='transfer', task_id=f'{3:032x}')
+        pool.outcome(pool.accounts[0][2], error)
+        self.assertEqual(pool.status()['accounts'][0]['cooldown_until'], now + 7200)
+
+    def test_preclaim_hint_is_released_at_admission_but_database_gate_still_applies(self):
+        from unittest.mock import Mock
+        from web_worker import execute
+        pool = self.pool({**self.config, 'path': 'videos', 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        ticket = Mock()
+        def work(*args):
+            ticket.finish.assert_called_once_with(10)
+            with self.assertRaises(PipelineBusy):
+                with self.pool().assignment():
+                    self.fail('Local pre-claim hint replaced database pacing')
+            return {'skipped': True}
+        with patch('web_worker._execute', side_effect=work):
+            execute('download', {'base': str(self.base), 'config': pool.config,
+                'urls': ['https://youtu.be/00000000001']}, store=self.store,
+                task_id=pool.router.task_id, start_ticket=ticket)
+
     def test_all_cooling_waits_and_recovers_after_restart_without_manual_resume(self):
         pool = self.pool()
         now = time.time()

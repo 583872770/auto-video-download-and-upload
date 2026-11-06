@@ -1237,6 +1237,7 @@ function updateCookiePoolLive(data) {
         `${session?.state === 'cooldown' ? '冷却中 · 暂停新请求' : session?.state === 'recovery' ? '低频恢复中' : '可参与调度'}：设置上限 ${account.configured_limit || pool.session_limit}，当前最多 ${session?.limit ?? account.limit ?? 1} 个任务，启动间隔至少 ${session?.interval || account.interval || 60} 秒。` +
         (session?.state === 'cooldown' ? `原因：${failureKindNames[session.cooldown_kind] || '临时故障'}；恢复检查时间 ${new Date(session.cooldown_until * 1000).toLocaleString()}；其他健康账号继续。` : '') +
         (session?.state === 'recovery' ? `启动间隔延长原因：${failureKindNames[session.cooldown_kind] || '此前故障'}；本轮连续成功 ${session.recovery_successes} 次，达标后自动恢复设置并发。` : '') +
+        (session?.last_failure_at ? ` 最近异常 ${new Date(session.last_failure_at * 1000).toLocaleString()}。` : '') +
         (account.shared_with ? ` 与「${session?.name || '同账号文件'}」共享并发、间隔和冷却。` : '');
     }
     const check = row.querySelector('[data-cookie-login-check]');
