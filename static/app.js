@@ -22,6 +22,7 @@ let providerDraft = null;
 let settingsDirty = false;
 let settingsBaseline = {};
 let settingsChannelBaseline = '';
+let cookiePoolDraft = null;
 let startupPolling = false;
 state.startup = { state: 'idle' };
 const qualityLabel = (value, provider) => !value || value === 'best' ? `尽可能最高画质${provider === 'downmp3' ? '（当前最高 1080p）' : ''}` : `${value}p`;
@@ -674,6 +675,7 @@ function fillConfig(config) {
   renderStorageSettings();
   renderDownloadMethod();
   renderConcurrencyDraft();
+  renderCookiePoolSaveState();
 }
 function renderConcurrencyDraft() {
   renderYouTubePacingRuntime();
@@ -1364,18 +1366,19 @@ async function exportCookieProfile(item) {
   toast('Cookie 已导出。');
 }
 async function loadCookieProfiles() {
+  const instance = state.instanceId || '';
   const data = await api('/api/youtube/cookies');
+  if (instance !== (state.instanceId || '')) return loadCookieProfiles();
   if (state.config) {
     state.config.youtube_cookie = data.cookie_path;
     state.config.youtube_cookie_pool = data.items.filter(item => item.pooled).map(item => item.id);
     renderDownloadMethod();
   }
+  if (cookiePoolDraft && cookiePoolDraft.instance !== instance) cookiePoolDraft = null;
+  if (cookiePoolDraft) cookiePoolDraft.ids = cookiePoolDraft.ids.filter(id => data.items.some(item => item.id === id));
   const poolEnabled = $('#youtube-cookie-pool-enabled');
-  const poolStatus = $('#youtube-cookie-pool-status');
-  if (poolEnabled) poolEnabled.checked = !!data.pool;
-  if (poolStatus) poolStatus.textContent = data.pool
-    ? `已启用 ${data.items.filter(item => item.pooled).length} 份 Cookie；账号池会按会话容量和请求间隔调度。`
-    : '选择至少 2 份已检测通过的 Cookie；仅支持单独使用 yt-dlp。';
+  if (poolEnabled) poolEnabled.checked = cookiePoolDraft ? cookiePoolDraft.enabled : !!data.pool;
+  renderCookiePoolSaveState();
   const list = $('#youtube-cookie-list');
   list.replaceChildren();
   const note = document.createElement('p');
@@ -1426,7 +1429,7 @@ async function loadCookieProfiles() {
     const poolCheck = document.createElement('input');
     poolCheck.type = 'checkbox';
     poolCheck.dataset.cookiePoolId = item.id;
-    poolCheck.checked = !!item.pooled;
+    poolCheck.checked = cookiePoolDraft ? cookiePoolDraft.ids.includes(item.id) : !!item.pooled;
     poolCheck.title = '加入 Cookie 账号池';
     poolCheck.setAttribute('aria-label', `加入账号池：${item.name}`);
     if (item.pooled) {
@@ -1487,6 +1490,7 @@ async function loadCookieProfiles() {
     select.disabled = item.active && !data.pool;
     select.addEventListener('click', () => runButton(select, async () => {
       const result = await api('/api/youtube/cookies/select', { method: 'POST', body: { id: item.id } });
+      cookiePoolDraft = null;
       if (state.config) state.config.youtube_cookie = result.cookie_path;
       toast(result.message);
       await loadCookieProfiles();
@@ -1559,19 +1563,25 @@ async function refreshCookieTimeline() {
 }
 $('#youtube-cookie-timeline-range')?.addEventListener('change', refreshCookieTimeline);
 $('#youtube-cookie-timeline-changes')?.addEventListener('change', refreshCookieTimeline);
-$('#youtube-cookie-pool-save').addEventListener('click', event => runButton(event.currentTarget, async () => {
-  const enabled = $('#youtube-cookie-pool-enabled').checked;
-  const ids = enabled ? $$('[data-cookie-pool-id]:checked').map(input => input.dataset.cookiePoolId) : [];
-  if (enabled && ids.length < 2) throw new Error('账号池至少需要选择 2 份 Cookie。');
-  if (enabled && selectedProviders().some(method => method !== 'yt_dlp')) {
-    throw new Error('Cookie 账号池仅支持单独使用 yt-dlp，请先在下载策略中关闭其他下载方式。');
+function renderCookiePoolSaveState() {
+  const status = $('#youtube-cookie-pool-status');
+  if (!status) return;
+  if (cookiePoolDraft) {
+    status.textContent = cookiePoolDraft.enabled
+      ? `未保存：已勾选 ${cookiePoolDraft.ids.length} 份 Cookie，点击页面底部“保存设置”后生效。`
+      : '未保存：将关闭账号池，点击页面底部“保存设置”后生效。';
+  } else {
+    const count = state.config?.youtube_cookie_pool?.length || 0;
+    status.textContent = count ? `已保存：账号池已启用，共 ${count} 份 Cookie。`
+      : '账号池未启用。选择至少 2 份 Cookie，仅支持单独使用 yt-dlp；修改后点击页面底部“保存设置”。';
   }
-  const result = await api('/api/config', { method: 'PUT', body: { youtube_cookie_pool: ids } });
-  toast(enabled ? 'Cookie 账号池已启用。' : 'Cookie 账号池已关闭。');
-  if ($('#youtube-cookie-pool-status')) $('#youtube-cookie-pool-status').textContent = result.message;
-  await loadCookieProfiles();
-  await refresh();
-}));
+}
+$('#youtube-cookie-section').addEventListener('change', event => {
+  if (!event.target.matches('#youtube-cookie-pool-enabled, [data-cookie-pool-id]')) return;
+  cookiePoolDraft = { instance: state.instanceId, enabled: $('#youtube-cookie-pool-enabled').checked,
+    ids: $$('[data-cookie-pool-id]:checked').map(input => input.dataset.cookiePoolId) };
+  renderCookiePoolSaveState();
+});
 $('#youtube-cookie-submit').addEventListener('click', event => {
   runButton(event.currentTarget, async () => {
     const form = $('#youtube-cookie-form');
@@ -1745,7 +1755,7 @@ $('#copy-logs').addEventListener('click', async () => {
 function markSettingsDirty() {
   settingsDirty = true;
   renderYouTubePacingRuntime();
-  $('#settings-save-state').textContent = '有未保存的设置。普通策略在后续领取或重试的视频生效；并发和资源保护按周期调整。修改直连源地址需先停止当前实例并等待相关任务结束。';
+  $('#settings-save-state').textContent = '有未保存的修改（包括账号池选择），统一点击“保存设置”后生效。新任务使用新策略，正在执行的任务保留原配置。';
   renderStrategySaveState(); renderDownloadControl();
 }
 $('#settings-form').addEventListener('input', markSettingsDirty);
@@ -1754,11 +1764,18 @@ $('#settings-form').addEventListener('submit', event => {
   event.preventDefault();
   runButton($('button[type="submit"]', event.target), async () => {
     if (downloadMethodBusy) return;
-    downloadMethodBusy = true; renderDownloadMethod();
     const data = Object.fromEntries([...new FormData(event.target)].filter(([key,value]) => value !== settingsBaseline[key]));
     const channels = readChannels();
     if (channelSignature(channels) !== settingsChannelBaseline) data.download_channels = channels;
     if (providerDraft) data.download_methods = [...providerDraft];
+    if (cookiePoolDraft && cookiePoolDraft.instance === state.instanceId) {
+      if (cookiePoolDraft.enabled && cookiePoolDraft.ids.length < 2) throw new Error('账号池至少需要选择 2 份 Cookie。');
+      if (cookiePoolDraft.enabled && (providerDraft || selectedProviders()).some(method => method !== 'yt_dlp')) {
+        throw new Error('Cookie 账号池仅支持单独使用 yt-dlp，请先在下载策略中关闭其他下载方式。');
+      }
+      data.youtube_cookie_pool = cookiePoolDraft.enabled ? [...cookiePoolDraft.ids] : [];
+    }
+    downloadMethodBusy = true; renderDownloadMethod();
     const instance = state.instanceId;
     const headers = { 'X-Instance-ID': instance || '' };
     const form = event.target;
@@ -1772,6 +1789,7 @@ $('#settings-form').addEventListener('submit', event => {
       if (mismatches.length) {
         const labels = mismatches.map(key => key === 'download_methods' ? '下载方式'
           : key === 'download_channels' ? '多渠道配置'
+          : key === 'youtube_cookie_pool' ? 'Cookie 账号池'
           : $(`[name="${key}"]`, form)?.closest('label')?.firstChild.textContent.trim() || key);
         const providers = value => Array.isArray(value) ? value.map(method => providerNames[method] || method).join('、') : '未返回有效列表';
         const detail = mismatches.includes('download_methods')
@@ -1779,12 +1797,13 @@ $('#settings-form').addEventListener('submit', event => {
         throw new Error(`保存结果未确认：${labels.join('、')}与提交值不一致${detail}，修改已保留，请重试；持续出现时将此提示提供给维护人员`);
       }
       if (instance !== state.instanceId) throw new Error('核对期间所选实例发生变化，请返回原实例确认设置');
-      settingsDirty = false; providerDraft = null;
+      settingsDirty = false; providerDraft = null; cookiePoolDraft = null;
       fillConfig(saved);
-      $('#settings-save-state').textContent = '当前实例设置已保存。后续领取或重试的视频使用新策略，当前视频的下载策略和保存位置保持原配置；并发、磁盘保护和日志清理按调度或检查周期调整。';
+      renderCookiePoolSaveState();
+      $('#settings-save-state').textContent = '当前实例设置已保存，包含账号池选择及其他设置修改。后续领取或重试的视频使用新配置，正在执行的任务保留原配置。';
       toast('设置已保存。');
       await refresh();
-      if ('worker_count' in data || 'youtube_cookie_session_limit' in data) await loadCookieProfiles();
+      if ('youtube_cookie_pool' in data || 'worker_count' in data || 'youtube_cookie_session_limit' in data) await loadCookieProfiles();
     } catch (error) {
       $('#settings-save-state').textContent = settingsDirty || providerDraft
         ? `保存失败：${error.message || '请求失败，请稍后重试。'}；修改已保留，请重试保存。`

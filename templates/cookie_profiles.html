@@ -13,11 +13,10 @@
       <label class="cookie-pool-toggle"><input id="youtube-cookie-pool-enabled" type="checkbox">启用账号池</label>
     </div>
     <div class="cookie-pool-actions">
-      <button id="youtube-cookie-pool-save" class="button button-white" type="button">保存账号池</button>
-      <span id="youtube-cookie-pool-status" class="micro-copy">选择至少 2 份 Cookie；仅支持单独使用 yt-dlp。</span>
+      <span id="youtube-cookie-pool-status" class="micro-copy" role="status">选择至少 2 份 Cookie，点击页面底部“保存设置”后生效。</span>
     </div>
     <div class="cookie-pool-explanation"><strong>一个账号限流，只暂停这个账号</strong><p>明确账号限流：休息至少 1 小时，其他健康账号继续；全部账号冷却时队列自动等待，无需手动恢复。HTTP 429 单独按配置冷却，默认 300 秒；源站要求更长则延长。</p><p>冷却结束自动低频恢复：先单任务、至少 180 秒间隔 → 连续成功 3 次且观察满 10 分钟后至少 120 秒 → 成功 5 次且观察满 30 分钟后恢复设置的会话并发，间隔仍至少 120 秒。再次限流重新冷却。</p><p>同账号重复导出共享限制；冷却中不发下载、字幕或登录检测请求。登录有效不代表没有限流。登录失效、验证码和旧版本人工拦截仍需按提示处理。</p></div>
-    <p class="micro-copy">账号池使用上方“保存账号池”单独保存，可在下载中调整。新配置从后续领取或重试的视频生效；已分配 Cookie 的任务继续使用原会话，不会中途换账号。每会话任务上限需点击页面底部“保存设置”。</p>
+    <p class="micro-copy">账号池开关、成员勾选和每会话任务上限，统一点击页面底部“保存设置”。可在下载中调整；新配置从后续领取或重试的视频生效，已分配 Cookie 的任务继续使用原会话。</p>
     <div id="youtube-cookie-pool-live" aria-live="polite"></div>
   </div>
   <div class="cookie-list-card">
