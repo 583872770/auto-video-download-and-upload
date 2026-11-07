@@ -74,7 +74,7 @@ def verify_instance_controls(page, apps, output):
     page.locator('.nav-item[data-view=overview]').click()
     expect(page.locator('#stat-speed')).to_have_text('1.0')
     expect(page.locator('#stat-speed-unit')).to_have_text('MB/s')
-    expect(page.locator('#speed-caption')).to_have_text('传输中视频 1 个')
+    expect(page.locator('#speed-caption')).to_have_text('汇总当前正在传输的视频速度')
     page.screenshot(path=str(output / 'workbench-speed-desktop.png'), full_page=True)
     page.set_viewport_size({'width': 390, 'height': 844})
     assert page.evaluate('() => document.documentElement.scrollWidth <= window.innerWidth'), 'workbench mobile overflow'

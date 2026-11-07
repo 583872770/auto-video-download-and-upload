@@ -281,7 +281,7 @@ function renderBatches() {
   }
   const queue = state.workbench || {};
   $('#batch-count').textContent = tasks.length;
-  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例处理中视频 ${tasks.length} 个 · 任务待下载视频 ${selectedJob?.queued || 0} 个`;
+  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例执行中的视频，按处理阶段排序`;
   const orderedTasks = [...tasks].sort((a, b) => {
     const left = progressVisualState(a), right = progressVisualState(b);
     return left.order - right.order || (Number(a.seq) || 0) - (Number(b.seq) || 0);
@@ -321,7 +321,7 @@ function renderWorkbenchSpeed() {
   $('#stat-speed').textContent = value;
   $('#stat-speed-unit').textContent = unit ? `${unit}/s` : '';
   $('#speed-caption').textContent = !workbench ? '等待实例状态' : !available ? '当前实例离线' : !transfers.length ? '当前没有视频传输' :
-    `传输中视频 ${transfers.length} 个${measured.length < transfers.length ? ' · 速度计算中' : ''}`;
+    measured.length < transfers.length ? '部分视频速度待更新' : '汇总当前正在传输的视频速度';
 }
 function renderOutputSpeed() {
   const element = $('#stat-output-speed');

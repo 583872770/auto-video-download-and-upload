@@ -40,7 +40,48 @@ function concurrencyAdmissionHTML(data) {
     ? `下一启动窗口：${concurrencyCountdown(pool.next_start_at - data.time, data.time)}。` : '';
   const limited = pool?.limited_profile_name ? ` · 触发原拦截的账号：${escapeHTML(pool.limited_profile_name)}` : '';
   const sessions = pool ? `<p>${Number(pool.configured_files || 0)} 份 Cookie · ${pool.known ? Number(pool.effective_sessions || 0) : '待确认'} 个核心账号会话${limited}。同一账号的重复导出共享并发、请求间隔和限流状态。${pool.known ? `当前容量 ${Number(pool.capacity || 0)} 路${pool.warming_sessions ? ` · ${Number(pool.warming_sessions)} 个会话尚未完成预热` : ''}${pool.min_interval ? ` · 稳定会话启动间隔至少 ${Number(pool.min_interval)} 秒` : ''}` : ''}${pool.unavailable_files ? ` ${Number(pool.unavailable_files)} 份文件不可用，请在账号管理中检查。` : ''}</p>` : '';
-  return `<div class="capacity-admission" role="status"><strong>当前限制说明</strong><p>${escapeHTML(data.bottleneck || '等待实例更新调度说明')}</p>${sessions}${cookieAccountNoticesHTML(pool, data.time, data.online && Date.now() / 1000 - data.time <= 20)}${next ? `<p>${next}</p>` : ''}<small>运行模式：${data.mode === 'cookie_pool' ? 'Cookie 池独立调度' : data.mode === 'auto' ? '自动调节' : '自定义'} · 执行中等待会话 ${Number(data.cookie_waiting || 0)} · 等待请求间隔 ${Number(data.youtube_waiting || 0)} · 解析 ${Number(data.stages?.extracting || 0)} · 传输 ${Number(data.transferring || 0)} · 合并 / 后处理 ${Number(data.processing || 0)}</small></div>`;
+  return `<div class="capacity-admission" role="status"><strong>当前调度说明</strong><p>${escapeHTML(data.bottleneck || '等待实例更新调度说明')}</p>${sessions}${cookieAccountNoticesHTML(pool, data.time, data.online && Date.now() / 1000 - data.time <= 20)}${next ? `<p>${next}</p>` : ''}</div>`;
+}
+function transferSlotState(stage) {
+  if (stage === 'downloading') return {kind: 'transferring', label: '正在传输'};
+  if (stage === 'waiting_request') return {kind: 'waiting', label: '等待请求间隔'};
+  if (['processing', 'waiting_processing', 'cleaning', 'uploading_oss'].includes(stage))
+    return {kind: 'processing', label: {cleaning: '清理文件', uploading_oss: '上传 OSS'}[stage] || '合并 / 后处理'};
+  if (stage === 'extracting') return {kind: 'preparing', label: '准备传输'};
+  return {kind: 'reserved', label: '已占用 · 状态同步中'};
+}
+function transferSlotsHTML(data, {compact = false} = {}) {
+  const allocation = data.transfer_allocation;
+  if (!allocation) return '<p class="capacity-empty">等待传输名额状态更新…</p>';
+  const current = data.online && Date.now() / 1000 - data.time <= 20;
+  const allowanceKnown = current && (!data.cookie_pool || data.cookie_pool.known);
+  const occupied = allocation.occupied || [];
+  const legend = new Map();
+  const tiles = occupied.map(task => {
+    const status = current ? transferSlotState(task.stage) : {kind: 'unknown', label: '状态待确认'};
+    if (current) legend.set(status.label, {kind: status.kind, count: (legend.get(status.label)?.count || 0) + 1});
+    return {...task, ...status};
+  });
+  for (let index = 0; index < allocation.unoccupied + allocation.restricted; index++) {
+    const free = index < allocation.unoccupied;
+    tiles.push(!allowanceKnown ? {kind: 'unknown', label: '状态待确认'} : free
+      ? {kind: 'unoccupied', label: '未占用', title: data.paused ? '已停止领取新任务' : '等待任务进入传输'}
+      : {kind: 'restricted', label: '暂不可用', title: '受当前调度额度限制'});
+  }
+  const stageLabels = {waiting_request: '等待请求间隔', waiting_cookie: '等待 Cookie', extracting: '解析视频',
+    waiting_transfer: '等待传输名额', waiting_resolver: '等待解析名额', waiting_browser: '等待浏览器',
+    waiting_verification: '等待网页验证', checking_environment: '检查环境', checking_login: '检查登录',
+    processing: '合并 / 后处理', waiting_processing: '等待后处理', cleaning: '清理文件', uploading_oss: '上传 OSS',
+    downloading: '传输状态同步中', switching_provider: '切换渠道', disk_wait: '等待磁盘空间'};
+  const outside = Object.entries(allocation.outside || {});
+  const outsideCount = outside.reduce((sum, [, count]) => sum + count, 0);
+  const summary = (current ? [`已占用 ${occupied.length} 路`, ...(allowanceKnown
+    ? [`未占用 ${allocation.unoccupied} 路`, `暂不可用 ${allocation.restricted} 路`] : ['剩余额度待确认'])]
+    : ['当前占用待确认']).map(label => `<span>${label}</span>`).join('');
+  return `<section class="transfer-allocation" aria-label="传输名额状态"><div class="transfer-allocation-heading"><div><h3>传输名额 <strong>${allocation.configured}<small> 路上限</small></strong></h3><p>${summary}</p></div><span class="transfer-effective">当前额度估算 <b>${allowanceKnown ? allocation.effective : '—'}</b> 路</span></div>${current && legend.size ? `<div class="transfer-legend">${[...legend].map(([label, value]) => `<span class="${value.kind}"><i></i>${label} <b>${value.count}</b></span>`).join('')}</div>` : ''}${compact ? '' : `<div class="transfer-slot-grid">${tiles.map((tile, index) => {
+    const content = `<span class="transfer-slot-top"><small>名额 ${String(index + 1).padStart(2, '0')}</small><i aria-hidden="true"></i></span><strong>${tile.label}</strong><span class="transfer-slot-title">${escapeHTML(current ? tile.title || '等待任务状态更新' : '等待新鲜采样')}</span>${current && tile.cookie_name ? `<span class="transfer-slot-cookie" title="${escapeHTML(tile.cookie_name)}">${escapeHTML(tile.cookie_name)}</span>` : ''}`;
+    return tile.task_id && current ? `<button type="button" class="transfer-slot ${tile.kind}" data-task="${escapeHTML(tile.task_id)}" title="${escapeHTML(tile.title || '')} · 查看任务日志">${content}</button>` : `<div class="transfer-slot ${tile.kind}">${content}</div>`;
+  }).join('')}</div>`}${allocation.over_limit && current ? `<p class="capacity-waits">上限已降低，已有 ${allocation.over_limit} 路超出新上限；这些任务结束后释放名额。</p>` : ''}<p class="transfer-slot-note">${current ? '按实际预留记录展示，占用不一定正在收数据。格子随任务更新排序，点击占用中的名额查看日志。' : '实例离线或采样已过期，保留设置上限，当前各路状态待确认。'}</p>${current && outsideCount ? `<div class="transfer-outside"><strong>另有 ${outsideCount} 个视频未占用传输名额</strong><div>${outside.map(([stage, count]) => `<span>${escapeHTML(stageLabels[stage] || '准备 / 其他阶段')} <b>${count}</b></span>`).join('')}</div></div>` : ''}</section>`;
 }
 function youtubePacingRuntimeHTML(data, draft = {}) {
   if (!data) return '<p>正在读取当前实例的实际启动间隔…</p>';
@@ -119,18 +160,35 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const tone = !data.online || stale ? 'unavailable' : warning ? 'warning' : 'normal';
   const label = !data.online || stale ? '状态待确认' : cooled.length || resolverCooled.length ? '渠道冷却' : recovering.length ? '逐步恢复' : data.disk_blocked ? '空间等待' : data.paused ? '已停止领取' : poolCooling ? data.cookie_pool.available_sessions ? '部分账号冷却' : '账号池等待' : poolRecovering ? '账号低频恢复' : warning ? '有待处理提示' : '调度中';
   const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th><th>共享连接占用</th><th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${row.transfer_limit} 路<small>${row.resolver_separate ? `解析上限 ${row.resolver_limit} 路` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${row.shared_limit}<small>含其他实例</small></td><td>${row.connection_used} / ${row.connection_limit}</td><td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
-  return `<div class="capacity-body" data-tone="${tone}"><div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>并发与等待</h2></div><span class="capacity-status ${tone}" role="status">${label}</span></div>${concurrencyAdmissionHTML(data)}${decisionExplanationHTML(data, key)}<div class="capacity-metrics"><div><span>${data.mode === 'cookie_pool' ? '会话池容量' : '设置并发'}</span><strong>${data.requested}<small> 路</small></strong><p>${data.mode === 'cookie_pool' ? '按会话容量调度，忽略实例并发设置' : data.mode === 'auto' ? '自动模式传输目标上限' : '手动模式工作进程上限'}</p></div><div><span>当前额度估算</span><strong>${data.online && !stale ? data.effective_limit : '—'}<small> 路</small></strong><p>综合渠道及共享资源限制</p></div><div><span>实际传输</span><strong>${data.online && !stale ? data.transferring : '—'}<small> 个视频</small></strong><p>处理中共 ${data.running} 个</p></div><div><span>等待传输</span><strong>${data.waiting_transfer}<small> 个视频</small></strong><p>准备 ${data.preparing} · 合并 / 后处理 ${data.processing}</p></div></div>${waitText ? `<p class="capacity-waits">等待原因：${waitText}</p>` : ''}<div class="capacity-notices">${riskFactsHTML(data, compact)}${notices.map(([kind, title, description, href, action]) => `<div class="capacity-notice ${kind}"><span class="capacity-notice-icon" aria-hidden="true">${kind === 'warning' ? '!' : 'i'}</span><div><strong>${escapeHTML(title)}</strong><p>${description}</p></div><a href="/${href}">${action} ↗</a></div>`).join('') || '<p class="capacity-clear">当前未检测到共享资源冷却或磁盘阻塞；任务准备、视频大小和上游响应仍会影响实际占用。</p>'}</div><p class="capacity-footnote">本机连接预留 ${data.connection_used || 0} / ${data.connection_budget || 32}（文件与分片共用，非实际套接字数）</p>${compact ? '' : details + riskResourcesHTML(data, key) + riskGuideHTML(key)}<p class="capacity-footnote">每次请求读取共享额度，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p></div>`;
+  return `<div class="capacity-body" data-tone="${tone}">
+    <div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>传输并发</h2></div><span class="capacity-status ${tone}" role="status">${label}</span></div>
+    ${transferSlotsHTML(data, {compact})}
+    ${key === 'overview' ? `<details class="capacity-details capacity-explanations" data-capacity-details="${escapeHTML(key)}-explanations"><summary>调度与异常说明${warning ? ' · 有需要关注的状态' : ''}</summary>` : ''}
+    ${concurrencyAdmissionHTML(data)}${decisionExplanationHTML(data, key)}
+    ${waitText ? `<p class="capacity-waits">等待原因：${waitText}</p>` : ''}
+    <div class="capacity-notices">${riskFactsHTML(data, compact)}${notices.map(([kind, title, description, href, action]) => `<div class="capacity-notice ${kind}"><span class="capacity-notice-icon" aria-hidden="true">${kind === 'warning' ? '!' : 'i'}</span><div><strong>${escapeHTML(title)}</strong><p>${description}</p></div><a href="/${href}">${action} ↗</a></div>`).join('') || '<p class="capacity-clear">当前未检测到共享资源冷却或磁盘阻塞；任务准备、视频大小和上游响应仍会影响实际占用。</p>'}</div>
+    <p class="capacity-footnote">本机连接预留 ${data.connection_used || 0} / ${data.connection_budget || 32}（文件与分片共用，非实际套接字数）</p>
+    ${compact ? '' : details + riskResourcesHTML(data, key) + riskGuideHTML(key)}
+    <p class="capacity-footnote">每次请求读取共享额度，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p>
+    ${key === 'overview' ? '</details>' : ''}</div>`;
 }
 function renderConcurrency() {
   const item = state.fleet?.items.find(value => value.id === state.instanceId);
   const data = fleetEnabled ? item?.concurrency : state.status?.concurrency;
   renderYouTubePacingRuntime(data);
   for (const target of document.querySelectorAll('[data-concurrency-panel]')) {
+    const focused = target.contains(document.activeElement) ? document.activeElement : null;
+    const focusedTask = focused?.closest('.transfer-slot[data-task]')?.dataset.task;
+    const focusedDetails = focused?.tagName === 'SUMMARY' ? focused.parentElement.dataset.capacityDetails : null;
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
     target.innerHTML = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});
     target.dataset.capacitySampledAt = data?.time || '';
     target.classList.toggle('capacity-stale', !!data && Date.now() / 1000 - data.time > 20);
     for (const node of target.querySelectorAll('details[data-capacity-details]')) node.open = opened.has(node.dataset.capacityDetails);
+    if (focusedTask) [...target.querySelectorAll('.transfer-slot[data-task]')]
+      .find(node => node.dataset.task === focusedTask)?.focus({preventScroll: true});
+    if (focusedDetails) [...target.querySelectorAll('details[data-capacity-details]')]
+      .find(node => node.dataset.capacityDetails === focusedDetails)?.querySelector(':scope > summary')?.focus({preventScroll: true});
   }
 }
 setInterval(() => {

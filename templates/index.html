@@ -69,6 +69,7 @@
         </div>
 
 
+        <section class="panel capacity-panel" data-concurrency-panel="overview" aria-label="当前实例传输并发"><p class="capacity-empty">正在读取传输名额状态…</p></section>
         <section class="panel output-chart-panel" aria-labelledby="output-chart-title">
           <div class="panel-heading"><div><h2 id="output-chart-title">成品产出趋势</h2><p class="panel-subtitle">当前实例 · 最近 30 分钟 · 每分钟平均速度</p></div><span class="output-chart-legend"><i></i>成品产出 · Mbps</span></div>
           <div id="output-chart-empty" class="output-chart-empty">暂无当前会话，启动后显示每分钟的成品产出。</div>
@@ -100,7 +101,6 @@
           <div id="download-startup" class="startup-panel" hidden role="status"><strong id="startup-title"></strong><ol id="startup-steps"></ol><p id="startup-message" class="micro-copy"></p></div>
         </section>
         <section class="panel library-panel" id="batch-progress-panel"><div class="panel-heading"><div><h2>视频处理进度 <span class="count-pill" id="batch-count">0</span></h2><p class="panel-subtitle" id="batch-summary">查看所选任务在当前实例的处理进度。</p></div><span class="live-label"><span class="online-dot"></span>实时更新</span></div><div id="batch-progress"></div></section></div>
-        <section class="panel capacity-panel" data-concurrency-panel="overview" aria-label="当前实例并发与等待"><p class="capacity-empty">正在读取并发与渠道状态…</p></section>
         <details class="panel system-download-control"><summary>当前实例状态与停止操作</summary><p id="download-queue-status" class="micro-copy" role="status"></p><button id="download-queue-toggle" type="button" class="button button-danger" disabled>立即停止</button><p class="micro-copy">停止操作仅影响当前实例。再次启动后，继续处理该实例所选任务的待下载视频。</p></details>
       </section>
 

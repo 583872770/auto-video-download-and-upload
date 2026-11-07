@@ -317,7 +317,7 @@ class Fleet:
                 if item['id'] in configs:
                     item['concurrency'] = diagnose(configs[item['id']], item['id'], by_instance.get(item['id'], []),
                         item['throughput'], context, stamp, global_limit=budget, global_running=sum(counts.values()),
-                        paused=item['paused'], online=item['online'])
+                        paused=item['paused'], online=item['online'], current_tasks=item['current_tasks'])
                     from webapp.subtitles import summary as subtitle_summary
                     item['concurrency']['subtitles'] = subtitle_summary(db, stamp, item['id'])
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],

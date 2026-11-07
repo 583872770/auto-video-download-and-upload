@@ -17,6 +17,7 @@ from werkzeug.serving import make_server, WSGIRequestHandler
 from app import create_app
 from webapp.database import download_permits, download_resources, instances, settings, tasks
 from webapp.throughput import policy_key
+from webapp.risk_diagnostics import GUIDE
 
 
 class QuietHandler(WSGIRequestHandler):
@@ -25,6 +26,7 @@ class QuietHandler(WSGIRequestHandler):
 
 
 def main():
+    expect.set_options(timeout=12000)
     output = Path(__file__).resolve().parents[1] / '.cache/concurrency-preview'
     output.mkdir(parents=True, exist_ok=True)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
@@ -46,7 +48,7 @@ def main():
                     progress=json.dumps({'stage': stage, 'transfer_wait_resource': 'upstream' if stage == 'waiting_transfer' else None,
                                          'speed': 8*1024**2 if stage == 'downloading' else None})))
                 if stage == 'downloading':
-                    for scope, units in (('upstream:youtube-origin', 1), ('connections:youtube-origin', 2)):
+                    for scope, units in (('upstream:youtube-origin', 1), ('local-transfers:preview', 1), ('connections:youtube-origin', 2)):
                         db.execute(download_permits.insert().values(token=str(number),
                             resource=hashlib.sha256(scope.encode()).hexdigest(), task_id=job['id'], owner='fixture', units=units))
 
@@ -93,7 +95,7 @@ def main():
                 fixture('normal')
                 page.goto(f'http://127.0.0.1:{server.server_port}/#overview')
                 expect(panel).to_contain_text('单渠道上限 8 路')
-                expect(panel.locator('.capacity-metrics>div').nth(1)).to_contain_text('8')
+                expect(panel.locator('.transfer-effective b')).to_contain_text('8')
                 for provider in ('yt_dlp', 'downmp3'):
                     label = page.evaluate("""provider => progressLabel({action: 'download', status: 'running',
                         instance_id: 'preview', progress: {stage: 'waiting_resolver', download_method: provider}})""", provider)
@@ -105,25 +107,27 @@ def main():
                 assert '提高浏览器数量不会解除这类等待' in resolver_html
                 assert '浏览器与转换阶段占用' not in resolver_html
                 panel.locator('summary').first.click()
+                panel.locator('[data-capacity-details=overview] > summary').click()
                 expect(panel.locator('.capacity-table').first).to_be_visible()
                 expect(panel).to_contain_text('解析与传输共用名额')
                 guide = panel.locator('.risk-guide')
                 guide.locator(':scope > summary').click()
-                guide.locator('.risk-category').first.locator(':scope > summary').click()
+                upstream_category = guide.locator('.risk-category').filter(has=page.locator('[data-guide-code=http_403]'))
+                upstream_category.locator(':scope > summary').click()
                 expect(guide.locator('[data-guide-code=http_403]')).to_be_visible()
                 expect(guide).to_contain_text('不能单独证明封号或封 IP')
                 expect(guide).to_contain_text('目录权限、路径过长或文件写入失败')
                 expect(guide).to_contain_text('第三方配额、每日额度或接口限制')
-                expect(guide.locator('.risk-guide-item')).to_have_count(39)
+                expect(guide.locator('.risk-guide-item')).to_have_count(len(GUIDE))
                 expect(guide.locator('[data-guide-code=account_rate_limit]')).to_contain_text('账号被限流')
                 page.screenshot(path=str(output/'normal-desktop.png'), full_page=True)
                 fixture('throttle')
                 expect(panel).to_contain_text('HTTP 429', timeout=12000)
                 expect(panel).to_contain_text('字幕请求触发限流')
-                expect(panel.locator('.capacity-metrics>div').nth(1)).to_contain_text('0')
+                expect(panel.locator('.transfer-effective b')).to_contain_text('0')
                 assert panel.locator('details').first.evaluate('node => node.open'), 'poll closed channel details'
                 assert guide.evaluate('node => node.open'), 'poll closed risk guide'
-                assert guide.locator('.risk-category').first.evaluate('node => node.open'), 'poll closed risk category'
+                assert upstream_category.evaluate('node => node.open'), 'poll closed risk category'
                 page.screenshot(path=str(output/'throttle-desktop.png'), full_page=True)
                 page.set_viewport_size({'width': 390, 'height': 844})
                 page.locator('#sidebar').evaluate('node => Promise.all(node.getAnimations().map(animation => animation.finished))')
@@ -132,7 +136,7 @@ def main():
                 guide.locator(':scope > summary').click()
                 fixture('recovery')
                 expect(panel).to_contain_text('相关共享资源暂按 1 路放行', timeout=12000)
-                expect(panel.locator('.capacity-metrics>div').nth(1)).to_contain_text('1')
+                expect(panel.locator('.transfer-effective b')).to_contain_text('1')
                 fixture('service')
                 expect(panel.locator('.capacity-notices')).to_contain_text('HTTP 503', timeout=12000)
                 expect(panel.locator('.capacity-notices')).not_to_contain_text('HTTP 429')
@@ -145,7 +149,7 @@ def main():
                 expect(panel).to_contain_text('HTTP 429')
                 fixture('offline')
                 expect(panel).to_contain_text('实例离线', timeout=12000)
-                expect(panel.locator('.capacity-metrics>div').nth(1).locator('strong')).to_contain_text('—')
+                expect(panel.locator('.transfer-effective b')).to_contain_text('—')
                 fixture('throttle')
                 page.set_viewport_size({'width': 1440, 'height': 1150})
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
@@ -164,7 +168,7 @@ def main():
                 page.locator('[name=subtitle_mode]').select_option('optional')
                 page.locator('[name=subtitle_languages]').fill('en,zh-Hans')
                 page.get_by_role('tab', name='Cookie 与登录').click()
-                page.get_by_text('出口与请求节奏（高级）', exact=True).click()
+                page.locator('#settings-pane-accounts .settings-policy-details > summary').click()
                 expect(page.locator('[name=youtube_start_interval]')).to_have_value('3')
                 page.locator('[name=youtube_start_interval]').fill('5')
                 page.locator('[name=youtube_cookie_fallback]').select_option('false')
@@ -187,7 +191,7 @@ def main():
                 expect(settings_panel).to_contain_text('字幕独立补下载', timeout=12000)
                 expect(settings_panel).to_contain_text('字幕上游冷却')
                 expect(settings_panel).not_to_contain_text('渠道冷却中')
-                expect(settings_panel.locator('.capacity-metrics>div').nth(1)).to_contain_text('16')
+                expect(settings_panel.locator('.transfer-effective b')).to_contain_text('16')
                 page.screenshot(path=str(output/'settings-optimized.png'), full_page=True)
                 failed_task = store.create('download', {'base': str(root), 'config': cfg,
                     'urls': ['https://youtu.be/jNQXAC9IVRw']})
@@ -220,7 +224,7 @@ def main():
                 expect(settings_panel.locator('[data-risk-code=auth_valid]')).to_be_visible(timeout=12000)
                 page.route('**/api/instances', lambda route: route.abort())
                 expect(settings_panel).to_contain_text('状态暂未更新', timeout=26000)
-                expect(settings_panel.locator('.capacity-metrics>div').nth(1).locator('strong')).to_contain_text('—')
+                expect(settings_panel.locator('.transfer-effective b')).to_contain_text('—')
                 assert not errors, errors
                 browser.close()
         finally:

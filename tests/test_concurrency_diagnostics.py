@@ -102,7 +102,7 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
             store = TaskStore(root)
             try:
                 jobs = [store.create('download', {'urls': ['https://youtu.be/jNQXAC9IVRw']}) for _ in range(3)]
-                scope = 'upstream:youtube-origin'
+                scope = 'local-transfers:node'
                 key = hashlib.sha256(scope.encode()).hexdigest()
                 with store.connect() as db:
                     for index, job in enumerate(jobs):
@@ -112,8 +112,48 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
                             owner='owner' if index != 2 else 'previous-owner', units=1))
                     db.execute(download_resources.insert().values(key=key, state=json.dumps({'policies': {}})))
                 with store.connect() as db:
-                    states, usage, _ = read_context(db, [('node', self.config)], self.stamp)
+                    states, usage, _, holders = read_context(db, [('node', self.config)], self.stamp)
                     self.assertEqual(usage[scope], 1)
+                    self.assertEqual(holders[scope], {jobs[0]['id']: 1})
                     self.assertEqual(states[scope], {'policies': {}})
             finally:
                 store.db.engine.dispose()
+
+    def allocation(self, stages, *, limit=12, effective=None, pool=False):
+        self.config.update(builtin_transfer_limit=limit, builtin_connection_limit=64,
+                           download_connection_limit=64)
+        if pool:
+            self.config['youtube_cookie_pool'] = ['account-a', 'account-b']
+        tasks = [{'id': str(index), 'video_id': 'video-' + str(index),
+                  'progress': {'stage': stage, 'cookie_profile_name': 'Account A'}}
+                 for index, stage in enumerate(stages)]
+        holders = {'local-transfers:node': {str(index): 1 for index in range(min(3, len(tasks)))}}
+        rate = None
+        if pool:
+            rate = {'policy': policy_key(self.config), 'time': self.stamp,
+                    'cookie_pool': {'known': True, 'capacity': 37, 'reason': 'ready'}}
+        state = {'upstream:youtube-origin': {'policies': {
+            'test': {'time': self.stamp, 'limit': effective}}}} if effective is not None else {}
+        result = diagnose(self.config, 'node', [t['progress'] for t in tasks], rate,
+                          (state, {'local-transfers:node': len(holders['local-transfers:node'])}, {}, holders),
+                          self.stamp, current_tasks=tasks)
+        return result['transfer_allocation']
+
+    def test_twelve_slots_use_permits_instead_of_execution_count(self):
+        value = self.allocation(['downloading', 'waiting_request', 'extracting', 'waiting_transfer', 'processing'])
+        self.assertEqual(value['configured'], 12)
+        self.assertEqual([t['stage'] for t in value['occupied']], ['downloading', 'waiting_request', 'extracting'])
+        self.assertEqual((value['unoccupied'], value['restricted']), (9, 0))
+        self.assertEqual(value['outside'], {'waiting_transfer': 1, 'processing': 1})
+        self.assertEqual(value['occupied'][1]['cookie_name'], 'Account A')
+
+    def test_shared_restriction_and_hot_reduction_preserve_existing_holders(self):
+        value = self.allocation(['downloading'] * 3, effective=5)
+        self.assertEqual((len(value['occupied']), value['unoccupied'], value['restricted']), (3, 2, 7))
+        value = self.allocation(['downloading'] * 3, limit=2)
+        self.assertEqual((value['configured'], len(value['occupied']), value['over_limit']), (2, 3, 1))
+        self.assertEqual((value['unoccupied'], value['restricted']), (0, 0))
+
+    def test_cookie_capacity_is_not_the_twelve_channel_slots(self):
+        value = self.allocation(['downloading'] * 3, pool=True)
+        self.assertEqual((value['configured'], value['effective']), (12, 12))

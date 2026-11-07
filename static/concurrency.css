@@ -5,6 +5,45 @@
 .risk-disclaimer{font-size:12px;line-height:1.8;color:#58677b;margin:14px 0}.risk-legend{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}.risk-legend span{font-size:11px;background:#f1f5f9;color:#526176;padding:5px 9px;border-radius:4px}.risk-category{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-top:8px}.risk-category>summary{display:flex;justify-content:space-between;gap:12px;font-size:12px;cursor:pointer}.risk-category>summary span{color:var(--muted);font-size:11px}.risk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.risk-guide-item{padding:15px;background:#f8fafc;border-radius:6px;min-width:0}.risk-guide-item h3{font-size:12px;line-height:1.6;margin:0 0 12px}.risk-guide-item dl{margin:0;font-size:12px;line-height:1.8}.risk-guide-item dt{font-weight:600;color:#526176;margin-top:8px}.risk-guide-item dd{margin:2px 0 0;color:#58677b;overflow-wrap:anywhere}.risk-guide-item a,.task-risk a{color:#2563eb;text-decoration:none}.task-risk{border:1px solid #f1d6a5;background:#fffbf2;border-radius:8px;padding:15px;margin:14px 0}.task-risk h3{font-size:14px;margin:0 0 10px}.task-risk article{border-top:1px solid #eddfc6;padding-top:12px;margin-top:12px}.task-risk strong{font-size:12px}.task-risk p{font-size:12px;line-height:1.8;color:#58677b;margin:5px 0;overflow-wrap:anywhere}.risk-task-state{font-variant-numeric:tabular-nums}
 @media(max-width:680px){.risk-grid{grid-template-columns:minmax(0,1fr)}.risk-category{padding:11px}.risk-guide-item{padding:12px}.task-risk{padding:12px}}
 
+/* Live transfer permits, distinct from task execution stages. */
+.transfer-allocation{border:1px solid #dfe6d8;border-radius:12px;background:#fbfcf9;padding:18px}
+.transfer-allocation-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.transfer-allocation-heading h3{display:flex;align-items:center;gap:14px;margin:0;font-size:13px;font-weight:500;color:#52614d}
+.transfer-allocation-heading h3 strong{font-size:30px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.transfer-allocation-heading h3 small{font-size:12px;font-weight:400;color:var(--muted)}
+.transfer-allocation-heading p{display:flex;flex-wrap:wrap;gap:2px 9px;font-size:12px;color:#63715c;margin:6px 0 0;line-height:1.8}
+.transfer-allocation-heading p span{white-space:nowrap}
+.transfer-effective{font-size:11px;color:var(--muted);text-align:right;flex-shrink:0}
+.transfer-effective b{font-size:17px;color:var(--ink);font-variant-numeric:tabular-nums;margin:0 4px}
+.transfer-legend{display:flex;flex-wrap:wrap;gap:9px 18px;margin:16px 0 12px}
+.transfer-legend span{display:flex;align-items:center;gap:6px;font-size:11px;color:#596653}
+.transfer-legend i,.transfer-slot-top i{display:block;width:7px;height:7px;border-radius:50%;background:var(--slot-color,#c4ccbf);flex-shrink:0}
+.transfer-legend b{font-variant-numeric:tabular-nums}
+.transfer-allocation .transferring{--slot-color:#29835c}.transfer-allocation .waiting{--slot-color:#be8a31}.transfer-allocation .preparing{--slot-color:#5988b5}.transfer-allocation .processing{--slot-color:#8972ad}.transfer-allocation .reserved{--slot-color:#748395}
+.transfer-slot-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px;margin-top:16px}
+.transfer-slot{display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0;min-height:112px;padding:11px 12px;border:1px solid #dce6d6;border-radius:8px;background:#fff;color:var(--ink);font-family:inherit;text-align:left;line-height:1.5}
+button.transfer-slot{cursor:pointer;transition:border-color .15s,background .15s}
+button.transfer-slot:hover{border-color:var(--slot-color);background:#f4f8f0}
+button.transfer-slot:focus-visible{outline:2px solid #456e35;outline-offset:3px}
+.transfer-slot-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.transfer-slot-top small{font-size:10px;color:#6f7b68;font-variant-numeric:tabular-nums}
+.transfer-slot>strong{font-size:12px;font-weight:600;color:var(--slot-color,#64725b);overflow-wrap:anywhere}
+.transfer-slot-title,.transfer-slot-cookie{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:#6c7765}
+.transfer-slot-cookie{color:#829078;margin-top:auto}
+.transfer-slot.unoccupied{background:#f5f8f1;border-style:dashed}
+.transfer-slot.restricted{background:#f5f5f3;border-color:#e2e3de;--slot-color:#a7afa1}
+.transfer-slot.unknown{background:#f2f4f5;border-color:#dce1e4;--slot-color:#9ba6b0}
+.transfer-slot-note{font-size:10px;color:var(--muted);line-height:1.8;margin:12px 0 0}
+.transfer-outside{border-top:1px solid #e2e8dd;padding-top:13px;margin-top:14px}
+.transfer-outside>strong{font-size:12px;font-weight:500;color:#596653}
+.transfer-outside>div{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:9px}
+.transfer-outside span{font-size:11px;color:var(--muted)}
+.transfer-outside b{font-size:12px;color:#53624b;margin-left:4px;font-variant-numeric:tabular-nums}
+.capacity-explanations>summary{color:#65765a;padding:3px 0}
+.capacity-explanations>.capacity-admission{margin-top:16px}
+@media(max-width:1100px){.transfer-slot-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:680px){.transfer-allocation{padding:13px}.transfer-allocation-heading{align-items:flex-start;gap:9px}.transfer-allocation-heading h3{gap:9px;flex-wrap:wrap}.transfer-allocation-heading h3 strong{font-size:26px}.transfer-effective{font-size:10px;max-width:110px;white-space:normal;line-height:1.8}.transfer-slot-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.transfer-slot{min-height:103px;padding:10px}.transfer-legend{gap:8px 12px}}
+
 /* Redesigned concurrency and channel settings */
 .concurrency-card-heading{align-items:flex-start;padding-bottom:14px}
 .concurrency-card-heading .panel-subtitle{max-width:720px;margin:9px 0 0}

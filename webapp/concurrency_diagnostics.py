@@ -4,7 +4,7 @@ import json
 import math
 from collections import Counter
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from webapp.channels import backend_key, group_caps, registry
 from webapp.database import download_permits, download_resources, settings, tasks
@@ -33,22 +33,57 @@ def read_context(db, configurations, stamp):
     """Batch only known resource identities, and count permits with valid leases."""
     scopes = set().union(*(scopes_for(config, identity) for identity, config in configurations))
     keys = {hashlib.sha256(scope.encode()).hexdigest(): scope for scope in scopes}
+    local_keys = [key for key, scope in keys.items() if scope.startswith('local-transfers:')]
+    holder = case((download_permits.c.resource.in_(local_keys), download_permits.c.task_id), else_='')
     states = {keys[key]: json.loads(value) for key, value in db.execute(
         select(download_resources.c.key, download_resources.c.state).where(download_resources.c.key.in_(keys)))}
-    usage = {keys[key]: int(value) for key, value in db.execute(
-        select(download_permits.c.resource, func.sum(download_permits.c.units)).select_from(
+    usage, holders = Counter(), {}
+    for key, task_id, value in db.execute(
+        select(download_permits.c.resource, holder,
+               func.sum(download_permits.c.units)).select_from(
             download_permits.join(tasks, (download_permits.c.task_id == tasks.c.id)
                                   & (download_permits.c.owner == tasks.c.worker_id))).where(
             download_permits.c.resource.in_(keys), tasks.c.status == 'running', tasks.c.lease_until > stamp
-        ).group_by(download_permits.c.resource))}
+        ).group_by(download_permits.c.resource, holder)):
+        scope = keys[key]
+        usage[scope] += int(value)
+        if task_id:
+            holders.setdefault(scope, {})[task_id] = int(value)
     disk_keys = ['disk:' + identity for identity, _ in configurations]
     disk = {key.removeprefix('disk:'): json.loads(value) for key, value in db.execute(
         select(settings.c.key, settings.c.value).where(settings.c.key.in_(disk_keys)))}
-    return states, usage, disk
+    return states, usage, disk, holders
 
 
-def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True):
-    states, usage, disks = context
+def transfer_allocation(config, identity, channels, caps, context, effective, current_tasks):
+    """Describe actual permits, independently of the last reported task stage."""
+    groups = {channel.upstream_group for channel in channels}
+    configured = sum(caps['upstream:' + group] for group in groups)
+    if not config.get('youtube_cookie_pool'):
+        configured = min(configured, int(config.get('worker_count', 1)))
+    holders = context[3].get('local-transfers:' + identity, {}) if len(context) > 3 else {}
+    tasks_by_id = {task['id']: task for task in current_tasks}
+    occupied = []
+    for task_id, units in holders.items():
+        task = tasks_by_id.get(task_id, {})
+        progress = task.get('progress') or {}
+        occupied.extend([{'task_id': task_id, 'stage': progress.get('stage', ''),
+                          'title': progress.get('title') or task.get('title') or task.get('video_id') or task_id[:8],
+                          'cookie_name': progress.get('cookie_profile_name') or ''}] * units)
+    order = {'downloading': 0, 'waiting_request': 1, 'extracting': 2}
+    occupied.sort(key=lambda task: (order.get(task['stage'], 3), task['task_id']))
+    outside = Counter((task.get('progress') or {}).get('stage') or 'preparing'
+                      for task in current_tasks if task['id'] not in holders)
+    # Existing holders finish normally after a hot reduction of the limit.
+    unoccupied = max(0, min(configured, effective) - len(occupied))
+    restricted = max(0, configured - len(occupied) - unoccupied)
+    return {'configured': configured, 'effective': min(configured, effective),
+            'occupied': occupied, 'unoccupied': unoccupied, 'restricted': restricted,
+            'outside': dict(outside), 'over_limit': max(0, len(occupied) - configured)}
+
+
+def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=()):
+    states, usage, disks = context[:3]
     auto = automatic(config)
     fresh = bool(rate and rate.get('policy') == policy_key(config) and 0 <= stamp - rate.get('time', 0) < 20)
     pooled = bool(config.get('youtube_cookie_pool'))
@@ -187,6 +222,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'sample_time': rate.get('time') if rate else None,
             'local_health': (rate or {}).get('risk_local'),
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
+            'transfer_allocation': transfer_allocation(config, identity, channels, caps, context, upper, current_tasks),
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
             'cookie_pool': cookie_pool, 'bottleneck': bottleneck,
