@@ -40,7 +40,8 @@ class FleetHotPolicyTests(unittest.TestCase):
             self.assertEqual(response.json['config'][key], value)
             self.assertEqual(saved[key], value)
             self.assertEqual(self.a.fleet.local_settings()['config'][key], value)
-        self.assertEqual(response.json['config']['throughput_mode'], 'auto')
+        # Channel selection and instance concurrency are independent controls.
+        self.assertEqual(response.json['config']['throughput_mode'], 'manual')
         self.assertEqual(self.b.fleet.policy()['config']['scheduler_mode'], 'ordered_fallback')
         with self.a.connect() as db:
             db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=0))

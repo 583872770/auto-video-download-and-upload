@@ -5,7 +5,7 @@ its version is recorded. Large queue tables are never rewritten here.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import inspect, select, bindparam
+from sqlalchemy import inspect, select, bindparam, tuple_
 
 from webapp.database import deliveries, download_lists, job_profiles, schema_migrations, test_files
 
@@ -119,11 +119,37 @@ def _completed_file_times(engine):
                 index.create(engine, checkfirst=True)
 
 
+def _cookie_ownership(engine):
+    from webapp.cookie_binding import claim, credential_keys
+    from webapp.database import cookie_profiles
+    order = (cookie_profiles.c.created_at, cookie_profiles.c.scope, cookie_profiles.c.id)
+    cursor = None
+    while True:
+        statement = select(cookie_profiles).where(cookie_profiles.c.deleted == 0).order_by(*order).limit(50)
+        if cursor is not None:
+            statement = statement.where(tuple_(*order) > cursor)
+        with engine.connect() as db:
+            rows = db.execute(statement).mappings().all()
+        if not rows:
+            break
+        for row in rows:
+            # Existing duplicates remain visible/exportable, but cannot execute
+            # on the losing instance. Keep memory and transactions bounded.
+            try:
+                keys = credential_keys(row['content'].encode())
+                with engine.begin() as db:
+                    claim(db, row['scope'], keys)
+            except ValueError:
+                continue
+        cursor = tuple(rows[-1][column.name] for column in order)
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
          ('20261030_optimize_indexes', _optimize_indexes),
-         ('20261106_completed_file_times', _completed_file_times))
+         ('20261106_completed_file_times', _completed_file_times),
+         ('20261107_cookie_ownership', _cookie_ownership))
 
 
 def upgrade(engine):

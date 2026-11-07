@@ -298,7 +298,12 @@ class YouTubeAuth:
         except OSError:
             publish(result)
             return result
-        except ValueError:
+        except ValueError as error:
+            from webapp.cookie_binding import CookieBindingConflict
+            if isinstance(error, CookieBindingConflict):
+                result.update(state='invalid', message=str(error))
+                publish(result)
+                return result
             result.update(state='invalid', message='Cookie 文件无效或已过期，请重新登录 YouTube 或上传新的 Cookie。')
             publish(result)
             return result

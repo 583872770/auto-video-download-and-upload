@@ -171,10 +171,12 @@ class CookiePool:
                 data = target.read_bytes()
                 group_key = account_group_key(item.get('name') if item else '', data)
                 credential = 'credential:' + credential_key(data)
-            except (ValueError, OSError):
+            except (ValueError, OSError) as error:
                 if strict:
+                    from webapp.cookie_binding import CookieBindingConflict
                     raise YouTubeAuthRequired({'state': 'invalid',
-                        'message': '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
+                        'message': str(error) if isinstance(error, CookieBindingConflict) else
+                        '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
                 self.unavailable.append({'id': identity, 'unavailable': True})
                 continue
             def resolve_group(db, stamp):

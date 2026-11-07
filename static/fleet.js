@@ -15,29 +15,17 @@ function mediaAddress(kind, name, identity) {
   const target = identity || state.instanceId;
   return `/media/${kind}/${encodeURIComponent(name)}${target ? `?instance_id=${encodeURIComponent(target)}` : ''}`;
 }
-function instanceStatistics(item) {
-  const totals = item.statistics || {};
-  return `<div class="fleet-metrics"><span>累计处理成功 <b>${Number(totals.succeeded || 0) + Number(totals.test_succeeded || 0)}</b></span><span>累计处理失败 <b>${Number(totals.failed || 0)}</b></span><span>已交付文件 <b>${Number(totals.file_count || 0)} 个 / ${bytes(totals.file_bytes || 0)}</b></span><span>测试文件 <b>${Number(totals.test_file_count || 0)} 个 / ${bytes(totals.test_file_bytes || 0)}</b></span></div>`;
-}
-function renderFleetJob() {
-  const item = state.fleet?.items.find(item => item.id === state.instanceId);
-  const job = item?.selected_job;
-  $('#fleet-job-context').innerHTML = job ? `<h2>当前实例：${escapeHTML(item.name)} · ${escapeHTML(job.customer)} / ${escapeHTML(job.name)}</h2><p class="micro-copy">${escapeHTML(instanceState(item))} · 处理中视频 ${item.running} 个</p><a class="text-button" href="/?instance_id=${encodeURIComponent(item.id)}#overview">返回此实例的下载工作台 ↗</a>` : '<h2>当前实例尚未选择下载任务</h2><p class="micro-copy">请在下载工作台选择任务并点击“启动”，操作仅影响当前实例。</p><a class="text-button" href="/#overview">前往下载工作台 ↗</a>';
-}
-function instanceCurrentTasks(item) {
-  const videos = item.current_tasks || [];
-  return `<div class="fleet-current-tasks"><h3>视频处理进度</h3>${videos.length ? videos.map(video => {
-    const progress = video.progress || {};
-    const speed = liveTransferSpeed({ status: 'running', progress });
-    return `<p class="micro-copy"><strong>${escapeHTML(video.title || video.video_id)}</strong>${video.title?' · '+escapeHTML(video.video_id):''} · ${escapeHTML(progressLabel({action:'download',status:'running',progress}))}${progress.percent == null ? '' : ' · '+escapeHTML(progress.percent)+'%'}${speed !== null ? ' · '+bytes(speed)+'/s' : ''}</p>`;
-  }).join('') : '<p class="micro-copy">当前没有正在处理的视频。</p>'}</div>`;
+function instanceMode(item) {
+  return item.cookie_count ? 'cookie_pool' : item.concurrency?.mode || item.throughput?.mode || 'manual';
 }
 function instanceLive(item) {
   const job = item.selected_job;
-  const rate = item.throughput;
-  const throughputDetails = rate ? `<p class="micro-copy">媒体接收速度 ${escapeHTML(rate.media_receive_mbps ?? '—')} Mbps · 成品产出速度 ${escapeHTML(rate.verified_mbps ?? '—')} Mbps（近期平均） · CPU ${escapeHTML(rate.cpu_percent)}% · 可用内存 ${escapeHTML(rate.memory_available_mb)} MB</p><p class="micro-copy">${Object.entries(rate.groups || {}).map(([group,value])=>`${escapeHTML(group)}：传输中视频 ${escapeHTML(value.active)} / ${escapeHTML(value.limit)}，${escapeHTML(value.receive_mbps)} Mbps`).join('；')}</p>` : '';
-  if (item.id === state.instanceId && $('#channel-performance')) renderChannelPerformance(rate);
-  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.running}</b></span><span>传输中视频 <b>${item.transferring}</b></span><span>总传输速度 <b>${bytes(item.speed)}/s</b></span></div>${item.throughput ? `<p class="micro-copy">${item.throughput.mode === 'cookie_pool' ? 'Cookie 池独立调度' : item.throughput.mode === 'auto' ? '自动并发' : '手动并发'} · 传输并发上限 ${escapeHTML(item.throughput.transfers)} · 视频处理并发上限 ${escapeHTML(item.throughput.workers)} · 浏览器并发上限 ${escapeHTML(item.throughput.browsers)} · 网络接收速度 ${escapeHTML(item.throughput.receive_mbps)} Mbps · ${escapeHTML(item.throughput.reason)}</p>` : ''}${throughputDetails}${concurrencyHTML(item.concurrency, {compact:true, key:item.id})}${instanceCurrentTasks(item)}<p class="micro-copy instance-policy">${escapeHTML(instancePolicyText(item.policy || {}))}</p>${instanceStatistics(item)}`;
+  const mode = instanceMode(item), pool = item.concurrency?.cookie_pool;
+  const source = mode === 'cookie_pool' ? `本实例 Cookie 池 · ${item.cookie_count || 0} 份${pool?.effective_sessions == null ? '' : ` · ${pool.effective_sessions} 个核心会话`}` : `${mode === 'auto' ? '自动并发' : '手动并发'} · ${item.has_cookie ? '本实例单 Cookie' : '未配置 Cookie'}`;
+  const limit = item.concurrency?.effective_limit;
+  const capacity = !item.online || item.paused ? '' : mode === 'cookie_pool' && !pool?.known ? ' · 会话容量待采样'
+    : limit == null ? '' : ` · 有效传输上限 ${escapeHTML(limit)}`;
+  return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.online ? item.running : '—'}</b></span><span>传输中视频 <b>${item.online ? item.transferring : '—'}</b></span><span>总传输速度 <b>${item.online ? bytes(item.speed)+'/s' : '—'}</b></span></div><p class="micro-copy instance-capacity">${escapeHTML(source)}${capacity}</p>`;
 }
 function instanceState(item) {
   return !item.online ? '离线' : item.paused ? item.running ? item.stop_requested ? '正在停止' : '等待当前视频完成' : '已停止' : item.running ? '已启动 · 处理中' : '已启动 · 等待任务';
@@ -58,13 +46,20 @@ function syncInstanceControls() {
 function instanceCard(item, expanded) {
   const id=escapeHTML(item.id), address=encodeURIComponent(item.id);
   const disabled = action => instanceActionDisabled(item, action) ? ' disabled' : '';
+  const pooled = instanceMode(item) === 'cookie_pool', resources = item.resources || {};
+  const field = (label, name, value, min, max) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${escapeHTML(value)}" required></label>`;
+  const capacityFields = pooled ? field('yt-dlp 传输上限（0 = 默认）', 'builtin_transfer_limit', resources.builtin_transfer_limit ?? 0, 0, 64)
+    + field('每核心会话并发上限', 'youtube_cookie_session_limit', resources.youtube_cookie_session_limit ?? 2, 1, 64)
+    + field('共用启动间隔（秒）', 'youtube_cookie_pool_start_interval', resources.youtube_cookie_pool_start_interval ?? 10, 0, 600)
+    : field(instanceMode(item) === 'auto' ? '自动调度传输上限' : '视频处理并发上限', 'worker_count', item.worker_count, 1, 64)
+      + (item.uses_browser ? field('浏览器并发上限', 'yt5s_browser_count', item.yt5s_browser_count, 1, 16) : '');
   return `<article class="fleet-instance panel"><form data-instance-form="${id}">
-    <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机）':''}</h2><p class="micro-copy">${id} · ${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
+    <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机）':''}</h2><p class="micro-copy">${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
     <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
     <div data-instance-live="${id}">${instanceLive(item)}</div>
-    <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">打开下载工作台 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">下载策略与磁盘 ↗</a></div>
+    <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">工作台与诊断 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">Cookie 与完整设置 ↗</a></div>
     <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后停止</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
-    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>名称、并发与磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label><label>${item.concurrency?.mode === 'cookie_pool' ? '实例并发（池模式不生效）' : item.throughput?.mode === 'auto' ? '传输并发上限' : '视频处理并发上限'}<input name="worker_count" type="number" min="1" max="64" value="${item.worker_count}"${item.concurrency?.mode === 'cookie_pool' ? ' disabled' : ''} required></label><label>浏览器并发上限<input name="yt5s_browser_count" type="number" min="1" max="16" value="${item.yt5s_browser_count}" required></label><label>最低剩余磁盘空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" value="${item.min_free_gb}" required></label></div><p class="micro-copy">素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">并发上限不等于当前处理数量。降低并发后，正在处理的视频会继续完成；离线实例重新连接后才会处理停止指令。</p></details>
+    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>${pooled ? 'Cookie 池调度' : '并发'} · 磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label>${capacityFields}${field('最低剩余磁盘空间（GB）', 'min_free_gb', item.min_free_gb, 0, 10000)}</div>${pooled ? '<p class="micro-copy">池按会话预热、冷却和可用容量调度，并受 yt-dlp 传输上限约束；0 使用渠道默认上限。调小上限后，已开始的传输继续完成。</p>' : ''}<p class="micro-copy">Cookie 仅归属本实例，同一核心登录凭据不能跨实例使用。删除或离线不会解除绑定。</p><p class="micro-copy">实例 ID：${id}<br>素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">仅保存本实例，后续调度读取新值。离线实例重新连接后才会处理停止指令。</p></details>
   </form></article>`;
 }
 let fleetLoading = false;
@@ -94,7 +89,6 @@ async function loadFleet({ poll = false } = {}) {
   }
   if (state.instanceId !== previous && lastStartedJobId !== null) await resetWorkbench();
   if (state.instanceId !== previous && typeof refreshDisk==='function') refreshDisk();
-  if (view === 'instances') renderFleetJob();
   if (view === 'overview') renderDownloadControl();
   if (state.instanceId && state.instanceId !== previous && hadConfig && !settingsDirty) {
     resetPage('media'); state.media = []; state.mediaTotal = 0; state.mediaDirectory = '';
@@ -115,7 +109,7 @@ async function loadFleet({ poll = false } = {}) {
   }
   const monitor=[['在线实例',`${workers.filter(item=>item.online).length} / ${workers.length}`],['处理中视频',workers.reduce((sum,item)=>sum+Number(item.running||0),0)],['总传输速度',bytes(workers.reduce((sum,item)=>sum+Number(item.online?item.speed||0:0),0))+'/s'],['异常实例',workers.filter(item=>!item.online||item.error).length]];
   $('#fleet-monitor-summary').innerHTML=monitor.map(([label,value])=>`<div class="monitor-metric"><span>${label}</span><strong>${escapeHTML(value)}</strong></div>`).join('');
-  const structure = JSON.stringify(workers.map(item => [item.id, item.name, item.role, item.host, item.directory, item.worker_count, item.yt5s_browser_count, item.min_free_gb, item.concurrency?.mode, item.throughput?.mode]));
+  const structure = JSON.stringify(workers.map(item => [item.id, item.name, item.role, item.host, item.directory, item.worker_count, item.yt5s_browser_count, item.min_free_gb, instanceMode(item), item.resources, item.uses_browser]));
   if (!state.fleetFormDirty && document.activeElement !== $('#fleet-global-limit')) $('#fleet-global-limit').value = data.global_limit;
   if (structure !== fleetStructureKey && !state.fleetControlBusy && !state.fleetFormDirty && !document.activeElement?.matches('#instances-view input')) {
     fleetStructureKey = structure;
@@ -192,7 +186,7 @@ async function initializeFleet() {
     event.preventDefault();
     const form = event.target;
     const data = Object.fromEntries(new FormData(form));
-    for (const key of ['worker_count', 'yt5s_browser_count', 'min_free_gb']) if (key in data) data[key] = Number(data[key]);
+    for (const key of ['worker_count', 'yt5s_browser_count', 'min_free_gb', 'builtin_transfer_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval']) if (key in data) data[key] = Number(data[key]);
     runButton($('button[type="submit"]', form), async () => {
       const result = await api(`/api/instances/${encodeURIComponent(form.dataset.instanceForm)}`, { method: 'PUT', body: data });
       state.fleetFormDirty = false;

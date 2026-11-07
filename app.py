@@ -248,8 +248,18 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             elif 'download_method' in data:
                 config['download_methods'] = None  # Compatibility with old clients/configuration.
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
+            if 'youtube_cookie_pool' in data or 'youtube_cookie' in data:
+                from webapp.cookie_profiles import CookieProfiles
+                profiles = CookieProfiles(config_path.parent, store)
+                for identity in config.get('youtube_cookie_pool', []):
+                    profiles.require(identity)
+                if 'youtube_cookie' in data and config.get('youtube_cookie'):
+                    target = resolve_path(config_path.parent, config['youtube_cookie'])
+                    if target.is_file():
+                        profiles.restore_selected(config['youtube_cookie'])
             if fleet and fleet.can_download:
-                limits = {key: config[key] for key in ('worker_count', 'yt5s_browser_count', 'min_free_gb') if key in data}
+                from webapp.fleet import RESOURCE_LIMITS
+                limits = {key: config[key] for key in RESOURCE_LIMITS if key in data}
                 if limits:
                     fleet.control(fleet.id, limits)
             save_settings(config_path, config)
@@ -499,12 +509,18 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             # a saved profile with no selected path is safe to make active.
             if not config.get('youtube_cookie'):
                 saved = profiles.items()
-                if saved:
-                    config['youtube_cookie'] = profiles.require(saved[0]['id']).relative_to(base).as_posix()
+                from webapp.cookie_binding import CookieBindingConflict
+                for item in saved:
+                    try:
+                        target = profiles.require(item['id'])
+                    except CookieBindingConflict:
+                        continue  # Keep legacy conflicts visible for removal/export.
+                    config['youtube_cookie'] = target.relative_to(base).as_posix()
                     config['youtube_cookie_pool'] = []
                     save_settings(config_path, config)
                     sync_runtime(config, base)
                     youtube_auth.invalidate()
+                    break
             items = profiles.items(config.get('youtube_cookie', ''))
             for item in items:
                 item['auth'] = youtube_auth.profile_status(item['id'], base)

@@ -42,6 +42,8 @@ ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')
 RESOURCE_LIMITS = {'worker_count': (1, 64), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}
+RESOURCE_LIMITS.update(builtin_transfer_limit=(0, 64), youtube_cookie_session_limit=(1, 64),
+                       youtube_cookie_pool_start_interval=(0, 600))
 
 
 class InstanceIdentityConflict(ValueError):
@@ -261,6 +263,7 @@ class Fleet:
                 self.store.statistics.stop_session(db, identity)
 
     def list(self):
+        from webapp.settings import download_methods
         with self.store.connect() as db:
             stamp = self.clock(db)
             rows = db.execute(select(instances).order_by(instances.c.name, instances.c.id)).mappings().all()
@@ -304,6 +307,12 @@ class Fleet:
                     'policy': {k: config[k] for k in POLICY_FIELDS if k in config},
                     'policy_version': local.get('policy_version', 1),
                     'min_free_gb': config.get('min_free_gb', 2), 'statistics': totals.get(row['id'], {})})
+                result[-1]['resources'] = {key: config.get(key, default) for key, default in (
+                    ('builtin_transfer_limit', 0), ('youtube_cookie_session_limit', 2),
+                    ('youtube_cookie_pool_start_interval', 10))}
+                result[-1]['cookie_count'] = len(config.get('youtube_cookie_pool', []))
+                result[-1]['has_cookie'] = bool(config.get('youtube_cookie'))
+                result[-1]['uses_browser'] = bool({'yt5s', 'yt1d', 'bergung'} & set(download_methods(config)))
                 result[-1]['current_tasks'] = current_tasks.get(row['id'], [])
                 result[-1]['selected_job'] = jobs.get(selections.get('workbench_job:' + row['id']))
             budget = int(db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget')).scalar_one())
@@ -352,7 +361,7 @@ class Fleet:
                     if type(value) is not int or not bounds[0] <= value <= bounds[1]:
                         raise ValueError(f'{key} 必须在 {bounds[0]} 到 {bounds[1]} 之间。')
                     limits[key] = value
-            if set(data) - {'name', 'action', 'worker_count', 'yt5s_browser_count', 'min_free_gb'}:
+            if set(data) - ({'name', 'action'} | RESOURCE_LIMITS.keys()):
                 raise ValueError('实例配置包含不支持的字段。')
             if 'action' in data:
                 action = data['action']

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from Utils.config import resolve_path
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
 from webapp.database import cookie_profiles as table
+from webapp.cookie_binding import claim, credential_keys, CookieBindingConflict
 
 
 class CookieProfiles:
@@ -56,13 +57,17 @@ class CookieProfiles:
                 db.execute(self.store.db.ignore(table, dict(scope=self.scope, id=identity,
                     name=item['name'], content=content, created_at=item.get('created_at') or
                     datetime.datetime.now(datetime.timezone.utc).isoformat(), deleted=0)))
+            try:
+                self.bind(content.encode('utf-8'))
+            except ValueError:
+                pass  # Historical conflicts/invalid files remain manageable.
 
     def items(self, active=''):
         current = resolve_path(self.base, active).resolve() if active else None
         with self.store.connect() as db:
             rows = db.execute(select(table.c.id, table.c.name, table.c.created_at).where(
                 self._where() & (table.c.deleted == 0)).order_by(table.c.created_at, table.c.id)).mappings().all()
-        return [{**row, 'active': self.path(row['id']).resolve() == current} for row in rows]
+        return [{**row, 'instance_id': self.scope, 'active': self.path(row['id']).resolve() == current} for row in rows]
 
     def add(self, name, data, filename='cookies.txt'):
         name = str(name or '').strip() or str(filename or 'cookies.txt').replace('\\', '/').rsplit('/', 1)[-1]
@@ -78,12 +83,14 @@ class CookieProfiles:
         identity = uuid.uuid4().hex
         item = dict(id=identity, name=name, created_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
         with self.store.connect() as db:
+            claim(db, self.scope, credential_keys(content.encode()))
             db.execute(table.insert().values(scope=self.scope, **item, content=content, deleted=0))
         return {**item, 'active': False}
 
     def save_legacy(self, data):
         parse_youtube_cookie_file(data)
         with self.store.connect() as db:
+            claim(db, self.scope, credential_keys(data))
             db.execute(self.store.db.upsert(table, dict(scope=self.scope, id='legacy',
                 name='原有 Cookie（上传 / 浏览器登录）', content=data.decode('utf-8-sig'),
                 created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(), deleted=0), ['scope', 'id']))
@@ -109,6 +116,12 @@ class CookieProfiles:
                 self._where(identity) & (table.c.deleted == 0))).scalar_one_or_none()
         if content is None:
             raise ValueError('Cookie 配置不存在。')
+        try:
+            self.bind(content.encode('utf-8'))
+        except CookieBindingConflict:
+            raise
+        except ValueError:
+            pass  # Preserve historical/expired caches for management; execution validates them.
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         data = content.encode('utf-8')
         if not target.is_file() or target.read_bytes() != data:
@@ -133,11 +146,20 @@ class CookieProfiles:
         elif target.parent == self.directory.resolve() and re.fullmatch(r'[a-f0-9]{32}', target.stem):
             identity = target.stem
         else:
-            return  # User-managed custom paths retain their existing behavior.
+            with target.open('rb') as source:
+                self.bind(source.read(1024 * 1024 + 1))
+            return
         self.require(identity)
 
+    def bind(self, data):
+        keys = credential_keys(data)
+        with self.store.connect() as db:
+            claim(db, self.scope, keys)
+
     def delete(self, identity):
-        target = self.require(identity)
+        # Conflicting historical profiles must still be removable/exportable.
+        target = self.path(identity)
+        self.export(identity)  # Validate a live scoped record, without using it.
         # Remove caches before committing the tombstone. If cleanup fails, the
         # database still owns the credentials and can restore the selected file.
         target.unlink(missing_ok=True)

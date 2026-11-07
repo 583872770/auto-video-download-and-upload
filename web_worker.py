@@ -243,7 +243,14 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
         if store:
             from webapp.cookie_profiles import CookieProfiles
-            CookieProfiles(base, store).restore_selected(config.get('youtube_cookie'))
+            from webapp.cookie_binding import CookieBindingConflict
+            try:
+                CookieProfiles(base, store).restore_selected(config.get('youtube_cookie'))
+            except CookieBindingConflict as error:
+                from webapp.youtube_auth import YouTubeAuthRequired
+                # Reuse the auth isolation path: preserve the task and stop this
+                # instance, rather than charging failures to every queued video.
+                raise YouTubeAuthRequired({'state': 'invalid', 'message': str(error)}) from None
         urls = payload['urls']
         if store and not test_mode:
             from webapp.store import source_identity

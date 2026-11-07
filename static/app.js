@@ -1081,7 +1081,6 @@ function applyWorkbench(workbench) {
   selectedJob = workbench.job?.id === selectedJobId ? workbench.job : null;
   state.batchTasks = workbench.active_tasks || [];
   renderTasks();
-  if (typeof renderFleetJob === 'function') renderFleetJob();
 }
 async function resetWorkbench() {
   ++workbenchEpoch;

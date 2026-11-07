@@ -167,11 +167,10 @@ progress::-moz-progress-bar, .download-meter progress::-moz-progress-bar { backg
 .monitor-metric:last-child { border: 0; }
 .monitor-metric span { display: block; font-size: 12px; color: var(--muted); }
 .monitor-metric strong { display: block; font-size: 24px; font-weight: 600; margin-top: 4px; overflow-wrap: anywhere; }
-.fleet-control-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .fleet-monitor-options { margin-bottom: 14px; }
 .fleet-monitor-options>summary { cursor: pointer; padding: 11px 14px; background: #fff; border: 1px solid var(--line); border-radius: 7px; font-size: 12px; color: #475569; }
 .fleet-monitor-options>summary>span { color: var(--muted); margin-left: 10px; font-size: 11px; }
-.fleet-monitor-options[open]>.fleet-control-strip { margin-top: 10px; margin-bottom: 0; }
+.fleet-monitor-options[open]>.fleet-budget { margin-top: 10px; }
 .fleet-budget { padding: 14px 16px; margin: 0; }
 .fleet-budget h2 { font-size: 14px; }
 .fleet-budget .micro-copy { margin: 6px 0; font-size: 11px; }
@@ -190,10 +189,6 @@ progress::-moz-progress-bar, .download-meter progress::-moz-progress-bar { backg
 .fleet-metrics { gap: 8px 16px; margin: 10px 0; color: var(--muted); font-size: 11px; }
 .instance-live-metrics { display: grid; grid-template-columns: 1fr 1fr 1.5fr; padding: 3px 0; }
 .instance-live-metrics b { display: block; margin: 3px 0 0; color: var(--ink); font-size: 20px; font-weight: 600; }
-.fleet-current-tasks { padding: 10px 0; }
-.fleet-current-tasks h3 { color: #475569; font-size: 12px; }
-.fleet-current-tasks .micro-copy { margin: 6px 0 0; }
-.instance-policy { font-size: 11px; margin: 10px 0 4px; }
 .instance-links { display: flex; justify-content: space-between; gap: 10px; margin: 12px 0; flex-wrap: wrap; }
 .instance-controls { padding-top: 12px; border-top: 1px solid var(--line); gap: 6px; }
 .instance-controls button { flex: 1; padding: 0 8px; }
@@ -206,7 +201,6 @@ progress::-moz-progress-bar, .download-meter progress::-moz-progress-bar { backg
 @media (max-width: 1150px) {
   .workbench-grid { grid-template-columns: 1fr; }
   #fleet-instances { grid-template-columns: 1fr; }
-  .fleet-control-strip { grid-template-columns: 1fr; }
 }
 @media (max-width: 900px) {
   .sidebar { width: 180px; }

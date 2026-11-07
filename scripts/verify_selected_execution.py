@@ -112,16 +112,16 @@ def main():
                 assert not status_gate.is_set(), 'progress waited for the slow status response'
                 status_gate.set()
                 page.locator('[data-view=instances].nav-item').click()
-                expect(page.locator('#fleet-job-context')).to_contain_text('Order A')
-                expect(page.locator('#fleet-job-context')).to_contain_text('处理中视频 1 个')
-                expect(page.locator('[data-instance-live=alpha]')).to_contain_text('npNnbj46_ik')
-                expect(page.locator('[data-instance-live=beta]')).to_contain_text('WMu6ANTg8mk')
+                expect(page.locator('[data-instance-live="alpha"]')).to_contain_text('Order A')
+                expect(page.locator('[data-instance-live="alpha"]')).to_contain_text('处理中视频 1')
+                expect(page.locator('[data-instance-live=alpha]')).not_to_contain_text('npNnbj46_ik')
+                expect(page.locator('[data-instance-live=beta]')).not_to_contain_text('WMu6ANTg8mk')
                 expect(page.locator('[data-instance-live=beta]')).to_contain_text('Order B')
                 # Live status must continue while an instance's settings are being edited.
                 page.locator('[data-instance-options=alpha] summary').click()
                 page.locator('[data-instance-form=alpha] [name=name]').fill('Unsaved name')
                 stores[0].update_progress(first[0]['id'], {'stage':'downloading', 'percent':55, 'speed':4096}, stores[0].owner)
-                expect(page.locator('[data-instance-live=alpha]')).to_contain_text('55%')
+                expect(page.locator('[data-instance-live=alpha]')).to_contain_text('4.0 KB/s')
                 expect(page.locator('[data-instance-form=alpha] [name=name]')).to_have_value('Unsaved name')
                 stores[0].fleet.control('alpha', {'action':'drain'})
                 expect(page.locator('[data-instance-state=alpha]')).to_contain_text('等待当前视频完成')
@@ -178,10 +178,10 @@ def main():
                 assert switched['batch_id'] == b
                 assert switched['video_id'] == 'aaaaaaaaaaa'
                 assert stores[0].claim('extra-owner') is None
-                expect(page.locator('#fleet-job-context')).to_contain_text('Order B')
-                expect(page.locator('#fleet-job-context')).to_contain_text('处理中视频 1 个')
+                expect(page.locator('[data-instance-live="alpha"]')).to_contain_text('Order B')
+                expect(page.locator('[data-instance-live="alpha"]')).to_contain_text('处理中视频 1')
                 expect(page.locator('[data-instance-live=alpha]')).not_to_contain_text('npNnbj46_ik')
-                expect(page.locator('[data-instance-live=beta]')).to_contain_text('WMu6ANTg8mk')
+                expect(page.locator('[data-instance-live=beta]')).not_to_contain_text('WMu6ANTg8mk')
                 page.locator('[data-view=overview].nav-item').click()
                 expect(page.locator('#download-job')).to_have_value(b)
                 expect(page.locator('#batch-progress')).to_contain_text('aaaaaaaaaaa')

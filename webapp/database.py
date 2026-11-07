@@ -72,6 +72,9 @@ cookie_profiles = Table('youtube_cookie_profiles', metadata,
     Column('name', String(80), nullable=False), Column('content', Text, nullable=False),
     Column('created_at', String(40), nullable=False),
     Column('deleted', Integer, nullable=False, server_default='0'))
+cookie_bindings = Table('youtube_cookie_bindings', metadata,
+    Column('credential', String(64), primary_key=True),
+    Column('scope', String(64), nullable=False))
 
 # Durable, secret-free audit trail for Cookie authentication, cooldown and
 # adaptive pacing decisions.  Cookie values are never stored here.
