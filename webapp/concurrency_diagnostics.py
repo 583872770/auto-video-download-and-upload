@@ -11,6 +11,7 @@ from webapp.database import download_permits, download_resources, settings, task
 from webapp.parallel_http import fragment_connection_budget
 from webapp.throughput import automatic, policy_key
 from webapp.decision_diagnostics import public_failure
+from webapp.youtube_pacing import cookie_pool_start_interval
 
 
 def scopes_for(config, identity):
@@ -82,7 +83,99 @@ def transfer_allocation(config, identity, channels, caps, context, effective, cu
             'outside': dict(outside), 'over_limit': max(0, len(occupied) - configured)}
 
 
-def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=()):
+def cookie_allocation(config, identity, pool, allocation, context, stamp, current_tasks, profiles, *,
+                      paused=False, online=True, disk_blocked=False):
+    """Explain observed admission gates without assigning idle permits to accounts."""
+    if not config.get('youtube_cookie_pool'):
+        return None
+    states = context[0]
+    sampled = {p['id']: p for p in (pool or {}).get('profiles', [])}
+    names = {p['id']: p['name'] for p in profiles}
+    selected = list(dict.fromkeys(config['youtube_cookie_pool']))
+    holders = {p['task_id'] for p in allocation['occupied']}
+    grouped, unassigned = {}, []
+    for task in current_tasks:
+        lease_until = task.get('lease_until', stamp + 1)
+        if lease_until is None or lease_until <= stamp:
+            continue
+        progress = task.get('progress') or {}
+        view = {'task_id': task['id'], 'title': progress.get('title') or task.get('title') or
+                task.get('video_id') or task['id'][:8], 'stage': progress.get('stage', 'preparing'),
+                'speed': progress.get('speed') if progress.get('stage') == 'downloading' and
+                all(not progress.get(key) or stamp - progress[key] <= 10
+                    for key in ('_reported_at', 'last_bytes_at')) else None,
+                'transfer_reserved': task['id'] in holders}
+        profile_id = progress.get('cookie_profile_id')
+        if profile_id:
+            grouped.setdefault(profile_id, []).append(view)
+            names.setdefault(profile_id, progress.get('cookie_profile_name') or profile_id)
+        else:
+            unassigned.append(view)
+    # Tasks already admitted may finish after their Cookie was removed from the pool.
+    selected.extend(profile_id for profile_id in grouped if profile_id not in selected)
+    gate = states.get('youtube-cookie-pool:' + identity, {})
+    start = states.get('youtube-start:' + identity, {})
+    accounts = []
+    for profile_id in selected:
+        sample = sampled.get(profile_id, {})
+        shared = sample.get('shared_with')
+        known = bool(online and pool and pool.get('known') and sample)
+        reasons = []
+
+        def add(code, label, until=None):
+            reasons.append({'code': code, 'label': label, 'until': until})
+
+        if not online:
+            add('offline', '实例离线，当前原因待确认')
+        elif paused:
+            add('paused', '实例已停止领取新任务')
+        if disk_blocked:
+            add('disk', '磁盘空间限制新任务')
+        if gate.get('halted'):
+            add('pool_halted', '账号池已拦截，需人工检查后恢复')
+        if gate.get('cooldown_until', 0) > stamp:
+            add('pool_cooldown', '账号池冷却中', gate['cooldown_until'])
+        if known:
+            if sample.get('state') == 'unavailable':
+                add('unavailable', 'Cookie 文件缺失或无效，请到账号管理中检查')
+            elif shared:
+                add('shared', '与其他 Cookie 共用账号额度，重复导出不会增加并发')
+            else:
+                if sample.get('cooldown_until', 0) > stamp:
+                    add('account_cooldown', '账号冷却中', sample['cooldown_until'])
+                elif sample.get('state') == 'cooldown':
+                    add('account_refresh', '冷却时间已到，等待账号状态更新')
+                elif sample.get('limit', 1) > 0 and sample.get('active', 0) >= sample.get('limit', 1):
+                    add('account_busy', '账号并发已满，等待当前任务结束')
+                if sample.get('next_start_at', 0) > stamp:
+                    add('account_interval', '等待账号启动间隔', sample['next_start_at'])
+                pool_next, start_next = gate.get('next_at', 0), start.get('next_at', 0)
+                if pool_next > stamp and start_next > stamp:
+                    add('pool_interval', '等待共用启动间隔', max(pool_next, start_next))
+                elif pool_next > stamp:
+                    add('pool_interval', '等待账号池启动间隔', pool_next)
+                elif start_next > stamp:
+                    add('start_interval', '等待实例视频启动间隔', start_next)
+                if len(allocation['occupied']) >= allocation['effective']:
+                    add('transfer_limit', '当前传输额度已用完，等待释放或恢复')
+        if not known and online:
+            add('unknown', '账号状态尚未取得新鲜采样，原因待确认')
+        if profile_id not in config['youtube_cookie_pool']:
+            add('removed', '已移出账号池，当前任务结束后不再分配')
+        if not reasons:
+            add('unassigned', '尚未分配新任务；当前未观测到账号或启动间隔限制')
+        accounts.append({'id': profile_id, 'name': names.get(profile_id) or sample.get('name') or profile_id,
+                         'known': known, 'state': sample.get('state', 'unknown'),
+                         'shared_with': shared, 'shared_name': names.get(shared) or sampled.get(shared, {}).get('name'),
+                         'limit': sample.get('limit'), 'active': sample.get('active'),
+                         'interval': sample.get('interval'), 'cooldown_kind': sample.get('cooldown_kind'),
+                         'tasks': grouped.get(profile_id, []), 'reasons': reasons})
+    return {'accounts': accounts, 'unassigned_tasks': unassigned,
+            'sample_time': (pool or {}).get('sampled_at'),
+            'pool_start_interval': cookie_pool_start_interval(config)}
+
+
+def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=(), cookie_profiles=()):
     states, usage, disks = context[:3]
     auto = automatic(config)
     fresh = bool(rate and rate.get('policy') == policy_key(config) and 0 <= stamp - rate.get('time', 0) < 20)
@@ -217,12 +310,16 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     decision_states = {key: value for key, value in states.items()
                        if key in own_scopes and (pooled or not key.startswith('youtube-cookie-pool:'))}
     decisions = explain(decision_states, rows, cookie_pool, pacing, stamp, paused=paused, running=len(progress))
+    allocation = transfer_allocation(config, identity, channels, caps, context, upper, current_tasks)
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'cookie_pool' if pooled else 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
             'local_health': (rate or {}).get('risk_local'),
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
-            'transfer_allocation': transfer_allocation(config, identity, channels, caps, context, upper, current_tasks),
+            'transfer_allocation': allocation,
+            'cookie_allocation': cookie_allocation(config, identity, cookie_pool, allocation, context, stamp,
+                current_tasks, cookie_profiles, paused=paused, online=online,
+                disk_blocked=bool(disk_fresh and disk.get('blocked'))),
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
             'cookie_pool': cookie_pool, 'bottleneck': bottleneck,
@@ -235,6 +332,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
             'subtitle_mode': config.get('subtitle_mode', 'optional'),
             'youtube_start_interval': int(config.get('youtube_start_interval', 3)),
+            'youtube_cookie_pool_start_interval': cookie_pool_start_interval(config),
             'youtube_pacing': pacing,
             'youtube_waiting': stages.get('waiting_request', 0),
             'cookie_waiting': stages.get('waiting_cookie', 0),

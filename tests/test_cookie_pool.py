@@ -63,6 +63,59 @@ class CookiePoolTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(len(db.execute(select(download_permits)).all()), 0)
 
+    def test_configured_shared_spacing_controls_admission_and_start_hint(self):
+        config = {**self.config, 'youtube_cookie_pool_start_interval': 3}
+        first, second = self.pool(config), self.pool(config)
+        stamp = time.time()
+        first.router.clock = second.router.clock = lambda db: stamp
+        with first.assignment(count_success=False) as selected:
+            self.assertEqual(selected['_cookie_pool_next_at'], stamp + 3)
+            gate = first.router.transaction_call(lambda db, now: first.router._state(db, first.global_scope))
+            self.assertEqual(gate['next_at'], stamp + 3)
+            stamp += 2
+            with self.assertRaises(PipelineBusy):
+                with second.assignment(count_success=False):
+                    self.fail('Shared interval bypassed')
+            stamp += 1
+            with second.assignment(count_success=False) as other:
+                self.assertNotEqual(other['_cookie_pool_selected'], selected['_cookie_pool_selected'])
+
+    def test_zero_shared_spacing_preserves_account_spacing_and_cooldown(self):
+        config = {**self.config, 'youtube_cookie_pool_start_interval': 0}
+        first, second = self.pool(config), self.pool(config)
+        stamp = time.time()
+        first.router.clock = second.router.clock = lambda db: stamp
+        with first.assignment(count_success=False) as selected:
+            identity = selected['_cookie_pool_selected']
+            self.assertEqual(selected['_cookie_pool_next_at'], stamp)
+            with second.assignment(count_success=False) as other:
+                self.assertNotEqual(other['_cookie_pool_selected'], identity)
+        with self.assertRaises(PipelineBusy):
+            with second.assignment(profile_id=identity, count_success=False):
+                self.fail('Account interval bypassed')
+        scope = next(scope for account, _, scope in first.accounts if account == identity)
+        first.outcome(scope, YouTubeAccountLimited('Your account has been rate-limited'))
+        stamp += 120
+        with self.assertRaises(PipelineBusy):
+            with second.assignment(profile_id=identity, count_success=False):
+                self.fail('Account cooldown bypassed')
+
+    def test_reducing_shared_interval_preserves_reserved_deadline(self):
+        first = self.pool({**self.config, 'youtube_cookie_pool_start_interval': 10})
+        second = self.pool({**self.config, 'youtube_cookie_pool_start_interval': 0})
+        stamp = time.time()
+        first.router.clock = second.router.clock = lambda db: stamp
+        with first.assignment(count_success=False):
+            pass
+        stamp += 3
+        with self.assertRaises(PipelineBusy):
+            with second.assignment(count_success=False):
+                self.fail('Saved configuration erased the reserved window')
+        stamp += 7
+        with second.assignment(count_success=False) as selected:
+            self.assertEqual(selected['_cookie_pool_next_at'], stamp)
+
+
     def test_duplicate_credentials_share_one_account(self):
         duplicate = self.profiles.add('copy', self.profiles.require(self.ids[0]).read_bytes() +
             b'.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tDIFFERENT_AUXILIARY_COOKIE\n')['id']
@@ -76,6 +129,20 @@ class CookiePoolTests(unittest.TestCase):
             with self.assertRaises(PipelineBusy):
                 with second.assignment():
                     self.fail('Duplicate Cookie bypassed per-account cap')
+
+    def test_public_profile_snapshot_contains_safe_idle_evidence_for_each_cookie(self):
+        duplicate = self.profiles.add('copy', self.profiles.require(self.ids[0]).read_bytes())['id']
+        pool = self.pool({**self.config, 'youtube_cookie_pool': self.ids + [duplicate]})
+        with pool.assignment() as selected:
+            status = pool.status()
+            public = status['capacity_summary']['profiles']
+            self.assertEqual(len(public), 4)
+            account = next(a for a in public if a['id'] == selected['_cookie_pool_selected'])
+            self.assertEqual(account['active'], 1)
+            self.assertGreater(account['next_start_at'], time.time())
+            self.assertEqual(next(a for a in public if a['id'] == duplicate)['shared_with'], self.ids[0])
+            for value in public:
+                self.assertFalse({'policies', 'denied_tasks', 'credential', 'content', 'cookies'} & value.keys())
 
     def test_pool_ignores_instance_concurrency_and_mode_but_preserves_warmup(self):
         config = {**self.config, 'youtube_cookie_pool': self.ids[:2],

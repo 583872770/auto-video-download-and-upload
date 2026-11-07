@@ -10,7 +10,7 @@ import uuid
 
 from sqlalchemy import func, select, text
 
-from webapp.database import instances, settings, tasks, counters, download_lists
+from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles
 from webapp.disk_budget import DISK_FIELDS
 from webapp.service_role import normalize_role
 
@@ -35,6 +35,7 @@ LOCAL_FIELDS.add('youtube_throttle_cooldown')
 LOCAL_FIELDS.add('youtube_sleep_preset')
 LOCAL_FIELDS.add('youtube_cookie_pool')
 LOCAL_FIELDS.add('youtube_cookie_session_limit')
+LOCAL_FIELDS.add('youtube_cookie_pool_start_interval')
 from webapp.youtube_pacing import PACING_FIELDS
 LOCAL_FIELDS |= PACING_FIELDS
 ONLINE_SECONDS = 45
@@ -277,7 +278,7 @@ class Fleet:
                 progress = live[task['id']]['progress'] if task['id'] in live else json.loads(task['progress'] or '{}')
                 by_instance.setdefault(task['instance_id'], []).append(progress)
                 current_tasks.setdefault(task['instance_id'], []).append({
-                    key: task[key] for key in ('id', 'batch_id', 'video_id', 'title')} | {'progress': progress})
+                    key: task[key] for key in ('id', 'batch_id', 'video_id', 'title', 'lease_until')} | {'progress': progress})
             totals = {}
             for scope, status, value in db.execute(select(counters).where(counters.c.scope.startswith('instance:'))):
                 totals.setdefault(scope.removeprefix('instance:'), {})[status] = int(value)
@@ -311,13 +312,21 @@ class Fleet:
                               for row in rows if row['role'] in DOWNLOAD_ROLES]
             context = read_context(db, configurations, stamp)
             configs = dict(configurations)
+            profile_ids = {profile for config in configs.values() for profile in config.get('youtube_cookie_pool', [])}
+            profile_names = {}
+            if profile_ids:
+                for profile in db.execute(select(cookie_profiles.c.scope, cookie_profiles.c.id, cookie_profiles.c.name)
+                        .where(cookie_profiles.c.scope.in_(configs), cookie_profiles.c.id.in_(profile_ids),
+                               cookie_profiles.c.deleted == 0)).mappings():
+                    profile_names.setdefault(profile['scope'], []).append(dict(profile))
             from webapp.risk_diagnostics import observed, read_auth
             auths = read_auth(db, configs)
             for item in result:
                 if item['id'] in configs:
                     item['concurrency'] = diagnose(configs[item['id']], item['id'], by_instance.get(item['id'], []),
                         item['throughput'], context, stamp, global_limit=budget, global_running=sum(counts.values()),
-                        paused=item['paused'], online=item['online'], current_tasks=item['current_tasks'])
+                        paused=item['paused'], online=item['online'], current_tasks=item['current_tasks'],
+                        cookie_profiles=profile_names.get(item['id'], []))
                     from webapp.subtitles import summary as subtitle_summary
                     item['concurrency']['subtitles'] = subtitle_summary(db, stamp, item['id'])
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],

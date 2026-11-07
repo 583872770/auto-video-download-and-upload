@@ -17,6 +17,7 @@ from webapp.download_policy import (RecoveryPolicy, failure_evidence, recovery_p
 from webapp.cookie_profiles import CookieProfiles
 from webapp.throughput import MAX_TRANSFERS, PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
+from webapp.youtube_pacing import cookie_pool_start_interval
 
 
 # A newly imported account remains deliberately conservative.  Once the same
@@ -88,6 +89,7 @@ def session_view(identity, name, state, config, stamp):
     cooling = state.get('cooldown_until', 0) > stamp
     recovery = bool(state.get('recovery_mode'))
     return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
+        active=int(state.get('active', 0)), next_start_at=state.get('next_at', 0),
         cooldown_kind=state.get('cooldown_kind'), cooldown_until=state.get('cooldown_until', 0),
         last_failure_at=state.get('last_failure_at', 0),
         denied_count=len(state.get('denied_tasks', [])),
@@ -132,6 +134,7 @@ def capacity_summary(snapshot, stamp=None):
             'execution_limit': MAX_TRANSFERS, 'session_limit': snapshot.get('session_limit'),
             'identity_verified': False, 'capacity': capacity, 'active': active, 'warming_sessions': warmup,
             'min_interval': min(intervals) if intervals else None,
+            'profiles': snapshot.get('profile_states', []),
             'sessions': session_states, 'cooling_sessions': len(cooling_sessions),
             'available_sessions': len(sessions) - len(cooling_sessions),
             'recovery_sessions': len(recovery_sessions),
@@ -158,11 +161,13 @@ class CookiePool:
         self.unavailable = []
         self.aliases = {}
         self.profile_names = {}
+        profile_items = {item['id']: item for item in profiles.items()}
         seen = {}
         for identity in config.get('youtube_cookie_pool', []):
+            item = profile_items.get(identity)
+            self.profile_names[identity] = item.get('name', identity) if item else identity
             try:
                 target = profiles.require(identity)
-                item = next((value for value in profiles.items() if value['id'] == identity), None)
                 data = target.read_bytes()
                 group_key = account_group_key(item.get('name') if item else '', data)
                 credential = 'credential:' + credential_key(data)
@@ -209,6 +214,11 @@ class CookiePool:
                                  'id': identity, 'shared_with': canonical})
             views = [session_view(a['id'], self.profile_names.get(a['id'], a['id']), a, self.config, stamp)
                      for a in accounts if not a.get('shared_with')]
+            profile_views = [dict(session_view(a['id'], self.profile_names.get(a['id'], a['id']), a,
+                                              self.config, stamp), shared_with=a.get('shared_with'))
+                             for a in accounts]
+            profile_views.extend({'id': a['id'], 'name': self.profile_names.get(a['id'], a['id']),
+                                  'state': 'unavailable'} for a in self.unavailable)
             result = {'halted': bool(global_state.get('halted')),
                     'reason': halt_message(global_state) if global_state.get('halted') else None,
                     'halted_at': global_state.get('halted_at'), 'halt_kind': global_state.get('halt_kind'),
@@ -221,7 +231,8 @@ class CookiePool:
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
                     'configured_files': len(self.config.get('youtube_cookie_pool', [])),
                     'execution_limit': MAX_TRANSFERS, 'session_limit': configured,
-                    'accounts': accounts + self.unavailable, 'session_states': views}
+                    'accounts': accounts + self.unavailable, 'session_states': views,
+                    'profile_states': profile_views}
             result['capacity_summary'] = capacity_summary(result, stamp)
             return result
         return self.router.transaction_call(read)
@@ -294,13 +305,10 @@ class CookiePool:
             jitter = min(10, max(2, interval * .2))
             state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, jitter))
             router._save(db, scope, state)
-            # This floor remains shared by all accounts on the same instance,
-            # but should not become the bottleneck once each account has its
-            # own 30s/45s lease.  With three mature sessions this allows at
-            # most six starts per minute while each session remains at its
-            # individual interval.
+            # The same setting also spaces parser starts in ChannelScheduler.
+            # Per-account intervals and cooldowns remain independent.
             gate = router._state(db, self.global_scope)
-            gate['next_at'] = stamp + max(10, 30 / len(self.accounts))
+            gate['next_at'] = stamp + cookie_pool_start_interval(self.config)
             router._save(db, self.global_scope, gate)
             return (identity, path, scope, token, stamp), 0
 
@@ -316,7 +324,7 @@ class CookiePool:
             yield {**self.config, 'youtube_cookie': str(path), '_cookie_pool_selected': identity,
                    '_cookie_pool_profile_name': self.profile_names.get(identity, identity),
                    '_cookie_pool_scope': scope, '_cookie_pool_admitted_at': admitted_at,
-                   '_cookie_pool_next_at': admitted_at + max(10, 30 / len(self.accounts))}
+                   '_cookie_pool_next_at': admitted_at + cookie_pool_start_interval(self.config)}
             completed = True
         except BaseException as failure:
             error = failure

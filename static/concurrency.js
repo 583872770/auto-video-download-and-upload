@@ -50,9 +50,58 @@ function transferSlotState(stage) {
   if (stage === 'extracting') return {kind: 'preparing', label: '准备传输'};
   return {kind: 'reserved', label: '已占用 · 状态同步中'};
 }
+function cookieTaskState(stage) {
+  const labels = {extracting: '解析视频', waiting_transfer: '等待传输名额', waiting_resolver: '等待解析名额',
+    waiting_cookie: '等待 Cookie', waiting_browser: '等待浏览器', waiting_verification: '等待网页验证',
+    checking_environment: '检查环境', checking_login: '检查登录', switching_provider: '切换渠道',
+    waiting_processing: '等待后处理', waiting_api_conversion: '等待转换', preparing_workspace: '准备工作目录',
+    preparing_proxy: '准备代理', disk_wait: '等待磁盘空间', preparing: '准备任务'};
+  if (labels[stage]) return {kind: 'preparing', label: labels[stage]};
+  const status = transferSlotState(stage);
+  return status.kind === 'reserved' ? {...status, label: '状态同步中'} : status;
+}
+function cookieAccountsHTML(data, {compact = false} = {}) {
+  const allocation = data.transfer_allocation;
+  const cookies = data.cookie_allocation;
+  const current = data.online && Date.now() / 1000 - data.time <= 20;
+  const known = current && data.cookie_pool?.known;
+  const heading = `<div class="transfer-allocation-heading"><div><h3>Cookie 账号 <strong>${cookies.accounts.length}<small> 个</small></strong></h3><p>${known ? `已占用 ${allocation.occupied.length} 路 · 空闲 ${allocation.unoccupied} 路${allocation.restricted ? ` · 受限 ${allocation.restricted} 路` : ''}` : current ? `已占用 ${allocation.occupied.length} 路 · 剩余额度待确认` : '当前任务与等待原因待确认'}</p></div><span class="transfer-effective">传输上限 <b>${allocation.configured}</b> 路<br>当前额度估算 <b>${known ? allocation.effective : '—'}</b> 路</span></div>`;
+  function taskHTML(task) {
+    const status = cookieTaskState(task.stage);
+    return `<button type="button" class="cookie-task ${status.kind}" data-task="${escapeHTML(task.task_id)}" title="${escapeHTML(task.title)} · 查看任务日志"><span class="cookie-task-stage">${status.label}</span><span class="cookie-task-title">${escapeHTML(task.title)}</span><small>${task.speed > 0 ? escapeHTML(bytes(task.speed)) + '/s' + ' · ' : ''}${task.transfer_reserved ? '占用传输名额' : '未占用传输名额'}</small></button>`;
+  }
+  const grid = compact ? '' : `<div class="cookie-runtime-grid">${cookies.accounts.map(account => {
+    const tasks = account.tasks || [];
+    const live = current && account.known;
+    const downloading = tasks.filter(task => task.stage === 'downloading').length;
+    const reasons = account.reasons || [];
+    const idleLabels = {paused: '已停止领取', account_interval: '等待账号间隔', pool_interval: '等待共用启动间隔',
+      start_interval: '等待实例启动间隔', transfer_limit: '等待传输额度', disk: '等待磁盘空间',
+      removed: '已移出账号池', unassigned: '待分配任务'};
+    const blocked = reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
+    const status = !live ? {kind: 'unknown', label: '状态待确认'} : blocked
+      ? {kind: 'restricted', label: account.state === 'unavailable' ? 'Cookie 不可用' : account.state === 'cooldown' ? '账号冷却中' : '暂停新增任务'}
+      : downloading ? {kind: 'transferring', label: `${downloading} 个正在传输`}
+      : tasks.length ? {kind: 'preparing', label: `${tasks.length} 个任务处理中`}
+      : account.shared_with ? {kind: 'reserved', label: '共用账号额度'}
+      : {kind: reasons[0]?.code === 'unassigned' ? 'unoccupied' : 'waiting', label: idleLabels[reasons[0]?.code] || '当前无任务'};
+    const reasonHTML = current
+      ? reasons.map(reason => `<li data-cookie-reason="${escapeHTML(reason.code)}">${escapeHTML(reason.label)}${reason.until > data.time ? ` · ${concurrencyCountdown(reason.until - data.time, data.time)}` : ''}</li>`).join('')
+      : '<li>实例离线或账号采样未更新，当前原因待确认。</li>';
+    const metadata = account.shared_with ? `共享账号：${escapeHTML(account.shared_name || account.shared_with)}`
+      : account.state === 'cooldown' ? '冷却期间不再分配新任务，已开始的任务可结束'
+      : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}`;
+    return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
+  }).join('')}</div>`;
+  const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
+    ? '已保存的账号池共用启动间隔已关闭。' : `已保存的账号池共用启动间隔为 ${Number(cookies.pool_start_interval)} 秒。`
+    : '账号池启动间隔等待采样确认。';
+  return `<section class="transfer-allocation cookie-allocation" aria-label="Cookie 账号任务与等待原因">${heading}${grid}${!compact && current && cookies.unassigned_tasks?.length ? `<div class="transfer-outside"><strong>尚未关联 Cookie 的任务</strong><div class="cookie-unassigned-tasks">${cookies.unassigned_tasks.map(taskHTML).join('')}</div></div>` : ''}<p class="transfer-slot-note">每格对应一份已选 Cookie；同一账号的重复 Cookie 共用额度。${spacing}原因依据当前准入记录；等待时间到期后仍需满足其他条件。未观测到限制不代表可以立即启动。点击视频查看任务日志。</p></section>`;
+}
 function transferSlotsHTML(data, {compact = false} = {}) {
   const allocation = data.transfer_allocation;
   if (!allocation) return '<p class="capacity-empty">等待传输名额状态更新…</p>';
+  if (data.cookie_allocation) return cookieAccountsHTML(data, {compact});
   const current = data.online && Date.now() / 1000 - data.time <= 20;
   const allowanceKnown = current && (!data.cookie_pool || data.cookie_pool.known);
   const occupied = allocation.occupied || [];
@@ -65,7 +114,7 @@ function transferSlotsHTML(data, {compact = false} = {}) {
   for (let index = 0; index < allocation.unoccupied + allocation.restricted; index++) {
     const free = index < allocation.unoccupied;
     tiles.push(!allowanceKnown ? {kind: 'unknown', label: '状态待确认'} : free
-      ? {kind: 'unoccupied', label: '未占用', title: data.paused ? '已停止领取新任务' : '等待任务进入传输'}
+      ? {kind: 'unoccupied', label: '空闲名额', title: data.paused ? '已停止领取新任务' : '当前无任务占用'}
       : {kind: 'restricted', label: '暂不可用', title: '受当前调度额度限制'});
   }
   const stageLabels = {waiting_request: '等待请求间隔', waiting_cookie: '等待 Cookie', extracting: '解析视频',
@@ -90,6 +139,16 @@ function youtubePacingRuntimeHTML(data, draft = {}) {
   const minimum = Number(pacing?.minimum_interval ?? data.youtube_start_interval ?? 0);
   const stale = Date.now() / 1000 - data.time > 20;
   const current = data.online && !stale;
+  if (data.cookie_pool) {
+    const shared = Number(data.youtube_cookie_pool_start_interval ?? data.cookie_allocation?.pool_start_interval ?? 10);
+    const pending = (draft.shared !== undefined && draft.shared !== '' && Number(draft.shared) !== shared) ||
+      (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum) ||
+      (draft.mode !== undefined && draft.mode !== mode);
+    const pool = data.cookie_pool;
+    const next = current && pool.known && pool.next_start_at > data.time
+      ? `<p>下一账号池准入窗口：${concurrencyCountdown(pool.next_start_at - data.time, data.time)}</p>` : '';
+    return `<div class="youtube-pacing-runtime-heading"><strong>已保存的账号池共用启动间隔：${shared ? shared + ' 秒' : '已关闭'}</strong><span>全部 Cookie 共用</span></div><p>每个账号自身的最小间隔设置：${minimum} 秒${current && pool.known && pool.min_interval ? `；当前会话采样最短 ${Number(pool.min_interval)} 秒` : ''}。</p>${pacing ? `<p>渐进调速另行约束启动，当前记录间隔 ${Number(pacing.interval)} 秒；累计预算仍生效。</p>` : ''}${next}<p>保存后，后续领取的任务使用新配置；已预留的等待窗口保留到期。账号自身间隔、并发与冷却仍独立生效。</p>${!current || !pool.known ? '<p class="youtube-pacing-runtime-note">运行采样未更新，当前实际等待以新鲜采样为准。</p>' : ''}${pending ? '<p class="youtube-pacing-runtime-note">请求节奏有待确认的修改；上方显示已保存值，统一点击“保存设置”后生效。</p>' : ''}`;
+  }
   const pending = (draft.mode !== undefined && draft.mode !== mode) ||
     (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum);
   const actual = pacing && pacing.initialized === false ? '待首次启动确认' : `${Number(pacing?.interval ?? minimum)} 秒`;
@@ -106,7 +165,8 @@ function renderYouTubePacingRuntime(data = fleetEnabled
   ? state.fleet?.items.find(value => value.id === state.instanceId)?.concurrency : state.status?.concurrency) {
   const form = document.querySelector('#settings-form');
   const draft = {mode: form?.elements.youtube_pacing_mode?.value,
-    minimum: form?.elements.youtube_start_interval?.value, saved: !settingsDirty};
+    minimum: form?.elements.youtube_start_interval?.value,
+    shared: form?.elements.youtube_cookie_pool_start_interval?.value, saved: !settingsDirty};
   for (const target of document.querySelectorAll('[data-youtube-pacing-runtime]')) {
     target.innerHTML = youtubePacingRuntimeHTML(data, draft);
     target.dataset.capacitySampledAt = data?.time || '';
@@ -128,7 +188,8 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const subtitleInterval = subtitles.interval_seconds ? `最少请求间隔：${concurrencyCountdown(subtitles.interval_seconds, data.time)}。` : '';
   const pacing = data.youtube_pacing;
   if (pacing) notices.push(['info', 'YouTube 渐进调速', `当前启动间隔 ${Number(pacing.interval)} 秒 · 最近一小时 ${Number(pacing.hourly_used)} / ${Number(pacing.hourly_limit)} 次 · 最近二十四小时 ${Number(pacing.daily_used)} / ${Number(pacing.daily_limit)} 次。${pacing.interval_reason ? escapeHTML(pacing.interval_reason) : ''}${pacing.next_start_at > data.time ? '下一启动窗口：' + concurrencyCountdown(pacing.next_start_at - data.time, data.time) + '。' : ''}${escapeHTML(pacing.reason || '')}。文件传输可并行，累计预算包含启动许可、重试及字幕请求。`, '#settings', '查看请求节奏']);
-  if (!pacing && data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.cookie_pool?.min_interval ? `账号池还会按每个核心会话至少 ${Number(data.cookie_pool.min_interval)} 秒错峰启动。` : ''}${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
+  if (!pacing && data.cookie_pool) notices.push(['info', '账号池请求节奏', `已保存的共用启动间隔：${Number(data.youtube_cookie_pool_start_interval ?? 10)} 秒（0 表示关闭）。${data.cookie_pool.min_interval ? `当前账号会话采样最短启动间隔 ${Number(data.cookie_pool.min_interval)} 秒。` : ''}账号与共用间隔分别生效，已开始的文件传输可并行。`, '#settings', '查看设置']);
+  else if (!pacing && data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
 
   if (subtitles.queued || subtitles.running || subtitles.failed) notices.push(['info', '字幕独立补下载', `待补 ${subtitles.queued || 0} · 执行中 ${subtitles.running || 0} · 补下载失败 ${subtitles.failed || 0}。${subtitleInterval}${subtitles.cooldown_seconds ? '字幕上游冷却'+subtitleRate+'：'+concurrencyCountdown(subtitles.cooldown_seconds, data.time)+'。' : ''}字幕队列不占用视频传输额度，也不改变视频成功及计费；完成当前后停止时不再领取新字幕任务。`, '#tasks', '查看执行日志']);
   if (!data.online || stale) notices.push(['unavailable', !data.online ? '实例离线' : '状态暂未更新', '下方保留最近数据，无法确认当前可用额度。请检查实例连接。', '#instances', '查看实例']);
@@ -178,14 +239,14 @@ function renderConcurrency() {
   renderYouTubePacingRuntime(data);
   for (const target of document.querySelectorAll('[data-concurrency-panel]')) {
     const focused = target.contains(document.activeElement) ? document.activeElement : null;
-    const focusedTask = focused?.closest('.transfer-slot[data-task]')?.dataset.task;
+    const focusedTask = focused?.closest('[data-task]')?.dataset.task;
     const focusedDetails = focused?.tagName === 'SUMMARY' ? focused.parentElement.dataset.capacityDetails : null;
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
     target.innerHTML = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});
     target.dataset.capacitySampledAt = data?.time || '';
     target.classList.toggle('capacity-stale', !!data && Date.now() / 1000 - data.time > 20);
     for (const node of target.querySelectorAll('details[data-capacity-details]')) node.open = opened.has(node.dataset.capacityDetails);
-    if (focusedTask) [...target.querySelectorAll('.transfer-slot[data-task]')]
+    if (focusedTask) [...target.querySelectorAll('[data-task]')]
       .find(node => node.dataset.task === focusedTask)?.focus({preventScroll: true});
     if (focusedDetails) [...target.querySelectorAll('details[data-capacity-details]')]
       .find(node => node.dataset.capacityDetails === focusedDetails)?.querySelector(':scope > summary')?.focus({preventScroll: true});

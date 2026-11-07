@@ -9,6 +9,11 @@ DAY = 86400
 CLEAN_WINDOW = 6 * 3600
 
 
+def cookie_pool_start_interval(config):
+    """Shared pool/instance start spacing; zero disables only this interval."""
+    return int(config.get('youtube_cookie_pool_start_interval', 10))
+
+
 def session_scope(config, base, instance):
     if config.get('_cookie_pool_scope', '').startswith('youtube-account:'):
         return 'youtube-pacing:session:' + config['_cookie_pool_scope'].removeprefix('youtube-account:')

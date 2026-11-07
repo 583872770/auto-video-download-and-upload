@@ -127,6 +127,39 @@ class YouTubePolicyTests(unittest.TestCase):
         with self.assertRaises(DownloadLeaseLost):
             scheduler.wait_youtube_start(scheduler.channels[0])
 
+    def test_pool_parser_uses_configured_shared_interval_and_preserves_old_window(self):
+        scheduler = self.scheduler()
+        scheduler.config.update(_cookie_pool_selected='fixture', youtube_cookie_pool_start_interval=3,
+                                youtube_start_interval=60)
+        stamp = time.time()
+        scheduler.clock = lambda db: stamp
+        read = lambda db, now: scheduler._state(db, 'youtube-start:local')
+        scheduler.wait_youtube_start(scheduler.channels[0])
+        self.assertEqual(scheduler.transaction_call(read)['next_at'], stamp + 3)
+        def advance(delay):
+            nonlocal stamp
+            stamp += delay
+        with patch('webapp.channel_scheduler.time.sleep', side_effect=advance) as sleep:
+            scheduler.wait_youtube_start(scheduler.channels[0])
+        self.assertAlmostEqual(sum(call.args[0] for call in sleep.call_args_list), 3)
+        reserved = stamp + 3
+        scheduler.config['youtube_cookie_pool_start_interval'] = 0
+        with patch('webapp.channel_scheduler.time.sleep', side_effect=advance) as sleep:
+            scheduler.wait_youtube_start(scheduler.channels[0])
+        self.assertEqual(stamp, reserved)
+        self.assertEqual(scheduler.transaction_call(read)['next_at'], stamp)
+        with patch('webapp.channel_scheduler.time.sleep', side_effect=AssertionError('Zero interval slept')):
+            scheduler.wait_youtube_start(scheduler.channels[0])
+
+    def test_shared_pool_setting_does_not_change_nonpool_parser_spacing(self):
+        scheduler = self.scheduler()
+        scheduler.config['youtube_cookie_pool_start_interval'] = 600
+        stamp = time.time()
+        scheduler.clock = lambda db: stamp
+        scheduler.wait_youtube_start(scheduler.channels[0])
+        state = scheduler.transaction_call(lambda db, now: scheduler._state(db, 'youtube-start:local'))
+        self.assertEqual(state['next_at'], stamp + 1)
+
     def test_youtube_429_has_conservative_floor_and_respects_longer_retry_after(self):
         scheduler = self.scheduler()
         for requested, expected in ((5,300),(900,900)):

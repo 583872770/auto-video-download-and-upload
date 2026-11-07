@@ -11,6 +11,38 @@ from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_pool_start_interval_saves_and_rejects_invalid_values(self):
+        key = 'youtube_cookie_pool_start_interval'
+        self.assertEqual(self.client.get('/api/config').json['config'][key], 10)
+        for value in (3, 0, 600):
+            with self.subTest(value=value):
+                response = self.client.put('/api/config', json={key: value}, headers=self.headers)
+                self.assertEqual(response.status_code, 200, response.json)
+                self.assertEqual(self.client.get('/api/config').json['config'][key], value)
+                if self.store.fleet:
+                    self.assertEqual(self.store.runtime()[key], value)
+                else:
+                    with self.store.connect() as db:
+                        saved = json.loads(db.execute(select(settings.c.value).where(
+                            settings.c.key == 'download_settings')).scalar_one())
+                    self.assertEqual(saved['config'][key], value)
+        for value in (-1, 601, True, 1.5, 'bad'):
+            with self.subTest(invalid=value):
+                response = self.client.put('/api/config', json={key: value}, headers=self.headers)
+                self.assertEqual(response.status_code, 400, response.json)
+                self.assertEqual(self.client.get('/api/config').json['config'][key], 600)
+
+    def test_pool_interval_change_applies_to_next_claim_without_rewriting_running_task(self):
+        key = 'youtube_cookie_pool_start_interval'
+        identity = self.create()
+        self.start(identity)
+        first = self.store.claim(self.store.owner)
+        self.assertEqual(first['payload']['config'][key], 10)
+        response = self.client.put('/api/config', json={key: 3}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.store.get(first['id'], private=True)['payload']['config'][key], 10)
+        self.assertEqual(self.store.claim('next-owner')['payload']['config'][key], 3)
+
     def test_cookie_session_limit_saves_as_instance_policy(self):
         response = self.client.put('/api/config', json={'youtube_cookie_session_limit': 5}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)

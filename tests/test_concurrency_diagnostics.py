@@ -59,6 +59,17 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         rate.update(time=self.stamp, policy=[])
         self.assertEqual(self.show(rate=rate)['transfer_limit'], 2)
 
+    def test_pool_spacing_reports_saved_value_even_without_fresh_runtime(self):
+        self.config['youtube_cookie_pool'] = ['a', 'b']
+        original = policy_key(self.config)
+        for interval in (3, 0, 600):
+            self.config['youtube_cookie_pool_start_interval'] = interval
+            self.assertNotEqual(policy_key(self.config), original)
+            value = self.show()
+            self.assertFalse(value['cookie_pool']['known'])
+            self.assertEqual(value['youtube_cookie_pool_start_interval'], interval)
+            self.assertEqual(value['cookie_allocation']['pool_start_interval'], interval)
+
     def test_auto_native_parallel_connections_reduce_effective_video_limit(self):
         self.config.update(throughput_mode='auto', worker_count=4,
                            fragment_concurrency=4, download_connection_limit=16,
@@ -157,3 +168,72 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
     def test_cookie_capacity_is_not_the_twelve_channel_slots(self):
         value = self.allocation(['downloading'] * 3, pool=True)
         self.assertEqual((value['configured'], value['effective']), (12, 12))
+
+    def cookie_cards(self, profiles, *, states=None, current_tasks=(), paused=False, stamp=None):
+        self.config.update(youtube_cookie_pool=['a', 'b', 'copy', 'bad'], builtin_transfer_limit=12,
+                           builtin_connection_limit=64, download_connection_limit=64)
+        pool = {'known': True, 'capacity': 6, 'effective_sessions': 2, 'reason': 'ready',
+                'sampled_at': self.stamp, 'profiles': profiles}
+        rate = {'policy': policy_key(self.config), 'time': self.stamp, 'cookie_pool': pool}
+        value = diagnose(self.config, 'node', [], rate, (states or {}, {}, {}, {}),
+                         self.stamp if stamp is None else stamp, current_tasks=current_tasks,
+                         cookie_profiles=[{'id': p, 'name': 'Cookie ' + p} for p in self.config['youtube_cookie_pool']],
+                         paused=paused)
+        return {a['id']: a for a in value['cookie_allocation']['accounts']}
+
+    def test_idle_accounts_explain_observed_account_and_shared_gates(self):
+        profiles = [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2, 'next_start_at': self.stamp + 60},
+                    {'id': 'b', 'state': 'cooldown', 'active': 0, 'limit': 0, 'cooldown_until': self.stamp + 300},
+                    {'id': 'copy', 'state': 'ready', 'shared_with': 'a'},
+                    {'id': 'bad', 'state': 'unavailable'}]
+        cards = self.cookie_cards(profiles, states={'youtube-cookie-pool:node': {'next_at': self.stamp + 10}})
+        reasons = lambda identity: {r['code']: r for r in cards[identity]['reasons']}
+        self.assertEqual(set(reasons('a')), {'account_interval', 'pool_interval'})
+        self.assertEqual(reasons('a')['account_interval']['until'], self.stamp + 60)
+        self.assertIn('account_cooldown', reasons('b'))
+        self.assertNotIn('account_busy', reasons('b'))
+        self.assertEqual(set(reasons('copy')), {'shared'})
+        self.assertEqual(set(reasons('bad')), {'unavailable'})
+        self.assertEqual(cards['a']['name'], 'Cookie a')
+
+    def test_account_tasks_group_by_id_and_include_preparation_without_permits(self):
+        tasks = [{'id': 'one', 'lease_until': self.stamp + 60,
+                  'progress': {'cookie_profile_id': 'a', 'stage': 'extracting'}},
+                 {'id': 'two', 'lease_until': self.stamp + 60,
+                  'progress': {'cookie_profile_id': 'a', 'stage': 'waiting_request'}},
+                 {'id': 'old', 'lease_until': self.stamp - 1,
+                  'progress': {'cookie_profile_id': 'a', 'stage': 'downloading'}},
+                 {'id': 'removed', 'progress': {'cookie_profile_id': 'removed', 'stage': 'processing'}}]
+        cards = self.cookie_cards([{'id': 'a', 'state': 'ready', 'active': 2, 'limit': 2}], current_tasks=tasks)
+        self.assertEqual([t['task_id'] for t in cards['a']['tasks']], ['one', 'two'])
+        self.assertTrue(all(not t['transfer_reserved'] for t in cards['a']['tasks']))
+        self.assertEqual(cards['a']['reasons'][0]['code'], 'account_busy')
+        self.assertIn('removed', {r['code'] for r in cards['removed']['reasons']})
+
+    def test_missing_or_stale_account_samples_do_not_invent_idle_reasons(self):
+        cards = self.cookie_cards([])
+        self.assertTrue(all(not a['known'] for a in cards.values()))
+        self.assertEqual(cards['a']['reasons'][0]['code'], 'unknown')
+        cards = self.cookie_cards([{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}], stamp=self.stamp + 21)
+        self.assertFalse(cards['a']['known'])
+        self.assertEqual(cards['a']['reasons'][0]['code'], 'unknown')
+
+    def test_no_observed_gate_does_not_claim_queue_is_empty_or_video_can_start(self):
+        profiles = [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}]
+        card = self.cookie_cards(profiles)['a']
+        self.assertEqual(card['reasons'][0]['code'], 'unassigned')
+        self.assertIn('未观测到', card['reasons'][0]['label'])
+        card = self.cookie_cards(profiles, paused=True)['a']
+        self.assertEqual(card['reasons'][0]['code'], 'paused')
+
+    def test_shared_start_gates_show_later_deadline_without_duplicate_reasons(self):
+        cards = self.cookie_cards([{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}], states={
+            'youtube-cookie-pool:node': {'next_at': self.stamp + 5},
+            'youtube-start:node': {'next_at': self.stamp + 9}})
+        self.assertEqual(len(cards['a']['reasons']), 1)
+        self.assertEqual(cards['a']['reasons'][0]['until'], self.stamp + 9)
+
+    def test_expired_cooldown_snapshot_does_not_invent_full_account_concurrency(self):
+        cards = self.cookie_cards([{'id': 'a', 'state': 'cooldown', 'active': 0, 'limit': 0,
+                                  'cooldown_until': self.stamp - 1}])
+        self.assertEqual(cards['a']['reasons'][0]['code'], 'account_refresh')

@@ -29,7 +29,7 @@ def policy_key(config):
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
                 'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool',
-                'youtube_cookie_session_limit')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval')}, sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def automatic(config):

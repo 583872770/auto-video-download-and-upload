@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from webapp.channels import backend_key, group_caps, observed_group, registry
 from webapp.database import download_permits as permits, download_resources as resources, tasks
 from webapp.throughput import PipelineBusy, runtime_limits
+from webapp.youtube_pacing import cookie_pool_start_interval
 from webapp.download_policy import (failure_evidence, recovery_policy, retry_after,
                                     cooldown_deadline, remember_decision)
 
@@ -389,12 +390,9 @@ class ChannelScheduler:
             return
         interval = int(self.config.get('youtube_start_interval', 3))
         if self.config.get('_cookie_pool_selected'):
-            # Account-specific spacing is admitted by CookiePool. Retain a
-            # shared instance floor without making the pool itself the
-            # bottleneck. CookiePool still enforces each core session's
-            # persisted 30s/45s/60s interval.
-            interval = max(10, 30 // max(1, len(self.config.get('youtube_cookie_pool', []))))
-        if not self.enabled or channel.adapter != 'yt_dlp' or interval <= 0:
+            # Match account admission; do not retain a separate hidden 10s floor.
+            interval = cookie_pool_start_interval(self.config)
+        if not self.enabled or channel.adapter != 'yt_dlp' or (interval <= 0 and not self.config.get('_cookie_pool_selected')):
             return
         def reserve(db, stamp):
             self._check_cookie_cooldown(db, stamp)
@@ -403,7 +401,9 @@ class ChannelScheduler:
                 raise DownloadLeaseLost('请求节奏等待期间任务租约已失效。')
             scope = 'youtube-start:' + self.instance
             state = self._state(db, scope)
-            delay = min(interval, max(0, state.get('next_at', 0) - stamp))
+            # A settings save must not cancel a previously reserved window,
+            # including when shared spacing is changed to zero.
+            delay = max(0, state.get('next_at', 0) - stamp)
             if delay:
                 return delay
             self._save(db, scope, {'next_at': stamp + interval, 'interval': interval})

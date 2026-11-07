@@ -33,6 +33,7 @@ DEFAULTS = {
     'youtube_sleep_preset': True,
     'youtube_cookie_pool': [],
     'youtube_cookie_session_limit': 2,
+    'youtube_cookie_pool_start_interval': 10,
     'youtube_pacing_mode': 'manual', 'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200,
     'postprocess_limit': 2,
     'downmp3_quality': 'best', 'downmp3_timeout': 300,
@@ -58,6 +59,7 @@ DOWNLOAD_FIELDS.add('youtube_sleep_preset')
 DOWNLOAD_FIELDS.add('youtube_throttle_cooldown')
 DOWNLOAD_FIELDS.add('youtube_cookie_pool')
 DOWNLOAD_FIELDS.add('youtube_cookie_session_limit')
+DOWNLOAD_FIELDS.add('youtube_cookie_pool_start_interval')
 from webapp.youtube_pacing import PACING_FIELDS
 DOWNLOAD_FIELDS |= PACING_FIELDS
 INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
@@ -75,6 +77,7 @@ INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
 INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))
 INTEGER_FIELDS['youtube_start_interval'] = (0, 600)
 INTEGER_FIELDS['youtube_cookie_session_limit'] = (1, 64)
+INTEGER_FIELDS['youtube_cookie_pool_start_interval'] = (0, 600)
 INTEGER_FIELDS['youtube_throttle_cooldown'] = (30, 3600)
 INTEGER_FIELDS['youtube_hourly_start_limit'] = (1, 5000)
 INTEGER_FIELDS['youtube_daily_start_limit'] = (1, 5000)
