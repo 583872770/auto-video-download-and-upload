@@ -1,5 +1,15 @@
 'use strict';
 
+// Countdown text changes locally each second; absolute deadlines and all other
+// markup still participate in the comparison so real state changes render.
+const capacityMarkup = new WeakMap();
+function capacityMarkupChanged(target, html) {
+  const key = html.replace(/(<span data-capacity-deadline="[^"]+">)[^<]*(<\/span>)/g, '$1$2');
+  if (capacityMarkup.get(target) === key) return false;
+  capacityMarkup.set(target, key);
+  return true;
+}
+
 const waitResourceNames = {
   upstream: '共享上游额度', 'local-upstream': '本实例渠道额度', quota: '共享渠道配额',
   connections: '共享连接预算', 'local-connections': '本机连接预算',
@@ -9,7 +19,7 @@ const waitResourceNames = {
   'route-probe': '未验证入口的单任务探测名额',
 };
 function concurrencyCountdown(seconds, sampledAt) {
-  const deadline = (sampledAt + seconds) * 1000;
+  const deadline = Math.round((sampledAt + seconds) * 1000);
   const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
   return `<span data-capacity-deadline="${deadline}">${left ? left + ' 秒' : '等待状态更新'}</span>`;
 }
@@ -168,7 +178,9 @@ function renderYouTubePacingRuntime(data = fleetEnabled
     minimum: form?.elements.youtube_start_interval?.value,
     shared: form?.elements.youtube_cookie_pool_start_interval?.value, saved: !settingsDirty};
   for (const target of document.querySelectorAll('[data-youtube-pacing-runtime]')) {
-    target.innerHTML = youtubePacingRuntimeHTML(data, draft);
+    if (target.closest('[hidden]')) continue;
+    const html = youtubePacingRuntimeHTML(data, draft);
+    if (capacityMarkupChanged(target, html)) target.innerHTML = html;
     target.dataset.capacitySampledAt = data?.time || '';
     target.classList.toggle('capacity-stale', !!data && (!data.online || Date.now() / 1000 - data.time > 20));
   }
@@ -230,7 +242,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
     <div class="capacity-notices">${riskFactsHTML(data, compact)}${notices.map(([kind, title, description, href, action]) => `<div class="capacity-notice ${kind}"><span class="capacity-notice-icon" aria-hidden="true">${kind === 'warning' ? '!' : 'i'}</span><div><strong>${escapeHTML(title)}</strong><p>${description}</p></div><a href="/${href}">${action} ↗</a></div>`).join('') || '<p class="capacity-clear">当前未检测到共享资源冷却或磁盘阻塞；任务准备、视频大小和上游响应仍会影响实际占用。</p>'}</div>
     <p class="capacity-footnote">本机连接预留 ${data.connection_used || 0} / ${data.connection_budget || 32}（文件与分片共用，非实际套接字数）</p>
     ${compact ? '' : details + riskResourcesHTML(data, key) + riskGuideHTML(key)}
-    <p class="capacity-footnote">每次请求读取共享额度，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p>
+    <p class="capacity-footnote">并发与共享额度定期刷新，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p>
     ${key === 'overview' ? '</details>' : ''}</div>`;
 }
 function renderConcurrency() {
@@ -238,13 +250,16 @@ function renderConcurrency() {
   const data = fleetEnabled ? item?.concurrency : state.status?.concurrency;
   renderYouTubePacingRuntime(data);
   for (const target of document.querySelectorAll('[data-concurrency-panel]')) {
+    if (target.closest('[hidden]')) continue;
+    const html = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});
+    target.dataset.capacitySampledAt = data?.time || '';
+    target.classList.toggle('capacity-stale', !!data && Date.now() / 1000 - data.time > 20);
+    if (!capacityMarkupChanged(target, html)) continue;
     const focused = target.contains(document.activeElement) ? document.activeElement : null;
     const focusedTask = focused?.closest('[data-task]')?.dataset.task;
     const focusedDetails = focused?.tagName === 'SUMMARY' ? focused.parentElement.dataset.capacityDetails : null;
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
-    target.innerHTML = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});
-    target.dataset.capacitySampledAt = data?.time || '';
-    target.classList.toggle('capacity-stale', !!data && Date.now() / 1000 - data.time > 20);
+    target.innerHTML = html;
     for (const node of target.querySelectorAll('details[data-capacity-details]')) node.open = opened.has(node.dataset.capacityDetails);
     if (focusedTask) [...target.querySelectorAll('[data-task]')]
       .find(node => node.dataset.task === focusedTask)?.focus({preventScroll: true});
@@ -253,10 +268,11 @@ function renderConcurrency() {
   }
 }
 setInterval(() => {
+  if (document.hidden) return;
   for (const node of document.querySelectorAll('[data-capacity-deadline]')) {
     const left = Math.max(0, Math.ceil((Number(node.dataset.capacityDeadline) - Date.now()) / 1000));
     node.textContent = left ? `${left} 秒` : '等待状态更新';
   }
   if ([...document.querySelectorAll('[data-capacity-sampled-at]')].some(node =>
-      node.dataset.capacitySampledAt && Date.now() / 1000 - Number(node.dataset.capacitySampledAt) > 20 && !node.classList.contains('capacity-stale'))) renderConcurrency();
+      !node.closest('[hidden]') && node.dataset.capacitySampledAt && Date.now() / 1000 - Number(node.dataset.capacitySampledAt) > 20 && !node.classList.contains('capacity-stale'))) renderConcurrency();
 }, 1000);

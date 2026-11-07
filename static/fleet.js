@@ -71,16 +71,21 @@ let fleetLoading = false;
 let fleetRetryAt = 0;
 let fleetFailures = 0;
 let fleetStructureKey = '';
+let fleetSampleAt = 0;
 async function loadFleet({ poll = false } = {}) {
-  if (!fleetEnabled || fleetLoading || (poll && Date.now() < fleetRetryAt)) return;
+  const view = location.hash.slice(1) || 'overview';
+  const interval = ['overview', 'settings', 'instances'].includes(view) ? 2000 : 10000;
+  if (!fleetEnabled || fleetLoading || (poll && (Date.now() < fleetRetryAt || Date.now() - fleetSampleAt < interval - 200))) return;
   fleetLoading = true;
+  fleetSampleAt = Date.now();
   const requestedInstance = state.instanceId;
+  const sampledAt = performance.now();
   try {
-  const data = await api('/api/instances');
+  const data = await api('/api/instances' + (poll ? '?poll=1' : ''));
   if (requestedInstance !== state.instanceId) return;
   fleetFailures = 0;
   state.fleet = data;
-  const view = location.hash.slice(1) || 'overview';
+  applyStartup(data.startup, sampledAt);
   const workers = data.items.filter(item => ['worker', 'hybrid'].includes(item.role));
   const previous = state.instanceId;
   const hadConfig = !!state.config;
@@ -136,7 +141,7 @@ async function loadFleet({ poll = false } = {}) {
     throw error;
   } finally {
     fleetLoading = false;
-    if (state.fleet && !fleetFailures) fleetRetryAt = Date.now() + (location.hash === '#instances' ? 2000 : 5000);
+    if (!fleetFailures) fleetRetryAt = 0;
   }
 }
 async function initializeFleet() {

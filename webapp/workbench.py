@@ -21,17 +21,25 @@ class Workbench:
         return row
 
     @staticmethod
-    def decorate_cookie_names(tasks, base, store):
+    def decorate_cookie_names(tasks, base, store, *, scope=None):
         """Attach the current Cookie label without exposing Cookie contents."""
-        if not tasks or not base:
+        if not tasks or not (base or scope):
             return tasks
-        ids = {((task.get('progress') or {}).get('cookie_profile_id')) for task in tasks}
+        ids = {(task.get('progress') or {}).get('cookie_profile_id') for task in tasks
+               if not (task.get('progress') or {}).get('cookie_profile_name')}
         ids.discard(None)
         if not ids:
             return tasks
         try:
             from webapp.cookie_profiles import CookieProfiles
-            names = {item['id']: item['name'] for item in CookieProfiles(base, store).items()}
+            from webapp.database import cookie_profiles
+            scope = scope or CookieProfiles.scope_for(base, store)
+            # Display reads need metadata only, without legacy migration or
+            # credential materialization on every workbench poll.
+            with store.connect() as db:
+                names = dict(db.execute(select(cookie_profiles.c.id, cookie_profiles.c.name).where(
+                    cookie_profiles.c.scope == scope, cookie_profiles.c.id.in_(ids),
+                    cookie_profiles.c.deleted == 0)).all())
         except Exception:
             names = {}
         result = []
@@ -63,8 +71,7 @@ class Workbench:
             blocked = resource_blocked(self.store, db, identity)
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
-        local = self.store.fleet.local_settings() if self.store.fleet else {}
-        active = self.decorate_cookie_names(active, local.get('base'), self.store)
+        active = self.decorate_cookie_names(active, None, self.store, scope=identity)
         job = self.jobs.detail(preview or selected) if preview or selected else None
         if job and job['deleted']:
             job = None
@@ -129,6 +136,8 @@ class Workbench:
 
 def register_workbench(app, store, configuration, preflight):
     workbench = Workbench(store)
+    from webapp.display_cache import display_cache
+    views = display_cache(app)
 
     @app.route('/api/jobs/workbench', methods=['GET', 'POST'])
     def download_workbench():
@@ -175,4 +184,5 @@ def register_workbench(app, store, configuration, preflight):
                         settings.c.key == 'workbench_job:' + identity)).scalar_one_or_none()
                 rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
             workbench.control(identity, data.get('action'), data.get('job_id'), expected)
-        return jsonify(workbench.status(identity, request.args.get('job_id')))
+        preview = request.args.get('job_id')
+        return jsonify(views.read(('workbench', identity, preview), lambda: workbench.status(identity, preview)))

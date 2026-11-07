@@ -16,6 +16,7 @@
       panes.get(tab.dataset.settingsTarget).hidden = !active;
       if (active && focus) tab.focus();
     }
+    if (typeof renderConcurrency === 'function') renderConcurrency();
   };
   document.addEventListener('click', event => {
     const target = event.target.closest('[data-settings-target]');

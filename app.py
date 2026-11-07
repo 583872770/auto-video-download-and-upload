@@ -304,7 +304,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             concurrency['risks'] = observed(config, concurrency, youtube['auth'], stamp,
                 error=fleet.row(db)['error'] if fleet else '')
             concurrency['auth_checked_at'] = youtube['auth'].get('checked_at')
-        return jsonify(tools=tools, accounts={}, python=sys.version.split()[0], database=store.db.engine.dialect.name,
+        return jsonify(tools=tools, accounts={}, startup=startup.status(), python=sys.version.split()[0], database=store.db.engine.dialect.name,
                        throughput=rate, concurrency=concurrency,
                        workers=store.workers(), worker_count=config.get('worker_count', 1),
                        yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=queue,

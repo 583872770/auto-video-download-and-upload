@@ -17,8 +17,12 @@ class CookieProfiles:
     def __init__(self, base, store):
         self.base, self.store = Path(base), store
         self.directory = self.base / 'Cookies' / 'profiles'
-        self.scope = store.fleet.id if store.fleet else hashlib.sha256(str(self.base.resolve()).encode()).hexdigest()
+        self.scope = self.scope_for(base, store)
         self._migrate()
+
+    @staticmethod
+    def scope_for(base, store):
+        return store.fleet.id if store.fleet else hashlib.sha256(str(Path(base).resolve()).encode()).hexdigest()
 
     def path(self, identity):
         if identity == 'legacy':

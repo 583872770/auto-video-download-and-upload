@@ -108,7 +108,7 @@ def main():
                 expect(panel.locator('.transfer-effective b')).to_have_text('—')
                 store.fleet.beat()
                 expect(panel.locator('.transfer-slot.transferring')).to_have_count(4, timeout=12000)
-                page.route('**/api/instances', lambda route: route.abort())
+                page.route('**/api/instances*', lambda route: route.abort())
                 expect(panel.locator('.transfer-slot.unknown')).to_have_count(12, timeout=26000)
                 # Untrusted titles and Cookie names remain plain text, including in tooltips.
                 html = page.evaluate("""() => transferSlotsHTML({online:true, time:Date.now()/1000,

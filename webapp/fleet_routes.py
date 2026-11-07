@@ -106,6 +106,8 @@ def preflight_instances(fleet, stage, cancelled):
 
 
 def register_fleet(app, fleet):
+    from webapp.display_cache import display_cache
+    views = display_cache(app)
     fleet.check_local = lambda policy: check_instance(app, fleet, policy)
 
     @app.before_request
@@ -168,7 +170,9 @@ def register_fleet(app, fleet):
     def list_instances():
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
-        return jsonify(**fleet.list(), execution=app.extensions['execution_control'].status())
+        return jsonify(**views.read(('instances',), fleet.list),
+                       startup=app.extensions['download_startup'].status(),
+                       execution=app.extensions['execution_control'].status())
 
     @app.put('/api/instances/<identity>')
     def update_instance(identity):

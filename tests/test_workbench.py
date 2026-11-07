@@ -16,6 +16,62 @@ class WorkbenchFleetTests(unittest.TestCase):
     setup_fleet = test_fleet.FleetTests.setup_fleet
     create = test_jobs.JobTests.create
 
+    def test_instance_poll_includes_fresh_console_startup_outside_snapshot(self):
+        from webapp.display_cache import display_cache
+        display_cache(self.apps['manager']).cache.ttl = 60
+        manager = self.apps['manager'].extensions['download_startup']
+        worker = self.apps['alpha'].extensions['download_startup']
+        manager.value = {'state': 'running', 'steps': []}
+        worker.value = {'state': 'failed', 'steps': []}
+        first = self.client.get('/api/instances?poll=1', headers={'X-Instance-ID': 'alpha'})
+        self.assertEqual(first.json['startup']['state'], 'running')
+        manager.value['state'] = 'succeeded'
+        second = self.client.get('/api/instances?poll=1', headers={'X-Instance-ID': 'alpha'})
+        self.assertEqual(second.json['startup']['state'], 'succeeded')
+
+    def test_poll_snapshot_is_scoped_and_control_invalidates_it(self):
+        from webapp.workbench import Workbench
+        from webapp.display_cache import display_cache
+        display_cache(self.apps['manager']).cache.ttl = 60
+        original = Workbench.status
+        with patch.object(Workbench, 'status', autospec=True, side_effect=original) as load:
+            for _ in range(2):
+                response = self.client.get('/api/jobs/workbench?poll=1', headers={'X-Instance-ID': 'alpha'})
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(load.call_count, 1)
+            beta = self.client.get('/api/jobs/workbench?poll=1', headers={'X-Instance-ID': 'beta'})
+            self.assertEqual(beta.json['instance_id'], 'beta')
+            self.assertEqual(load.call_count, 2)
+            self.client.get('/api/jobs/workbench', headers={'X-Instance-ID': 'alpha'})
+            self.assertEqual(load.call_count, 3)
+            self.control('alpha', 'pause')
+            count = load.call_count
+            result = self.client.get('/api/jobs/workbench?poll=1', headers={'X-Instance-ID': 'alpha'})
+            self.assertTrue(result.json['paused'])
+            self.assertEqual(load.call_count, count + 1)
+
+    def test_cookie_labels_use_executor_scope_and_metadata_only(self):
+        from webapp.cookie_profiles import CookieProfiles
+        from webapp.workbench import Workbench
+        content = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture\n'
+        profile = CookieProfiles(self.root / 'alpha', self.a).add('Alpha account', content)
+        task = {'progress': {'cookie_profile_id': profile['id']}}
+        queries = []
+        def capture(conn, cursor, sql, parameters, context, many):
+            queries.append(sql)
+        event.listen(self.manager.db.engine, 'before_cursor_execute', capture)
+        try:
+            with patch.object(CookieProfiles, '_migrate', side_effect=AssertionError('display must not migrate')):
+                result = Workbench.decorate_cookie_names([task], None, self.manager, scope='alpha')
+                self.assertEqual(result[0]['progress']['cookie_profile_name'], 'Alpha account')
+                self.assertEqual(len(queries), 1)
+                self.assertNotIn('content', queries[0].lower())
+                Workbench.decorate_cookie_names(result, None, self.manager, scope='alpha')
+                self.assertEqual(len(queries), 1, 'already labelled tasks need no SQL')
+                self.assertNotIn('cookie_profile_name', task['progress'])
+        finally:
+            event.remove(self.manager.db.engine, 'before_cursor_execute', capture)
+
     def control(self, instance, action, job=None, expected_status=200):
         with patch('webapp.fleet_routes.rpc', return_value={'ready': True}) as rpc:
             response = self.client.post('/api/jobs/workbench', json={'action': action, 'job_id': job},

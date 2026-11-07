@@ -868,16 +868,26 @@ function renderStorageSettings() {
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
 const refreshedAt = {};
+let startupSampleAt = 0;
+function applyStartup(value, sampledAt) {
+  if (value && sampledAt >= startupSampleAt) {
+    state.startup = value;
+    startupSampleAt = sampledAt;
+  }
+}
 const refreshInFlight = new Map();
 const refreshFailures = {};
 let refreshFailureInstance;
-function applyRefreshData(data) {
+function applyRefreshData(data, sampledAt = performance.now()) {
     const { media, tasks, clash, overview } = data;
     const mediaBefore = JSON.stringify([state.media, state.overview.media, state.overview.recent_media]);
     if (overview) { state.overview = overview; state.counts = overview.counts; }
     if (media) { state.media = media.items; state.mediaTotal = media.total; pages.media.next = media.next_cursor; }
     if (tasks) { state.tasks = tasks.items; pages.tasks.next = tasks.next_cursor; }
-    if (data.status) state.status = data.status;
+    if (data.status) {
+      state.status = data.status;
+      if (!fleetEnabled) applyStartup(data.status.startup, sampledAt);
+    }
     if (clash) state.clash = clash;
     if ((media || overview) && mediaBefore !== JSON.stringify([state.media, state.overview.media, state.overview.recent_media])) renderMedia();
     if (tasks || overview || data.status) renderTasks();
@@ -900,7 +910,7 @@ function applyRefreshData(data) {
 
 }
 async function refresh({ poll = false, viewChanged = false } = {}) {
-  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
+  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution({force: !poll || viewChanged}).catch(() => {});
   state.polling = true;
   const instance = state.instanceId;
   if (refreshFailureInstance !== instance) {
@@ -917,9 +927,9 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     const requests = {
       media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
       tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
-      status: due('status', true, view === 'overview' || $('#youtube-login-dialog').open ? 2000 : 10000) ? '/api/status' : null,
+      status: due('status', true, $('#youtube-login-dialog').open || (!fleetEnabled && view === 'overview') ? 2000 : 10000) ? '/api/status' : null,
       clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
-      overview: due('overview', true, view === 'overview' ? 2000 : 10000) ? '/api/overview' : null,
+      overview: due('overview', true, 10000) ? '/api/overview' : null,
     };
     await Promise.allSettled(Object.entries(requests).filter(([name, path]) => {
       if (!path) return false;
@@ -928,7 +938,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
       previous?.controller.abort();
       return true;
     }).map(async ([name, path]) => {
-      const ticket = { instance, path, controller: new AbortController() };
+      const ticket = { instance, path, sampledAt: performance.now(), controller: new AbortController() };
       refreshInFlight.set(name, ticket);
       try {
         const value = await api(path, { signal: ticket.controller.signal });
@@ -936,7 +946,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
         refreshedAt[name] = Date.now();
         delete refreshFailures[name];
         if (!['media', 'tasks', 'clash'].includes(name) || view === (location.hash.slice(1) || 'overview')) {
-          applyRefreshData({ [name]: value });
+          applyRefreshData({ [name]: value }, ticket.sampledAt);
         }
       } catch (error) {
         if (instance === state.instanceId && refreshInFlight.get(name) === ticket && error.name !== 'AbortError') {
@@ -967,6 +977,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
 }
 
 document.addEventListener('viewchange', () => {
+  renderConcurrency();
   if (state.config) refresh({ poll: true, viewChanged: true }).catch(error => toast(error.message, true));
 });
 window.addEventListener('hashchange', () => {
@@ -1013,11 +1024,17 @@ let executionPolling = false;
 let executionRetryAt = 0;
 let executionFailures = 0;
 let workbenchEpoch = 0;
-async function refreshExecution() {
-  if (executionPolling || document.hidden || Date.now() < executionRetryAt) return;
+let executionSampleAt = 0;
+let executionSampleKey = '';
+async function refreshExecution({force = false} = {}) {
+  const key = `${state.instanceId || ''}:${selectedJobId || ''}`;
+  const stamp = Date.now();
+  if (executionPolling || document.hidden || (!force && (stamp < executionRetryAt ||
+      (key === executionSampleKey && stamp - executionSampleAt < 1800)))) return;
   executionPolling = true;
+  executionSampleAt = stamp; executionSampleKey = key;
   try {
-    await refreshSelectedJob();
+    await refreshSelectedJob({poll: !force});
     executionFailures = 0; executionRetryAt = 0;
   } catch (error) {
     executionFailures += 1;
@@ -1025,16 +1042,16 @@ async function refreshExecution() {
     throw error;
   } finally { executionPolling = false; }
 }
-setInterval(() => {
-  if ((location.hash.slice(1) || 'overview') === 'overview') refreshExecution().catch(() => {});
-}, 1000);
-async function refreshSelectedJob() {
+async function refreshSelectedJob({poll = false} = {}) {
   if (queueControlBusy || (fleetEnabled && !state.instanceId)) return;
   const id = selectedJobId;
   const instance = state.instanceId;
   const epoch = ++workbenchEpoch;
   try {
-    const workbench = await api(`/api/jobs/workbench${id ? '?job_id='+encodeURIComponent(id) : ''}`);
+    const query = new URLSearchParams();
+    if (id) query.set('job_id', id);
+    if (poll) query.set('poll', '1');
+    const workbench = await api(`/api/jobs/workbench${query.size ? '?' + query : ''}`);
     if (epoch !== workbenchEpoch || state.instanceId !== instance || selectedJobId !== id) return;
     applyWorkbench(workbench);
     renderJobOptions();
@@ -1149,13 +1166,14 @@ async function pollStartup() {
   startupPolling = true;
   try {
     const previous = state.startup;
-    state.startup = await api('/api/downloads/startup');
+    const sampledAt = performance.now();
+    applyStartup(await api('/api/downloads/startup'), sampledAt);
     renderDownloadControl();
     if (previous?.state === 'running' && state.startup.state !== 'running') refresh().catch(() => {});
   } catch { /* The main connection banner reports service availability. */ }
   finally { startupPolling = false; }
 }
-setInterval(() => { if (state.startup?.state === 'running' || location.hash === '#overview') pollStartup(); }, 1000);
+setInterval(() => { if (state.startup?.state === 'running') pollStartup(); }, 1000);
 $('#download-queue-start').addEventListener('click', async () => {
   if (queueControlBusy || document.body.dataset.consoleRole === 'viewer') return;
   if (providerDraft || downloadMethodBusy) {
