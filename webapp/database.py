@@ -76,6 +76,13 @@ cookie_bindings = Table('youtube_cookie_bindings', metadata,
     Column('credential', String(64), primary_key=True),
     Column('scope', String(64), nullable=False))
 
+# Updated in the existing fenced settlement transaction, without extra commits.
+runtime_hours = Table('download_runtime_hours', metadata,
+    Column('scope', String(64), primary_key=True), Column('hour', BigInteger, primary_key=True),
+    Column('outcome', String(24), primary_key=True), Column('reason', String(64), primary_key=True),
+    Column('task_count', BigInteger, nullable=False), Column('file_count', BigInteger, nullable=False),
+    Column('file_bytes', BigInteger, nullable=False), Column('elapsed_seconds', Float, nullable=False))
+
 # Durable, secret-free audit trail for Cookie authentication, cooldown and
 # adaptive pacing decisions.  Cookie values are never stored here.
 youtube_cookie_events = Table('youtube_cookie_events', metadata,

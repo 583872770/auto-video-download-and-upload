@@ -29,7 +29,49 @@ def policy_key(config):
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
                 'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool',
-                'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval')}, sort_keys=True).encode()).hexdigest()[:16]]
+                'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
+                'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers')}, sort_keys=True).encode()).hexdigest()[:16]]
+
+
+def pool_worker_limits(config, capacity, resources=None):
+    """Size processes from static capacity; live permits still govern execution."""
+    from webapp.channels import group_caps, registry
+    from webapp.parallel_http import fragment_connection_budget
+    from webapp.db_pool_calculator import connection_budget
+    capacity = max(1, min(MAX_TRANSFERS, int(capacity)))
+    channels = registry(config)
+    caps = group_caps(channels)
+    groups = {}
+    for channel in channels:
+        units = fragment_connection_budget(config, channel.connection_limit, capacity) if channel.adapter == 'yt_dlp' else 1
+        group = channel.upstream_group
+        limit = min(capacity, channel.transfer_limit, caps['upstream:' + group],
+                    caps['connections:' + group] // units,
+                    int(config.get('download_connection_limit', 32)) // units)
+        groups[group] = max(groups.get(group, 0), limit)
+    transfer_capacity = min(capacity, sum(groups.values()), int(config.get('download_connection_limit', 32)))
+    preparation = max(0, min(16, int(config.get('youtube_cookie_pool_preparation_workers', 4))))
+    configured = max(1, min(MAX_TRANSFERS, int(config.get('youtube_cookie_pool_worker_limit', 20))))
+    resources = resources if resources is not None else resource_limits()
+    memory_cap = max(1, int((resources['memory_total'] * .65 - 256 * MIB) / (160 * MIB)))
+    db_budget = connection_budget()
+    workers = max(1, min(capacity, configured, transfer_capacity + preparation, memory_cap, db_budget['workers']))
+    return {'workers': workers, 'configured_worker_limit': configured,
+            'preparation_workers': preparation, 'worker_transfer_capacity': transfer_capacity,
+            'memory_worker_cap': memory_cap, 'db_worker_cap': db_budget['workers'],
+            'db_connection_budget': db_budget['total'], 'db_main_connections': sum(db_budget['main']),
+            'db_auxiliary_connections': db_budget['auxiliary'], 'db_connections_per_worker': db_budget['per_worker']}
+
+
+def worker_should_retire(directory, slot):
+    """Read a fresh local sizing hint before claiming another task."""
+    if slot <= 0:
+        return False
+    try:
+        saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
+        return 0 <= time.time() - saved['time'] < 20 and slot >= max(1, int(saved['workers']))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def automatic(config):
@@ -108,8 +150,9 @@ def _atomic(path, data):
 
 def runtime_limits(config, directory):
     if config.get('youtube_cookie_pool'):
-        # Before a fresh snapshot, start one worker per configured file. The
-        # database pool gate verifies deduplication, warmup and cooling on admission.
+        # Before a fresh snapshot, use the conservative configured-file count,
+        # still bounded by the process/resource contract. Admission verifies
+        # deduplication, warmup, ownership and cooling with live database state.
         target = min(MAX_TRANSFERS, max(1, len(config['youtube_cookie_pool'])))
         result = {'transfers': target, 'workers': target, 'browsers': 1,
                   'mode': 'cookie_pool', 'reason': 'Cookie 池独立调度，等待会话容量采样'}
@@ -118,9 +161,16 @@ def runtime_limits(config, directory):
             if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
                     and (saved.get('cookie_pool') or {}).get('known')):
                 target = max(1, min(MAX_TRANSFERS, int(saved['cookie_pool']['capacity'])))
-                result.update(saved, transfers=target, workers=target, mode='cookie_pool')
+                if 1 <= int(saved.get('workers', 0)) <= MAX_WORKERS:
+                    from webapp.db_pool_calculator import connection_budget
+                    result.update(saved, transfers=target, mode='cookie_pool')
+                    result['workers'] = min(int(saved['workers']),
+                        max(1, int(config.get('youtube_cookie_pool_worker_limit', 20))),
+                        connection_budget()['workers'])
+                    return result
         except (OSError, ValueError, KeyError, TypeError):
             pass
+        result.update(pool_worker_limits(config, target))
         return result
     requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
     if not automatic(config):
@@ -168,6 +218,7 @@ class ThroughputController:
         self.pressure_hits = 0
         self.browser_trial = None
         self.browser_until = 0
+        self.pool_adjusted = 0
 
     def sample(self):
         resources = resource_limits()
@@ -213,12 +264,10 @@ class ThroughputController:
         browsers = min(browser_ceiling, self.state['browsers']) if same else min(2, browser_ceiling)
         nominal_workers = max(1, int((resources['memory_total'] * .65 - 256 * MIB -
                                      (browsers * 384 * MIB if browser_methods else 0)) / (128 * MIB)))
-        worker_pool = max(2, int(os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2'))) + max(0, int(os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')))
-        db_worker_cap = max(1, int(os.environ.get('VIDEO_WORKER_DB_CONNECTION_BUDGET', '48')) // worker_pool)
+        from webapp.db_pool_calculator import connection_budget
+        db_worker_cap = connection_budget()['workers']
         nominal_workers = min(nominal_workers, db_worker_cap)
         ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
-        if pooled:
-            ceiling = requested
         transfers = (requested if pooled else
                      min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2))))
         counts = {}
@@ -406,6 +455,26 @@ class ThroughputController:
         if not automatic(config):
             transfers, workers, browsers = requested, requested, 1 if pooled else browser_requested
             reason = cookie_capacity.get('reason', 'Cookie 池独立调度') if pooled else '使用手动并发'
+            if pooled:
+                pool_limits = pool_worker_limits(config, requested, resources)
+                workers = pool_limits['workers']
+                if same:
+                    previous_workers = min(workers, self.state['workers'])
+                    workers = previous_workers
+                    if pressure and tick - self.pool_adjusted >= 60:
+                        workers = max(1, math.floor(previous_workers * .8))
+                    elif (not pressure and cpu < 80 and tick - self.pool_adjusted >= 60
+                          and resources['memory_available'] >= max(512*MIB, resources['memory_total'] * .12)):
+                        workers = min(pool_limits['workers'], previous_workers + 1)
+                    if workers != self.state['workers']:
+                        self.pool_adjusted = tick
+                else:
+                    if resources['memory_available'] < max(256*MIB, resources['memory_total'] * .08):
+                        workers = min(workers, 2)
+                    self.pool_adjusted = tick
+                reason += f'；本机下载进程上限 {workers}，额外任务等待空闲进程'
+                if workers < pool_limits['workers']:
+                    reason += '；资源压力收敛后逐步恢复进程'
         else:
             # Extra preparation workers are bounded; a ready URL waits inside
             # its owning leased task, never in an unbounded or cross-node cache.
@@ -431,6 +500,8 @@ class ThroughputController:
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
                       'reason': reason, 'control_metric': 'media_received_bytes',
                       'cookie_pool': cookie_capacity if pooled else None}
+        if pooled:
+            self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
         _atomic(self.directory / 'throughput.json', self.state)
         self.previous, self.last = resources, tick
         return self.state

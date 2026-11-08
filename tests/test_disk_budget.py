@@ -14,11 +14,12 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from webapp.disk_budget import DiskBudget, DiskPressure, DiskCoordinationBusy, GIB, MIB, file_lock, process_identity, size_of
+from webapp.disk_budget import DiskBudget, DiskPressure, DiskCoordinationBusy, GIB, MIB, file_lock, process_identity, safe_path, size_of
 from webapp.maintenance import BoundedLog
 from tests import test_scale
 
@@ -54,11 +55,54 @@ def exercise_disk_worker(directory, ready, start, results):
                     if category['committed_bytes'] > category['budget_bytes']:
                         raise AssertionError('category capacity overcommitted')
         results.put(('ok', 8))
-    except BaseException as error:
-        results.put(('error', repr(error)))
+    except BaseException:
+        results.put(('error', traceback.format_exc()))
 
 
 class DiskScanTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows extended-path spelling')
+    def test_disappearing_directory_extended_prefix_is_not_a_link(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            target = root / 'changing' / 'child'
+            original = Path.resolve
+            def prefixed(path, *args, **kwargs):
+                resolved = original(path, *args, **kwargs)
+                return Path('\\\\?\\' + str(resolved)) if path == target else resolved
+            with patch.object(Path, 'resolve', new=prefixed):
+                self.assertEqual(safe_path(target, root), target)
+
+    def test_resolved_redirect_and_parent_escape_remain_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            target = root / 'changing' / 'child'
+            original = Path.resolve
+            def redirected(path, *args, **kwargs):
+                return root.parent / 'outside' if path == target else original(path, *args, **kwargs)
+            with patch.object(Path, 'resolve', new=redirected):
+                with self.assertRaisesRegex(ValueError, '包含链接'):
+                    safe_path(target, root)
+            with self.assertRaises(ValueError):
+                safe_path(root / '..' / 'outside', root)
+
+    @unittest.skipUnless(os.name == 'nt', 'NTFS concurrent deletion')
+    def test_delete_pending_native_name_is_rechecked_before_accepting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            target = root / 'changing' / 'child'
+            deleted = Path(root.drive + '/') / '$Extend' / '$Deleted' / 'transient' / 'child'
+            original = Path.resolve
+            observations = []
+            def changing(path, *args, **kwargs):
+                if path == target:
+                    observations.append(path)
+                    if len(observations) == 1:
+                        return deleted
+                return original(path, *args, **kwargs)
+            with patch.object(Path, 'resolve', new=changing):
+                self.assertEqual(safe_path(target, root), target)
+            self.assertEqual(len(observations), 2)
+
     def test_special_files_are_counted_without_opening_or_traversing(self):
         for kind in (stat.S_IFSOCK, stat.S_IFIFO, stat.S_IFCHR, stat.S_IFBLK):
             with self.subTest(kind=kind):
@@ -89,6 +133,28 @@ class DiskScanTests(unittest.TestCase):
             with patch('webapp.disk_budget.os.scandir', side_effect=PermissionError('denied')):
                 with self.assertRaises(PermissionError):
                     size_of(temporary)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows delete-pending access denial')
+    def test_delete_pending_access_denial_is_rechecked_then_discarded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            measured = {root / 'lease': 4096}
+            error = PermissionError('delete pending')
+            error.winerror = 5
+            with patch('webapp.disk_budget.os.scandir', side_effect=[error, FileNotFoundError()]) as scan:
+                self.assertEqual(size_of(root, measured=measured), 0)
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(measured[root / 'lease'], 0)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows persistent ACL denial')
+    def test_persistent_windows_permission_error_is_never_counted_as_zero(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            error = PermissionError('ACL denied')
+            error.winerror = 5
+            with patch('webapp.disk_budget.os.scandir', side_effect=error) as scan:
+                with self.assertRaises(PermissionError):
+                    size_of(temporary)
+            self.assertEqual(scan.call_count, 5)
 
     def test_disappearing_parent_discards_credit_for_previously_scanned_children(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -169,7 +235,8 @@ class DiskBudgetTests(unittest.TestCase):
                 self.assertLessEqual(snapshot['committed_bytes'], snapshot['budget_bytes'])
                 time.sleep(0.02)
             outcomes = [results.get(timeout=60) for _ in processes]
-            self.assertEqual(outcomes, [('ok', 8)] * 16)
+            self.assertEqual(outcomes, [('ok', 8)] * 16,
+                             '\n'.join(str(detail) for status, detail in outcomes if status != 'ok'))
         finally:
             start.set()
             for process in processes:

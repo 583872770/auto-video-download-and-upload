@@ -579,13 +579,12 @@ class TaskStore:
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
-            if not self.downloads_paused(db, lock=True):
-                raise ValueError('请先停止全部下载，再应用当前连接。')
-            counts = self._counts(db, ['action:download'])
-            if counts.get('running', 0):
+            queue = self.connection_queue(db, lock=True)
+            if not queue['paused']:
+                raise ValueError('请先停止当前实例的下载，再应用当前连接。' if self.fleet else '请先停止全部下载，再应用当前连接。')
+            if queue['running']:
                 raise ValueError('当前下载进程尚未停止，请稍后再应用当前连接。')
-            importing = self._counts(db, ['action:import'])
-            if not (counts.get('queued', 0) or importing.get('queued', 0) or importing.get('running', 0)):
+            if not (queue['queued'] or queue['importing']):
                 raise ValueError('当前没有排队的下载或导入任务。')
             cutoff = db.execute(select(func.max(tasks.c.seq))).scalar_one() or 0
             value = {'cutoff_seq': cutoff, 'config': connection, 'updated_at': now()}
@@ -594,6 +593,34 @@ class TaskStore:
             db.execute(self.db.upsert(settings, dict(key=self._connection_key(),
                 value=json.dumps(value, ensure_ascii=False)), ['key']))
         return {'mode': connection['proxy_mode'], 'updated_at': value['updated_at']}
+
+    def connection_queue(self, db=None, *, lock=False):
+        """Connection checks concern this executor, not other nodes' activity."""
+        if db is None:
+            with self.connect() as connection:
+                return self.connection_queue(connection, lock=lock)
+        paused = self.downloads_paused(db, lock=lock)
+        job = None
+        if self.fleet:
+            from webapp.database import instances
+            statement = select(instances.c.paused).where(instances.c.id == self.fleet.id)
+            node_paused = db.execute(statement.with_for_update() if lock else statement).scalar_one()
+            job = self.workbench_job(db)
+            paused = bool(node_paused or (paused and not job))
+        counts = self._counts(db, ['batch:' + job] if job else ['action:download'])
+        running = counts.get('running', 0)
+        if self.fleet:
+            running = db.execute(select(func.count()).select_from(tasks).where(
+                tasks.c.instance_id == self.fleet.id, tasks.c.action == 'download',
+                tasks.c.status == 'running')).scalar_one()
+        if job:
+            importing = db.execute(select(func.count()).select_from(imports.join(job_imports,
+                imports.c.id == job_imports.c.id)).where(job_imports.c.job_id == job,
+                imports.c.finished == 0)).scalar_one()
+        else:
+            pending = self._counts(db, ['action:import'])
+            importing = pending.get('running', 0) + pending.get('queued', 0)
+        return dict(paused=paused, queued=counts.get('queued', 0), running=running, importing=importing)
 
     def _connection_key(self):
         prefix = ('i:' + hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':') if self.fleet else ''
@@ -790,8 +817,10 @@ class TaskStore:
                 values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
                 values['policy_version'] = payload.get('policy_version')
                 from webapp.downloads import initial_progress
-                values['progress'] = json.dumps(initial_progress(payload.get('config', {}),
-                    payload.get('policy_version')), ensure_ascii=False)
+                initial = initial_progress(payload.get('config', {}), payload.get('policy_version'))
+                if payload.get('_retry_cookie_profile_id'):
+                    initial['retry_cookie_profile_id'] = payload['_retry_cookie_profile_id']
+                values['progress'] = json.dumps(initial, ensure_ascii=False)
                 # Generate snapshot BEFORE adding download_session_id
                 packed_without_session = self._pack(db, payload)
                 row = {**row, 'instance_id': values.get('instance_id', row.get('instance_id')),
@@ -919,7 +948,8 @@ class TaskStore:
                 return False
             if worker_id and (row['worker_id'] != worker_id or row['status'] != 'running'):
                 return False
-            if self.fleet and worker_id and (not row['lease_until'] or row['lease_until'] <= self.fleet.clock(db)
+            settled_stamp = self.fleet.clock(db) if self.fleet else time.time()
+            if self.fleet and worker_id and (not row['lease_until'] or row['lease_until'] <= settled_stamp
                     or self.fleet.row(db)['boot_id'] != self.fleet.boot_id):
                 return False
             if result:
@@ -943,12 +973,29 @@ class TaskStore:
                                 'skipped' if (result or {}).get('skipped') else 'completed', speed=None, eta=None)
                 if not error:
                     progress['percent'] = 100
+            extra = {}
+            failure = progress.get('last_failure') or {}
+            retry_profile = failure.get('profile_id') or progress.get('cookie_profile_id')
+            pin_retry = retry and failure.get('reason') == 'no_data' and retry_profile
+            if pin_retry or not retry and progress.get('retry_cookie_profile_id'):
+                payload = self.decode(row, private=True, db=db)['payload']
+                if pin_retry:
+                    payload.setdefault('_retry_original_target', row.get('target_instance_id'))
+                    payload.update(_retry_cookie_profile_id=retry_profile,
+                                   _retry_cookie_instance_id=row.get('instance_id') or 'local')
+                    if row.get('instance_id'):
+                        extra['target_instance_id'] = row['instance_id']
+                else:
+                    extra['target_instance_id'] = payload.pop('_retry_original_target', row.get('target_instance_id'))
+                    payload.pop('_retry_cookie_profile_id', None)
+                    payload.pop('_retry_cookie_instance_id', None)
+                extra['payload'] = self._pack(db, payload)
             self._transition(db, row, status)
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
                 status=status, finished_at=None if retry else now(), result=json.dumps(result, ensure_ascii=False) if result else None,
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
-                available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay if retry else 0,
-                lease_until=None, worker_id=None))
+                available_at=settled_stamp + delay if retry else 0,
+                lease_until=None, worker_id=None, **extra))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
             self.statistics.transition(db, row, outcome, error,
@@ -966,6 +1013,11 @@ class TaskStore:
                     db.execute(rotations.update().where(rotations.c.id == generation).values({field: rotations.c[field] + 1}))
                 if row['source_key'] and not row['source_key'].startswith('job:') and (error or (result or {}).get('test_mode') or row['source_key'].startswith('test:')):
                     db.execute(reservations.delete().where(reservations.c.key == row['source_key'], reservations.c.task_id == task_id))
+            if not retry:
+                # Keep the hourly bucket's write lock as close to COMMIT as
+                # possible; unrelated statistics/ledger work precedes it.
+                from webapp.runtime_summary import record_terminal
+                record_terminal(self, db, row, outcome, progress, result, settled_stamp)
             return True
 
     def recover(self, *, expired_only=True):
@@ -1026,6 +1078,11 @@ class TaskStore:
         from webapp.disk_budget import DISK_FIELDS
         keys = ('worker_count', 'yt5s_browser_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
         keys = (*keys, *DISK_FIELDS)
+        keys = (*keys, 'youtube_cookie_pool', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
+                'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers', 'throughput_mode',
+                'bandwidth_mbps', 'download_method', 'download_methods', 'download_channels', 'scheduler_mode',
+                'download_connection_limit', 'builtin_transfer_limit', 'builtin_resolver_limit',
+                'builtin_connection_limit', 'fragment_concurrency')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))

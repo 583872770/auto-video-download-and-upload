@@ -1,0 +1,28 @@
+<section id="deployment-view" class="view" hidden>
+  <section class="panel">
+    <div class="panel-heading"><div><h2>所选实例部署配置</h2><p class="panel-subtitle">在上方切换实例，管理对应服务器。保存后重启该实例生效，当前任务继续使用原配置。</p></div><button id="instance-deployment-reload" class="button button-white" type="button">重新读取</button></div>
+    <p id="instance-deployment-state" class="clash-notice" role="status">正在读取部署配置…</p><button id="instance-deployment-discard" class="text-button" type="button" hidden>放弃修改并重新读取</button>
+    <form id="instance-deployment-form" hidden>
+      <fieldset class="deployment-fields"><legend>实例与访问</legend><div class="fleet-fields">
+        <label>实例显示名称<input name="instance_name" maxlength="100" required></label>
+        <label>实例 ID<input name="instance_id" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" required></label>
+        <label>其他实例可访问的地址<input name="instance_url" type="url" placeholder="http://10.0.0.12:5000"></label>
+        <label>允许访问的域名 / IP<input name="web_hosts" required placeholder="localhost,127.0.0.1,download.example.com"></label>
+      </div><p class="micro-copy">实例 ID 对应任务与 Cookie 归属，应保持稳定。实例地址填写其他服务器可访问的 HTTP(S) 地址；域名 / IP 用逗号分隔，不带协议和端口。</p></fieldset>
+      <fieldset class="deployment-fields"><legend>共享 MySQL</legend><div class="fleet-fields">
+        <label>数据库地址<input name="mysql_host" required></label><label>端口<input name="mysql_port" type="number" min="1" max="65535" required></label>
+        <label>数据库名称<input name="mysql_database" required></label><label>用户名<input name="mysql_user" required autocomplete="off"></label>
+        <label>新密码<input name="mysql_password" type="password" autocomplete="new-password" placeholder="留空保留已有密码"></label>
+      </div><p class="micro-copy">所有协作实例需连接同一个数据库。密码保存后不回显，留空保留原密码。</p></fieldset>
+      <fieldset class="deployment-fields"><legend>共享 Redis</legend>
+        <label class="rotation-check"><input name="redis_enabled" type="checkbox">启用 Redis 进度缓存</label>
+        <label>新 Redis 连接地址<input name="redis_url" type="password" autocomplete="new-password" placeholder="redis://:password@redis-host:6379/0；留空保留已有连接"></label>
+        <p id="instance-deployment-redis" class="micro-copy"></p>
+      </fieldset>
+      <p class="micro-copy">页面保存的部署配置优先于启动环境，保存在目标实例状态目录；不会改写 .env。宿主机端口、卷映射和服务重启仍由部署工具管理。</p>
+      <div class="clash-actions"><button id="instance-deployment-test" class="button button-white" type="button">从所选实例测试连接</button><button type="submit" class="button button-dark">保存所选实例部署配置</button></div>
+      <p id="instance-deployment-result" class="micro-copy" role="status"></p>
+    </form>
+    <p class="micro-copy">服务无法启动时，直接访问目标服务器地址下的 /setup 本机部署恢复页，使用目标服务器的独立部署访问码恢复。</p>
+  </section>
+</section>

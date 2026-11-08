@@ -4,7 +4,9 @@
 <label>YouTube Cookie 使用策略<select name="youtube_cookie_usage"><option value="auto">按需使用（推荐）</option><option value="always">始终使用已选 Cookie</option><option value="never">仅匿名，不使用 Cookie</option></select><small>按需模式先用匿名请求公开内容；只有 yt-dlp 明确要求登录时才用当前 Cookie 重试一次。Cookie 池始终使用池内会话。</small></label>
   <label>账号池共用启动间隔（秒）<input name="youtube_cookie_pool_start_interval" type="number" min="0" max="600" required><small>仅 Cookie 账号池生效，默认 10 秒。同一实例的全部 Cookie 共用，分配新视频和开始解析均使用此值；0 表示关闭这项共用间隔。点击“保存设置”后，后续领取的任务使用新值，已预留的等待窗口保留到期。</small></label>
   <label>YouTube 视频启动最小间隔（秒）<input name="youtube_start_interval" type="number" min="0" max="600" required><small>账号池模式下，这是每个账号自身的最小启动间隔，仍受预热、恢复和账号历史退避约束；上面的共用间隔单独设置。非账号池模式下，这是实例视频启动间隔；固定模式 0 表示关闭，渐进模式以此为提速下限。已开始的文件传输可并行。</small></label>
-  <label>Cookie 池每会话任务上限<input name="youtube_cookie_session_limit" type="number" min="1" max="64" required><small>默认 2，预热前每会话 1 个任务，预热后按此上限执行。池模式独立调度，不使用运行模式与实例并发上限；总容量按有效会话累计，执行器最多 64 个任务。冷却、登录拦截和启动间隔仍生效。</small></label>
+  <label>Cookie 池每会话任务上限<input name="youtube_cookie_session_limit" type="number" min="1" max="64" required><small>默认 2，预热前每会话 1 个任务。账号容量按有效会话累计，最多 64；本机实际进程还受下面的上限、内存和数据库预算约束。冷却、登录拦截和启动间隔仍生效。</small></label>
+  <label>Cookie 池下载进程上限<input name="youtube_cookie_pool_worker_limit" type="number" min="1" max="64" required><small>默认 20。控制本实例常驻下载进程，不改变单个 Cookie 的并发和绑定。保存后逐步生效；缩小时，现有任务完成后退出多余进程。</small></label>
+  <label>Cookie 池准备进程余量<input name="youtube_cookie_pool_preparation_workers" type="number" min="0" max="16" required><small>默认 4。在渠道与连接预算允许的传输量之外，为解析和请求等待预留的进程额度；与上面的总上限同时生效。</small></label>
   <div class="youtube-pacing-runtime" data-youtube-pacing-runtime role="status" aria-live="polite">正在读取当前实例的实际启动间隔…</div>
   <label>滚动一小时启动预算<input name="youtube_hourly_start_limit" type="number" min="1" max="5000" required><small>渐进模式生效，建议先用 80。当前实例及同核心登录会话均受预算约束，视频重试与字幕补下载也计入。</small></label>
   <label>滚动二十四小时启动预算<input name="youtube_daily_start_limit" type="number" min="1" max="5000" required><small>渐进模式生效，建议先用 1200。用完后保留任务等待窗口释放；重启或切换单 Cookie / 账号池不重置记录。这是本地试运行预算，不是平台配额。</small></label>

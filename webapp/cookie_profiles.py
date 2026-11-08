@@ -10,7 +10,7 @@ import uuid
 from sqlalchemy import select
 from Utils.config import resolve_path
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
-from webapp.database import cookie_profiles as table
+from webapp.database import cookie_profiles as table, cookie_bindings
 from webapp.cookie_binding import claim, credential_keys, CookieBindingConflict
 
 
@@ -41,12 +41,15 @@ class CookieProfiles:
         candidates = [('legacy', self.path('legacy'), None)]
         candidates += [(p.stem, p.with_suffix('.txt'), p) for p in self.directory.glob('*.json')
                        if re.fullmatch(r'[a-f0-9]{32}', p.stem)]
+        candidates = [(identity, target, metadata) for identity, target, metadata in candidates if target.is_file()]
+        if not candidates:
+            return
+        with self.store.connect() as db:
+            existing = set(db.execute(select(table.c.id).where(
+                self._where() & table.c.id.in_([identity for identity, _, _ in candidates]))).scalars())
         for identity, target, metadata in candidates:
-            if not target.is_file():
+            if identity in existing:
                 continue
-            with self.store.connect() as db:
-                if db.execute(select(table.c.id).where(self._where(identity))).first():
-                    continue
             item = json.loads(metadata.read_text(encoding='utf-8')) if metadata else {
                 'name': '原有 Cookie（上传 / 浏览器登录）', 'created_at': None}
             # Preserve even expired historical data; validation remains at use time.
@@ -122,6 +125,10 @@ class CookieProfiles:
             raise
         except ValueError:
             pass  # Preserve historical/expired caches for management; execution validates them.
+        return self._cache(identity, content)
+
+    def _cache(self, identity, content):
+        target = self.path(identity)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         data = content.encode('utf-8')
         if not target.is_file() or target.read_bytes() != data:
@@ -136,6 +143,55 @@ class CookieProfiles:
                 temporary.unlink(missing_ok=True)
         target.chmod(0o600)
         return target
+
+    def pool_members(self, identities, *, strict=True):
+        """Read live membership and immutable ownership in two bulk queries.
+
+        Never cache execution authorization. Only historical, previously unbound
+        credentials need a claim/write; normal status polling remains read-only.
+        """
+        identities = list(dict.fromkeys(identities))
+        members, unavailable = [], []
+        with self.store.connect() as db:
+            rows = {row['id']: dict(row) for row in db.execute(select(
+                table.c.id, table.c.name, table.c.content).where(
+                    self._where() & (table.c.deleted == 0) & table.c.id.in_(identities))).mappings()}
+            keys_by_id = {}
+            for identity in identities:
+                try:
+                    self.path(identity)
+                    if identity not in rows:
+                        raise ValueError('Cookie 配置不存在。')
+                    keys_by_id[identity] = credential_keys(rows[identity]['content'].encode('utf-8'))
+                except ValueError as error:
+                    if strict:
+                        raise
+                    unavailable.append({'id': identity, 'name': rows.get(identity, {}).get('name', identity),
+                                        'unavailable': True})
+            keys = sorted({key for values in keys_by_id.values() for key in values})
+            owners = dict(db.execute(select(cookie_bindings.c.credential, cookie_bindings.c.scope).where(
+                cookie_bindings.c.credential.in_(keys))).all()) if keys else {}
+            for identity, values in keys_by_id.items():
+                try:
+                    if any(owners.get(key) != self.scope for key in values):
+                        # claim() handles the concurrent first-use race and gives
+                        # the usual, actionable binding-conflict explanation.
+                        with db.begin_nested():
+                            claim(db, self.scope, values)
+                    members.append(rows[identity])
+                except CookieBindingConflict:
+                    if strict:
+                        raise
+                    unavailable.append({'id': identity, 'name': rows[identity]['name'], 'unavailable': True})
+        ready = []
+        for row in members:
+            try:
+                ready.append({**row, 'path': self._cache(row['id'], row['content'])})
+            except OSError:
+                if strict:
+                    raise
+                unavailable.append({'id': row['id'], 'name': row['name'], 'unavailable': True})
+        return ready, unavailable
 
     def restore_selected(self, value):
         if not value:

@@ -17,6 +17,7 @@
   <script src="{{ url_for('static', filename='risks.js') }}" defer></script>
   <script src="{{ url_for('static', filename='concurrency.js') }}" defer></script>
   <script src="{{ url_for('static', filename='fleet.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='instance_deployment.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   <script src="{{ url_for('static', filename='disk.js') }}" defer></script>
   <script src="{{ url_for('static', filename='statistics.js') }}" defer></script>
@@ -55,7 +56,11 @@
     <main><p id="connection-warning" class="clash-notice" hidden role="alert"></p>
       <div class="page-heading"><div><h1 id="page-title">下载工作台</h1><p id="page-description">选择实例与任务，集中查看运行进度。</p></div><a class="button button-white" href="/jobs">任务中心 ↗</a></div>
 
-      <div id="fleet-selection-bar" class="panel fleet-selection" hidden><label><span class="scope-badge">当前实例</span><select id="fleet-selection" aria-label="当前下载实例"></select></label><p id="fleet-selection-note" class="micro-copy"></p></div>
+      <div id="fleet-selection-bar" class="panel fleet-selection" hidden>
+        <div class="fleet-scope-heading"><div class="fleet-management-target"><span>当前管理：</span><strong id="fleet-target-name">正在读取实例</strong><span id="fleet-target-status" class="count-pill"></span></div><div class="fleet-entry">访问入口：<strong id="fleet-entry-name">正在读取</strong></div></div>
+        <div class="fleet-picker"><label for="fleet-search">搜索实例<input id="fleet-search" type="search" placeholder="名称、实例 ID 或主机" autocomplete="off" aria-controls="fleet-selection" aria-describedby="fleet-search-result"></label><label for="fleet-selection">切换管理实例<select id="fleet-selection" aria-label="当前下载实例" aria-describedby="fleet-selection-note"></select></label></div>
+        <p id="fleet-search-result" class="micro-copy" role="status"></p><p id="fleet-selection-note" class="micro-copy"></p><button id="fleet-reload" type="button" class="button button-white" hidden>重新读取所选实例</button>
+      </div>
       <section id="overview-view" class="view">
         {% include 'workflow_strip.html' %}
         <div class="stats-grid download-dashboard">
@@ -185,6 +190,7 @@
         <section class="panel"><div class="panel-heading"><div><h2>订阅节点 <span class="count-pill" id="clash-node-count">0</span></h2><p class="panel-subtitle" id="clash-test-progress">延迟测试不会切换当前节点；测试结果不代表实际下载速度。</p></div><button class="button button-white" id="clash-test-all" type="button"><svg><use href="#i-clock"/></svg>全部测速</button></div><div class="clash-toolbar"><input id="clash-node-search" type="search" placeholder="搜索节点名称或协议" aria-label="搜索节点"><select id="clash-node-sort" aria-label="节点排序"><option value="original">订阅顺序</option><option value="delay">延迟从低到高</option><option value="name">按名称排序</option></select></div><div id="clash-nodes"></div></section>
       </section>
 
+      {% include 'instance_deployment.html' %}
       <footer class="page-footer"><span>FRAMEFLOW <span class="footer-divider">/</span> 为每一帧，找到下一站。</span><span>Flask · 管理与下载</span></footer>
     </main>
   </div>

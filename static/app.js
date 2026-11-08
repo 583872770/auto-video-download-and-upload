@@ -48,6 +48,7 @@ const viewNames = {
   statistics: ['交付与账单', '交付与账单', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
   settings: ['系统设置', '系统设置', '维护当前下载实例的下载策略、目录、登录和资源配置。'],
   clash: ['网络与代理', '网络与代理', '管理 Clash 订阅、选择下载节点，并测试延迟与连通性。'],
+  deployment: ['部署设置', '部署设置', '读取和保存当前所选实例的部署配置；重启该实例后生效。'],
 };
 
 function escapeHTML(value) {
@@ -78,6 +79,18 @@ function toast(message, error = false) {
 async function api(path, options = {}) {
   const headers = { 'X-CSRF-Token': csrf, ...options.headers };
   if (state.instanceId && !Object.hasOwn(headers, 'X-Instance-ID')) headers['X-Instance-ID'] = state.instanceId;
+  const scoped = /^(?:\/api\/(?:config|instance-deployment|status|youtube|clash|disk|media|jobs\/workbench|downloads\/connection)(?:[/?]|$)|\/api\/tasks$)/.test(path);
+  const instance = state.instanceId;
+  const epoch = state.instanceEpoch;
+  const writing = !['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase());
+  if (fleetEnabled && scoped && writing && (!state.instanceReady || state.configInstance !== instance)) {
+    throw new Error('所选实例尚未就绪，请先重新读取该实例，再执行操作。');
+  }
+  const assertCurrentInstance = () => {
+    if (fleetEnabled && scoped && (instance !== state.instanceId || epoch !== state.instanceEpoch)) {
+      throw new DOMException('实例已切换，已忽略原实例的返回结果。', 'AbortError');
+    }
+  };
   const { responseType, timeoutMs, signal, ...fetchOptions } = options;
   if (fetchOptions.body && !(fetchOptions.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
@@ -90,11 +103,14 @@ async function api(path, options = {}) {
   else signal?.addEventListener('abort', abort, { once: true });
   const timer = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')),
     timeoutMs ?? (responseType === 'file' ? 120000 : reading ? 12000 : 90000));
+  if (scoped && writing) state.instanceWrites = (state.instanceWrites || 0) + 1;
   try {
     const response = await fetch(path, { ...fetchOptions, headers, signal: controller.signal });
+  assertCurrentInstance();
   if (responseType === 'file' && response.ok && !response.redirected
       && response.headers.get('Content-Disposition')?.toLowerCase().startsWith('attachment')) return response;
   const raw = await response.text();
+  assertCurrentInstance();
   let data;
   try {
     data = raw ? JSON.parse(raw) : {};
@@ -115,6 +131,7 @@ async function api(path, options = {}) {
     }
     throw error;
   } finally {
+    if (scoped && writing) state.instanceWrites -= 1;
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
@@ -131,9 +148,10 @@ function setView(name) {
   history.replaceState(null, '', `${location.search}#${name}`);
   if (typeof renderInstanceScope === 'function') renderInstanceScope();
   document.dispatchEvent(new CustomEvent('viewchange', { detail: name }));
-  if (name === 'settings' && $('#youtube-cookie-list')) loadCookieProfiles().catch(error => {
-    $('#youtube-cookie-list').textContent = error.message;
+  if (name === 'settings' && $('#youtube-cookie-list') && (!fleetEnabled || state.instanceReady)) loadCookieProfiles().catch(error => {
+    if (error.name !== 'AbortError') $('#youtube-cookie-list').textContent = error.message;
   });
+  if (name === 'deployment' && (!fleetEnabled || state.instanceReady)) loadInstanceDeployment();
 }
 function emptyState(title, description, button = false) {
   return `<div class="empty-state"><div class="empty-icon">${icon('film')}</div><div><strong>${escapeHTML(title)}</strong><p>${escapeHTML(description)}</p>${button ? `<button class="button button-white" data-view="overview">${icon('download')}开始下载视频</button>` : ''}</div></div>`;
@@ -191,6 +209,10 @@ function progressLabel(task) {
     return task.progress?.stage === 'disk_wait' ? '字幕等待临时空间' : '正在补下载字幕 · 视频已完成';
   }
   if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待启动';
+  if (task.status === 'queued' && task.progress?.stage === 'scheduling_wait') {
+    const remaining = Math.max(0, Math.ceil((task.progress.retry_at || task.available_at || 0) - Date.now() / 1000));
+    return `${task.progress.wait_reason || '等待调度资源'}${remaining ? ` · 约 ${remaining} 秒后重新检查` : ' · 等待重新检查'}`;
+  }
   if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '等待退避重试' : '排队中';
   if (task.action === 'import' && task.status === 'running') return `正在导入 · 新增 ${task.progress?.added || 0} · 重复 ${task.progress?.duplicates || 0} · 无效 ${task.progress?.invalid || 0}`;
   if (task.status === 'failed') return '下载失败';
@@ -608,7 +630,7 @@ function renderSubscriptions(data) {
   $('#clash-subscription-badge').textContent = profiles.length ? `已保存 ${profiles.length} 个` : '未配置';
   $('#clash-subscription-url').required = !selected;
   $('#clash-subscription-url').placeholder = selected ? '留空更新已保存链接；填写新链接可替换此订阅' : '粘贴 Clash / Mihomo 订阅链接';
-  $('#clash-import').lastChild.textContent = selected ? '保存并更新此订阅' : '保存新订阅';
+  $('#clash-import').lastChild.textContent = `${selected ? '保存并更新订阅到' : '保存新订阅到'}「${instanceName(state.instanceId)}」`;
   $('#clash-subscription-info').textContent = (active ? `当前使用：${active.name}。` : '') + (selected ? `${selected.host} · ${selected.node_count} 个节点 · 更新于 ${formatDate(selected.updated_at, true)}` : '可保存多个订阅并手动切换。') + ' 链接仅保存在当前实例，保存后不回显。' + (selected?.id === data.active_subscription_id && data.notices?.length ? '\n' + data.notices.join(' · ') : '');
 }
 function chooseSubscription(identity) {
@@ -662,6 +684,7 @@ async function clashAction(operation) {
 }
 function fillConfig(config) {
   state.config = config;
+  state.configInstance = state.instanceId;
   const form = $('#settings-form');
   if (settingsDirty) { renderDownloadMethod(); return; }
   settingsBaseline = {};
@@ -682,7 +705,7 @@ function renderConcurrencyDraft() {
   const form = $('#settings-form');
   const number = name => Number(form.elements[name]?.value || 0);
   if (state.config?.youtube_cookie_pool?.length) {
-    $('#concurrency-config-note').textContent = `Cookie 池独立调度：每会话预热前 1 个任务，预热后最多 ${number('youtube_cookie_session_limit')} 个；不使用运行模式与实例并发上限。相同核心会话合并计数，总执行容量最多 64；启动间隔、冷却及渠道连接额度仍生效。`;
+    $('#concurrency-config-note').textContent = `Cookie 池独立调度：每会话预热前 1 个任务，预热后最多 ${number('youtube_cookie_session_limit')} 个；本机下载进程最多 ${number('youtube_cookie_pool_worker_limit')} 个，准备余量 ${number('youtube_cookie_pool_preparation_workers')} 个。内存和数据库预算可能进一步降低实际进程数；启动间隔、冷却及渠道连接额度仍生效。`;
     $('#concurrency-config-note').classList.remove('capacity-draft-warning');
     return;
   }
@@ -1255,7 +1278,7 @@ async function updateTaskDetail() {
   $('#task-dialog-title').textContent = actionNames[task.action] || task.action;
   $('#task-detail-meta').innerHTML = `<span class="task-status status-${task.status}">${taskStatus(task)}</span><span>${task.id.slice(0, 8)}</span><span>创建于 ${escapeHTML(formatDate(task.created_at, true))}</span>${task.started_at ? `<span>开始于 ${escapeHTML(formatDate(task.started_at, true))}</span>` : ''}${task.finished_at ? `<span>结束于 ${escapeHTML(formatDate(task.finished_at, true))}</span>` : ''}`;
   $('#task-risk').innerHTML = taskRiskHTML(task);
-  $('#task-error').hidden = !task.error;
+  $('#task-error').hidden = !task.error || task.progress?.stage === 'scheduling_wait';
   $('#task-error').textContent = task.error ? readableError(task.error) : '';
   $('#task-download-progress').innerHTML = task.action === 'clear_media' ? `<p class="micro-copy">已删除 ${Number(task.progress?.deleted_files || 0)} 个文件 · 释放 ${bytes(task.progress?.deleted_bytes || 0)}${task.progress?.failed_files ? ` · ${Number(task.progress.failed_files)} 个文件未能删除` : ''}</p>` : ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
   const result = task.result;
@@ -1798,7 +1821,7 @@ $('#settings-form').addEventListener('submit', event => {
     const form = event.target;
     form.inert = true;
     form.setAttribute('aria-busy', 'true');
-    $('#settings-save-state').textContent = '正在保存设置并核对服务器中的实际值…';
+    $('#settings-save-state').textContent = `正在保存到「${instanceName(instance)}」并核对服务器中的实际值…`;
     try {
       await api('/api/config', { method:'PUT', body:data, headers });
       const saved = (await api('/api/config', { headers, cache:'no-store' })).config;
@@ -1817,8 +1840,8 @@ $('#settings-form').addEventListener('submit', event => {
       settingsDirty = false; providerDraft = null; cookiePoolDraft = null;
       fillConfig(saved);
       renderCookiePoolSaveState();
-      $('#settings-save-state').textContent = '当前实例设置已保存，包含账号池选择及其他设置修改。后续领取或重试的视频使用新配置，正在执行的任务保留原配置。';
-      toast('设置已保存。');
+      $('#settings-save-state').textContent = `「${instanceName(instance)}」设置已保存，包含账号池选择及其他设置修改。后续领取或重试的视频使用新配置，正在执行的任务保留原配置。`;
+      toast(`设置已保存到「${instanceName(instance)}」。`);
       await refresh();
       if ('youtube_cookie_pool' in data || 'worker_count' in data || 'youtube_cookie_session_limit' in data) await loadCookieProfiles();
     } catch (error) {
@@ -1839,8 +1862,8 @@ async function init() {
   setView(location.hash.slice(1) || 'overview');
   try {
     await initializeFleet();
-    const config = await api('/api/config');
-    fillConfig(config.config);
+    if (fleetEnabled) await loadSelectedInstance({ reset: false });
+    else fillConfig((await api('/api/config')).config);
   } catch (error) { toast(`读取实例配置失败：${error.message}`, true); }
   try {
     selectedJobId = /^[a-f0-9]{32}$/.test(initialJobId || '') ? initialJobId : '';

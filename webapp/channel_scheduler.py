@@ -118,6 +118,33 @@ class ChannelScheduler:
             permits.join(tasks, (permits.c.task_id == tasks.c.id) & (permits.c.owner == tasks.c.worker_id)))
             .where(permits.c.resource == _key(scope), tasks.c.status == 'running', tasks.c.lease_until > stamp)).scalar_one())
 
+    def snapshot(self, scopes):
+        """Display-only batch read; never create rows or acquire router-v1.
+
+        Admission still uses transaction_call and live owner/lease checks. These
+        READ COMMITTED observations can differ slightly while tasks transition.
+        """
+        with self.store.connect() as db:
+            stamp = self.clock(db)
+            states = self._states(db, scopes)
+            active = self._active_many(db, scopes, stamp)
+        return states, active, stamp
+
+    @staticmethod
+    def _states(db, scopes):
+        keys = {_key(scope): scope for scope in scopes}
+        return {keys[key]: json.loads(value or '{}') for key, value in db.execute(
+            select(resources.c.key, resources.c.state).where(resources.c.key.in_(keys)))}
+
+    @staticmethod
+    def _active_many(db, scopes, stamp):
+        keys = {_key(scope): scope for scope in scopes}
+        return {keys[key]: int(value) for key, value in db.execute(select(
+                permits.c.resource, func.sum(permits.c.units)).select_from(permits.join(
+                    tasks, (permits.c.task_id == tasks.c.id) & (permits.c.owner == tasks.c.worker_id))).where(
+                        permits.c.resource.in_(keys), tasks.c.status == 'running', tasks.c.lease_until > stamp
+                    ).group_by(permits.c.resource))}
+
     def _owned(self, db, stamp):
         if self.store.fleet and self.store.fleet.row(db)['boot_id'] != self.store.fleet.boot_id:
             return False

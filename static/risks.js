@@ -10,6 +10,9 @@ const failureKindNames = {
   repeated_http_403: '多个不同视频连续返回 HTTP 403，保护性暂停',
   transient_failure: '暂时性故障', local_halt: '沿用本地停止状态',
   local_resource: '本地资源或执行条件限制', unknown: '证据不足，尚未分类',
+  drm_only: '仅图片可用，无可下载的非 DRM 媒体', format_unavailable: '没有可用格式，原因未确认',
+  no_data: '媒体请求未收到数据块', incomplete_response: '媒体响应中途断开',
+  private: '视频私密', deleted: '视频已删除', geo_blocked: '视频地区限制',
 };
 function failureEvidenceHTML(failure) {
   if (!failure) return '';

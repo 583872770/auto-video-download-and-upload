@@ -68,6 +68,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                          path=workspace.directory if workspace.test_mode else None)
     from webapp.downloads import initial_progress
     last_progress = initial_progress(config, payload.get('policy_version'))
+    if payload.get('_retry_cookie_profile_id'):
+        last_progress['retry_cookie_profile_id'] = payload['_retry_cookie_profile_id']
 
     def report(value):
         estimate = value.get('total_bytes') or 0
@@ -95,24 +97,22 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
         payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path), '_disk_state': str(state)}
         try:
             from webapp.youtube_auth import is_youtube
+            if payload.get('_retry_cookie_profile_id') and not prepared.get('youtube_cookie_pool'):
+                raise RuntimeError('本任务重试绑定的 Cookie 池已关闭，请检查配置后手动重试。')
             if prepared.get('youtube_cookie_pool') and is_youtube(payload['urls']):
                 from webapp.cookie_pool import CookiePool
                 pool = CookiePool(store, prepared, payload['base'], task_id)
+                retry_profile = payload.get('_retry_cookie_profile_id')
+                if retry_profile and (retry_profile not in pool.profile_names or
+                        retry_profile not in {identity for identity, _, _ in pool.accounts} | set(pool.aliases) or
+                        payload.get('_retry_cookie_instance_id') != pool.router.instance):
+                    raise RuntimeError('本任务重试绑定的 Cookie 已不可用或实例不匹配，请检查账号池后手动重试。')
                 report({'stage': 'waiting_cookie'})
-                with pool.assignment(count_success=False) as selected:
+                with pool.assignment(profile_id=retry_profile, count_success=False) as selected:
                     if start_ticket:
                         start_ticket.finish(selected['_cookie_pool_next_at'] - selected['_cookie_pool_admitted_at'])
                     cookie_profile_id = selected['_cookie_pool_selected']
-                    cookie_profile_name = cookie_profile_id
-                    try:
-                        from webapp.cookie_profiles import CookieProfiles
-                        cookie_profile_name = next((item['name'] for item in
-                            CookieProfiles(payload['base'], store).items()
-                            if item['id'] == cookie_profile_id), cookie_profile_id)
-                    except Exception:
-                        # The ID remains useful for diagnostics if the display
-                        # name cannot be read while the worker is starting.
-                        pass
+                    cookie_profile_name = selected.get('_cookie_pool_profile_name', cookie_profile_id)
                     report({'cookie_profile_id': cookie_profile_id,
                             'cookie_profile_name': cookie_profile_name})
                     selected['_cookie_pool_profile_name'] = cookie_profile_name
@@ -241,7 +241,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
-        if store:
+        if store and (config.get('youtube_cookie_usage', 'auto') != 'never'
+                      or config.get('_cookie_pool_selected')):
             from webapp.cookie_profiles import CookieProfiles
             from webapp.cookie_binding import CookieBindingConflict
             try:
@@ -923,6 +924,9 @@ def drain(directory, slot=0, role='all'):
         from webapp.download_start_gate import DownloadStartGate
         start_gate = DownloadStartGate(store.directory)
         while True:
+            from webapp.throughput import worker_should_retire
+            if worker_should_retire(store.directory, slot):
+                break  # Complete in-flight work, then retire before claiming again.
             remaining = next_claim_after - time.monotonic()
             if remaining > 0:
                 # Delay this idle worker too. Delaying only the released task
@@ -946,6 +950,8 @@ def drain(directory, slot=0, role='all'):
                 execution_id=uuid.uuid4().hex)
             from webapp.throughput import PipelineBusy, runtime_limits
             if slot > 0 and slot >= runtime_limits(runtime, store.directory)['workers']:
+                if start_ticket:
+                    start_ticket.finish()
                 store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
                 break
             if task['action'] == 'download':
@@ -1052,7 +1058,7 @@ def drain(directory, slot=0, role='all'):
             sys.stderr.flush()
             from webapp.maintenance import bounded_task_log
             maximum = min(int(runtime.get('max_log_mb', 2)) * MIB,
-                          int(runtime.get('disk_log_budget_mb', 64)) * MIB // 64)
+                          int(runtime.get('disk_log_budget_mb', 256)) * MIB // 64)
             with (diagnostic_context(**task_context),
                   active_task_log(store.directory, slot, task['id']) as log_admitted,
                   bounded_task_log(store.log_path(task['id']), maximum,
@@ -1081,7 +1087,10 @@ def drain(directory, slot=0, role='all'):
                 except PipelineBusy as error:
                     if start_ticket:
                         start_ticket.finish(error.retry_after)
-                    record_failure(error)
+                    store.update_progress(task['id'], {**last_progress, 'stage': 'scheduling_wait',
+                        'speed': None, 'eta': None, 'wait_reason': str(error),
+                        'retry_at': time.time() + error.retry_after,
+                        'retry_delay_seconds': error.retry_after}, store.owner)
                     lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=error.retry_after)
                     worker_delay = max(2, min(60, error.retry_after))
                     next_claim_after = time.monotonic() + worker_delay
@@ -1159,6 +1168,8 @@ def drain(directory, slot=0, role='all'):
                     policy = recovery_policy(failure, {**runtime, **config}, youtube=failure.source != 'provider')
                     server_delay = max(getattr(error, '_download_recovery_delay', policy.delay),
                         failure.retry_after or 0, getattr(error, 'retry_after', 0) or 0) or None
+                    if failure.reason == 'no_data':
+                        server_delay = max(server_delay or 0, min(300, 60 * 2 ** max(0, task['attempts'] - 1)))
                     transient = failure.retryable
                     lease_guard.settle(store.finish, task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])

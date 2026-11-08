@@ -55,6 +55,9 @@ def main():
             store = app.extensions['task_store']
             with store.connect() as db:
                 db.execute(instances.update().where(instances.c.id == node).values(url=f'http://127.0.0.1:{server.server_port}'))
+                from webapp.runtime_summary import record_terminal
+                record_terminal(store, db, {'action': 'download', 'instance_id': node}, 'succeeded',
+                    {}, {'file_count': 1, 'file_bytes': 12345 if node == 'pool' else 99999}, time.time())
         errors = []
         try:
             with sync_playwright() as pw:
@@ -79,17 +82,34 @@ def main():
                 pool.locator('[name="builtin_transfer_limit"]').fill('9')
                 pool.locator('[name="youtube_cookie_session_limit"]').fill('3')
                 pool.locator('[name="youtube_cookie_pool_start_interval"]').fill('6')
+                pool.locator('[name="youtube_cookie_pool_worker_limit"]').fill('7')
                 page.wait_for_timeout(2300)
                 expect(pool.locator('[name="builtin_transfer_limit"]')).to_have_value('9')
                 pool.locator('button[type="submit"]').click()
                 expect(page.locator('.toast').last).to_contain_text('实例配置已保存')
                 local = apps['pool'].extensions['fleet'].local_settings()['config']
                 assert [local[k] for k in ('builtin_transfer_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval')] == [9, 3, 6]
+                assert local['youtube_cookie_pool_worker_limit'] == 7
                 assert apps['manual'].extensions['fleet'].local_settings()['config']['builtin_transfer_limit'] == 12
                 # Opening the complete settings page reads the exact same values.
                 pool.get_by_role('link', name='Cookie 与完整设置').click()
                 page.locator('#settings-tab-accounts').click()
                 expect(page.locator('[name="youtube_cookie_pool_start_interval"]')).to_have_value('6')
+                expect(page.locator('#settings-form [name="youtube_cookie_pool_worker_limit"]')).to_have_value('7')
+                expect(page.locator('#settings-form [name="youtube_cookie_pool_preparation_workers"]')).to_have_value('4')
+                page.locator('#settings-tab-storage').click()
+                page.locator('#runtime-summary-open').click()
+                expect(page.locator('#runtime-summary-content')).to_contain_text('实例：pool')
+                expect(page.locator('#runtime-summary-content')).to_contain_text('完成 1 个')
+                page.locator('#runtime-summary-days').select_option('30')
+                expect(page.locator('#runtime-summary-content')).to_contain_text('实例：pool')
+                page.screenshot(path=str(output / 'runtime-summary-desktop.png'), full_page=True)
+                page.set_viewport_size({'width': 390, 'height': 844})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'summary page overflow'
+                assert page.locator('#runtime-summary-content').evaluate('(element) => element.scrollWidth <= element.clientWidth'), 'summary text overflow'
+                page.screenshot(path=str(output / 'runtime-summary-mobile.png'), full_page=True)
+                page.locator('#runtime-summary-close').click()
+                page.set_viewport_size({'width': 1440, 'height': 1100})
                 page.goto(f'http://127.0.0.1:{servers[0].server_port}/#instances')
                 expect(page.locator('.fleet-instance')).to_have_count(3)
                 page.screenshot(path=str(output / 'instances-desktop.png'), full_page=True)
@@ -109,7 +129,7 @@ def main():
                 server.shutdown()
             for thread in threads:
                 thread.join(timeout=3)
-    print('PASS: pool/manual/auto, saved controls, node isolation, drafts, offline state, desktop/mobile')
+    print('PASS: pool/manual/auto, process controls, scoped runtime summary, drafts, offline state, desktop/mobile')
 
 
 if __name__ == '__main__':

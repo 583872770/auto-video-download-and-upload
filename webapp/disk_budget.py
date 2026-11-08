@@ -22,10 +22,10 @@ COORDINATION_TIMEOUT = 5
 USAGE_INTERVAL = 5
 DISK_DEFAULTS = {
     'disk_budget_gb': 20, 'disk_test_budget_gb': 16,
-    'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 64,
+    'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 256,
     'disk_import_budget_mb': 1024, 'disk_cache_budget_mb': 256,
     'disk_min_free_gb': 10, 'disk_resume_free_gb': 15,
-    'disk_upload_limit_mb': 256, 'disk_success_log_hours': 24,
+    'disk_upload_limit_mb': 256, 'disk_success_log_hours': 6,
     'disk_failure_log_days': 7,
 }
 DISK_FIELDS = set(DISK_DEFAULTS)
@@ -43,20 +43,54 @@ def is_disk_full(error):
     return isinstance(error, OSError) and error.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', 122))
 
 
+def _path_comparison_key(path):
+    value = str(path)
+    if os.name == 'nt':
+        # Windows realpath can retain the extended prefix if a directory
+        # disappears between its two native lookups. This is spelling, not a
+        # link; normalize only DOS/UNC prefixes, never device namespaces.
+        if value.upper().startswith('\\\\?\\UNC\\'):
+            value = '\\\\' + value[8:]
+        elif (value.startswith('\\\\?\\') and len(value) >= 7
+              and value[4].isalpha() and value[5:7] == ':\\'):
+            value = value[4:]
+    return os.path.normcase(value)
+
+
 def safe_path(path, root):
     path, root = Path(path).absolute(), Path(root).absolute()
     if not path.is_relative_to(root) or path == root:
         raise ValueError('临时文件路径超出受控目录。')
-    if root.is_symlink() or root.is_junction():
-        raise ValueError('临时根目录不能是链接。')
-    current = root
-    for part in path.relative_to(root).parts:
-        current = current / part
-        if current.is_symlink() or current.is_junction():
-            raise ValueError('临时目录不能包含链接。')
-    if root.resolve() != root or path.resolve() != path:
-        raise ValueError('临时文件路径包含链接。')
-    return path
+    for attempt in range(5):
+        if root.is_symlink() or root.is_junction():
+            raise ValueError('临时根目录不能是链接。')
+        current = root
+        for part in path.relative_to(root).parts:
+            current = current / part
+            if current.is_symlink() or current.is_junction():
+                raise ValueError('临时目录不能包含链接。')
+        resolved_root, resolved_path = root.resolve(), path.resolve()
+        if (_path_comparison_key(resolved_root) == _path_comparison_key(root)
+                and _path_comparison_key(resolved_path) == _path_comparison_key(path)):
+            return path
+        # NTFS may briefly resolve a concurrently removed directory to its
+        # internal $Deleted name. Recheck the full guard, never accept that
+        # redirect. Stable redirects and real links still fail closed.
+        if os.name != 'nt' or attempt == 4:
+            raise ValueError('临时文件路径包含链接。')
+        time.sleep(.001 * 2 ** attempt)
+
+
+def _read_disk_metadata(operation):
+    for attempt in range(5):
+        try:
+            return operation()
+        except PermissionError as error:
+            # Windows can report access denied while a directory is pending
+            # deletion. Retry briefly; persistent ACL errors remain visible.
+            if os.name != 'nt' or getattr(error, 'winerror', None) != 5 or attempt == 4:
+                raise
+            time.sleep(.001 * 2 ** attempt)
 
 
 def size_of(path, *, measured=None):
@@ -65,7 +99,7 @@ def size_of(path, *, measured=None):
     try:
         if path.is_junction():
             return 0
-        metadata = path.lstat()
+        metadata = _read_disk_metadata(path.lstat)
         if stat.S_ISLNK(metadata.st_mode):
             return 0
         total = max(metadata.st_size, getattr(metadata, 'st_blocks', 0) * 512)
@@ -73,7 +107,7 @@ def size_of(path, *, measured=None):
         # FIFOs and device nodes likewise have metadata but no children.
         if stat.S_ISDIR(metadata.st_mode):
             total = max(total, 4096)
-            with os.scandir(path) as entries:
+            with _read_disk_metadata(lambda: os.scandir(path)) as entries:
                 for entry in entries:
                     total += size_of(entry.path, measured=measured)
         if measured is not None and path in measured:

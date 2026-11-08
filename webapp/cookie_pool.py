@@ -10,6 +10,9 @@ import json
 import random
 import re
 import time
+from functools import lru_cache
+
+from sqlalchemy import select
 
 from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.channel_scheduler import ChannelScheduler
@@ -18,6 +21,14 @@ from webapp.cookie_profiles import CookieProfiles
 from webapp.throughput import MAX_TRANSFERS, PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 from webapp.youtube_pacing import cookie_pool_start_interval
+
+
+@lru_cache(maxsize=256)
+def _member_identity(name, content):
+    # Bounded, process-local parsing cache. Live membership and binding are
+    # always read from the DB; replacement content/name changes this key.
+    data = content.encode('utf-8')
+    return account_group_key(name, data), 'credential:' + credential_key(data)
 
 
 # A newly imported account remains deliberately conservative.  Once the same
@@ -161,51 +172,66 @@ class CookiePool:
         self.unavailable = []
         self.aliases = {}
         self.profile_names = {}
-        profile_items = {item['id']: item for item in profiles.items()}
-        seen = {}
-        for identity in config.get('youtube_cookie_pool', []):
-            item = profile_items.get(identity)
-            self.profile_names[identity] = item.get('name', identity) if item else identity
+        try:
+            members, self.unavailable = profiles.pool_members(config.get('youtube_cookie_pool', []), strict=strict)
+        except (ValueError, OSError) as error:
+            from webapp.cookie_binding import CookieBindingConflict
+            raise YouTubeAuthRequired({'state': 'invalid',
+                'message': str(error) if isinstance(error, CookieBindingConflict) else
+                '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
+        self.profile_names.update({item['id']: item['name'] for item in self.unavailable})
+        parsed = []
+        for item in members:
+            identity = item['id']
+            self.profile_names[identity] = item['name']
             try:
-                target = profiles.require(identity)
-                data = target.read_bytes()
-                group_key = account_group_key(item.get('name') if item else '', data)
-                credential = 'credential:' + credential_key(data)
-            except (ValueError, OSError) as error:
+                group, credential = _member_identity(item['name'], item['content'])
+            except ValueError:
                 if strict:
-                    from webapp.cookie_binding import CookieBindingConflict
                     raise YouTubeAuthRequired({'state': 'invalid',
-                        'message': str(error) if isinstance(error, CookieBindingConflict) else
-                        '账号池中的 Cookie 文件缺失、无效或过期，请检测并更新后再启动。'}) from None
+                        'message': '账号池中的 Cookie 缺少登录凭据，请检测并更新后再启动。'}) from None
                 self.unavailable.append({'id': identity, 'unavailable': True})
                 continue
-            def resolve_group(db, stamp):
-                alias_scope = 'youtube-account-alias:' + credential
-                alias = self.router._state(db, alias_scope)
-                if not alias.get('group'):
-                    alias['group'] = group_key
-                    self.router._save(db, alias_scope, alias)
-                return alias['group']
-            # Persist the association: selecting a differently named export on
-            # its own must not create a new cooldown or concurrency budget.
-            group_key = self.router.transaction_call(resolve_group)
+            parsed.append((identity, item['path'], group, credential))
+        from webapp.channel_scheduler import _key
+        from webapp.database import download_resources
+        alias_scopes = {_key('youtube-account-alias:' + credential): credential for _, _, _, credential in parsed}
+        with self.router.store.connect() as db:
+            groups = {alias_scopes[key]: json.loads(raw or '{}').get('group') for key, raw in db.execute(
+                select(download_resources.c.key, download_resources.c.state).where(
+                    download_resources.c.key.in_(alias_scopes)))}
+        missing = [(group, credential) for _, _, group, credential in parsed if not groups.get(credential)]
+        if missing:
+            def initialize_aliases(db, stamp):
+                result = {}
+                for group, credential in missing:
+                    scope = 'youtube-account-alias:' + credential
+                    state = self.router._state(db, scope)
+                    if not state.get('group'):
+                        state['group'] = group
+                        self.router._save(db, scope, state)
+                    result[credential] = state['group']
+                return result
+            groups.update(self.router.transaction_call(initialize_aliases))
+        seen = {}
+        for identity, target, _, credential in parsed:
+            group_key = groups[credential]
             canonical = next((seen[key] for key in (group_key, credential) if key in seen), None)
             if canonical is None:
                 key = group_key
                 self.accounts.append((identity, target, 'youtube-account:' + key))
-                self.profile_names[identity] = item.get('name', identity) if item else identity
                 seen[group_key] = identity
                 seen[credential] = identity
             else:
                 self.aliases[identity] = canonical
-                self.profile_names[identity] = item.get('name', identity) if item else identity
         self.global_scope = 'youtube-cookie-pool:' + self.router.instance
 
     def status(self):
+        states, usage, sampled_at = self.router.snapshot([self.global_scope, *(scope for _, _, scope in self.accounts)])
         def read(db, stamp):
-            global_state = self.router._state(db, self.global_scope)
-            accounts = [{'id': identity, **self.router._state(db, scope),
-                         'active': self.router._active(db, scope, stamp)} for identity, _, scope in self.accounts]
+            global_state = states.get(self.global_scope, {})
+            accounts = [{'id': identity, **states.get(scope, {}),
+                         'active': usage.get(scope, 0)} for identity, _, scope in self.accounts]
             configured = int(self.config.get('youtube_cookie_session_limit', 2))
             for account in accounts:
                 warming = account.get('limit', 1) < 2
@@ -237,7 +263,7 @@ class CookiePool:
                     'profile_states': profile_views}
             result['capacity_summary'] = capacity_summary(result, stamp)
             return result
-        return self.router.transaction_call(read)
+        return read(None, sampled_at)
 
     def clear_halt_after_checks(self):
         """Called only by the idle-only API after fresh checks of every member."""
@@ -275,7 +301,10 @@ class CookiePool:
                 return None, gate['cooldown_until'] - stamp
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp
-            states = [(identity, path, scope, router._state(db, scope), router._active(db, scope, stamp))
+            scopes = [scope for _, _, scope in self.accounts]
+            state_by_scope = router._states(db, scopes)
+            active_by_scope = router._active_many(db, scopes, stamp)
+            states = [(identity, path, scope, state_by_scope.get(scope, {}), active_by_scope.get(scope, 0))
                       for identity, path, scope in self.accounts]
             capacity = min(MAX_TRANSFERS, sum(session_limit(self.config, state)
                 for _, _, _, state, _ in states if state.get('cooldown_until', 0) <= stamp))
@@ -346,6 +375,8 @@ class CookiePool:
         policy = recovery_policy(failure, self.config) if failure else None
         if failure and failure.source == 'oss':
             return  # Storage delivery never changes YouTube session health.
+        if failure and failure.kind in ('local_resource', 'local_halt'):
+            return  # Scheduling/resource waits belong to the task, not Cookie failure history.
         denied = bool(failure and failure.kind == 'access_denied' and failure.http_status == 403
                       and failure.source == 'youtube' and failure.phase == 'transfer' and failure.task_id)
         from webapp.youtube_cookie_history import record as record_cookie_event

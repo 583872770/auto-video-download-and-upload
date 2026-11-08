@@ -1,60 +1,44 @@
-"""数据库连接池动态计算。"""
+"""One per-instance connection contract for the supervisor and its children."""
 import os
 
 
-def calculate_pool_size(is_worker=False, worker_count=None):
-    """根据角色和并发数动态分配连接池大小。
+def _integer(name, default, minimum=0):
+    value = int(os.environ.get(name, default))
+    if value < minimum:
+        raise ValueError(f'{name} must be at least {minimum}')
+    return value
 
-    Args:
-        is_worker: 是否为 worker 子进程
-        worker_count: 总 worker 数（仅主进程需要）
 
-    Returns:
-        (pool_size, max_overflow)
+def worker_pool_size():
+    # Progress/business writes and lease heartbeats can overlap in a worker.
+    return (_integer('VIDEO_WORKER_DB_POOL_SIZE', 2, 2),
+            _integer('VIDEO_WORKER_DB_MAX_OVERFLOW', 0))
+
+
+def connection_budget():
+    """Reserve main + two auxiliary lanes before admitting download workers.
+
+    This is an instance budget, not the MySQL server's max_connections. Operators
+    sharing a database must allocate a suitable budget to each instance.
     """
+    total = _integer('VIDEO_DB_CONNECTION_BUDGET', 48, 8)
+    per_worker = sum(worker_pool_size())
+    auxiliary = _integer('VIDEO_DB_AUXILIARY_CONNECTIONS', 2 * per_worker, 2 * per_worker)
+    main = (_integer('VIDEO_DB_POOL_SIZE', 5, 2), _integer('VIDEO_DB_MAX_OVERFLOW', 2))
+    if sum(main) + auxiliary + per_worker > total:
+        raise ValueError('VIDEO_DB_CONNECTION_BUDGET cannot cover the main pool, auxiliary lanes and one worker')
+    workers = min((total - sum(main) - auxiliary) // per_worker,
+                  _integer('VIDEO_WORKER_DB_CONNECTION_BUDGET', 48, per_worker) // per_worker)
+    return {'total': total, 'main': main, 'auxiliary': auxiliary,
+            'per_worker': per_worker, 'workers': workers}
+
+
+def calculate_pool_size(is_worker=False, worker_count=None):
     if is_worker:
-        # Worker 进程：每个最多 2 个连接（业务写入 + 心跳读取）
-        # 不需要 overflow，避免连接数不可控
-        pool_size = int(os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2'))
-        return (pool_size, 0)
-
-    # 主进程：根据总预算分配
-    total_budget = int(os.environ.get('VIDEO_DB_CONNECTION_BUDGET', '48'))
-
-    # 预留给 worker（默认 16 个，每个 2 连接）
+        return worker_pool_size()
+    budget = connection_budget()
     if worker_count is None:
-        worker_count = int(os.environ.get('VIDEO_THROUGHPUT_WORKERS', '16'))
-    worker_reserved = worker_count * 2
-
-    # 主进程可用 = 总预算 - worker 预留
-    main_available = max(5, total_budget - worker_reserved)
-
-    # pool_size 取 60%，max_overflow 取 40%
-    pool_size = max(2, int(main_available * 0.6))
-    max_overflow = max(0, main_available - pool_size)
-
-    return (pool_size, max_overflow)
-
-
-if __name__ == '__main__':
-    # 打印当前配置
-    print('当前连接池配置：')
-    print('=' * 60)
-
-    main_pool, main_overflow = calculate_pool_size(is_worker=False, worker_count=16)
-    print(f'主进程: pool_size={main_pool}, max_overflow={main_overflow}')
-    print(f'  → 最多 {main_pool + main_overflow} 个连接')
-
-    worker_pool, worker_overflow = calculate_pool_size(is_worker=True)
-    print(f'Worker 进程: pool_size={worker_pool}, max_overflow={worker_overflow}')
-
-    total_workers = int(os.environ.get('VIDEO_THROUGHPUT_WORKERS', '16'))
-    total = (main_pool + main_overflow) + total_workers * worker_pool
-    print(f'\n总计（1 主 + {total_workers} worker）：{total} 个连接')
-
-    budget = int(os.environ.get('VIDEO_DB_CONNECTION_BUDGET', '48'))
-    print(f'预算: {budget}')
-    if total > budget:
-        print(f'⚠️  警告：总连接数 {total} 超过预算 {budget}')
-    else:
-        print(f'✓ 在预算内（余量 {budget - total}）')
+        worker_count = int(os.environ['VIDEO_THROUGHPUT_WORKERS']) if 'VIDEO_THROUGHPUT_WORKERS' in os.environ else None
+    if worker_count is not None and int(worker_count) > budget['workers']:
+        raise ValueError('Planned download workers exceed VIDEO_DB_CONNECTION_BUDGET')
+    return budget['main']

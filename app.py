@@ -208,17 +208,22 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
 
     @app.get('/api/config')
     def read_config():
-        config, base = settings()
         if fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc):
-            from webapp.fleet_routes import selected_configuration
-            config = selected_configuration(fleet, config)
+            from webapp.fleet_routes import selected_id, rpc
+            if selected_id() != fleet.id:
+                # Paths and the complete configuration belong to the selected
+                # node. Resolving a peer's relative paths against this entry
+                # node's base silently describes a different directory.
+                return jsonify(rpc(fleet, selected_id(), '/api/config'))
+        config, base = settings()
         editable = {key: config.get(key, default) for key, default in DEFAULTS.items()}
         editable['download_methods'] = download_methods(config)
         from Utils.oss_storage import public_oss_config, OSS_SECRETS
         editable = public_oss_config(editable)
         for key in OSS_SECRETS:
             editable[key + '_configured'] = bool(config.get(key) or config.get(key + '_configured'))
-        return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)))
+        return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)),
+                       instance_id=fleet.id if fleet else None)
 
     @app.put('/api/config')
     def update_config():
@@ -1095,6 +1100,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     register_jobs(app, store, settings, job_preflight)
     from webapp.workbench import register_workbench
     register_workbench(app, store, settings, job_preflight)
+    from webapp.managed_deployment import register_instance_deployment
+    register_instance_deployment(app)
 
     def prepare_system_resume():
         if fleet:

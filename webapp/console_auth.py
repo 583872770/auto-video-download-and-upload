@@ -23,11 +23,14 @@ _DUMMY_HASH = generate_password_hash('not-a-login-password')
 LOCAL_RPC_METHODS = {
     '/health': {'GET', 'HEAD'},
     '/api/config': {'GET', 'HEAD', 'PUT'},
+    '/api/instance-deployment': {'GET', 'HEAD', 'PUT'},
+    '/api/instance-deployment/test': {'POST'},
     '/api/status': {'GET', 'HEAD'},
     '/api/fleet/preflight': {'POST'},
     '/api/downloads/connection': {'POST'},
     '/api/disk': {'GET', 'HEAD'},
     '/api/disk/logs': {'GET', 'HEAD'},
+    '/api/disk/runtime-summary': {'GET', 'HEAD'},
     '/api/disk/cleanup': {'POST'},
     '/api/media': {'GET', 'HEAD', 'POST'},
     '/api/media/reindex': {'POST'},
@@ -97,6 +100,9 @@ def rpc_allowed():
 
     # Read-only task logs
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
+        return method in ('GET', 'HEAD')
+
+    if re.fullmatch(r'/api/youtube/cookies/(?:[a-f0-9]{32}|legacy)/timeline', path):
         return method in ('GET', 'HEAD')
 
     if path.startswith(('/media/videos/', '/media/covers/')):

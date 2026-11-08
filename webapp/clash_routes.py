@@ -43,9 +43,10 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         login = app.extensions.get('youtube_login')
         login_active = bool(login and login.status()['active'])
         paused_changes_locked = rotation_locked() or login_active
-        queue = store.download_queue()
+        queue = store.connection_queue()
         connection_reason = ('请先完成或取消 YouTube 登录，再应用当前连接。' if login_active else
-                             '请先停止全部下载并等待当前任务结束，再应用当前连接。' if paused_changes_locked or not queue['paused'] else
+                             ('请先停止当前实例下载并等待当前任务结束，再应用当前连接。' if store.fleet else
+                              '请先停止全部下载并等待当前任务结束，再应用当前连接。') if paused_changes_locked or not queue['paused'] else
                              '当前没有排队的下载或导入任务。' if not (queue['queued'] or queue['importing']) else '')
         return {**data, 'locked': paused_changes_locked,
                 'connection_edit_locked': paused_changes_locked,
@@ -68,9 +69,10 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
     def apply_connection():
         with media_lock, settings_lock:
             idle(subscription=True)
-            queue = store.download_queue()
+            queue = store.connection_queue()
             if not queue['paused'] or queue['running']:
-                abort(409, description='请先停止全部下载并等待当前任务结束，再应用当前连接。')
+                abort(409, description='请先停止当前实例下载并等待当前任务结束，再应用当前连接。' if store.fleet else
+                      '请先停止全部下载并等待当前任务结束，再应用当前连接。')
             if not (queue['queued'] or queue['importing']):
                 abort(409, description='当前没有排队的下载或导入任务。')
             config, _ = settings()

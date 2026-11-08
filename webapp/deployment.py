@@ -29,8 +29,8 @@ MYSQL_FIELDS = frozenset({'mysql_host', 'mysql_port', 'mysql_database', 'mysql_u
 
 
 def instance_settings(profile):
-    """Database settings belong exclusively to the launch configuration."""
-    return {key: value for key, value in profile.items() if key not in MYSQL_FIELDS}
+    """Legacy recovery pages never return connection credentials."""
+    return {key: value for key, value in profile.items() if key not in MYSQL_FIELDS | {'redis_url'}}
 
 
 def mysql_url(profile):
@@ -43,7 +43,7 @@ def validate_profile(data, previous, *, require_database=True):
     if not isinstance(data, dict):
         raise ValueError('请提交有效的部署配置。')
     allowed = {'role', 'instance_id', 'instance_name', 'instance_url', 'mysql_host', 'mysql_port',
-               'mysql_database', 'mysql_user', 'mysql_password', 'web_hosts'}
+               'mysql_database', 'mysql_user', 'mysql_password', 'web_hosts', 'redis_url'}
     if set(data) - allowed:
         raise ValueError('包含不支持的部署配置项。')
     value = {**previous, **data}
@@ -91,7 +91,7 @@ def validate_profile(data, previous, *, require_database=True):
 
 
 def validate_page_profile(data, previous):
-    if isinstance(data, dict) and MYSQL_FIELDS.intersection(data):
+    if isinstance(data, dict) and (MYSQL_FIELDS | {'redis_url'}).intersection(data):
         raise ValueError('数据库连接由 .env 或启动环境配置，不能在页面修改。')
     return validate_profile(data, previous)
 
@@ -133,9 +133,11 @@ class DeploymentGateway:
         self.config_path, self.directory = Path(config_path).resolve(), Path(state_dir).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'deployment.json'
+        self.managed_path = self.directory / 'deployment-managed.json'
         self.lock = threading.Lock()
         self.active = None
         self.running_role = None
+        self.running_profile = None
         self.pending_restart = False
         self.startup_error = ''
         self.failure = None
@@ -185,6 +187,18 @@ class DeploymentGateway:
                            'instance_name': instance_name}.items():
             if value:
                 self.profile[key] = value
+        if self.managed_path.is_file():
+            try:
+                from webapp.managed_deployment import validate_managed
+                saved = json.loads(self.managed_path.read_text(encoding='utf-8'))
+                if not isinstance(saved, dict) or saved.get('version') != 1 or not isinstance(saved.get('profile'), dict):
+                    raise ValueError('Invalid managed deployment')
+                self.profile = validate_managed(saved['profile'], self.profile)
+                invalid_environment = invalid_saved = False
+                self.startup_error = ''
+            except (ValueError, OSError):
+                self.startup_error = '统一管理保存的部署配置无法读取，请在本机部署恢复页重新保存配置。'
+                invalid_saved = True
         database_configured = all(self.profile.get(key) for key in MYSQL_FIELDS - {'mysql_port'})
         if not invalid_environment and not invalid_saved and database_configured:
             try:
@@ -270,6 +284,7 @@ class DeploymentGateway:
                  'mysql_host': os.environ.get('MYSQL_HOST', ''), 'mysql_port': os.environ.get('MYSQL_PORT') or 3306,
                  'mysql_database': os.environ.get('MYSQL_DATABASE') or 'video_downloads',
                  'mysql_user': os.environ.get('MYSQL_USER') or 'video', 'mysql_password': os.environ.get('MYSQL_PASSWORD', ''),
+                 'redis_url': os.environ.get('REDIS_URL', ''),
                  'web_hosts': os.environ.get('VIDEO_WEB_HOSTS') or f'localhost,127.0.0.1,[::1],{socket.gethostname()}'}
         raw = os.environ.get('VIDEO_DATABASE_URL')
         if raw:
@@ -315,8 +330,10 @@ class DeploymentGateway:
     def activate(self, profile):
         # Reject incompatible local identities before starting any processes or DDL.
         self.resolve_identity(profile)
-        write_profile(self.path, instance_settings(profile))
+        self.persist_profile(profile)
         self.profile = profile
+        if self.managed_path.is_file():
+            os.environ['REDIS_URL'] = profile.get('redis_url', '')
         if os.environ.get('YT5S_BROWSER_ENABLED') == '1' and not self.desktop_started:
             self.report_startup('正在启动浏览器桌面环境…')
             spec = importlib.util.spec_from_file_location('frameflow_desktop', ROOT / 'docker/browser_desktop.py')
@@ -335,9 +352,17 @@ class DeploymentGateway:
                       startup_report=self.report_startup)
         app.config['TRUSTED_HOSTS'] = [item.strip() for item in profile['web_hosts'].split(',')]
         app.config['DEPLOYMENT_SETUP_AVAILABLE'] = True
+        app.extensions['deployment_gateway'] = self
         self.active = app
         self.running_role = profile['role']
+        self.running_profile = dict(profile)
         self.report_startup('初始化完成，服务已就绪。')
+
+    def persist_profile(self, profile):
+        if self.managed_path.is_file():
+            write_profile(self.managed_path, dict(version=1, profile=profile))
+        else:
+            write_profile(self.path, instance_settings(profile))
 
     def startup_status(self):
         return {'starting': self.starting, 'stage': self.startup_stage,
@@ -433,7 +458,7 @@ class DeploymentGateway:
                 was_running = self.active is not None
                 # Persist before starting dispatch threads: a write failure must
                 # never leave a service running with unsaved instance settings.
-                write_profile(self.path, instance_settings(value))
+                self.persist_profile(value)
                 self.profile = value
                 if not was_running:
                     transferred = True

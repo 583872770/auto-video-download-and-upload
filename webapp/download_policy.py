@@ -43,6 +43,7 @@ class FailureEvidence:
     task_id: str | None = None
     profile_id: str | None = None
     profile_name: str | None = None
+    reason: str | None = None
 
     def public(self):
         return asdict(self)
@@ -103,6 +104,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     # original exception; a partial response is not a permanent content error.
     incomplete_read = any(isinstance(c, (IncompleteRead, YtdlpIncompleteRead)) for c in chain) or bool(re.search(
         r'\b\d+ bytes read,\s*\d+ more expected\b', lower))
+    no_data = 'did not get any data blocks' in lower
     if any(type(c).__name__ == 'OSSUploadError' for c in chain):
         kind, source, phase = 'storage_failure', 'oss', 'upload'
     elif result.get('source') == 'cookie_pool_halted':
@@ -117,15 +119,16 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         kind = 'authentication_required'
         phase = phase or 'auth'
     elif any(getattr(c, 'failure_scope', None) == 'video' for c in chain) or any(term in lower for term in (
-            'private video', 'members-only content', 'not available in your country',
+            'private video', 'this video is private', 'members-only content', 'not available in your country',
             'requested format is not available', 'drm protected', 'video has been deleted',
+            'video has been removed',
             'account associated with this video has been terminated')):
         kind = 'content_restriction'
     elif 'confirm' in lower and 'bot' in lower or 'captcha' in lower:
         kind = 'verification_required'
     elif status in (401, 403):
         kind = 'access_denied'
-    elif status in (408, 500, 502, 503, 504) or transient or incomplete_read or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
+    elif status in (408, 500, 502, 503, 504) or transient or incomplete_read or no_data or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
             'timed out', 'timeout', 'connection reset', 'connection refused', 'name resolution',
             'connection aborted', 'temporary failure', 'sslerror', 'ssleoferror', 'network is unreachable',
             'remote end closed connection', 'err_connection_', 'err_proxy_connection_', 'err_tunnel_connection_')):
@@ -133,9 +136,18 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     else:
         kind = 'unknown'
     retryable = kind in ('request_rate_limit', 'transient_failure') or kind == 'storage_failure' and transient
+    reason = next((getattr(c, 'failure_reason') for c in chain if getattr(c, 'failure_reason', None)), None)
+    if kind == 'content_restriction' and not reason:
+        reason = ('private' if 'private video' in lower or 'this video is private' in lower else
+                  'deleted' if 'video has been removed' in lower or 'video has been deleted' in lower else
+                  'geo_blocked' if 'not available in your country' in lower else
+                  'drm_only' if 'drm protected' in lower and 'only images' in lower else
+                  'format_unavailable' if 'requested format is not available' in lower else None)
+    if kind == 'transient_failure' and not reason:
+        reason = 'no_data' if no_data else 'incomplete_response' if incomplete_read else None
     value = FailureEvidence(uuid.uuid4().hex, time.time(), source or 'unknown', phase or 'unknown', kind,
                             status, evidence, delay, retryable, safe_text(str(error))[:1000],
-                            task_id, profile_id, safe_text(profile_name)[:80] if profile_name else None)
+                            task_id, profile_id, safe_text(profile_name)[:80] if profile_name else None, reason)
     for cause in chain:
         _attach(cause, value)
     return value

@@ -1,11 +1,120 @@
 'use strict';
 
-function renderInstanceScope() {
-  const local = ['overview','media','settings','clash','instances',''].includes(location.hash.slice(1));
-  $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
-  if (state.fleet?.items.some(item => ['worker', 'hybrid'].includes(item.role))) {
-    $('#fleet-selection-note').textContent = location.hash === '#instances' ? '下方汇总和列表展示全部实例；工作台、系统设置和素材库跟随所选实例。' : '任务选择、下载控制、系统设置和素材库仅影响当前实例。';
+function setInstanceReady(ready, error = '') {
+  state.instanceReady = ready;
+  state.instanceError = error;
+  for (const id of ['settings-view', 'clash-view', 'media-view', 'overview-view', 'deployment-view']) {
+    document.getElementById(id).inert = !ready;
   }
+  const retry = $('#fleet-reload');
+  if (retry) { retry.hidden = ready; retry.disabled = !!state.instanceLoading; }
+  renderInstanceScope();
+}
+function instanceHasDraft() {
+  const subscriptionName = $('#clash-subscription-name').value.trim();
+  const savedName = state.clash?.subscriptions?.find(item => item.id === subscriptionSelection)?.name || '';
+  return state.deploymentDirty || settingsDirty || providerDraft || cookiePoolDraft || rotationDirty ||
+    !!$('#clash-subscription-url').value.trim() || subscriptionName !== savedName ||
+    !!$('[data-cookie-file]', $('#youtube-cookie-form')).files.length ||
+    !!$('[data-cookie-name]', $('#youtube-cookie-form')).value.trim();
+}
+async function loadSelectedInstance({ reset = true } = {}) {
+  const instance = state.instanceId;
+  const epoch = (state.instanceEpoch || 0) + 1;
+  state.instanceEpoch = epoch;
+  state.instanceLoading = true;
+  setInstanceReady(false);
+  if (reset) {
+    for (const dialog of $$('dialog[open]')) dialog.close();
+    state.status = null; state.clash = null; state.media = []; state.config = null; state.configInstance = null;
+    state.clearMediaDirectory = null;
+    resetInstanceDeployment();
+    nodeSignature = ''; subscriptionInstance = undefined; subscriptionSelection = null; rotationDraft = null;
+    $('#clash-subscription-name').value = ''; $('#clash-subscription-url').value = '';
+    $('#youtube-cookie-list').replaceChildren();
+    resetPage('media'); renderMedia();
+  }
+  try {
+    // Keep configuration loading independent of workbench failures.
+    const data = await api('/api/config');
+    if (epoch !== state.instanceEpoch || instance !== state.instanceId) return;
+    if (data.instance_id && data.instance_id !== instance) throw new Error('返回的配置不属于所选实例，请检查实例地址。');
+    fillConfig(data.config);
+    if (reset) {
+      await resetWorkbench().catch(error => {
+        if (epoch === state.instanceEpoch && instance === state.instanceId) toast(`工作台读取失败：${error.message}`, true);
+      });
+      if (epoch !== state.instanceEpoch || instance !== state.instanceId) return;
+      fillConfig(data.config);
+    }
+    setInstanceReady(true);
+    renderDownloadControl();
+    if (location.hash === '#settings') loadCookieProfiles().catch(error => {
+      if (epoch === state.instanceEpoch && instance === state.instanceId && error.name !== 'AbortError') {
+        $('#youtube-cookie-list').textContent = error.message;
+      }
+    });
+    if (location.hash === '#deployment') loadInstanceDeployment();
+    await refresh();
+    if (epoch !== state.instanceEpoch || instance !== state.instanceId) return;
+    if (typeof refreshDisk === 'function') refreshDisk();
+  } catch (error) {
+    if (epoch !== state.instanceEpoch || instance !== state.instanceId) return;
+    setInstanceReady(false, `无法读取“${instanceName(instance)}”：${error.message}。请重试或选择其他实例。`);
+    throw error;
+  } finally {
+    if (epoch === state.instanceEpoch) {
+      state.instanceLoading = false;
+      const retry = $('#fleet-reload');
+      if (retry) retry.disabled = false;
+      renderInstanceScope();
+    }
+  }
+}
+
+function renderInstanceScope() {
+  const local = ['overview','media','settings','clash','instances','deployment',''].includes(location.hash.slice(1));
+  $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
+  const target = instanceName(state.instanceId);
+  const item = state.fleet?.items.find(item => item.id === state.instanceId);
+  $('#fleet-target-name').textContent = state.instanceId ? target : '尚未选择';
+  $('#fleet-target-name').title = state.instanceId || '';
+  $('#fleet-entry-name').textContent = state.fleet?.instance_id ? instanceName(state.fleet.instance_id) : location.host;
+  $('#fleet-entry-name').title = state.fleet?.instance_id || location.host;
+  const badge = $('#fleet-target-status');
+  badge.textContent = item ? (item.online ? `在线 · ${instanceState(item)}` : '离线') : state.instanceId ? '未登记' : '待选择';
+  badge.dataset.online = String(!!item?.online);
+  for (const [selector, label] of [
+    ['#settings-form button[type="submit"]', `保存设置到「${target}」`],
+    ['#instance-deployment-form button[type="submit"]', `保存部署配置到「${target}」`],
+    ['#instance-deployment-test', `从「${target}」测试连接`],
+    ['#rotation-save', `保存轮换配置到「${target}」`],
+  ]) {
+    const button = $(selector);
+    if (button?.lastChild?.nodeType === Node.TEXT_NODE && button.lastChild.textContent !== label) button.lastChild.textContent = label;
+  }
+  renderInstanceChoices();
+  if (state.instanceError || state.instanceLoading) {
+    $('#fleet-selection-note').textContent = state.instanceError || `正在读取“${instanceName(state.instanceId)}”，操作将在读取完成后恢复。`;
+  } else if (state.fleet?.items.some(item => ['worker', 'hybrid'].includes(item.role))) {
+    $('#fleet-selection-note').textContent = location.hash === '#instances' ? '下方展示全部实例；每张卡片操作对应实例，全局并发设置影响全部实例。工作台和设置跟随上方所选实例。' : location.hash === '#deployment' ? '部署配置保存到上方管理实例，重启该实例服务后生效。访问入口不影响保存目标。' : '工作台、系统设置、代理和素材库跟随上方管理实例；任务中心、客户和账单为全局共享。';
+  }
+}
+
+function renderInstanceChoices() {
+  const selector = $('#fleet-selection');
+  const workers = state.fleet?.items.filter(item => ['worker', 'hybrid'].includes(item.role)) || [];
+  const query = $('#fleet-search').value.trim().toLocaleLowerCase();
+  const matches = workers.filter(item => !query || [item.name, item.id, item.host].some(value => String(value || '').toLocaleLowerCase().includes(query)));
+  const option = item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name || item.id)} · ${escapeHTML(item.id)}${item.id === state.fleet?.instance_id ? '（访问入口）' : ''} · ${instanceState(item)}</option>`;
+  const selected = workers.find(item => item.id === state.instanceId);
+  const retained = state.instanceId && !matches.some(item => item.id === state.instanceId);
+  const current = retained ? `<optgroup label="当前管理（保留选择）">${selected ? option(selected) : `<option value="${escapeHTML(state.instanceId)}">${escapeHTML(state.instanceId)} · 未登记</option>`}</optgroup>` : '';
+  const options = current + matches.map(option).join('');
+  if (selector.innerHTML !== options) selector.innerHTML = options;
+  selector.value = state.instanceId || '';
+  $('#fleet-search-result').hidden = !query;
+  $('#fleet-search-result').textContent = query ? `找到 ${matches.length} / ${workers.length} 个实例。${retained ? '当前管理实例已保留，搜索不会切换实例。' : '选择实例后切换管理目标。'}` : '';
 }
 
 function instanceName(identity) {
@@ -51,15 +160,16 @@ function instanceCard(item, expanded) {
   const capacityFields = pooled ? field('yt-dlp 传输上限（0 = 默认）', 'builtin_transfer_limit', resources.builtin_transfer_limit ?? 0, 0, 64)
     + field('每核心会话并发上限', 'youtube_cookie_session_limit', resources.youtube_cookie_session_limit ?? 2, 1, 64)
     + field('共用启动间隔（秒）', 'youtube_cookie_pool_start_interval', resources.youtube_cookie_pool_start_interval ?? 10, 0, 600)
+    + field('本机下载进程上限', 'youtube_cookie_pool_worker_limit', resources.youtube_cookie_pool_worker_limit ?? 20, 1, 64)
     : field(instanceMode(item) === 'auto' ? '自动调度传输上限' : '视频处理并发上限', 'worker_count', item.worker_count, 1, 64)
       + (item.uses_browser ? field('浏览器并发上限', 'yt5s_browser_count', item.yt5s_browser_count, 1, 16) : '');
   return `<article class="fleet-instance panel"><form data-instance-form="${id}">
-    <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机）':''}</h2><p class="micro-copy">${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
+    <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机访问入口）':''}</h2><p class="micro-copy">${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
     <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
     <div data-instance-live="${id}">${instanceLive(item)}</div>
     <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">工作台与诊断 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">Cookie 与完整设置 ↗</a></div>
     <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后停止</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
-    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>${pooled ? 'Cookie 池调度' : '并发'} · 磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label>${capacityFields}${field('最低剩余磁盘空间（GB）', 'min_free_gb', item.min_free_gb, 0, 10000)}</div>${pooled ? '<p class="micro-copy">池按会话预热、冷却和可用容量调度，并受 yt-dlp 传输上限约束；0 使用渠道默认上限。调小上限后，已开始的传输继续完成。</p>' : ''}<p class="micro-copy">Cookie 仅归属本实例，同一核心登录凭据不能跨实例使用。删除或离线不会解除绑定。</p><p class="micro-copy">实例 ID：${id}<br>素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置</button><p class="micro-copy">仅保存本实例，后续调度读取新值。离线实例重新连接后才会处理停止指令。</p></details>
+    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>${pooled ? 'Cookie 池调度' : '并发'} · 磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label>${capacityFields}${field('最低剩余磁盘空间（GB）', 'min_free_gb', item.min_free_gb, 0, 10000)}</div>${pooled ? '<p class="micro-copy">池按会话预热、冷却和可用容量调度，并受 yt-dlp 传输上限约束；0 使用渠道默认上限。调小上限后，已开始的传输继续完成。</p>' : ''}<p class="micro-copy">Cookie 仅归属本实例，同一核心登录凭据不能跨实例使用。删除或离线不会解除绑定。</p><p class="micro-copy">实例 ID：${id}<br>素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置到「${escapeHTML(item.name)}」</button><p class="micro-copy">仅保存本实例，后续调度读取新值。离线实例重新连接后才会处理停止指令。</p></details>
   </form></article>`;
 }
 let fleetLoading = false;
@@ -84,25 +194,16 @@ async function loadFleet({ poll = false } = {}) {
   const workers = data.items.filter(item => ['worker', 'hybrid'].includes(item.role));
   const previous = state.instanceId;
   const hadConfig = !!state.config;
-  if (!workers.some(item => item.id === state.instanceId)) {
+  if (!state.instanceId && workers.length) {
     state.instanceId = workers.find(item => item.id === data.instance_id)?.id || workers.find(item => item.online)?.id || workers[0]?.id || '';
   }
-  if (state.instanceId !== previous && lastStartedJobId !== null) await resetWorkbench();
   if (state.instanceId !== previous && typeof refreshDisk==='function') refreshDisk();
   if (view === 'overview') renderDownloadControl();
   if (state.instanceId && state.instanceId !== previous && hadConfig && !settingsDirty) {
-    resetPage('media'); state.media = []; state.mediaTotal = 0; state.mediaDirectory = '';
-    const instance = state.instanceId;
-    const config = await api('/api/config');
-    if (instance !== state.instanceId) return;
-    fillConfig(config.config); renderDownloadControl();
+    await loadSelectedInstance();
   }
-  const selector = $('#fleet-selection');
-  const options = workers.map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}${item.id === data.instance_id ? '（本机）' : ''} · ${instanceState(item)}</option>`).join('');
-  if (selector.innerHTML !== options) selector.innerHTML = options;
-  selector.value = state.instanceId || '';
-  if (workers.length) renderInstanceScope();
-  else $('#fleet-selection-note').textContent = '还没有下载实例，请启动服务并检查数据库连接。';
+  renderInstanceScope();
+  if (!workers.length && !state.instanceId) $('#fleet-selection-note').textContent = '还没有下载实例，请启动服务并检查数据库连接。';
   if (view !== 'instances') {
     if (['overview', 'settings'].includes(view)) renderConcurrency();
     return;
@@ -140,6 +241,8 @@ async function loadFleet({ poll = false } = {}) {
 }
 async function initializeFleet() {
   if (!fleetEnabled) return;
+  state.instanceReady = false;
+  setInstanceReady(false);
   $('#fleet-nav').hidden = false;
   renderInstanceScope();
   state.instanceId = new URLSearchParams(location.search).get('instance_id') || localStorage.getItem('frameflow-instance:' + location.origin) || '';
@@ -150,27 +253,31 @@ async function initializeFleet() {
     history.replaceState(null, '', address.pathname + address.search + address.hash);
   }
   $('#instances-view').addEventListener('input', () => { state.fleetFormDirty = true; });
-  await loadFleet();
+  $('#fleet-search').addEventListener('input', renderInstanceChoices);
+  $('#fleet-reload').addEventListener('click', async () => {
+    if (state.instanceLoading || instanceHasDraft()) {
+      toast('请先保存或清除当前实例的未提交修改。', true); return;
+    }
+    try {
+      if (!state.instanceId) await loadFleet();
+      if (!state.instanceId) throw new Error('还没有可管理的实例，请检查服务注册及数据库连接。');
+      await loadSelectedInstance();
+    } catch (error) { toast(error.message, true); }
+  });
   document.addEventListener('viewchange', () => loadFleet().catch(() => {}));
   $('#fleet-selection').addEventListener('change', async event => {
-    if (queueControlBusy || clashBusy) { event.target.value = state.instanceId || ''; return; }
-    if (settingsDirty || providerDraft || downloadMethodBusy) {
+    if (queueControlBusy || clashBusy || state.instanceWrites || downloadMethodBusy) { event.target.value = state.instanceId || ''; return; }
+    if (instanceHasDraft()) {
       event.target.value = state.instanceId || '';
       toast('请先保存当前修改，再切换实例。', true);
       return;
     }
     state.instanceId = event.target.value;
-    const instance = state.instanceId;
     const diskChip=$('#workspace-disk-status');
     diskChip.textContent='磁盘状态读取中'; diskChip.classList.remove('warning','unavailable'); diskChip.title='当前实例的磁盘状态正在更新';
     localStorage.setItem('frameflow-instance:' + location.origin, state.instanceId);
-    resetPage('media'); state.media = [];
     try {
-      await resetWorkbench();
-      const data = await api('/api/config');
-      if (state.instanceId !== instance) return;
-      fillConfig(data.config); renderDownloadControl(); await refresh();
-      if (typeof refreshDisk==='function') refreshDisk();
+      await loadSelectedInstance();
     }
     catch (error) { toast(error.message, true); }
   });
@@ -186,7 +293,7 @@ async function initializeFleet() {
     event.preventDefault();
     const form = event.target;
     const data = Object.fromEntries(new FormData(form));
-    for (const key of ['worker_count', 'yt5s_browser_count', 'min_free_gb', 'builtin_transfer_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval']) if (key in data) data[key] = Number(data[key]);
+    for (const key of ['worker_count', 'yt5s_browser_count', 'min_free_gb', 'builtin_transfer_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval', 'youtube_cookie_pool_worker_limit']) if (key in data) data[key] = Number(data[key]);
     runButton($('button[type="submit"]', form), async () => {
       const result = await api(`/api/instances/${encodeURIComponent(form.dataset.instanceForm)}`, { method: 'PUT', body: data });
       state.fleetFormDirty = false;
@@ -219,4 +326,5 @@ async function initializeFleet() {
     }
   });
   setInterval(() => { if (!document.hidden) loadFleet({ poll: true }).catch(() => {}); }, 2000);
+  await loadFleet();
 }

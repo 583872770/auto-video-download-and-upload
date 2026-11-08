@@ -80,7 +80,7 @@ class TaskRunner:
         from webapp.disk_budget import DiskBudget, GIB
         from webapp.maintenance import prune_disk_logs, cleanup_logs
         from web_worker import worker_lock
-        last_disk = last_cleanup = last_log_cleanup = last_snapshot = last_error = 0
+        last_disk = last_cleanup = last_log_cleanup = last_snapshot = last_error = last_summary_cleanup = 0
         while not self.stop.is_set():
             config = self._maintenance_config
             # Local log retention also works during a database outage.
@@ -110,6 +110,10 @@ class TaskRunner:
                     with worker_lock(self.store.directory / 'log-maintenance.lock') as acquired:
                         if acquired:
                             cleanup_logs(self.store, config.get('log_retention_days', 0))
+                if time.monotonic() - last_summary_cleanup >= 3600:
+                    from webapp.runtime_summary import prune
+                    prune(self.store)
+                    last_summary_cleanup = time.monotonic()
             except Exception as error:
                 if time.monotonic() - last_error >= 30:
                     diagnostic_log.write((safe_text('后台维护检查失败：' + str(error))[:2000] + '\n').encode('utf-8'))
@@ -158,7 +162,7 @@ class TaskRunner:
                 self._settings_ready.set()
                 from webapp.throughput import runtime_limits
                 count = runtime_limits(config, self.store.directory)['workers']
-                diagnostic_log.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 64)) * 1024 ** 2 // 128))
+                diagnostic_log.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 256)) * 1024 ** 2 // 128))
                 for old_slot, previous in list(self.processes.items()):
                     code = previous.poll()
                     if code is not None:
@@ -206,8 +210,10 @@ class TaskRunner:
                                    VIDEO_WORKER_DATABASE_URL=self.store.db.url)
                         # Every subprocess owns its own Engine. A download only
                         # needs its progress transaction and heartbeat in parallel.
-                        env['VIDEO_DB_POOL_SIZE'] = os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2')
-                        env['VIDEO_DB_MAX_OVERFLOW'] = os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')
+                        # Every process must retain the supervisor's pool
+                        # settings to calculate the same aggregate budget.
+                        env['VIDEO_WORKER_DB_POOL_SIZE'] = os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2')
+                        env['VIDEO_WORKER_DB_MAX_OVERFLOW'] = os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')
                         from webapp.database import schema_token
                         env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path

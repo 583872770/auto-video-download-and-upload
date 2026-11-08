@@ -127,14 +127,16 @@ def _prune_disk_logs(store, config, *, low_space=False):
             modified = path.stat().st_mtime
             if path.stem in active or row.get('status') == 'running' or (not database_available and now - modified < 120):
                 continue
-            hours = int(config.get('disk_success_log_hours', 24)) if row.get('status') == 'succeeded' else int(config.get('disk_failure_log_days', 7)) * 24
+            hours = int(config.get('disk_success_log_hours', 6)) if row.get('status') == 'succeeded' else int(config.get('disk_failure_log_days', 7)) * 24
             if config.get('log_retention_days'):
                 hours = min(hours, int(config['log_retention_days']) * 24)
-            entries.append((modified, path, size, now - modified > hours * 3600))
+            expired = now - modified > hours * 3600
+            priority = 0 if row.get('status') == 'succeeded' else 2 if row.get('status') in ('failed', 'interrupted') else 1
+            entries.append((not expired, priority, modified, path, size, expired))
         except (OSError, ValueError):
             continue
     # Leave room for every running slot's capped log plus round-off/metadata.
-    maximum = int(config.get('disk_log_budget_mb', 64)) * MIB
+    maximum = int(config.get('disk_log_budget_mb', 256)) * MIB
     # Instance logs have fixed names (18 at most), bounded writers and age expiry.
     # They share this budget with task logs; no per-attempt diagnostic files.
     for path in (store.directory / 'logs' / 'instance').glob('*.log'):
@@ -165,9 +167,17 @@ def _prune_disk_logs(store, config, *, low_space=False):
         for path in paths if path.parent == store.directory)
     headroom = maximum // 2
     retained = len(paths)
+    # Reserve most retained capacity for failure evidence. Active logs keep
+    # their existing protection and share the other half as writing headroom.
+    success_budget = (maximum - headroom) // 4
+    success_bytes = sum(entry[4] for entry in entries if entry[1] == 0)
+    maximum_files = max(1024, min(16384, maximum // MIB * 32)) if database_available else 1024
+    success_files = sum(entry[1] == 0 for entry in entries)
     removed_ids = []
-    for modified, path, size, expired in sorted(entries):
-        if not low_space and not expired and total <= maximum - headroom and retained <= 1024:
+    removed_failures = 0
+    for _, priority, modified, path, size, expired in sorted(entries):
+        if (not low_space and not expired and total <= maximum - headroom and retained <= maximum_files
+                and (priority != 0 or success_bytes <= success_budget and success_files <= maximum_files // 4)):
             continue
         try:
             for suffix in ('.log', '.offset', '.offset.tmp'):
@@ -187,6 +197,11 @@ def _prune_disk_logs(store, config, *, low_space=False):
                         break
             total -= size + directory_bytes
             retained -= 1
+            if priority == 0:
+                success_bytes -= size
+                success_files -= 1
+            if priority == 2 and not expired:
+                removed_failures += 1
             removed_ids.append(path.stem)
         except OSError:
             continue
@@ -197,6 +212,16 @@ def _prune_disk_logs(store, config, *, low_space=False):
                     db.execute(tasks.update().where(tasks.c.id.in_(removed_ids[offset:offset + 500])).values(logs_pruned=1))
             except Exception:
                 break
+    try:
+        from webapp.throughput import _atomic
+        _atomic(store.directory / 'log-retention.json', {
+            'sampled_at': now, 'budget_bytes': maximum, 'retained_target_bytes': maximum - headroom,
+            'success_budget_bytes': success_budget, 'maximum_task_files': maximum_files,
+            'retained_task_files': retained, 'removed_task_files': len(removed_ids),
+            'unexpired_failure_files_removed': removed_failures, 'database_available': database_available,
+            'low_space': low_space, 'policy': 'expired_then_success_then_unknown_then_failure'})
+    except OSError:
+        pass
     # A crash can leave offsets without a log. Their count must also stay bounded.
     for root in (store.directory, store.directory / 'logs'):
         entries = root.glob('*.offset*') if root == store.directory else root.rglob('*.offset*')

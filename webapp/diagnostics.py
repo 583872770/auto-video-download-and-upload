@@ -125,7 +125,7 @@ def runtime_log(directory, slot='supervisor', config=None):
         raise ValueError('无效的日志进程编号')
     root = Path(directory).resolve()
     path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
-    budget = int((config or {}).get('disk_log_budget_mb', 64)) * MIB
+    budget = int((config or {}).get('disk_log_budget_mb', 256)) * MIB
     return BoundedLog(path, max(4096, min(256 * 1024, budget // 128)),
                       warning_path=root / 'log-write-warning.json')
 
@@ -226,7 +226,7 @@ def process_diagnostics(directory, slot):
 def configure_diagnostics(config):
     if _sink:
         from webapp.disk_budget import MIB
-        _sink.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 64)) * MIB // 128))
+        _sink.maximum = max(4096, min(256 * 1024, int(config.get('disk_log_budget_mb', 256)) * MIB // 128))
 
 
 @contextmanager

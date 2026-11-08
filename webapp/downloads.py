@@ -54,6 +54,7 @@ class DownloadFailure:
     def warning(self, message):
         text = str(message).lower()
         category = ('invalid_session' if 'account cookies are no longer valid' in text else
+                    'drm_only' if 'drm protected' in text and 'only images' in text else
                     'drm_formats_skipped' if 'drm protected' in text and 'skipped' in text else
                     'signature_challenge' if 'signature' in text or 'challenge' in text else 'other')
         self.warnings[category] += 1
@@ -73,7 +74,39 @@ class DownloadFailure:
         if bot_check:
             return ('YouTube 要求登录验证，当前 Cookie 或代理节点未通过验证。'
                     '请使用当前节点在浏览器打开视频，完成登录验证后重新导出并上传 Cookie；仍失败可更换节点。')
+        detail = self.reason(reason)
+        explanation = {
+            'drm_only': '源站明确提示该视频只有图片可用，没有可下载的非 DRM 音视频；这是视频内容限制。',
+            'format_unavailable': '当前未找到符合条件的音视频格式，原因尚未确认。',
+            'no_data': '媒体请求未收到数据块，属于临时传输故障；是否重试受任务尝试次数限制。',
+            'private': '视频为私密内容，当前会话没有观看权限。',
+            'deleted': '视频已被删除或移除。',
+            'geo_blocked': '视频在当前出口所在地区不可用。',
+        }.get(detail)
+        if detail == 'format_unavailable' and self.warnings['drm_formats_skipped']:
+            explanation += '部分格式被标记为 DRM；仅凭这条提示不能认定全部格式均受 DRM 限制。'
+        if explanation:
+            return f'下载失败：{explanation} 原始原因：{reason}'
         return f'下载失败：{reason}' if reason else '下载失败，下载器未返回具体原因，请查看日志。'
+
+    def reason(self, reason):
+        text = str(reason).lower()
+        # Earlier format warnings must never overwrite an observed access or
+        # rate-limit failure. Keep those existing recovery policies intact.
+        if re.search(r'\bHTTP(?:\s+Error)?[\s:]+(?:401|403|429)\b', text, re.I):
+            return None
+        if 'did not get any data blocks' in text:
+            return 'no_data'
+        if 'private video' in text or 'this video is private' in text:
+            return 'private'
+        if 'video has been removed' in text or 'video has been deleted' in text:
+            return 'deleted'
+        if 'not available in your country' in text:
+            return 'geo_blocked'
+        if 'requested format is not available' in text or ('drm protected' in text and 'only images' in text):
+            return ('drm_only' if self.warnings['drm_only'] or ('drm protected' in text and 'only images' in text)
+                    else 'format_unavailable')
+        return None
 
     def as_error(self, exception=None):
         """Only explicit content restrictions are scoped to an individual video."""
@@ -81,6 +114,10 @@ class DownloadFailure:
         text = message.lower()
         error = (YouTubeAccountLimited(message) if 'your account has been rate-limited' in text
                  else RuntimeError(message))
+        error.failure_reason = self.reason(self.errors[-1] if self.errors else clean_download_error(exception or ''))
+        if error.failure_reason == 'drm_only':
+            error.failure_scope = 'video'
+            error.retryable = False
         if any(term in text for term in ('this video is private', 'private video',
                 'video has been removed', 'video has been deleted',
                 'video is not available in your country', 'members-only content')):

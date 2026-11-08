@@ -16,7 +16,7 @@ def public_failure(value):
     if not isinstance(value, dict):
         return None
     result = {k: value.get(k) for k in ('incident_id', 'observed_at', 'source', 'phase', 'kind',
-                                       'http_status', 'evidence', 'retry_after', 'retryable', 'task_id', 'profile_id')}
+                                       'http_status', 'evidence', 'retry_after', 'retryable', 'task_id', 'profile_id', 'reason')}
     result['profile_name'] = safe_text(value['profile_name'])[:80] if value.get('profile_name') else None
     result['message'] = safe_text(value.get('message', ''))[:1000]
     return result
