@@ -1081,8 +1081,7 @@ class TaskStore:
         keys = (*keys, 'youtube_cookie_pool', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
                 'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers', 'throughput_mode',
                 'bandwidth_mbps', 'download_method', 'download_methods', 'download_channels', 'scheduler_mode',
-                'download_connection_limit', 'builtin_transfer_limit', 'builtin_resolver_limit',
-                'builtin_connection_limit', 'fragment_concurrency')
+                'download_connection_limit', 'builtin_transfer_limit', 'builtin_resolver_limit', 'fragment_concurrency')
         value = json.dumps({key: config[key] for key in keys if key in config})
         with self.connect() as db:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))

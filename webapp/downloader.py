@@ -75,8 +75,7 @@ def build_ydl_options(config, base):
         '_parallel_http': config.get('download_method', 'yt_dlp') == 'yt_dlp',
     }
     if options['_parallel_http']:
-        options['concurrent_fragment_downloads'] = fragment_connection_budget(config,
-            int(config.get('builtin_connection_limit') or (64 if config.get('scheduler_mode') == 'auto' else 16)),
+        options['concurrent_fragment_downloads'] = fragment_connection_budget(config, None,
             max(1, int(config.get('worker_count', 1))))
     if config.get('download_method', 'yt_dlp') == 'yt_dlp' and config.get('youtube_sleep_preset', True):
         # Equivalent to yt-dlp's documented `-t sleep` preset. This spaces

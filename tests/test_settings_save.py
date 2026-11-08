@@ -1,5 +1,6 @@
 """Instance-policy saves preserve current attempts and affect subsequent claims."""
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,18 @@ from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_cached_frontend_retired_connection_field_is_ignored_and_not_persisted(self):
+        response = self.client.put('/api/config', json={
+            'builtin_connection_limit': 1, 'download_connection_limit': 24}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        saved = self.client.get('/api/config').json
+        self.assertNotIn('builtin_connection_limit', saved['config'])
+        self.assertEqual(saved['config']['download_connection_limit'], 24)
+        import yaml
+        stored = yaml.safe_load(Path(saved['config_path']).read_text(encoding='utf-8'))
+        self.assertNotIn('builtin_connection_limit', stored)
+        self.assertEqual(stored['download_connection_limit'], 24)
+
     def test_pool_start_interval_saves_and_rejects_invalid_values(self):
         key = 'youtube_cookie_pool_start_interval'
         self.assertEqual(self.client.get('/api/config').json['config'][key], 10)

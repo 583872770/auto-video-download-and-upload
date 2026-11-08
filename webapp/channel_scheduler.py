@@ -458,12 +458,15 @@ class ChannelScheduler:
             ceiling = self.caps.get('upstream:' + actual.upstream_group, actual.transfer_limit)
             local = runtime_limits(self.config, self.store.directory)
             limit = min(ceiling, local.get('groups', {}).get(actual.upstream_group, {}).get('limit', ceiling))
-            return [('upstream:' + actual.upstream_group, ceiling, 1),
+            requirements = [('upstream:' + actual.upstream_group, ceiling, 1),
                     ('local-transfers:' + self.instance, local['transfers'], 1),
                     ('local-upstream:' + self.instance + ':' + actual.upstream_group, limit, 1),
-                    ('connections:' + actual.upstream_group, self.caps.get('connections:' + actual.upstream_group, actual.connection_limit), streams),
                     ('local-connections:' + self.instance, int(self.config.get('download_connection_limit', 32)), streams),
                     ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
+            shared = self.caps.get('connections:' + actual.upstream_group, actual.connection_limit)
+            if shared is not None:
+                requirements.append(('connections:' + actual.upstream_group, shared, streams))
+            return requirements
         backend = []
         if self.config.get('scheduler_mode') == 'auto':
             _, resolving, quota = self.backend_caps[backend_key(channel)]

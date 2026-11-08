@@ -43,7 +43,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual([item.upstream_group for item in channels], ['unverified-media', 'unverified-media'])
         self.assertEqual(len(group_caps(channels)), 4)
         independent = registry({'download_method': 'bergung', 'download_channels': [channel('other', 'independent')]})
-        self.assertEqual(len(group_caps(independent)), 8)
+        self.assertEqual(len(group_caps(independent)), 7)
 
     def test_alias_caps_use_minimum_and_default_override_keeps_other_entrances(self):
         values = [channel('extra', transfer_limit=2), channel('bergung', transfer_limit=6)]
@@ -66,6 +66,15 @@ class RegistryTests(unittest.TestCase):
                        [channel('alias', transfer_limit=True)], [channel('alias', cookie='secret')]):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 registry({'download_method': 'bergung', 'download_channels': values})
+
+    def test_builtin_channels_ignore_retired_connection_cap(self):
+        for mode in ('ordered_fallback', 'balanced', 'auto'):
+            for old_limit in (0, 1, 16, 128):
+                config = dict(scheduler_mode=mode, builtin_connection_limit=old_limit)
+                with self.subTest(mode=mode, old_limit=old_limit):
+                    channels = registry(config)
+                    self.assertIsNone(channels[0].connection_limit)
+                    self.assertNotIn('connections:youtube-origin', group_caps(channels))
 
     def test_retry_after_delta_date_and_invalid_values(self):
         self.assertEqual(retry_after('75', 100), 75)
@@ -113,6 +122,35 @@ class AdmissionTests(unittest.TestCase):
                 pass
         with second.permit(alias, 'transfer', timeout=0):
             pass
+
+    def test_builtin_transfer_skips_legacy_shared_connections_but_keeps_local_cap(self):
+        config = dict(download_method='yt_dlp', worker_count=4, builtin_transfer_limit=4,
+                      builtin_connection_limit=1, download_connection_limit=2)
+        first, second = self.scheduler(config=config), self.scheduler(config=config)
+        with first.transaction() as (db, stamp):
+            first._state(db, 'connections:youtube-origin')
+            first._save(db, 'connections:youtube-origin', {'cooldown_until': stamp + 3600})
+        with first.permit(first.channels[0], 'transfer', streams=2, timeout=0):
+            self.assertEqual(first.snapshot(['connections:youtube-origin'])[1].get('connections:youtube-origin', 0), 0)
+            with self.assertRaises(PipelineBusy):
+                with second.permit(second.channels[0], 'transfer', timeout=0):
+                    self.fail('local connection budget was bypassed')
+            self.assertEqual(second.blocked_resource, 'local-connections')
+        with second.permit(second.channels[0], 'transfer', streams=2, timeout=0):
+            pass
+
+    def test_builtin_instances_keep_independent_local_connection_budgets(self):
+        config = dict(download_method='yt_dlp', worker_count=4, builtin_transfer_limit=4,
+                      builtin_connection_limit=1, download_connection_limit=2)
+        first, second = self.scheduler(config=config), self.scheduler(self.second, config)
+        first.instance, second.instance = 'node-a', 'node-b'
+        with first.permit(first.channels[0], 'transfer', streams=2, timeout=0):
+            with second.permit(second.channels[0], 'transfer', streams=2, timeout=0):
+                _, used, _ = first.snapshot(['local-connections:node-a', 'local-connections:node-b',
+                                             'connections:youtube-origin'])
+                self.assertEqual(used.get('local-connections:node-a'), 2)
+                self.assertEqual(used.get('local-connections:node-b'), 2)
+                self.assertEqual(used.get('connections:youtube-origin', 0), 0)
 
     def test_all_scopes_are_atomic_and_failed_admission_leaks_no_permit(self):
         first, second = self.scheduler(), self.scheduler(self.second)

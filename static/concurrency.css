@@ -45,6 +45,27 @@ button.transfer-slot:focus-visible{outline:2px solid #456e35;outline-offset:3px}
 @media(max-width:680px){.transfer-allocation{padding:13px}.transfer-allocation-heading{align-items:flex-start;gap:9px}.transfer-allocation-heading h3{gap:9px;flex-wrap:wrap}.transfer-allocation-heading h3 strong{font-size:26px}.transfer-effective{font-size:10px;max-width:110px;white-space:normal;line-height:1.8}.transfer-slot-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.transfer-slot{min-height:103px;padding:10px}.transfer-legend{gap:8px 12px}}
 
 /* Cookie cards retain account identity while tasks and admission gates change. */
+.cookie-runtime-filters{display:grid;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8dd}
+.cookie-filter-task-row{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.cookie-filter-task-row>span,.cookie-filter-account-row label{font-size:11px;color:#63715c;line-height:1.8}
+.cookie-filter-task-row>span{flex-shrink:0;padding-top:7px}
+.cookie-task-filters{display:flex;flex-wrap:wrap;gap:7px;min-width:0}
+.cookie-task-filters button{display:flex;align-items:center;gap:6px;min-height:34px;padding:7px 10px;border:1px solid #dce4d5;border-radius:6px;background:#fff;color:#596653;font-family:inherit;font-size:11px;line-height:1.5;cursor:pointer}
+.cookie-task-filters button b{font-weight:600;font-variant-numeric:tabular-nums}
+.cookie-task-filters button:hover{border-color:#829774;background:#f3f7ed}
+.cookie-task-filters button[aria-pressed=true]{border-color:#647f50;background:#edf4e6;color:#385628}
+.cookie-task-filters button:focus-visible,.cookie-filter-account-row select:focus-visible{outline:2px solid #456e35;outline-offset:3px}
+.cookie-filter-account-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.cookie-filter-account-row label{display:flex;align-items:center;gap:12px;min-width:0}
+.cookie-filter-account-row select{min-width:200px;max-width:100%;min-height:36px;padding:7px 10px;border:1px solid #dce4d5;border-radius:6px;background:#fff;color:var(--ink);font-family:inherit;font-size:11px}
+.cookie-filter-account-row button:disabled{opacity:.45;cursor:default}
+.cookie-filter-summary{font-size:11px;line-height:1.8;color:#63715c;margin:12px 0 0;overflow-wrap:anywhere}
+.cookie-filter-summary b{color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
+.cookie-filter-summary>span{display:block;font-size:10px;color:var(--muted);margin-top:3px}
+.cookie-filter-empty{padding:24px 14px;margin-top:14px;border:1px dashed #dce4d5;border-radius:8px;background:#fff;text-align:center}
+.cookie-filter-empty strong{font-size:12px;font-weight:500;color:#596653}
+.cookie-filter-empty p{font-size:11px;line-height:1.8;color:var(--muted);margin:6px 0 0}
+@media(max-width:680px){.cookie-filter-task-row{flex-direction:column;gap:6px}.cookie-filter-task-row>span{padding:0}.cookie-task-filters{gap:6px}.cookie-task-filters button{min-height:38px;padding:8px}.cookie-filter-account-row{align-items:flex-start}.cookie-filter-account-row label{width:100%;gap:8px}.cookie-filter-account-row select{flex:1;min-width:0}.cookie-filter-account-row>button{margin-left:auto;min-height:32px}}
 .cookie-runtime-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:12px;margin-top:16px}
 .cookie-runtime-card{min-width:0;border:1px solid #dfe5d8;border-top:3px solid var(--slot-color,#bbc5b3);border-radius:9px;background:#fff;padding:14px;display:flex;flex-direction:column;gap:12px}
 .cookie-runtime-heading{display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0}

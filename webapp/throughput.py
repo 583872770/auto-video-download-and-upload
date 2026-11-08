@@ -28,7 +28,7 @@ def policy_key(config):
             int(config.get('yt5s_browser_count', 2)), 0 if pooled else int(config.get('bandwidth_mbps', 0)),
             hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
                 'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
-                'builtin_resolver_limit', 'builtin_connection_limit', 'fragment_concurrency', 'youtube_cookie_pool',
+                'builtin_resolver_limit', 'fragment_concurrency', 'youtube_cookie_pool',
                 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
                 'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers')}, sort_keys=True).encode()).hexdigest()[:16]]
 
@@ -46,8 +46,9 @@ def pool_worker_limits(config, capacity, resources=None):
         units = fragment_connection_budget(config, channel.connection_limit, capacity) if channel.adapter == 'yt_dlp' else 1
         group = channel.upstream_group
         limit = min(capacity, channel.transfer_limit, caps['upstream:' + group],
-                    caps['connections:' + group] // units,
                     int(config.get('download_connection_limit', 32)) // units)
+        if 'connections:' + group in caps:
+            limit = min(limit, caps['connections:' + group] // units)
         groups[group] = max(groups.get(group, 0), limit)
     transfer_capacity = min(capacity, sum(groups.values()), int(config.get('download_connection_limit', 32)))
     preparation = max(0, min(16, int(config.get('youtube_cookie_pool_preparation_workers', 4))))

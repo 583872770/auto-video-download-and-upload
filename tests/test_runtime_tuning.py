@@ -99,7 +99,7 @@ class WorkerBudgetTests(unittest.TestCase):
 
     def test_pool_caps_count_main_auxiliary_and_each_worker_pool(self):
         state = pool_worker_limits(self.config, 36, self.resources)
-        self.assertEqual(state['worker_transfer_capacity'], 16)
+        self.assertEqual(state['worker_transfer_capacity'], 18)
         self.assertEqual(state['configured_worker_limit'], 20)
         self.assertEqual(state['workers'], 18)  # 48 - 7 main - 4 auxiliary, at 2 each.
         self.assertLessEqual(state['workers'] * state['db_connections_per_worker'] +

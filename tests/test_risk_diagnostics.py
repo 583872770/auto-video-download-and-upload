@@ -162,9 +162,9 @@ class RiskDiagnosticsTests(unittest.TestCase):
         self.assertTrue(any(r['phase'] == 'resolve' and r['cooldown_seconds'] == 50
                             for r in value['channels'][0]['resources']))
 
-    def test_auto_connection_cooldown_also_blocks_transfer_estimate(self):
+    def test_local_connection_cooldown_also_blocks_transfer_estimate(self):
         stamp = time.time()
         config = {'download_method':'yt_dlp','worker_count':16,'throughput_mode':'auto'}
-        value = diagnose(config, 'node', [], None, ({'connections:youtube-origin':
+        value = diagnose(config, 'node', [], None, ({'local-connections:node':
             {'cooldown_until':stamp+40}}, {}, {}), stamp)
         self.assertEqual(value['effective_limit'], 0)

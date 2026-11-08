@@ -23,7 +23,7 @@ class Channel:
     quota_group: str
     transfer_limit: int = 8
     resolver_limit: int = 4
-    connection_limit: int = 16
+    connection_limit: int | None = 16
     weight: int = 1
     site_url: str = ''
     api_url: str = ''
@@ -98,7 +98,7 @@ def registry(config):
         default = Channel(adapter, adapter, PROVIDERS[adapter], upstream, adapter, adapter,
                                 transfer_limit=int(config.get('builtin_transfer_limit') or (32 if config.get('scheduler_mode') == 'auto' else 8)),
                                 resolver_limit=int(config.get('builtin_resolver_limit', 4)),
-                                connection_limit=int(config.get('builtin_connection_limit') or (64 if config.get('scheduler_mode') == 'auto' else 16)),
+                                connection_limit=None,
                                 task_limit=int(config.get('builtin_transfer_limit') or (32 if config.get('scheduler_mode') == 'auto' else 8)),
                                 site_url=SITE if adapter == 'bergung' else '',
                                 api_url=API if adapter == 'bergung' else '')
@@ -119,6 +119,8 @@ def group_caps(channels):
                                     ('resolver', channel.resolver_group, channel.resolver_limit),
                                     ('quota', channel.quota_group, channel.transfer_limit),
                                     ('connections', channel.upstream_group, channel.connection_limit)):
+            if limit is None:
+                continue
             key = kind + ':' + group
             caps[key] = min(caps.get(key, limit), limit)
     return caps

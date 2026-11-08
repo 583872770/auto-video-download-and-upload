@@ -19,6 +19,8 @@ CHUNK_SIZE = 10 * 1024 * 1024
 
 
 def fragment_connection_budget(config, channel_limit, transfers):
+    if channel_limit is None:
+        channel_limit = int(config.get('download_connection_limit', 32))
     return max(1, min(16, int(config.get('fragment_concurrency', 4)), channel_limit,
                       max(1, int(config.get('download_connection_limit', 32)) // max(1, transfers))))
 

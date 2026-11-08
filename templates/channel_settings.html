@@ -17,7 +17,6 @@
       <label>本机下载连接预算<input name="download_connection_limit" type="number" min="2" max="128" required><small>默认 32；文件和媒体分片共用。</small></label>
       <label>内置渠道传输上限<input name="builtin_transfer_limit" type="number" min="0" max="64" required><small>0 使用策略默认值；每个内置渠道分别生效。</small></label>
       <label>内置渠道解析上限<input name="builtin_resolver_limit" type="number" min="1" max="16" required><small>默认 4；手动 yt-dlp 的解析与传输共用名额。</small></label>
-      <label>内置渠道共享连接预算<input name="builtin_connection_limit" type="number" min="0" max="128" required><small>0 使用策略默认值；实例之间共用。</small></label>
     </div>
     <p id="concurrency-config-note" class="micro-copy" role="status"></p>
     <p class="micro-copy channel-budget-note">实际额度还会受到 Cookie 会话、上游冷却、其他实例、磁盘和临时空间影响；保存后在后续任务及运行诊断中生效。</p>

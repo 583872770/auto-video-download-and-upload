@@ -19,7 +19,7 @@ POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'down
                  'bergung_quality', 'bergung_timeout',
                  'fragment_concurrency', 'storage_mode'}
 POLICY_FIELDS |= {'scheduler_mode', 'download_channels', 'auto_channel_attempts'}
-POLICY_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
+POLICY_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit'}
 LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
                 'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
                 'max_log_mb', 'log_retention_days', 'shard_downloads'}

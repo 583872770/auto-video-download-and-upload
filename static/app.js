@@ -711,14 +711,13 @@ function renderConcurrencyDraft() {
   }
   const auto = form.elements.scheduler_mode?.value === 'auto';
   const requested = number('worker_count'), channel = number('builtin_transfer_limit') || (auto ? 32 : 8);
-  const shared = number('builtin_connection_limit') || (auto ? 64 : 16);
   const connection = number('download_connection_limit');
-  const fragments = Math.min(number('fragment_concurrency') || 4, shared, Math.max(1, Math.floor(connection / Math.max(1, requested))));
+  const fragments = Math.min(number('fragment_concurrency') || 4, Math.max(1, Math.floor(connection / Math.max(1, requested))));
   const methods = providerDraft || selectedProviders();
   const native = methods.includes('yt_dlp');
-  const cap = Math.min(requested, channel, native ? Math.floor(Math.min(connection, shared) / fragments) : requested);
+  const cap = Math.min(requested, channel, native ? Math.floor(connection / fragments) : connection);
   const warning = requested > cap;
-  $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机 / 共享连接预算 ${connection} / ${shared}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
+  $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机连接预算 ${connection}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
   $('#concurrency-config-note').classList.toggle('capacity-draft-warning', warning);
 }
 $('#settings-form').addEventListener('input', renderConcurrencyDraft);

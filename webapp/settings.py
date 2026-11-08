@@ -26,7 +26,7 @@ DEFAULTS = {
     'auto_channel_attempts': 3,
     'download_connection_limit': 32, 'shared_parser': True,
     'subtitle_mode': 'optional', 'subtitle_languages': 'en,zh-Hans,zh-Hant',
-    'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4, 'builtin_connection_limit': 0,
+    'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4,
     'youtube_source_address': '', 'youtube_start_interval': 3, 'youtube_cookie_fallback': False,
     'youtube_cookie_usage': 'auto',
     'youtube_throttle_cooldown': 300,
@@ -53,7 +53,7 @@ DOWNLOAD_FIELDS.add('postprocess_limit')
 DOWNLOAD_FIELDS |= OSS_FIELDS
 DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
 DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
-DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit', 'builtin_connection_limit'}
+DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit'}
 DOWNLOAD_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
 DOWNLOAD_FIELDS.add('youtube_cookie_usage')
 DOWNLOAD_FIELDS.add('youtube_sleep_preset')
@@ -76,7 +76,7 @@ from Utils.oss_storage import OSS_INTEGER_FIELDS
 INTEGER_FIELDS.update(OSS_INTEGER_FIELDS)
 INTEGER_FIELDS['download_connection_limit'] = (2, 128)
 INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
-INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16), builtin_connection_limit=(0, 128))
+INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16))
 INTEGER_FIELDS['youtube_start_interval'] = (0, 600)
 INTEGER_FIELDS['youtube_cookie_session_limit'] = (1, 64)
 INTEGER_FIELDS['youtube_cookie_pool_start_interval'] = (0, 600)
@@ -121,6 +121,8 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
+    # Retired setting: old files and task snapshots must not restore its cap.
+    config.pop('builtin_connection_limit', None)
     if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
         raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
     if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):

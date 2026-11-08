@@ -279,7 +279,8 @@ class BudgetAndPolicyTests(unittest.TestCase):
         config = {'builtin_transfer_limit':16,'builtin_connection_limit':32,'builtin_resolver_limit':6}
         validate_settings(config)
         channel = registry(config)[0]
-        self.assertEqual((channel.transfer_limit, channel.connection_limit, channel.resolver_limit), (16,32,6))
+        self.assertEqual((channel.transfer_limit, channel.connection_limit, channel.resolver_limit), (16,None,6))
+        self.assertNotIn('builtin_connection_limit', config)
         self.assertEqual(registry({'scheduler_mode':'auto','builtin_transfer_limit':0})[0].transfer_limit, 32)
         with tempfile.TemporaryDirectory() as root:
             self.assertFalse(build_ydl_options(config, root)['writesubtitles'])

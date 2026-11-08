@@ -70,17 +70,78 @@ function cookieTaskState(stage) {
   const status = transferSlotState(stage);
   return status.kind === 'reserved' ? {...status, label: '状态同步中'} : status;
 }
+
+const cookieTaskFilters = [
+  ['all', '全部'], ['transferring', '正在传输'], ['preparing', '准备 / 解析'],
+  ['waiting', '等待中'], ['processing', '后处理中'], ['idle', '无任务'],
+];
+const cookieAccountFilters = [
+  ['all', '全部账号'], ['normal', '正常'], ['cooldown', '冷却中'],
+  ['recovery', '恢复观察'], ['manual', '需人工处理'], ['unavailable', 'Cookie 不可用'],
+  ['unknown', '状态待确认'],
+];
+// View preferences are local to this page and executor, never execution settings.
+const cookieRuntimeFilters = new Map();
+function cookieFilterScope() {
+  return state.instanceId || 'local';
+}
+function cookieFilterSelection() {
+  return cookieRuntimeFilters.get(cookieFilterScope()) || {task: 'all', account: 'all'};
+}
+function cookieFilterStates(account, current) {
+  const reasons = new Set((account.reasons || []).map(reason => reason.code));
+  const health = !current || !account.known ? 'unknown'
+    : account.state === 'unavailable' || reasons.has('unavailable') ? 'unavailable'
+    : reasons.has('pool_halted') ? 'manual'
+    : account.state === 'cooldown' || reasons.has('account_cooldown') || reasons.has('pool_cooldown') ? 'cooldown'
+    : account.state === 'recovery' ? 'recovery' : account.state === 'ready' ? 'normal' : 'unknown';
+  const stages = new Set();
+  if (current) {
+    const tasks = account.tasks || [];
+    if (!tasks.length) stages.add('idle');
+    for (const task of tasks) {
+      const stage = typeof task.stage === 'string' ? task.stage : '';
+      if (stage === 'downloading') stages.add('transferring');
+      else if (stage.startsWith('waiting_') || ['disk_wait', 'scheduling_wait', 'retrying'].includes(stage)) stages.add('waiting');
+      else if (['processing', 'cleaning', 'uploading_oss'].includes(stage)) stages.add('processing');
+      else if (['extracting', 'checking_environment', 'checking_login', 'switching_provider',
+        'preparing_workspace', 'preparing_proxy', 'preparing', 'converting'].includes(stage)) stages.add('preparing');
+    }
+  }
+  return {health, stages};
+}
+function cookieFilterView(accounts, current, selection) {
+  const rows = accounts.map(account => ({account, ...cookieFilterStates(account, current)}));
+  const taskMatches = row => selection.task === 'all' || row.stages.has(selection.task);
+  const accountMatches = row => selection.account === 'all' || row.health === selection.account;
+  const taskCounts = Object.fromEntries(cookieTaskFilters.map(([key]) => [key,
+    rows.filter(row => accountMatches(row) && (key === 'all' || row.stages.has(key))).length]));
+  const accountCounts = Object.fromEntries(cookieAccountFilters.map(([key]) => [key,
+    rows.filter(row => taskMatches(row) && (key === 'all' || row.health === key)).length]));
+  return {accounts: rows.filter(row => taskMatches(row) && accountMatches(row)).map(row => row.account),
+    taskCounts, accountCounts};
+}
+function cookieFiltersHTML(view, selection) {
+  return `<div class="cookie-runtime-filters" data-cookie-filter-scope="${escapeHTML(cookieFilterScope())}">
+    <div class="cookie-filter-task-row"><span>任务状态</span><div class="cookie-task-filters" role="group" aria-label="按任务状态筛选">${cookieTaskFilters.map(([key, label]) => `<button type="button" data-cookie-task-filter="${key}" aria-pressed="${selection.task === key}"><span>${label}</span><b data-cookie-filter-count>${view.taskCounts[key]}</b></button>`).join('')}</div></div>
+    <div class="cookie-filter-account-row"><label>账号状态<select data-cookie-account-filter aria-label="按账号状态筛选">${cookieAccountFilters.map(([key, label]) => `<option value="${key}"${selection.account === key ? ' selected' : ''}>${label} · ${view.accountCounts[key]}</option>`).join('')}</select></label><button type="button" class="text-button" data-cookie-filters-clear${selection.task === 'all' && selection.account === 'all' ? ' disabled' : ''}>清除筛选</button></div>
+  </div>`;
+}
 function cookieAccountsHTML(data, {compact = false} = {}) {
   const allocation = data.transfer_allocation;
   const cookies = data.cookie_allocation;
   const current = data.online && Date.now() / 1000 - data.time <= 20;
   const known = current && data.cookie_pool?.known;
+  const selection = compact ? null : cookieFilterSelection();
+  const view = compact ? null : cookieFilterView(cookies.accounts, current, selection);
+  const filters = compact ? '' : cookieFiltersHTML(view, selection);
+  const summary = compact ? '' : `<p class="cookie-filter-summary" role="status">当前展示 <b>${view.accounts.length} / ${cookies.accounts.length}</b> 个 Cookie · 上方为实例整体数据。<span>数量按 Cookie 卡片统计，同一卡片可匹配多个任务状态；两项筛选同时满足才展示。${current ? '“等待中”指已有任务等待；“无任务”的具体原因见卡片。' : '实例离线或采样已过期，当前任务状态待确认。'}</span></p>`;
   const heading = `<div class="transfer-allocation-heading"><div><h3>Cookie 账号 <strong>${cookies.accounts.length}<small> 个</small></strong></h3><p>${known ? `已占用 ${allocation.occupied.length} 路 · 空闲 ${allocation.unoccupied} 路${allocation.restricted ? ` · 受限 ${allocation.restricted} 路` : ''}` : current ? `已占用 ${allocation.occupied.length} 路 · 剩余额度待确认` : '当前任务与等待原因待确认'}</p></div><span class="transfer-effective">传输上限 <b>${allocation.configured}</b> 路<br>当前额度估算 <b>${known ? allocation.effective : '—'}</b> 路</span></div>`;
   function taskHTML(task) {
     const status = cookieTaskState(task.stage);
     return `<button type="button" class="cookie-task ${status.kind}" data-task="${escapeHTML(task.task_id)}" title="${escapeHTML(task.title)} · 查看任务日志"><span class="cookie-task-stage">${status.label}</span><span class="cookie-task-title">${escapeHTML(task.title)}</span><small>${task.speed > 0 ? escapeHTML(bytes(task.speed)) + '/s' + ' · ' : ''}${task.transfer_reserved ? '占用传输名额' : '未占用传输名额'}</small></button>`;
   }
-  const grid = compact ? '' : `<div class="cookie-runtime-grid">${cookies.accounts.map(account => {
+  const grid = compact ? '' : view.accounts.length ? `<div class="cookie-runtime-grid">${view.accounts.map(account => {
     const tasks = account.tasks || [];
     const live = current && account.known;
     const downloading = tasks.filter(task => task.stage === 'downloading').length;
@@ -102,11 +163,11 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
       : account.state === 'cooldown' ? '冷却期间不再分配新任务，已开始的任务可结束'
       : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}`;
     return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
-  }).join('')}</div>`;
+  }).join('')}</div>` : '<div class="cookie-filter-empty"><strong>没有符合当前筛选条件的 Cookie</strong><p>可清除筛选查看全部账号；账号状态与任务变化后会自动更新结果。</p></div>';
   const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
     ? '已保存的账号池共用启动间隔已关闭。' : `已保存的账号池共用启动间隔为 ${Number(cookies.pool_start_interval)} 秒。`
     : '账号池启动间隔等待采样确认。';
-  return `<section class="transfer-allocation cookie-allocation" aria-label="Cookie 账号任务与等待原因">${heading}${grid}${!compact && current && cookies.unassigned_tasks?.length ? `<div class="transfer-outside"><strong>尚未关联 Cookie 的任务</strong><div class="cookie-unassigned-tasks">${cookies.unassigned_tasks.map(taskHTML).join('')}</div></div>` : ''}<p class="transfer-slot-note">每格对应一份已选 Cookie；同一账号的重复 Cookie 共用额度。${spacing}原因依据当前准入记录；等待时间到期后仍需满足其他条件。未观测到限制不代表可以立即启动。点击视频查看任务日志。</p></section>`;
+  return `<section class="transfer-allocation cookie-allocation" aria-label="Cookie 账号任务与等待原因">${heading}${filters}${summary}${grid}${!compact && current && cookies.unassigned_tasks?.length ? `<div class="transfer-outside"><strong>尚未关联 Cookie 的任务（不参与账号筛选）</strong><div class="cookie-unassigned-tasks">${cookies.unassigned_tasks.map(taskHTML).join('')}</div></div>` : ''}<p class="transfer-slot-note">每格对应一份已选 Cookie；同一账号的重复 Cookie 共用额度。${spacing}原因依据当前准入记录；等待时间到期后仍需满足其他条件。未观测到限制不代表可以立即启动。点击视频查看任务日志。</p></section>`;
 }
 function transferSlotsHTML(data, {compact = false} = {}) {
   const allocation = data.transfer_allocation;
@@ -217,8 +278,8 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   if (data.disk_blocked || data.disk_message) notices.push(['warning', '临时空间等待', `${escapeHTML(data.disk_message || '临时文件预算已用满，暂停领取新任务。')} 磁盘剩余空间与临时文件预算分别计算。`, '#settings', '查看磁盘预算']);
   const restricted = channels.filter(row => Math.min(row.transfer_limit, row.shared_limit) < data.requested);
   if (restricted.length) notices.push(['info', '渠道额度低于设置并发', `设置 ${data.requested} 路，${restricted.map(row => `${escapeHTML(row.label)} 单渠道上限 ${row.transfer_limit} 路、共享上游上限 ${row.shared_limit} 路`).join('；')}。提高工作进程数不会同步提高这些额度。`, '#settings', '查看渠道上限']);
-  const connections = channels.filter(row => row.connection_units && Math.floor(Math.min(row.connection_limit, data.connection_budget) / row.connection_units) < data.requested);
-  if (connections.length) notices.push(['info', '连接预算限制可用并发', `${connections.map(row => `${escapeHTML(row.label)} 每任务预留 ${row.connection_units} 个连接，本机预算 ${data.connection_budget}、共享预算 ${row.connection_limit}，理论最多约 ${Math.floor(Math.min(row.connection_limit, data.connection_budget) / row.connection_units)} 路`).join('；')}。文件及分片共用预算，其他实例也会占用共享连接。`, '#settings', '查看连接预算']);
+  const connections = channels.filter(row => row.connection_units && Math.floor(Math.min(row.connection_limit ?? data.connection_budget, data.connection_budget) / row.connection_units) < data.requested);
+  if (connections.length) notices.push(['info', '连接预算限制可用并发', `${connections.map(row => `${escapeHTML(row.label)} 每任务预留 ${row.connection_units} 个连接，本机预算 ${data.connection_budget}${row.connection_limit != null ? `、共享预算 ${row.connection_limit}` : ''}，理论最多约 ${Math.floor(Math.min(row.connection_limit ?? data.connection_budget, data.connection_budget) / row.connection_units)} 路`).join('；')}。文件及分片共用预算。`, '#settings', '查看连接预算']);
   const resolverWaiting = Number(data.stages?.waiting_resolver || 0);
   if (resolverWaiting) notices.push(['info', '解析名额 / 渠道配额等待', `${resolverWaiting} 个视频正在等待解析名额或共享渠道配额，尚未开始媒体传输。yt-dlp 原生解析不占浏览器名额，提高浏览器数量不会解除这类等待。`, '#settings', '查看渠道上限']);
   const browserWaiting = Object.entries(data.stages || {}).filter(([stage]) => ['waiting_browser', 'waiting_verification', 'converting'].includes(stage)).reduce((sum, [, count]) => sum + count, 0);
@@ -232,7 +293,8 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const warning = poolCooling || poolRecovering || cooled.length || resolverCooled.length || recovering.length || data.disk_blocked || (data.risks || []).some(item => item.severity === 'warning');
   const tone = !data.online || stale ? 'unavailable' : warning ? 'warning' : 'normal';
   const label = !data.online || stale ? '状态待确认' : cooled.length || resolverCooled.length ? '渠道冷却' : recovering.length ? '逐步恢复' : data.disk_blocked ? '空间等待' : data.paused ? '已停止领取' : poolCooling ? data.cookie_pool.available_sessions ? '部分账号冷却' : '账号池等待' : poolRecovering ? '账号低频恢复' : warning ? '有待处理提示' : '调度中';
-  const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th><th>共享连接占用</th><th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${row.transfer_limit} 路<small>${row.resolver_separate ? `解析上限 ${row.resolver_limit} 路` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${row.shared_limit}<small>含其他实例</small></td><td>${row.connection_used} / ${row.connection_limit}</td><td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
+  const sharedConnections = channels.some(row => row.connection_limit != null);
+  const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th>${sharedConnections ? '<th>共享连接占用</th>' : ''}<th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${row.transfer_limit} 路<small>${row.resolver_separate ? `解析上限 ${row.resolver_limit} 路` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${row.shared_limit}<small>含其他实例</small></td>${sharedConnections ? `<td>${row.connection_limit != null ? `${row.connection_used} / ${row.connection_limit}` : '—'}</td>` : ''}<td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
   return `<div class="capacity-body" data-tone="${tone}">
     <div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>传输并发</h2></div><span class="capacity-status ${tone}" role="status">${label}</span></div>
     ${transferSlotsHTML(data, {compact})}
@@ -245,6 +307,64 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
     <p class="capacity-footnote">并发与共享额度定期刷新，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p>
     ${key === 'overview' ? '</details>' : ''}</div>`;
 }
+// Retain the live filter controls and their ancestors in the document. A full
+// innerHTML replacement on every sample would close an open native dropdown.
+function replaceAroundAnchor(parent, anchor, nextParent, nextAnchor) {
+  while (parent.firstChild !== anchor) parent.firstChild.remove();
+  while (anchor.nextSibling) anchor.nextSibling.remove();
+  while (nextParent.firstChild !== nextAnchor) parent.insertBefore(nextParent.firstChild, anchor);
+  while (nextAnchor.nextSibling) parent.append(nextAnchor.nextSibling);
+}
+function updateCookieFilterPanel(target, html) {
+  const controls = target.querySelector(':scope > .capacity-body > .cookie-allocation > .cookie-runtime-filters');
+  if (!controls) return false;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const next = template.content.querySelector('.cookie-runtime-filters');
+  if (!next || next.dataset.cookieFilterScope !== controls.dataset.cookieFilterScope) return false;
+  for (const button of controls.querySelectorAll('[data-cookie-task-filter]')) {
+    const updated = next.querySelector(`[data-cookie-task-filter="${button.dataset.cookieTaskFilter}"]`);
+    button.setAttribute('aria-pressed', updated.getAttribute('aria-pressed'));
+    const count = button.querySelector('[data-cookie-filter-count]');
+    const text = updated.querySelector('[data-cookie-filter-count]').textContent;
+    if (count.textContent !== text) count.textContent = text;
+  }
+  const selector = controls.querySelector('[data-cookie-account-filter]');
+  const updatedSelector = next.querySelector('[data-cookie-account-filter]');
+  for (const option of selector.options) {
+    const text = [...updatedSelector.options].find(item => item.value === option.value).textContent;
+    if (option.textContent !== text) option.textContent = text;
+  }
+  if (selector.value !== updatedSelector.value) selector.value = updatedSelector.value;
+  controls.querySelector('[data-cookie-filters-clear]').disabled = next.querySelector('[data-cookie-filters-clear]').disabled;
+  const allocation = controls.parentElement, nextAllocation = next.parentElement;
+  const body = allocation.parentElement, nextBody = nextAllocation.parentElement;
+  replaceAroundAnchor(allocation, controls, nextAllocation, next);
+  replaceAroundAnchor(body, allocation, nextBody, nextAllocation);
+  body.dataset.tone = nextBody.dataset.tone;
+  return true;
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-cookie-task-filter], [data-cookie-filters-clear]');
+  if (!button || button.disabled) return;
+  const controls = button.closest('.cookie-runtime-filters');
+  if (!controls || controls.dataset.cookieFilterScope !== cookieFilterScope()) return;
+  const clear = button.hasAttribute('data-cookie-filters-clear');
+  const task = button.dataset.cookieTaskFilter;
+  if (!clear && !cookieTaskFilters.some(([key]) => key === task)) return;
+  cookieRuntimeFilters.set(cookieFilterScope(), clear ? {task: 'all', account: 'all'}
+    : {...cookieFilterSelection(), task});
+  renderConcurrency();
+  if (clear) controls.querySelector('[data-cookie-task-filter="all"]').focus({preventScroll: true});
+});
+document.addEventListener('change', event => {
+  const selector = event.target.closest('[data-cookie-account-filter]');
+  if (!selector || !cookieAccountFilters.some(([key]) => key === selector.value)) return;
+  const controls = selector.closest('.cookie-runtime-filters');
+  if (!controls || controls.dataset.cookieFilterScope !== cookieFilterScope()) return;
+  cookieRuntimeFilters.set(cookieFilterScope(), {...cookieFilterSelection(), account: selector.value});
+  renderConcurrency();
+});
 function renderConcurrency() {
   const item = state.fleet?.items.find(value => value.id === state.instanceId);
   const data = fleetEnabled ? item?.concurrency : state.status?.concurrency;
@@ -258,13 +378,17 @@ function renderConcurrency() {
     const focused = target.contains(document.activeElement) ? document.activeElement : null;
     const focusedTask = focused?.closest('[data-task]')?.dataset.task;
     const focusedDetails = focused?.tagName === 'SUMMARY' ? focused.parentElement.dataset.capacityDetails : null;
+    const focusedFilter = focused?.closest('[data-cookie-task-filter]')?.dataset.cookieTaskFilter;
+    const focusedAccountFilter = focused?.matches('[data-cookie-account-filter]');
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
-    target.innerHTML = html;
+    if (!updateCookieFilterPanel(target, html)) target.innerHTML = html;
     for (const node of target.querySelectorAll('details[data-capacity-details]')) node.open = opened.has(node.dataset.capacityDetails);
-    if (focusedTask) [...target.querySelectorAll('[data-task]')]
-      .find(node => node.dataset.task === focusedTask)?.focus({preventScroll: true});
+    if (focusedTask) ([...target.querySelectorAll('[data-task]')]
+      .find(node => node.dataset.task === focusedTask) || target.querySelector('.cookie-task-filters [aria-pressed="true"]'))?.focus({preventScroll: true});
     if (focusedDetails) [...target.querySelectorAll('details[data-capacity-details]')]
       .find(node => node.dataset.capacityDetails === focusedDetails)?.querySelector(':scope > summary')?.focus({preventScroll: true});
+    if (focusedFilter) target.querySelector(`[data-cookie-task-filter="${focusedFilter}"]`)?.focus({preventScroll: true});
+    if (focusedAccountFilter) target.querySelector('[data-cookie-account-filter]')?.focus({preventScroll: true});
   }
 }
 setInterval(() => {

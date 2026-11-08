@@ -228,6 +228,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     @app.put('/api/config')
     def update_config():
         data = body()
+        # A cached older frontend may still submit this retired field.
+        data.pop('builtin_connection_limit', None)
         if fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.fleet_routes import selected_id, update_configuration
             if selected_id() != fleet.id:

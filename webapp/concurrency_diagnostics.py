@@ -20,8 +20,9 @@ def scopes_for(config, identity):
               'youtube-start:' + identity, 'subtitles:youtube-origin', 'execution:' + identity}
     for channel in registry(config):
         for group in {channel.upstream_group, 'youtube-origin'}:
-            scopes.update(('upstream:' + group, 'connections:' + group,
-                           'local-upstream:' + identity + ':' + group))
+            scopes.update(('upstream:' + group, 'local-upstream:' + identity + ':' + group))
+            if channel.connection_limit is not None:
+                scopes.add('connections:' + group)
         scopes.update(('channel:' + channel.id, 'quota:' + channel.quota_group,
                        'resolver:' + channel.resolver_group,
                        'route:' + channel.id, 'backend-route:' + backend_key(channel),
@@ -240,14 +241,18 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         # Native HTTP ranges and manifest fragments share the same connection budget.
         connection_units = (fragment_connection_budget(config, channel.connection_limit, transfers)
                             if channel.adapter == 'yt_dlp' else None)
-        connection = resource('connections:' + group, caps['connections:' + group])
+        connection = (resource('connections:' + group, caps['connections:' + group])
+                      if 'connections:' + group in caps else None)
         local_connection = resource('local-connections:' + identity, int(config.get('download_connection_limit', 32)))
         if connection_units:
-            effective = min(effective, connection['effective'] // connection_units,
-                            local_connection['effective'] // connection_units)
+            effective = min(effective, local_connection['effective'] // connection_units)
+            if connection is not None:
+                effective = min(effective, connection['effective'] // connection_units)
         else:
-            effective = min(effective, connection['effective'], local_connection['effective'])
-        resources.extend((connection, local_connection))
+            effective = min(effective, local_connection['effective'])
+            if connection is not None:
+                effective = min(effective, connection['effective'])
+        resources.extend(([connection] if connection is not None else []) + [local_connection])
         separate_resolver = channel.adapter != 'yt_dlp' or auto or pooled or config.get('youtube_pacing_mode') == 'adaptive'
         resolving = ([resource('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group])]
                      if separate_resolver else [])
@@ -264,7 +269,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         rows.append({'id': channel.id, 'label': channel.label, 'group': group,
                      'transfer_limit': channel.transfer_limit, 'resolver_limit': channel.resolver_limit,
                      'resolver_separate': separate_resolver,
-                     'connection_limit': connection['limit'], 'connection_used': connection['used'],
+                     'connection_limit': connection['limit'] if connection is not None else None,
+                     'connection_used': connection['used'] if connection is not None else None,
                      'connection_units': connection_units, 'shared_limit': resources[1]['limit'],
                      'effective_limit': effective, 'occupied': resources[1]['used'],
                      'cooldown_seconds': cooldown, 'recovery_seconds': recovery,
@@ -303,7 +309,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     elif pooled and fresh and rate.get('workers') and upper == int(rate['workers']) and upper < transfers:
         bottleneck = '本机下载进程上限限制当前额度；可在 Cookie 设置中调整，仍受内存和数据库预算约束'
     elif upper < transfers:
-        bottleneck = '渠道或共享连接预算低于实例设置'
+        bottleneck = '渠道或连接额度低于实例设置'
     elif auto and transfers < requested:
         bottleneck = (rate or {}).get('reason') or '自动调节正在观察下载吞吐与服务器资源'
     else:

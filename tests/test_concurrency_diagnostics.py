@@ -75,9 +75,26 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
                            fragment_concurrency=4, download_connection_limit=16,
                            builtin_connection_limit=4)
         rate = {'policy': policy_key(self.config), 'time': self.stamp, 'transfers': 4}
-        result = self.show(rate=rate)
+        result = self.show({'local-connections:node': {'policies': {
+            'live': {'time': self.stamp, 'limit': 4}}}}, rate=rate)
         self.assertEqual(result['channels'][0]['connection_units'], 4)
         self.assertEqual(result['effective_limit'], 1)
+
+    def test_retired_shared_connections_do_not_reduce_eighteen_pool_slots(self):
+        self.config.update(youtube_cookie_pool=['a'] * 18, builtin_transfer_limit=18,
+                           builtin_connection_limit=1, download_connection_limit=32)
+        rate = {'policy': policy_key(self.config), 'time': self.stamp, 'workers': 18,
+                'cookie_pool': {'known': True, 'capacity': 36, 'reason': 'ready'}}
+        value = self.show({'connections:youtube-origin': {'cooldown_until': self.stamp + 3600,
+            'policies': {'legacy': {'time': self.stamp, 'limit': 1}}}}, rate=rate)
+        self.assertEqual(value['effective_limit'], 18)
+        self.assertEqual(value['transfer_allocation']['restricted'], 0)
+        self.assertIsNone(value['channels'][0]['connection_limit'])
+        self.assertNotIn('connections', [r['scope'] for r in value['channels'][0]['resources']])
+        self.assertEqual(value['transfer_allocation']['unoccupied'], 18)
+        policy = policy_key(self.config)
+        self.config['builtin_connection_limit'] = 128
+        self.assertEqual(policy_key(self.config), policy)
 
     def test_wait_counts_are_separate_from_real_transfers(self):
         value = self.show(progress=[{'stage': 'downloading'}, {'stage': 'extracting'},

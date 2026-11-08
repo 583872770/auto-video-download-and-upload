@@ -280,6 +280,16 @@ class ParallelHttpTests(unittest.TestCase):
         self.assertEqual(transfer_connection_units(info, budget), 1)
         self.assertEqual(transfer_connection_units({'protocol': 'm3u8_native'}, budget), 2)
 
+    def test_builtin_fragment_budget_ignores_retired_shared_connection_cap(self):
+        config = dict(download_method='yt_dlp', builtin_connection_limit=1,
+                      fragment_concurrency=8, download_connection_limit=32, worker_count=1)
+        self.assertEqual(fragment_connection_budget(config, None, 1), 8)
+        self.assertEqual(build_ydl_options(config, Path(self.temp.name))['concurrent_fragment_downloads'], 8)
+        config['download_connection_limit'] = 4
+        self.assertEqual(fragment_connection_budget(config, None, 1), 4)
+        self.assertEqual(build_ydl_options(config, Path(self.temp.name))['concurrent_fragment_downloads'], 4)
+        self.assertEqual(fragment_connection_budget(config, 2, 1), 2)
+
     def test_worker_reserves_same_connection_count_as_actual_downloader(self):
         from unittest.mock import patch
         from web_worker import execute
