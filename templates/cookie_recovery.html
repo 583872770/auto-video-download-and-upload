@@ -1,0 +1,8 @@
+<dialog id="cookie-recovery-dialog" class="cookie-timeline-dialog cookie-recovery-dialog" aria-labelledby="cookie-recovery-title">
+  <div class="dialog-heading"><div><span class="section-kicker">COOKIE / RECOVERY</span><h2 id="cookie-recovery-title">账号恢复与启动间隔</h2></div><button type="button" class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+  <div class="cookie-recovery-controls"><label>查看账号<select id="cookie-recovery-account"></select></label><button type="button" id="cookie-recovery-refresh" class="button button-white">刷新调整记录</button></div>
+  <div id="cookie-recovery-progress" class="cookie-recovery-progress" aria-live="polite"></div>
+  <div class="cookie-recovery-history-heading"><h3>间隔调整与异常记录</h3><span>最近 7 天 · 最多 100 条</span></div>
+  <p class="micro-copy">记录中的秒数为调度器记录间隔；当前实际下限还会受配置和恢复保护约束。历史仅在打开、切换账号或手动刷新时读取。</p>
+  <div id="cookie-recovery-history" class="cookie-timeline-list" aria-live="polite"></div>
+</dialog>

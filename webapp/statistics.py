@@ -320,6 +320,13 @@ class DownloadStatistics:
             if self._scope(instance_id) == 'local':
                 db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
 
+    def file_identity(self, task, path, *, test_mode=False):
+        """Use the same durable identity for registration and receipt recovery."""
+        logical = (task['id'] + ('\0test' if test_mode else '\0delivery')) if (
+            self.store.fleet or self.store.single or (task['source_key'] or '').startswith('job:')) else (
+            (task['id'] + '\0' if test_mode else '') + str(path))
+        return hashlib.sha256(logical.encode('utf-8')).hexdigest()
+
     def record_file(self, task_id, path, video_id='', title='', *, test_mode=False):
         """Called only after successful final-file processing, never from progress bytes."""
         path = Path(path).resolve()
@@ -342,10 +349,7 @@ class DownloadStatistics:
             session_id = self.store.decode(task, private=True, db=db)['payload'].get('download_session_id')
             if not session_id:
                 return False  # Jobs already executing during an upgrade have no reliable session.
-            logical = (task_id + ('\0test' if test_mode else '\0delivery')) if (
-                self.store.fleet or self.store.single or (task['source_key'] or '').startswith('job:')) else (
-                (task_id + '\0' if test_mode else '') + str(path))
-            identity = hashlib.sha256(logical.encode('utf-8')).hexdigest()
+            identity = self.file_identity(task, path, test_mode=test_mode)
             self._active(db, task.get('instance_id'))
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
                 return False

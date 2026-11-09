@@ -42,7 +42,7 @@ function cookieAccountNoticesHTML(pool, sampledAt, current = true) {
   const title = !current ? '上次记录的账号状态，当前状态待确认' : pool.halted ? '池仍有人工拦截，请查看原拦截原因' : !pool.cooling_sessions
     ? '受影响账号正在低频恢复，其他账号正常调度' : pool.available_sessions
     ? '仅受影响账号暂停，其他账号继续调度' : '全部账号冷却中，队列自动等待，无需手动恢复';
-  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮连续成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动单路、至少 300 秒间隔恢复；成功至少 10 次且观察满一小时后恢复设置的会话并发，启动间隔继续逐步缩短。一天内重复账号限流按 1 / 2 / 4 / 8 小时冷却；连续 403 按 15 / 30 / 60 分钟保护性冷却。源站要求更久则延长等待。</p>' : ''}</article>`).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
+  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮有效成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动单路、至少 300 秒间隔恢复；成功至少 10 次且观察满一小时后恢复设置的会话并发，启动间隔继续逐步缩短。一天内重复账号限流按 1 / 2 / 4 / 8 小时冷却；连续 403 按 15 / 30 / 60 分钟保护性冷却。源站要求更久则延长等待。</p>' : ''}<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(s.id)}" aria-haspopup="dialog">查看恢复进度与间隔调整</button></article>`).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
 }
 function concurrencyAdmissionHTML(data) {
   const pool = data.cookie_pool;
@@ -161,8 +161,8 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
       : '<li>实例离线或账号采样未更新，当前原因待确认。</li>';
     const metadata = account.shared_with ? `共享账号：${escapeHTML(account.shared_name || account.shared_with)}`
       : account.state === 'cooldown' ? '冷却期间不再分配新任务，已开始的任务可结束'
-      : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}${account.hourly_limit ? ` · 小时启动 ${Number(account.hourly_used || 0)} / ${Number(account.hourly_limit)} · 今日滚动 ${Number(account.daily_used || 0)} / ${Number(account.daily_limit)}` : ''}`;
-    return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
+      : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}${account.hourly_limit ? ` · 小时启动 ${Number(account.hourly_used || 0)} / ${Number(account.hourly_limit)} · 近24小时启动 ${Number(account.daily_used || 0)} / ${Number(account.daily_limit)}` : ''}`;
+    return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}${live && account.state !== 'unavailable' ? `<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(account.shared_with || account.id)}" aria-haspopup="dialog">${account.state === 'recovery' ? '查看恢复进度与间隔调整' : '查看启动间隔与调整记录'}</button>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
   }).join('')}</div>` : '<div class="cookie-filter-empty"><strong>没有符合当前筛选条件的 Cookie</strong><p>可清除筛选查看全部账号；账号状态与任务变化后会自动更新结果。</p></div>';
   const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
     ? '已保存的账号池共用启动间隔已关闭。' : `已保存的账号池共用启动间隔为 ${Number(cookies.pool_start_interval)} 秒。`
@@ -296,7 +296,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const sharedConnections = channels.some(row => row.connection_limit != null);
   const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th>${sharedConnections ? '<th>共享连接占用</th>' : ''}<th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${row.transfer_limit} 路<small>${row.resolver_separate ? `解析上限 ${row.resolver_limit} 路` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${row.shared_limit}<small>含其他实例</small></td>${sharedConnections ? `<td>${row.connection_limit != null ? `${row.connection_used} / ${row.connection_limit}` : '—'}</td>` : ''}<td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
   return `<div class="capacity-body" data-tone="${tone}">
-    <div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>传输并发</h2></div><span class="capacity-status ${tone}" role="status">${label}</span></div>
+    <div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>传输并发</h2></div>${poolRecovering ? `<button type="button" class="capacity-status ${tone}" data-cookie-recovery="" aria-haspopup="dialog" title="查看各账号的恢复条件和启动间隔调整">${label} · 查看进度</button>` : `<span class="capacity-status ${tone}" role="status">${label}</span>`}</div>
     ${transferSlotsHTML(data, {compact})}
     ${key === 'overview' ? `<details class="capacity-details capacity-explanations" data-capacity-details="${escapeHTML(key)}-explanations"><summary>调度与异常说明${warning ? ' · 有需要关注的状态' : ''}</summary>` : ''}
     ${concurrencyAdmissionHTML(data)}${decisionExplanationHTML(data, key)}
@@ -369,6 +369,7 @@ function renderConcurrency() {
   const item = state.fleet?.items.find(value => value.id === state.instanceId);
   const data = fleetEnabled ? item?.concurrency : state.status?.concurrency;
   renderYouTubePacingRuntime(data);
+  if (typeof renderCookieRecovery === 'function') renderCookieRecovery(data);
   for (const target of document.querySelectorAll('[data-concurrency-panel]')) {
     if (target.closest('[hidden]')) continue;
     const html = concurrencyHTML(data, {key: target.dataset.concurrencyPanel});
@@ -376,6 +377,7 @@ function renderConcurrency() {
     target.classList.toggle('capacity-stale', !!data && Date.now() / 1000 - data.time > 20);
     if (!capacityMarkupChanged(target, html)) continue;
     const focused = target.contains(document.activeElement) ? document.activeElement : null;
+    const focusedRecovery = focused?.closest('[data-cookie-recovery]')?.dataset.cookieRecovery;
     const focusedTask = focused?.closest('[data-task]')?.dataset.task;
     const focusedDetails = focused?.tagName === 'SUMMARY' ? focused.parentElement.dataset.capacityDetails : null;
     const focusedFilter = focused?.closest('[data-cookie-task-filter]')?.dataset.cookieTaskFilter;
@@ -383,6 +385,7 @@ function renderConcurrency() {
     const opened = new Set([...target.querySelectorAll('details[data-capacity-details][open]')].map(node => node.dataset.capacityDetails));
     if (!updateCookieFilterPanel(target, html)) target.innerHTML = html;
     for (const node of target.querySelectorAll('details[data-capacity-details]')) node.open = opened.has(node.dataset.capacityDetails);
+    if (focusedRecovery !== undefined) [...target.querySelectorAll('[data-cookie-recovery]')].find(node => node.dataset.cookieRecovery === focusedRecovery)?.focus({preventScroll: true});
     if (focusedTask) ([...target.querySelectorAll('[data-task]')]
       .find(node => node.dataset.task === focusedTask) || target.querySelector('.cookie-task-filters [aria-pressed="true"]'))?.focus({preventScroll: true});
     if (focusedDetails) [...target.querySelectorAll('details[data-capacity-details]')]
@@ -393,6 +396,7 @@ function renderConcurrency() {
 }
 setInterval(() => {
   if (document.hidden) return;
+  if (typeof renderCookieRecovery === 'function') renderCookieRecovery();
   for (const node of document.querySelectorAll('[data-capacity-deadline]')) {
     const left = Math.max(0, Math.ceil((Number(node.dataset.capacityDeadline) - Date.now()) / 1000));
     node.textContent = left ? `${left} 秒` : '等待状态更新';

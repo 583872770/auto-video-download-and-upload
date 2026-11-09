@@ -268,7 +268,7 @@ assert(cookieAccountNoticesHTML(pool, data.time, false).includes('当前状态�
 pool.cooling_sessions = 0;
 pool.available_sessions = 1;
 pool.sessions[0] = {name:'Account A',state:'recovery',limit:1,interval:300,recovery_successes:2,cooldown_kind:'account_rate_limit'};
-assert(cookieAccountNoticesHTML(pool, data.time).includes('本轮连续成功 2 次'));
+assert(cookieAccountNoticesHTML(pool, data.time).includes('本轮有效成功 2 次'));
 data.time -= 60;
 assert(decisionExplanationHTML(data, 'main').includes('摘要已过期'));
 """
@@ -302,7 +302,7 @@ updateCookiePoolLive(data);
 assert(!check.disabled);
 assert(!classes.has('cookie-cooling'));
 assert(classes.has('cookie-recovery'));
-assert(policy.textContent.includes('本轮连续成功 2 次'));
+assert(policy.textContent.includes('本轮有效成功 2 次'));
 assert.equal(selection.checked,false);
 """
         result = subprocess.run(['node', '-e', program], capture_output=True, text=True)

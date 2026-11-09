@@ -523,12 +523,16 @@ class DiskBudget:
                         continue
                     try:
                         path = safe_path(row['path'], self.directory)
-                        if row['task'] and store:
-                            task = store.get(row['task'])
-                            if task and task['status'] == 'running':
-                                continue
+                        task = store.get(row['task']) if row['task'] and store else None
+                        if task and task['status'] == 'running':
+                            continue
                         receipts = path / '.completed-files.json'
                         if receipts.exists():
+                            # The next owner must settle a complete queued task
+                            # before its retained result can be discarded.
+                            if task and task['status'] == 'queued':
+                                pending += 1
+                                continue
                             if not store or not self.receipts_recorded(store, row['task'], receipts):
                                 pending += 1
                                 continue
@@ -582,11 +586,32 @@ class DiskBudget:
     @staticmethod
     def receipts_recorded(store, task, path):
         from sqlalchemy import select
-        from webapp.database import test_files
+        from webapp.database import tasks, test_files
         receipts = json.loads(path.read_text(encoding='utf-8'))
+        if not receipts:
+            return False
         with store.connect() as db:
-            recorded = {r.path: r.size for r in db.execute(select(test_files.c.path, test_files.c.size).where(test_files.c.task_id == task))}
-        return all(recorded.get(item['path']) == item['size'] for item in receipts)
+            recorded = db.execute(select(test_files).where(test_files.c.task_id == task)).mappings().all()
+            by_path = {r['path']: r['size'] for r in recorded}
+            if all(by_path.get(item['path']) == item['size'] for item in receipts):
+                return True
+            # Single-video tasks are counted once across attempts, whose temporary
+            # directories differ. Match that ledger identity, not the old path.
+            if len(receipts) != 1 or len(recorded) != 1:
+                return False
+            row = db.execute(select(tasks).where(tasks.c.id == task)).mappings().first()
+            if not row or row['action'] != 'download':
+                return False
+            decoded = store.decode(row, private=True, db=db)
+        item, entry = receipts[0], recorded[0]
+        if (len(decoded['payload'].get('urls', [])) != 1 or not item.get('complete')
+                or not item.get('video_id') or item['video_id'] != decoded['video_id']
+                or item['video_id'] != entry['video_id'] or item['size'] <= 0
+                or item['size'] != entry['size']
+                or entry['id'] != store.statistics.file_identity(row, item['path'], test_mode=True)):
+            return False
+        current = safe_path(item['path'], path.parent)
+        return current.is_file() and current.stat().st_size == item['size']
 
     def recover_test_result(self, store, task_id):
         """A newly claimed owner can finish a complete file left before DB commit."""

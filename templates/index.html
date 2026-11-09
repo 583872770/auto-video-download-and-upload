@@ -16,6 +16,7 @@
   <script id="risk-guide-data" type="application/json">{{ risk_guide | tojson }}</script>
   <script src="{{ url_for('static', filename='risks.js') }}" defer></script>
   <script src="{{ url_for('static', filename='concurrency.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='cookie_recovery.js') }}" defer></script>
   <script src="{{ url_for('static', filename='fleet.js') }}" defer></script>
   <script src="{{ url_for('static', filename='instance_deployment.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
@@ -201,6 +202,7 @@
   <dialog id="task-dialog" class="task-dialog"><div class="dialog-heading"><div><span class="section-kicker">TASK INSPECTOR</span><h2 id="task-dialog-title">任务详情</h2></div><button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><div id="task-detail-meta" class="task-detail-meta"></div><div id="task-error" class="task-error" hidden></div><div id="task-risk"></div><div id="task-download-progress"></div><div id="task-result"></div><details class="task-technical"><summary>查看技术日志与错误详情</summary><div class="terminal-heading"><span><svg><use href="#i-terminal"/></svg>执行日志</span><button class="text-button" id="copy-logs">复制日志</button></div><pre id="task-log" class="terminal" tabindex="0">等待任务开始…</pre><p class="micro-copy">展开时更新日志；关闭窗口不影响后台任务。</p></details></dialog>
   <dialog id="media-clear-dialog" class="task-dialog" aria-labelledby="media-clear-title"><form id="media-clear-form"><div class="dialog-heading"><h2 id="media-clear-title">清空素材库</h2><button type="button" class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p>将永久删除当前目录中的全部视频，以及同名封面、字幕、音频和元数据。此操作无法撤销。</p><p class="micro-copy">仅清理当前服务所在机器的此目录，包含子目录，搜索和分页不会缩小删除范围。下载记录、计费统计和下载去重记录保留。</p><p id="media-clear-directory" class="micro-copy"></p><p class="micro-copy">请先暂停全部下载并等待任务停止。清理在后台进行，完成后可重新开始下载。</p><label class="media-clear-confirm">输入“清空”确认<input id="media-clear-confirmation" autocomplete="off" required placeholder="清空"></label><div class="media-library-actions"><button type="button" class="button button-white" data-close>取消</button><button id="media-clear-submit" type="submit" class="button button-danger" disabled>永久删除素材</button></div></form></dialog>
   <dialog id="media-dialog" class="media-dialog" aria-labelledby="media-dialog-title"><div class="dialog-heading"><div><span class="section-kicker">VIDEO PLAYER</span><h2 id="media-dialog-title">视频预览</h2></div><button class="icon-button" data-close aria-label="关闭播放器"><svg><use href="#i-close"/></svg></button></div><video id="media-player" controls playsinline preload="metadata"></video><p id="media-player-error" class="task-error" role="alert" hidden></p><div class="media-player-footer"><p id="media-player-filename" class="micro-copy"></p><a id="media-download" class="button button-white" download><svg><use href="#i-download"/></svg>保存视频</a></div></dialog>
+  {% include 'cookie_recovery.html' %}
   <div class="toast-container" id="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

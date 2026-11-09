@@ -97,3 +97,27 @@
 .cookie-profile-row.cookie-cooling{border:1px solid #e4b565;background:#fff8e8}
 .cookie-profile-row.cookie-recovery{border:1px solid #96bedf;background:#f0f7ff}
 .cookie-session-status{font-weight:600;line-height:1.6;color:#805319}
+.capacity-status[data-cookie-recovery]{cursor:pointer;font:inherit;text-decoration:underline;text-underline-offset:3px}
+.cookie-recovery-dialog{width:min(800px,calc(100vw - 28px));overflow-y:auto}
+.cookie-recovery-controls{display:flex;align-items:end;gap:12px;justify-content:space-between;margin:16px 21px;flex-wrap:wrap}
+.cookie-recovery-controls label{display:grid;gap:6px;min-width:0;flex:1}
+.cookie-recovery-controls select{max-width:100%;width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:#fff}
+.cookie-recovery-progress{margin:16px 21px;line-height:1.8;font-size:13px;overflow-wrap:anywhere}
+.cookie-recovery-progress h3,.cookie-recovery-history-heading h3{font-size:14px;margin:16px 0 10px}
+.cookie-recovery-phase{font-weight:700;color:#285d80}
+.cookie-recovery-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.cookie-recovery-metrics>div{display:grid;gap:7px;padding:12px;background:#f0f7ff;border-radius:8px}
+.cookie-recovery-metrics span{font-size:12px;color:#536575}
+.cookie-recovery-metrics strong{font-size:18px}
+.cookie-recovery-gate{margin:12px 0}.cookie-recovery-gate label{display:block}
+.cookie-recovery-gate progress{width:100%;height:10px;accent-color:#387fa6}
+.cookie-recovery-next{padding:12px;background:#f4f8ee;border-radius:8px}
+.cookie-recovery-warning{padding:10px;background:#fff4df;border-radius:6px;color:#805319}
+.cookie-recovery-history-heading{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 21px}
+.cookie-recovery-history-heading span{font-size:12px;color:#66745e}
+.cookie-recovery-dialog .cookie-timeline-list{max-height:none}
+.cookie-recovery-dialog .cookie-timeline-event h4{font-size:13px}
+.cookie-recovery-dialog .cookie-timeline-event p{font-size:12px}
+.cookie-recovery-dialog .cookie-timeline-event small{font-size:11px}
+.cookie-recovery-dialog .micro-copy{font-size:12px;line-height:1.8}
+@media(max-width:540px){.cookie-recovery-metrics{grid-template-columns:1fr}.cookie-recovery-metrics>div{grid-template-columns:1fr auto;align-items:center}.cookie-recovery-controls{align-items:stretch;flex-direction:column}}

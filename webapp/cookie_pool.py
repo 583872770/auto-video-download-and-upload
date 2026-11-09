@@ -23,7 +23,11 @@ from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
 from webapp.concurrency_policy import (MAX_TRANSFERS, cookie_pool_start_interval,
                                       cookie_session_limit as session_limit)
 from webapp.cookie_policy import (account_interval, start_budget, retry_interval, account_limit_delay,
-                                  RECOVERY_INTERVAL, RECOVERY_WINDOW, RECOVERY_SUCCESSES)
+                                  RECOVERY_INTERVAL, RECOVERY_WINDOW, RECOVERY_SUCCESSES,
+                                  STABLE_ACCOUNT_INTERVAL, MATURE_ACCOUNT_INTERVAL,
+                                  STABLE_SUCCESSES, STABLE_WINDOW, MATURE_SUCCESSES, MATURE_WINDOW,
+                                  STABLE_STEP, MATURE_STEP,
+                                  pacing_progress)
 from webapp.config_schema import DEFAULTS
 
 
@@ -39,8 +43,6 @@ def _member_identity(name, content):
 # session has produced a long, clean run, its start interval can be reduced in
 # small steps.  The floor still leaves a visible gap between authenticated
 # YouTube requests and is restored by any timeout/throttle outcome below.
-MATURE_ACCOUNT_INTERVAL = 30
-STABLE_ACCOUNT_INTERVAL = 45
 DENIED_WINDOW = 15 * 60
 DENIED_THRESHOLD = 3
 DENIED_COOLDOWN = 15 * 60
@@ -94,7 +96,7 @@ def account_group_key(name, data):
     return 'credential:' + credential_key(data)
 
 
-def session_view(identity, name, state, config, stamp):
+def session_view(identity, name, state, config, stamp, *, pacing=None):
     cooling = state.get('cooldown_until', 0) > stamp
     recovery = bool(state.get('recovery_mode'))
     starts, budget_until = start_budget(config, state, stamp)
@@ -110,6 +112,7 @@ def session_view(identity, name, state, config, stamp):
         limited_at=state.get('limited_at'), limited_count=state.get('limited_count', 0),
         recovery_started_at=state.get('recovery_started_at', 0),
         recovery_successes=state.get('recovery_successes', 0),
+        pacing=pacing if pacing is not None else pacing_progress(config, state, stamp),
         interval=account_interval(config, state),
         limit=0 if cooling else session_limit(config, state),
         configured_limit=int(config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit'])))
@@ -233,20 +236,26 @@ class CookiePool:
             global_state = states.get(self.global_scope, {})
             accounts = [{'id': identity, **states.get(scope, {}),
                          'active': usage.get(scope, 0)} for identity, _, scope in self.accounts]
+            # Preserve the stored interval before the public account summary
+            # replaces it with the effective interval imposed by configuration.
+            progress = {a['id']: pacing_progress(self.config, a, stamp) for a in accounts}
             configured = int(self.config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit']))
             for account in accounts:
                 warming = account.get('limit', 1) < 2
                 account.update(limit=session_limit(self.config, account),
                                configured_limit=configured, warming=warming,
                                interval=account_interval(self.config, account))
-                account['next_at'] = session_view(account['id'], '', account, self.config, stamp)['next_start_at']
+                account['next_at'] = session_view(account['id'], '', account, self.config, stamp,
+                                                  pacing=progress[account['id']])['next_start_at']
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
-            views = [session_view(a['id'], self.profile_names.get(a['id'], a['id']), a, self.config, stamp)
+            views = [session_view(a['id'], self.profile_names.get(a['id'], a['id']), a, self.config, stamp,
+                                  pacing=progress[a['id']])
                      for a in accounts if not a.get('shared_with')]
             profile_views = [dict(session_view(a['id'], self.profile_names.get(a['id'], a['id']), a,
-                                              self.config, stamp), shared_with=a.get('shared_with'))
+                                              self.config, stamp, pacing=progress[a.get('shared_with') or a['id']]),
+                                  shared_with=a.get('shared_with'))
                              for a in accounts]
             profile_views.extend({'id': a['id'], 'name': self.profile_names.get(a['id'], a['id']),
                                   'state': 'unavailable'} for a in self.unavailable)
@@ -532,7 +541,7 @@ class CookiePool:
                 state['streak'] = state.get('streak', 0) + 1
                 state['first_success'] = state.get('first_success') or stamp
                 state['successes'] = state.get('successes', 0) + 1
-                if state['streak'] >= 5 and stamp - state['first_success'] >= 600:
+                if state['streak'] >= STABLE_SUCCESSES and stamp - state['first_success'] >= STABLE_WINDOW:
                     # Keep the legacy warmup marker; session_limit() applies
                     # the current per-session configuration after warmup.
                     state['limit'] = 2
@@ -540,9 +549,9 @@ class CookiePool:
                     # session (20 clean completions over at least 30 minutes)
                     # can step down to 30s; any error below resets it to 120s.
                     floor = (MATURE_ACCOUNT_INTERVAL
-                             if state['successes'] >= 20 and stamp - state['first_success'] >= 1800
+                             if state['successes'] >= MATURE_SUCCESSES and stamp - state['first_success'] >= MATURE_WINDOW
                              else STABLE_ACCOUNT_INTERVAL)
-                    step = 15 if floor == MATURE_ACCOUNT_INTERVAL else 5
+                    step = MATURE_STEP if floor == MATURE_ACCOUNT_INTERVAL else STABLE_STEP
                     previous_interval = int(state.get('interval', 60))
                     state['interval'] = max(floor, state.get('recovery_interval_floor', 0),
                                             state.get('interval', 60) - step)
