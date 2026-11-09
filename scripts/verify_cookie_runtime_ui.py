@@ -65,6 +65,8 @@ def main():
                     state.update(cooldown_until=stamp + 600, cooldown_kind='repeated_http_403')
                 if identity == ids[5]:
                     state.update(recovery_mode=True, interval=180, next_at=stamp + 180)
+                if identity == ids[10]:
+                    state['starts'] = [stamp - 60 * i for i in range(30)]
                 pool.router._save(db, scope, state)
             gate = pool.router._state(db, pool.global_scope)
             gate['next_at'] = stamp + 90
@@ -120,9 +122,13 @@ def main():
                 expect(card(3)).to_contain_text('等待账号启动间隔')
                 expect(card(4)).to_contain_text('账号冷却中')
                 expect(card(5)).to_contain_text('低频恢复中')
+                expect(panel).to_contain_text('至少 300 秒间隔恢复')
+                expect(panel).not_to_contain_text('连续成功 3 次')
                 expect(card(6)).to_contain_text('Cookie 不可用')
                 expect(card(7)).to_contain_text('共用账号额度')
                 expect(card(9)).to_contain_text('等待账号池启动间隔')
+                expect(card(10)).to_contain_text('账号滚动启动预算已用完')
+                expect(card(10)).to_contain_text('小时启动 30 / 30')
                 expect(panel.locator('.cookie-unassigned-tasks')).to_contain_text('等待 Cookie')
                 panel.screenshot(path=str(output / 'accounts-desktop.png'))
                 button = card(0).locator('.cookie-task').first
@@ -163,13 +169,14 @@ def main():
                     policy.locator('summary').click()
                 field = page.locator('[name="youtube_cookie_pool_start_interval"]')
                 runtime = page.locator('[data-youtube-pacing-runtime]')
-                expect(field).to_have_value('10')
-                expect(runtime).to_contain_text('已保存的账号池共用启动间隔：10 秒')
+                expect(field).to_have_value('5')
+                expect(runtime).to_contain_text('已保存的账号池共用启动间隔：5 秒')
+                expect(runtime).to_contain_text('当前会话采样最短 120 秒')
                 gate_before = pool.router.transaction_call(lambda db, stamp: pool.router._state(db, pool.global_scope))
                 for value in ('3', '0'):
                     field.fill(value)
                     expect(runtime).to_contain_text('请求节奏有待确认的修改')
-                    expect(runtime).to_contain_text('已保存的账号池共用启动间隔：' + ('10 秒' if value == '3' else '3 秒'))
+                    expect(runtime).to_contain_text('已保存的账号池共用启动间隔：' + ('5 秒' if value == '3' else '3 秒'))
                     page.locator('#settings-form button[type="submit"]').click()
                     expect(page.locator('#settings-save-state')).to_contain_text('设置已保存')
                     saved = page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']

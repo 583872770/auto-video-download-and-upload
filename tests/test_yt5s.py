@@ -199,14 +199,22 @@ class Yt5sTests(unittest.TestCase):
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(self.store.counts()['total'], 1)
         self.method('yt_dlp')
+        # Default on-demand mode permits public content without a login probe.
+        with patch.object(self.app.extensions['youtube_auth'], 'require', side_effect=AssertionError('anonymous start')):
+            result = self.client.post('/api/downloads', json={'urls': '2Gu7q-KUXCk'}, headers=self.headers)
+        self.assertEqual(result.status_code, 202, result.json)
+        self.assertEqual(self.client.put('/api/config', json={'youtube_cookie_usage': 'always'},
+                                        headers=self.headers).status_code, 200)
         result = self.client.post('/api/downloads', json={'urls': '2Gu7q-KUXCk'}, headers=self.headers)
-        self.assertEqual(result.status_code, 409)  # Method one still requires login.
+        self.assertEqual(result.status_code, 409)  # Explicit always mode requires login.
 
     def test_resume_uses_current_provider_after_default_is_changed(self):
         self.method('yt5s')
         self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
         self.store.set_downloads_paused(True)
         self.method('yt_dlp')
+        self.assertEqual(self.client.put('/api/config', json={'youtube_cookie_usage': 'always'},
+                                        headers=self.headers).status_code, 200)
         with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={}) as auth:
             result = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(result.status_code, 200, result.json)

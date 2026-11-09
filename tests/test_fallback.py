@@ -13,7 +13,7 @@ import yt_dlp
 from webapp.downloader import download_cookie_session
 from tests import test_yt5s
 from tests.test_yt5s import VIDEO
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from tests.test_youtube_auth import COOKIE
 from webapp.downloads import DownloadLeaseLost
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
@@ -27,13 +27,15 @@ class FallbackContract:
 
     def cookie(self):
         self.method('yt5s_fallback')
+        response = self.client.put('/api/config', json={'youtube_cookie_usage': 'always'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
         response = self.client.post('/api/youtube/cookie', headers=self.headers,
             data={'cookie': (BytesIO(COOKIE), 'cookies.txt')})
         self.assertEqual(response.status_code, 201, response.json)
 
     def payload(self, **config):
         return {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s_fallback',
-                           'youtube_cookie': 'Cookies/youtube.txt', **config},
+                           'youtube_cookie': 'Cookies/youtube.txt', 'youtube_cookie_usage': 'always', **config},
                 'base': str(self.root), 'urls': [VIDEO]}
 
     def test_selection_and_preflight_for_new_batch_import_and_resume(self):
@@ -207,8 +209,10 @@ class FallbackContract:
             rotation_count = Mock(return_value=4)
             result = execute('download', payload, store=self.store, worker_slot=2, rotation_completed=rotation_count)
         rotation_count.assert_called_once_with('fixture:2', False)
-        for call in auth.call_args_list:
-            self.assertEqual(call.kwargs, {'proxy': 'http://127.0.0.1:18888', 'node': 'B'})
+        self.assertEqual(len(auth.call_args_list), 2)
+        self.assertEqual(auth.call_args_list[0].kwargs,
+                         {'proxy': 'http://127.0.0.1:18888', 'node': 'B', 'publish_latest': True})
+        self.assertEqual(auth.call_args_list[1].kwargs, {'proxy': 'http://127.0.0.1:18888', 'node': 'B'})
         self.assertEqual(proxies, [('http://127.0.0.1:18888', False), ('http://127.0.0.1:18888', True)])
         self.assertTrue(result['fallback_used'])
 
@@ -299,7 +303,10 @@ class FallbackContract:
 
         identity = None
         for mode in ('local', 'local', 'test'):
-            response = self.client.put('/api/config', json={'storage_mode': mode}, headers=self.headers)
+            # This fixture calls execute directly, without the worker heartbeat.
+            # Exercise transfer/billing rather than sleeping beyond its 60s lease.
+            response = self.client.put('/api/config', json={'storage_mode': mode,
+                'youtube_start_interval': 0, 'youtube_sleep_preset': False}, headers=self.headers)
             self.assertEqual(response.status_code, 200, response.json)
             task = self.store.create('download', self.payload(storage_mode=mode))
             job = self.store.claim(self.store.owner, actions=('download',))
@@ -341,7 +348,7 @@ class SQLiteFallbackTests(FallbackContract, unittest.TestCase):
     setUp = test_yt5s.Yt5sTests.setUp
 
 
-class MySQLFallbackTests(MySQLFixture, FallbackContract, unittest.TestCase):
+class MySQLFallbackTests(StandaloneMySQLFixture, FallbackContract, unittest.TestCase):
     def setUp(self):
         browser = patch('webapp.yt5s.browser_executable', return_value='/fixture/chromium')
         display = patch('webapp.yt5s.display_available', return_value=True)

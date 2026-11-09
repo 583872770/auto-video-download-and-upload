@@ -1,5 +1,7 @@
 """Job isolation contracts: queue ownership, imports, cancellation and billing."""
 from io import BytesIO
+import json
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -74,6 +76,47 @@ class JobTests(unittest.TestCase):
         self.control(a, 'retry')
         self.assertEqual(self.detail(a)['total'], 2)
         self.assertEqual(self.detail(a)['failed'], 0)
+
+    def test_manual_retry_staggers_releases_preserves_history_and_original_cookie(self):
+        from webapp.database import tasks, job_events
+        from webapp.jobs import Jobs
+        identity = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')
+        ids = [value['id'] for value in self.videos(identity)]
+        profile = 'a' * 32
+        failure = {'kind': 'account_rate_limit', 'profile_id': profile}
+        config = {'youtube_cookie_pool': [profile, 'b' * 32], 'youtube_start_interval': 120,
+                  'youtube_cookie_pool_start_interval': 5}
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id.in_(ids)).values(status='failed', attempts=3,
+                error='limited', instance_id='alpha', finished_at='2026-11-09T00:00:00+00:00',
+                progress=json.dumps({'last_failure': failure})))
+        before = time.time()
+        Jobs(self.store).control(identity, 'retry', config, {})
+        values = sorted((self.store.get(i, private=True) for i in ids), key=lambda t: t['available_at'])
+        self.assertGreaterEqual(values[0]['available_at'], before)
+        self.assertAlmostEqual(values[1]['available_at'] - values[0]['available_at'], 300)
+        for task in values:
+            self.assertEqual((task['status'], task['attempts']), ('queued', 0))
+            self.assertTrue(task['payload']['_manual_retry'])
+            self.assertEqual(task['payload']['_retry_cookie_profile_id'], profile)
+            self.assertEqual(task['target_instance_id'], 'alpha')
+            self.assertEqual(task['payload']['_retry_history'][0]['error'], 'limited')
+            self.assertEqual(task['payload']['_retry_history'][0]['attempts'], 3)
+        # A second click is idempotent and cannot pull queued work forward.
+        Jobs(self.store).control(identity, 'retry', config, {})
+        self.assertEqual([self.store.get(t['id'])['available_at'] for t in values],
+                         [t['available_at'] for t in values])
+        # Newly failed work is placed after the existing retry queue.
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id == values[0]['id']).values(status='failed',
+                attempts=2, error='limited again', progress=json.dumps({'last_failure': failure})))
+        Jobs(self.store).control(identity, 'retry', config, {})
+        retried = self.store.get(values[0]['id'], private=True)
+        self.assertGreaterEqual(retried['available_at'], values[1]['available_at'] + 300)
+        self.assertEqual(len(retried['payload']['_retry_history']), 2)
+        with self.store.connect() as db:
+            messages = db.execute(select(job_events.c.message).where(job_events.c.job_id == identity)).scalars().all()
+        self.assertTrue(any('account_rate_limit' in message for message in messages))
 
     def test_pause_stop_and_global_pause_have_distinct_scopes(self):
         a, b = self.create(), self.create('List B')

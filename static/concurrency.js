@@ -42,7 +42,7 @@ function cookieAccountNoticesHTML(pool, sampledAt, current = true) {
   const title = !current ? '上次记录的账号状态，当前状态待确认' : pool.halted ? '池仍有人工拦截，请查看原拦截原因' : !pool.cooling_sessions
     ? '受影响账号正在低频恢复，其他账号正常调度' : pool.available_sessions
     ? '仅受影响账号暂停，其他账号继续调度' : '全部账号冷却中，队列自动等待，无需手动恢复';
-  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮连续成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动以单任务、至少 180 秒间隔恢复；连续成功 3 次且观察满 10 分钟后可降至 120 秒；成功 5 次且观察满 30 分钟后恢复设置的会话并发，间隔仍至少 120 秒。再次出现同类异常会重新冷却；连续 403 的冷却按 15、30、60 分钟递增，源站要求更久则延长等待。</p>' : ''}</article>`).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
+  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮连续成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动单路、至少 300 秒间隔恢复；成功至少 10 次且观察满一小时后恢复设置的会话并发，启动间隔继续逐步缩短。一天内重复账号限流按 1 / 2 / 4 / 8 小时冷却；连续 403 按 15 / 30 / 60 分钟保护性冷却。源站要求更久则延长等待。</p>' : ''}</article>`).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
 }
 function concurrencyAdmissionHTML(data) {
   const pool = data.cookie_pool;
@@ -146,7 +146,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
     const live = current && account.known;
     const downloading = tasks.filter(task => task.stage === 'downloading').length;
     const reasons = account.reasons || [];
-    const idleLabels = {paused: '已停止领取', account_interval: '等待账号间隔', pool_interval: '等待共用启动间隔',
+    const idleLabels = {paused: '已停止领取', account_budget: '等待账号预算', account_interval: '等待账号间隔', pool_interval: '等待共用启动间隔',
       start_interval: '等待实例启动间隔', transfer_limit: '等待传输额度', disk: '等待磁盘空间',
       removed: '已移出账号池', unassigned: '待分配任务'};
     const blocked = reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
@@ -161,7 +161,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
       : '<li>实例离线或账号采样未更新，当前原因待确认。</li>';
     const metadata = account.shared_with ? `共享账号：${escapeHTML(account.shared_name || account.shared_with)}`
       : account.state === 'cooldown' ? '冷却期间不再分配新任务，已开始的任务可结束'
-      : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}`;
+      : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}${account.hourly_limit ? ` · 小时启动 ${Number(account.hourly_used || 0)} / ${Number(account.hourly_limit)} · 今日滚动 ${Number(account.daily_used || 0)} / ${Number(account.daily_limit)}` : ''}`;
     return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
   }).join('')}</div>` : '<div class="cookie-filter-empty"><strong>没有符合当前筛选条件的 Cookie</strong><p>可清除筛选查看全部账号；账号状态与任务变化后会自动更新结果。</p></div>';
   const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
@@ -211,7 +211,7 @@ function youtubePacingRuntimeHTML(data, draft = {}) {
   const stale = Date.now() / 1000 - data.time > 20;
   const current = data.online && !stale;
   if (data.cookie_pool) {
-    const shared = Number(data.youtube_cookie_pool_start_interval ?? data.cookie_allocation?.pool_start_interval ?? 10);
+    const shared = Number(data.youtube_cookie_pool_start_interval ?? data.cookie_allocation?.pool_start_interval ?? 5);
     const pending = (draft.shared !== undefined && draft.shared !== '' && Number(draft.shared) !== shared) ||
       (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum) ||
       (draft.mode !== undefined && draft.mode !== mode);
@@ -261,7 +261,7 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const subtitleInterval = subtitles.interval_seconds ? `最少请求间隔：${concurrencyCountdown(subtitles.interval_seconds, data.time)}。` : '';
   const pacing = data.youtube_pacing;
   if (pacing) notices.push(['info', 'YouTube 渐进调速', `当前启动间隔 ${Number(pacing.interval)} 秒 · 最近一小时 ${Number(pacing.hourly_used)} / ${Number(pacing.hourly_limit)} 次 · 最近二十四小时 ${Number(pacing.daily_used)} / ${Number(pacing.daily_limit)} 次。${pacing.interval_reason ? escapeHTML(pacing.interval_reason) : ''}${pacing.next_start_at > data.time ? '下一启动窗口：' + concurrencyCountdown(pacing.next_start_at - data.time, data.time) + '。' : ''}${escapeHTML(pacing.reason || '')}。文件传输可并行，累计预算包含启动许可、重试及字幕请求。`, '#settings', '查看请求节奏']);
-  if (!pacing && data.cookie_pool) notices.push(['info', '账号池请求节奏', `已保存的共用启动间隔：${Number(data.youtube_cookie_pool_start_interval ?? 10)} 秒（0 表示关闭）。${data.cookie_pool.min_interval ? `当前账号会话采样最短启动间隔 ${Number(data.cookie_pool.min_interval)} 秒。` : ''}账号与共用间隔分别生效，已开始的文件传输可并行。`, '#settings', '查看设置']);
+  if (!pacing && data.cookie_pool) notices.push(['info', '账号池请求节奏', `已保存的共用启动间隔：${Number(data.youtube_cookie_pool_start_interval ?? 5)} 秒（0 表示关闭）。${data.cookie_pool.min_interval ? `当前账号会话采样最短启动间隔 ${Number(data.cookie_pool.min_interval)} 秒。` : ''}账号与共用间隔分别生效，已开始的文件传输可并行。`, '#settings', '查看设置']);
   else if (!pacing && data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
 
   if (subtitles.queued || subtitles.running || subtitles.failed) notices.push(['info', '字幕独立补下载', `待补 ${subtitles.queued || 0} · 执行中 ${subtitles.running || 0} · 补下载失败 ${subtitles.failed || 0}。${subtitleInterval}${subtitles.cooldown_seconds ? '字幕上游冷却'+subtitleRate+'：'+concurrencyCountdown(subtitles.cooldown_seconds, data.time)+'。' : ''}字幕队列不占用视频传输额度，也不改变视频成功及计费；完成当前后停止时不再领取新字幕任务。`, '#tasks', '查看执行日志']);

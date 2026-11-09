@@ -158,8 +158,8 @@ function instanceCard(item, expanded) {
   const pooled = instanceMode(item) === 'cookie_pool', resources = item.resources || {};
   const field = (label, name, value, min, max) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${escapeHTML(value)}" required></label>`;
   const capacityFields = pooled ? field('yt-dlp 传输上限（0 = 默认）', 'builtin_transfer_limit', resources.builtin_transfer_limit ?? 0, 0, 64)
-    + field('每核心会话并发上限', 'youtube_cookie_session_limit', resources.youtube_cookie_session_limit ?? 2, 1, 64)
-    + field('共用启动间隔（秒）', 'youtube_cookie_pool_start_interval', resources.youtube_cookie_pool_start_interval ?? 10, 0, 600)
+    + field('每核心会话并发上限', 'youtube_cookie_session_limit', resources.youtube_cookie_session_limit ?? 1, 1, 64)
+    + field('共用启动间隔（秒）', 'youtube_cookie_pool_start_interval', resources.youtube_cookie_pool_start_interval ?? 5, 0, 600)
     + field('本机下载进程上限', 'youtube_cookie_pool_worker_limit', resources.youtube_cookie_pool_worker_limit ?? 20, 1, 64)
     : field(instanceMode(item) === 'auto' ? '自动调度传输上限' : '视频处理并发上限', 'worker_count', item.worker_count, 1, 64)
       + (item.uses_browser ? field('浏览器并发上限', 'yt5s_browser_count', item.yt5s_browser_count, 1, 16) : '');

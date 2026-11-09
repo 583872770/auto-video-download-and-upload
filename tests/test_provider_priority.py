@@ -90,7 +90,14 @@ class ProviderPriorityTests(unittest.TestCase):
             for methods in permutations(('downmp3', 'yt5s', 'yt_dlp'), length):
                 for winner in methods:
                     with self.subTest(methods=methods, winner=winner):
-                        events, values = self.run_chain(list(methods), winner)
+                        # Each permutation is an independent scenario. Real
+                        # channel cooldown from another case must not leak in.
+                        case = type(self)()
+                        try:
+                            case.setUp()
+                            events, values = case.run_chain(list(methods), winner)
+                        finally:
+                            case.doCleanups()
                         self.assertEqual(events, list(methods[:methods.index(winner) + 1]))
                         self.assertEqual(values[-1]['download_method'], winner)
 
@@ -126,12 +133,17 @@ class ProviderPriorityTests(unittest.TestCase):
         self.assertEqual(rows['yt1d']['attempted'], 0)
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 1)
 
-    def test_four_providers_and_yt1d_fallback_keep_independent_statistics(self):
+    def test_four_providers_keep_independent_statistics(self):
         methods = ['downmp3', 'yt1d', 'yt5s', 'yt_dlp']
         events, _ = self.run_chain(methods, winner='yt5s')
         self.assertEqual(events, methods[:3])
         rows = self.rows()
         self.assertEqual((rows['yt1d']['attempted'], rows['yt1d']['failed']), (1, 1))
+        self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
+
+    def test_yt1d_fallback_keeps_independent_statistics(self):
+        # Fresh health state: a previous fixture's 503 must not leave yt1d
+        # legitimately cooling during this independent fallback scenario.
         events, _ = self.run_chain(['yt5s', 'yt1d', 'downmp3'], winner='yt1d')
         self.assertEqual(events, ['yt5s', 'yt1d'])
         self.assertEqual(self.rows()['yt1d']['succeeded'], 1)
@@ -153,6 +165,8 @@ class ProviderPriorityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.json)
         self.store.set_downloads_paused(True)
         self.save(['downmp3', 'yt_dlp'])
+        self.assertEqual(self.client.put('/api/config', json={'youtube_cookie_usage': 'always'},
+                                        headers=self.headers).status_code, 200)
         response = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(response.status_code, 409)
         self.assertTrue(self.store.downloads_paused())

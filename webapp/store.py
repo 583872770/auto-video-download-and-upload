@@ -17,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 from webapp.database import (Database, archive, batches, counters, download_lists, imports, reservations,
                              rotations, settings, snapshots, tasks, workers, job_profiles, job_imports, job_removed)
 from webapp.store_utils import now, source_identity
+from webapp.config_schema import RUNTIME_FIELDS
 
 _LIVE_UNSET = object()
 
@@ -976,7 +977,8 @@ class TaskStore:
             extra = {}
             failure = progress.get('last_failure') or {}
             retry_profile = failure.get('profile_id') or progress.get('cookie_profile_id')
-            pin_retry = retry and failure.get('reason') == 'no_data' and retry_profile
+            pin_retry = bool(error) and retry_profile and (failure.get('reason') == 'no_data'
+                or failure.get('kind') in ('account_rate_limit', 'request_rate_limit'))
             if pin_retry or not retry and progress.get('retry_cookie_profile_id'):
                 payload = self.decode(row, private=True, db=db)['payload']
                 if pin_retry:
@@ -1075,14 +1077,7 @@ class TaskStore:
             return list(latest.values())
 
     def set_runtime(self, config):
-        from webapp.disk_budget import DISK_FIELDS
-        keys = ('worker_count', 'yt5s_browser_count', 'min_free_gb', 'max_log_mb', 'log_retention_days', 'youtube_cookie', 'storage_mode')
-        keys = (*keys, *DISK_FIELDS)
-        keys = (*keys, 'youtube_cookie_pool', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
-                'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers', 'throughput_mode',
-                'bandwidth_mbps', 'download_method', 'download_methods', 'download_channels', 'scheduler_mode',
-                'download_connection_limit', 'builtin_transfer_limit', 'builtin_resolver_limit', 'fragment_concurrency')
-        value = json.dumps({key: config[key] for key in keys if key in config})
+        value = json.dumps({key: config[key] for key in RUNTIME_FIELDS if key in config})
         with self.connect() as db:
             db.execute(self.db.upsert(settings, dict(key='runtime', value=value), ['key']))
 

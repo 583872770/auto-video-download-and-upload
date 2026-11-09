@@ -16,19 +16,12 @@ import uuid
 
 import psutil
 
+from webapp.config_schema import DISK_DEFAULTS, DISK_FIELDS
+
 GIB = 1024 ** 3
 MIB = 1024 ** 2
 COORDINATION_TIMEOUT = 5
 USAGE_INTERVAL = 5
-DISK_DEFAULTS = {
-    'disk_budget_gb': 20, 'disk_test_budget_gb': 16,
-    'disk_browser_budget_mb': 1024, 'disk_log_budget_mb': 256,
-    'disk_import_budget_mb': 1024, 'disk_cache_budget_mb': 256,
-    'disk_min_free_gb': 10, 'disk_resume_free_gb': 15,
-    'disk_upload_limit_mb': 256, 'disk_success_log_hours': 6,
-    'disk_failure_log_days': 7,
-}
-DISK_FIELDS = set(DISK_DEFAULTS)
 
 
 class DiskPressure(RuntimeError):

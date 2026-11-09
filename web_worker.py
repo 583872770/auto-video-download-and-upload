@@ -108,7 +108,8 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                         payload.get('_retry_cookie_instance_id') != pool.router.instance):
                     raise RuntimeError('本任务重试绑定的 Cookie 已不可用或实例不匹配，请检查账号池后手动重试。')
                 report({'stage': 'waiting_cookie'})
-                with pool.assignment(profile_id=retry_profile, count_success=False) as selected:
+                with pool.assignment(profile_id=retry_profile, count_success=False,
+                                     manual_retry=bool(payload.get('_manual_retry'))) as selected:
                     if start_ticket:
                         start_ticket.finish(selected['_cookie_pool_next_at'] - selected['_cookie_pool_admitted_at'])
                     cookie_profile_id = selected['_cookie_pool_selected']
@@ -117,7 +118,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                             'cookie_profile_name': cookie_profile_name})
                     selected['_cookie_pool_profile_name'] = cookie_profile_name
                     event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
-                          source_address=selected.get('youtube_source_address', ''), identity_retry=False)
+                          source_address=selected.get('youtube_source_address', ''), identity_retry=bool(retry_profile))
                     result = _execute(action, {**payload, 'config': selected}, report,
                                       rotation_completed, store, worker_slot)
                     if not result.get('skipped') and result.get('file_count', 0) > 0:
@@ -241,8 +242,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             runtime = store.runtime()
             if 'youtube_cookie' in runtime:
                 config = {**config, 'youtube_cookie': runtime['youtube_cookie']}
-        if store and (config.get('youtube_cookie_usage', 'auto') != 'never'
-                      or config.get('_cookie_pool_selected')):
+        if store and 'yt_dlp' in methods and (config.get('youtube_cookie_usage', 'auto') != 'never'
+                                              or config.get('_cookie_pool_selected')):
             from webapp.cookie_profiles import CookieProfiles
             from webapp.cookie_binding import CookieBindingConflict
             try:
@@ -658,7 +659,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                 progress.state.update(stage='waiting_request', speed=None, eta=None)
                 progress.save()
 
-            if youtube and not (provider == 'yt_dlp' and config.get('youtube_pacing_mode') == 'adaptive'):
+            if youtube and (config.get('_cookie_pool_selected') or not (
+                    provider == 'yt_dlp' and config.get('youtube_pacing_mode') == 'adaptive')):
                 scheduler.wait_youtube_start(channel, on_wait=wait_request)
                 progress.state.update(stage='extracting')
                 progress.save(force=True)
@@ -714,7 +716,8 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                             if automatic_throughput(config) or config.get('youtube_cookie_pool') or config.get('youtube_pacing_mode') == 'adaptive':
                                 for address in addresses:
                                     with resolving():
-                                        if youtube and config.get('youtube_pacing_mode') == 'adaptive':
+                                        if (youtube and config.get('youtube_pacing_mode') == 'adaptive'
+                                                and not config.get('_cookie_pool_selected')):
                                             scheduler.wait_youtube_start(channel, on_wait=wait_request)
                                         info = downloader.extract_info(address, download=False)
                                     if info is None:
@@ -786,7 +789,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                             store.statistics.methods.select_provider(payload['_task_id'], provider, fallback=bool(index))
                         elif index:
                             store.statistics.methods.fallback(payload['_task_id'], provider)
-                    if index and provider == 'yt_dlp' and store and youtube:
+                    if index and provider == 'yt_dlp' and store and youtube and use_cookie:
                         # Website conversion may have taken several minutes.
                         YouTubeAuth(store).require(config, base, **(
                             {'proxy': snapshot['proxy'], 'node': snapshot['node']}
@@ -1029,14 +1032,18 @@ def drain(directory, slot=0, role='all'):
                 failure = failure_evidence(error)
                 policy = recovery_policy(failure, {**runtime, **config})
                 if policy.targets == ('session',):
-                    wait = '至少一小时' if failure.kind == 'account_rate_limit' else f'至少 {int(policy.delay)} 秒'
+                    delay = max(policy.delay, getattr(error, '_download_recovery_delay', 0), failure.retry_after or 0)
+                    wait = f'至少 {int(delay)} 秒'
                     reason = (f'账号「{failure.profile_name or failure.profile_id}」限流，'
-                              f'仅该账号冷却{wait}，其他 Cookie 继续执行；冷却后自动以单任务、低频恢复。')
+                              f'该账号冷却{wait}；任务绑定原账号等待，其他 Cookie 按各自额度继续。')
                     store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
-                        'speed': None, 'eta': None, 'retry_delay_seconds': 30,
+                        'speed': None, 'eta': None, 'retry_delay_seconds': delay,
                         'retry_reason': 'youtube_session_rate_limit'}, store.owner)
-                    lease_guard.settle(store.release, task['id'], store.owner, reason, delay=30)
-                    event('attempt_released', reason='youtube_session_rate_limit', retry_after=30,
+                    lease_guard.settle(store.finish, task['id'], error=reason, worker_id=store.owner,
+                                       retryable=True, retry_after=delay)
+                    event('account_limit_settled', reason='youtube_session_rate_limit', retry_after=delay,
+                          attempts=task['attempts'], max_attempts=task['max_attempts'],
+                          retry_scheduled=task['attempts'] < task['max_attempts'],
                           instance_paused=False, **error_details(error))
                     print(reason, flush=True)
                     return False

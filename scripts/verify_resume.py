@@ -15,6 +15,7 @@ from flask import request
 from webapp.bulk import run_import
 from webapp.jobs import Jobs
 from scripts.verify_jobs import QuietHandler
+from scripts.browser_checks import wait_for_workbench_ready
 from webapp.browser import browser_options
 
 
@@ -83,6 +84,8 @@ def main():
                     store.set_downloads_paused(True)
                     release.clear(); entered.clear(); delay_control[0] = True
                     page.goto(base + path)
+                    wait_for_workbench_ready(page)
+                    expect(page.locator('#download-job')).to_have_value(a if path == f'/?job={a}' else b)
                     button = page.locator(selector)
                     expect(button).to_be_enabled()
                     button.click()
@@ -92,14 +95,18 @@ def main():
                     if path.startswith('/?'):
                         expect(page.locator('#download-job')).to_be_disabled()
                     page.screenshot(path=str(output / ('home-pending.png' if path.startswith('/?') else 'jobs-pending.png')))
-                    release.set()
+                    with page.expect_response(lambda response: response.request.method == 'POST'
+                                              and response.url.endswith('/api/jobs/workbench')) as started:
+                        release.set()
+                    assert started.value.status == 200, started.value.text()
                     expect(button).not_to_contain_text('正在启动')
                     assert jobs.detail(a)['total'] == 1
                     assert not jobs.detail(a)['released']
                     assert not jobs.detail(b)['released']
                     assert store.downloads_paused(), 'instance start changed the shared switch'
                     assert not store.fleet.row()['paused']
-                    assert client.get('/api/jobs/workbench').json['selected_job_id'] == (a if path == f'/?job={a}' else b)
+                    selected = client.get('/api/jobs/workbench').json
+                    assert selected['selected_job_id'] == (a if path == f'/?job={a}' else b), selected
                     delay_control[0] = False
                     page.screenshot(path=str(output / ('home-result.png' if path.startswith('/?') else 'jobs-result.png')))
                     store.fleet.control('fixture', {'action':'drain'})
@@ -122,14 +129,14 @@ def main():
                     store.fleet.check_local = slow_preflight
                     resume = page.locator('[data-instance-action="resume"]')
                     resume.click()
-                    expect(resume).to_have_text('正在检查并恢复…')
+                    expect(resume).to_have_text('正在检查并启动…')
                     expect(resume).to_be_disabled()
                     assert entered.wait(3)
                     page.evaluate('loadFleet()')  # Polling must not replace the in-flight button.
-                    expect(resume).to_have_text('正在检查并恢复…')
+                    expect(resume).to_have_text('正在检查并启动…')
                     expect(resume).to_be_disabled()
                     release.set()
-                    expect(page.locator('#fleet-instances .count-pill')).to_contain_text('在线 ·')
+                    expect(page.locator('#fleet-instances .count-pill')).to_contain_text('已启动')
                     assert not store.fleet.row()['paused']
                     page.locator('[data-view="overview"]').first.click()
                     expect(page.locator('#download-execution-status')).not_to_contain_text('在线下载实例均已暂停')
@@ -141,6 +148,7 @@ def main():
                 page.add_init_script('AbortSignal.timeout = () => { const controller = new AbortController(); setTimeout(() => controller.abort(new DOMException("test timeout", "TimeoutError")), 300); return controller.signal; };')
                 delay_control[0] = True
                 page.goto(base + f'/?job={a}')
+                wait_for_workbench_ready(page)
                 page.locator('#download-queue-start').click()
                 expect(page.locator('#download-execution-status')).to_contain_text('结果尚未确认')
                 expect(page.locator('#download-queue-start')).to_be_enabled()

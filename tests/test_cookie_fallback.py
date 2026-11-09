@@ -163,6 +163,61 @@ class CookieFallbackTests(unittest.TestCase):
 class CookieUsageTests(unittest.TestCase):
     setUp = CookieFallbackTests.setUp
 
+    def test_third_party_only_execution_ignores_an_unavailable_native_cookie(self):
+        from webapp.store import TaskStore
+        store = TaskStore(self.root / 'provider-state')
+        self.addCleanup(store.db.engine.dispose)
+        missing_cookie = self.root / 'unavailable-native-cookie.txt'
+        self.payload['config'].update(download_methods=['downmp3'], youtube_cookie=str(missing_cookie))
+        with patch('webapp.cookie_profiles.CookieProfiles.restore_selected',
+                   side_effect=AssertionError('third-party provider must not restore native Cookie')), \
+                patch('webapp.youtube_auth.YouTubeAuth.require') as auth, \
+                patch('webapp.environment.require_downmp3_environment'), \
+                patch('webapp.downmp3.resolve', return_value={'id': 'u71MaudlmOc'}), \
+                patch.object(yt_dlp.YoutubeDL, 'process_ie_result') as transfer:
+            result = execute('download', self.payload, store=store)
+        self.assertEqual(result['download_method'], 'downmp3')
+        transfer.assert_called_once()
+        auth.assert_not_called()
+        self.assertFalse(missing_cookie.exists())
+
+    def check_provider_fallback(self, usage, *, needs_login=False):
+        from webapp.store import TaskStore
+        store = TaskStore(self.root / 'fallback-state')
+        self.addCleanup(store.db.engine.dispose)
+        self.payload['config'].update(download_methods=['downmp3', 'yt_dlp'], youtube_cookie_usage=usage)
+        calls = []
+
+        def download(downloader, urls):
+            calls.append(bool(downloader.params.get('cookiefile')))
+            if needs_login and len(calls) == 1:
+                downloader.report_error('Sign in to watch this video')
+                return 1
+            return 0
+
+        with patch('webapp.downmp3.resolve', side_effect=RuntimeError('fixture HTTP 502')), \
+                patch('webapp.environment.require_downmp3_environment'), \
+                patch('webapp.youtube_auth.YouTubeAuth.require', return_value={'state': 'valid'}) as auth, \
+                patch.object(yt_dlp.YoutubeDL, 'download', download):
+            result = execute('download', self.payload, store=store)
+        self.assertEqual(result['download_method'], 'yt_dlp')
+        self.assertTrue(result['fallback_used'])
+        self.assertEqual(calls, [False, True] if needs_login else [usage == 'always'])
+        self.assertEqual(auth.call_count, 2 if usage == 'always' else 0)
+        self.assertEqual(self.cookie.read_bytes(), self.original)
+
+    def test_on_demand_provider_fallback_starts_anonymously_without_login_probe(self):
+        self.check_provider_fallback('auto')
+
+    def test_on_demand_provider_fallback_uses_cookie_only_after_authentication_required(self):
+        self.check_provider_fallback('auto', needs_login=True)
+
+    def test_anonymous_provider_fallback_never_checks_login(self):
+        self.check_provider_fallback('never')
+
+    def test_authenticated_provider_fallback_rechecks_cookie_before_native_attempt(self):
+        self.check_provider_fallback('always')
+
     def test_public_content_starts_anonymously_without_auth_preflight(self):
         from webapp.store import TaskStore
         self.payload['config']['youtube_cookie_usage'] = 'auto'

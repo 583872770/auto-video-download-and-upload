@@ -13,7 +13,7 @@ from unittest.mock import patch
 from sqlalchemy import event, select
 
 from tests import test_scale
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from webapp.database import archive, deliveries, download_sessions, settings, tasks, test_files, test_totals
 from webapp.statistics import describe
 from webapp.store import TaskStore
@@ -71,7 +71,10 @@ class StatisticsContract:
         next_file = self.final_file('next.mp4', 5678)
         self.assertTrue(self.store.statistics.record_file(resumed['id'], next_file))
         self.store.finish(resumed['id'], result={}, worker_id=self.store.owner)
-        self.assertEqual(self.store.statistics.session(new_id)['status'], 'completed')
+        # An idle executor remains in the same session until explicitly stopped.
+        self.assertEqual(self.store.statistics.session(new_id)['status'], 'active')
+        self.store.set_downloads_paused(True)
+        self.assertEqual(self.store.statistics.session(new_id)['status'], 'paused')
         self.assertEqual(self.store.statistics.session(identity), closed)
         overview = self.overview()
         self.assertEqual((overview['summary']['file_count'], overview['summary']['file_bytes']), (2, 18023))
@@ -92,8 +95,10 @@ class StatisticsContract:
         self.assertEqual(again['payload']['download_session_id'], identity)
         self.assertEqual(self.store.statistics.session(identity)['attempted'], 1)
         self.store.finish(again['id'], error='permanent failure', worker_id=self.store.owner)
+        self.assertEqual(self.store.statistics.session(identity)['status'], 'active')
+        self.store.set_downloads_paused(True)
         closed = self.store.statistics.session(identity)
-        self.assertEqual((closed['attempted'], closed['failed'], closed['file_bytes'], closed['status']), (1, 1, 0, 'completed'))
+        self.assertEqual((closed['attempted'], closed['failed'], closed['file_bytes'], closed['status']), (1, 1, 0, 'paused'))
         self.assertFalse(self.store.finish(again['id'], error='duplicate completion', worker_id=self.store.owner))
         self.assertEqual(self.store.statistics.session(identity), closed)
 
@@ -186,6 +191,9 @@ class StatisticsContract:
             with self.store.connect() as db:
                 db.execute(download_sessions.update().where(download_sessions.c.id == job['payload']['download_session_id']).values(price=price))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
+            # Separate customer labels belong to distinct executor sessions.
+            self.store.set_downloads_paused(True)
+            self.store.set_downloads_paused(False)
         filtered = self.client.get('/api/statistics', query_string={'q': '客户 A'}).json
         self.assertEqual(len(filtered['items']), 2)
         self.assertEqual((filtered['summary']['file_count'], filtered['summary']['file_bytes']), (2, 2000))
@@ -244,6 +252,8 @@ class StatisticsContract:
             self.assertEqual(rows[0]['精确字节数'], str(size))
             self.assertNotIn('单价(元/单位)', rows[0])
             self.assertIn('不计费', rows[0]['保存方式'])
+            self.store.set_downloads_paused(True)
+            self.store.set_downloads_paused(False)
         filtered = self.client.get('/api/statistics', query_string={'q': '客户 A'}).json
         summary = filtered['summary']
         self.assertEqual((summary['test_file_count'], summary['test_file_bytes'], summary['downloaded_file_bytes']), (2, 19134, 19134))
@@ -349,7 +359,7 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
         self.assertFalse(list((self.store.directory / 'test-downloads').rglob('*.mp4')))
 
 
-class MySQLStatisticsTests(MySQLFixture, StatisticsContract, unittest.TestCase):
+class MySQLStatisticsTests(StandaloneMySQLFixture, StatisticsContract, unittest.TestCase):
     pass
 
 

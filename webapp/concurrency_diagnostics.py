@@ -8,10 +8,11 @@ from sqlalchemy import case, func, select
 
 from webapp.channels import backend_key, group_caps, registry
 from webapp.database import download_permits, download_resources, settings, tasks
-from webapp.parallel_http import fragment_connection_budget
-from webapp.throughput import automatic, policy_key
+from webapp.concurrency_policy import (automatic, backend_limits, cookie_pool_start_interval, fragment_connection_budget,
+                                      resolver_requirements, resource_capacity, transfer_requirements)
+from webapp.throughput import policy_key
 from webapp.decision_diagnostics import public_failure
-from webapp.youtube_pacing import cookie_pool_start_interval
+from webapp.config_schema import DEFAULTS
 
 
 def scopes_for(config, identity):
@@ -150,7 +151,9 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
                     add('account_refresh', '冷却时间已到，等待账号状态更新')
                 elif sample.get('limit', 1) > 0 and sample.get('active', 0) >= sample.get('limit', 1):
                     add('account_busy', '账号并发已满，等待当前任务结束')
-                if sample.get('next_start_at', 0) > stamp:
+                if sample.get('budget_until', 0) > stamp:
+                    add('account_budget', '账号滚动启动预算已用完', sample['budget_until'])
+                elif sample.get('next_start_at', 0) > stamp:
                     add('account_interval', '等待账号启动间隔', sample['next_start_at'])
                 pool_next, start_next = gate.get('next_at', 0), start.get('next_at', 0)
                 if pool_next > stamp and start_next > stamp:
@@ -172,6 +175,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
                          'shared_with': shared, 'shared_name': names.get(shared) or sampled.get(shared, {}).get('name'),
                          'limit': sample.get('limit'), 'active': sample.get('active'),
                          'interval': sample.get('interval'), 'cooldown_kind': sample.get('cooldown_kind'),
+                         **{key: sample.get(key) for key in ('hourly_used', 'daily_used', 'hourly_limit', 'daily_limit')},
                          'tasks': grouped.get(profile_id, []), 'reasons': reasons})
     return {'accounts': accounts, 'unassigned_tasks': unassigned,
             'sample_time': (pool or {}).get('sampled_at'),
@@ -203,47 +207,38 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     transfers = int(rate['transfers']) if auto and fresh else min(requested, 2) if auto else requested
     channels = registry(config)
     caps = group_caps(channels)
-    backend_caps = {}
-    for channel in channels:
-        key = backend_key(channel)
-        limits = (channel.task_limit, channel.resolver_limit, channel.transfer_limit)
-        backend_caps[key] = tuple(min(a, b) for a, b in zip(backend_caps.get(key, limits), limits))
+    backend_caps = backend_limits(channels)
 
     def resource(scope, cap):
         state = states.get(scope, {})
-        live = [p['limit'] for p in state.get('policies', {}).values() if p.get('time', 0) > stamp - 90]
-        ceiling = min([cap, *live])
-        cooling = max(0, state.get('cooldown_until', 0) - stamp)
-        recovering = max(0, state.get('recover_until', 0) - stamp)
-        return {'scope': scope.split(':', 1)[0], 'group': scope.split(':', 1)[1], 'limit': ceiling,
-                'effective': 0 if cooling else min(1, ceiling) if recovering else ceiling,
-                'used': usage.get(scope, 0), 'cooldown_seconds': math.ceil(cooling),
-                'recovery_seconds': math.ceil(recovering),
-                'last_throttle_status': state.get('cooldown_status') if cooling or recovering else None,
-                'last_throttle_kind': state.get('cooldown_kind') if cooling or recovering else None,
+        capacity = resource_capacity(cap, state, stamp)
+        return {'scope': scope.split(':', 1)[0], 'group': scope.split(':', 1)[1], 'limit': capacity.limit,
+                'effective': capacity.effective,
+                'used': usage.get(scope, 0), 'cooldown_seconds': math.ceil(capacity.cooling),
+                'recovery_seconds': math.ceil(capacity.recovering),
+                'last_throttle_status': state.get('cooldown_status') if capacity.cooling or capacity.recovering else None,
+                'last_throttle_kind': state.get('cooldown_kind') if capacity.cooling or capacity.recovering else None,
                 'last_throttle_at': state.get('last_throttle_at'),
                 'last_failure': public_failure(state.get('last_decision', {}).get('failure'))}
 
     rows, group_limits = [], {}
+    local = {'transfers': transfers, 'groups': rate.get('groups', {}) if auto and fresh else {}}
     for channel in channels:
         group = channel.upstream_group
-        group_limit = min(transfers, caps['upstream:' + group])
-        if auto and fresh:
-            group_limit = min(group_limit, rate.get('groups', {}).get(group, {}).get('limit', group_limit))
-        resources = [resource('channel:' + channel.id, channel.task_limit if config.get('scheduler_mode') == 'auto' else 4096),
-                     resource('upstream:' + group, caps['upstream:' + group]),
-                     resource('quota:' + channel.quota_group, caps['quota:' + channel.quota_group]),
-                     resource('local-upstream:' + identity + ':' + group, group_limit)]
-        resources.append(resource('local-transfers:' + identity, transfers))
-        if config.get('scheduler_mode') == 'auto':
-            resources.append(resource('backend-quota:' + backend_key(channel), backend_caps[backend_key(channel)][2]))
-        effective = min(transfers, *(r['effective'] for r in resources))
         # Native HTTP ranges and manifest fragments share the same connection budget.
         connection_units = (fragment_connection_budget(config, channel.connection_limit, transfers)
                             if channel.adapter == 'yt_dlp' else None)
-        connection = (resource('connections:' + group, caps['connections:' + group])
-                      if 'connections:' + group in caps else None)
-        local_connection = resource('local-connections:' + identity, int(config.get('download_connection_limit', 32)))
+        requirements = transfer_requirements(config, identity, channel, caps, local, connection_units or 1)
+        by_scope = {scope.split(':', 1)[0]: resource(scope,
+                    min(cap, transfers) if scope.startswith('local-upstream:') else cap)
+                    for scope, cap, _ in requirements}
+        resources = [resource('channel:' + channel.id, channel.task_limit if config.get('scheduler_mode') == 'auto' else 4096),
+                     by_scope['upstream'], by_scope['quota'], by_scope['local-upstream'], by_scope['local-transfers']]
+        if config.get('scheduler_mode') == 'auto':
+            resources.append(resource('backend-quota:' + backend_key(channel), backend_caps[backend_key(channel)][2]))
+        effective = min(transfers, *(r['effective'] for r in resources))
+        connection = by_scope.get('connections')
+        local_connection = by_scope['local-connections']
         if connection_units:
             effective = min(effective, local_connection['effective'] // connection_units)
             if connection is not None:
@@ -254,7 +249,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                 effective = min(effective, connection['effective'])
         resources.extend(([connection] if connection is not None else []) + [local_connection])
         separate_resolver = channel.adapter != 'yt_dlp' or auto or pooled or config.get('youtube_pacing_mode') == 'adaptive'
-        resolving = ([resource('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group])]
+        resolving = ([resource(scope, cap) for scope, cap, _ in resolver_requirements(channel, caps)
+                      if scope.startswith('resolver:')]
                      if separate_resolver else [])
         if config.get('scheduler_mode') == 'auto':
             resolving.extend((resource('backend-resolver:' + backend_key(channel), backend_caps[backend_key(channel)][1]),
@@ -316,7 +312,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         bottleneck = '额度允许执行；实际任务数还取决于队列、启动间隔和视频处理阶段'
     from webapp.youtube_pacing import summary as pacing_summary
     pacing = (pacing_summary(config, states.get('youtube-pacing:instance:' + identity, {}), stamp)
-              if config.get('youtube_pacing_mode') == 'adaptive' else None)
+              if config.get('youtube_pacing_mode') == 'adaptive' and not pooled else None)
     from webapp.decision_diagnostics import explain
     own_scopes = scopes_for(config, identity)
     decision_states = {key: value for key, value in states.items()
@@ -344,7 +340,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'processing': sum(stages.get(name, 0) for name in ('processing', 'waiting_processing', 'cleaning', 'uploading_oss')), 'waiting_transfer': stages.get('waiting_transfer', 0),
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
             'subtitle_mode': config.get('subtitle_mode', 'optional'),
-            'youtube_start_interval': int(config.get('youtube_start_interval', 3)),
+            'youtube_start_interval': int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])),
             'youtube_cookie_pool_start_interval': cookie_pool_start_interval(config),
             'youtube_pacing': pacing,
             'youtube_waiting': stages.get('waiting_request', 0),

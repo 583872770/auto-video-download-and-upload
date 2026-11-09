@@ -26,7 +26,7 @@ class SettingsSaveContract:
 
     def test_pool_start_interval_saves_and_rejects_invalid_values(self):
         key = 'youtube_cookie_pool_start_interval'
-        self.assertEqual(self.client.get('/api/config').json['config'][key], 10)
+        self.assertEqual(self.client.get('/api/config').json['config'][key], 5)
         for value in (3, 0, 600):
             with self.subTest(value=value):
                 response = self.client.put('/api/config', json={key: value}, headers=self.headers)
@@ -50,10 +50,10 @@ class SettingsSaveContract:
         identity = self.create()
         self.start(identity)
         first = self.store.claim(self.store.owner)
-        self.assertEqual(first['payload']['config'][key], 10)
+        self.assertEqual(first['payload']['config'][key], 5)
         response = self.client.put('/api/config', json={key: 3}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.store.get(first['id'], private=True)['payload']['config'][key], 10)
+        self.assertEqual(self.store.get(first['id'], private=True)['payload']['config'][key], 5)
         self.assertEqual(self.store.claim('next-owner')['payload']['config'][key], 3)
 
     def test_cookie_session_limit_saves_as_instance_policy(self):

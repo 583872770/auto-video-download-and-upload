@@ -6,7 +6,7 @@ import unittest
 
 from sqlalchemy import event
 
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from tests.test_scale import ScaleTests
 from tests.test_statistics import StatisticsContract
 from webapp.database import download_sessions, method_tasks, method_totals, settings, tasks
@@ -179,6 +179,8 @@ class MethodStatisticsContract:
             self.store.statistics.update(identity, {'label': label})
             self.store.statistics.record_file(job['id'], self.final_file(f'{index}.mp4', index + 100))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
+            self.store.set_downloads_paused(True)
+            self.store.set_downloads_paused(False)
         rows = self.methods(query='客户 A')
         self.assertEqual([rows[key]['file_bytes'] for key in ('yt_dlp', 'yt5s')], [100, 102])
         self.assertEqual(sum(row['attempted'] for row in self.methods(query='%').values()), 0)
@@ -238,6 +240,6 @@ class SQLiteMethodStatisticsTests(MethodStatisticsContract, unittest.TestCase):
     setUp = ScaleTests.setUp
 
 
-class MySQLMethodStatisticsTests(MySQLFixture, MethodStatisticsContract, unittest.TestCase):
+class MySQLMethodStatisticsTests(StandaloneMySQLFixture, MethodStatisticsContract, unittest.TestCase):
     pass
 

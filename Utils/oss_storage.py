@@ -9,12 +9,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-OSS_DEFAULTS = {'oss_endpoint': '', 'oss_bucket': '', 'oss_prefix': 'videos',
-                'oss_access_key_id': '', 'oss_access_key_secret': '', 'oss_security_token': '',
-                'oss_upload_threads': 2, 'oss_part_size_mb': 8, 'oss_upload_limit': 2}
-OSS_INTEGER_FIELDS = {'oss_upload_threads': (1, 8), 'oss_part_size_mb': (4, 64), 'oss_upload_limit': (1, 8)}
-OSS_FIELDS = set(OSS_DEFAULTS)
-OSS_SECRETS = {'oss_access_key_secret', 'oss_security_token'}
+from webapp.config_schema import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS, OSS_SECRETS
 
 
 class OSSUploadError(RuntimeError):

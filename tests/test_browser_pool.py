@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from tests import test_scale
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from webapp.browser_pool import browser_slot
 from webapp.yt5s import resolve
 
@@ -189,5 +189,5 @@ class BrowserSettingsTests(unittest.TestCase):
         self.assertNotIn('yt5s_browser_count', self.store.get(task['id'], private=True)['payload']['config'])
 
 
-class MySQLBrowserSettingsTests(MySQLFixture, BrowserSettingsTests):
+class MySQLBrowserSettingsTests(StandaloneMySQLFixture, BrowserSettingsTests):
     pass

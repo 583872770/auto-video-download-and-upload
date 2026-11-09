@@ -115,6 +115,10 @@ class ClashTests(unittest.TestCase):
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(fixture['content'])
+                elif self.path.endswith('/another.mp4'):
+                    # A permanent fixture failure tests node selection without
+                    # depending on how an empty HTTP 204 body is classified.
+                    self.send_error(404)
                 else:
                     fixture['proxy_requests'] += 1
                     self.send_response(200 if self.path.endswith('/download.mp4') else 204)

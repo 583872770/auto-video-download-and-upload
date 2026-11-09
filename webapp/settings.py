@@ -10,81 +10,9 @@ PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': '
              'bergung': 'Bergung'}
 
 import yaml
-from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
-from Utils.oss_storage import OSS_DEFAULTS, OSS_FIELDS, validate_oss
-
-DEFAULTS = {
-    'path': 'videos', 'dir': '', 'url': '', 'proxy': '', 'proxy_mode': 'manual', 'youtube_cookie': '',
-    'browser_executable': '', 'download_format': '', 'js_runtimes': None,
-    'worker_count': 1, 'download_attempts': 3, 'min_free_gb': 2,
-    'log_retention_days': 0, 'max_log_mb': 2, 'shard_downloads': True, 'storage_mode': 'local',
-    'download_method': 'yt_dlp', 'yt5s_quality': 'best', 'yt5s_browser_count': 2,
-    'download_methods': None,
-    'fragment_concurrency': 4,
-    'throughput_mode': 'manual', 'bandwidth_mbps': 0,
-    'scheduler_mode': 'ordered_fallback', 'download_channels': [],
-    'auto_channel_attempts': 3,
-    'download_connection_limit': 32, 'shared_parser': True,
-    'subtitle_mode': 'optional', 'subtitle_languages': 'en,zh-Hans,zh-Hant',
-    'builtin_transfer_limit': 0, 'builtin_resolver_limit': 4,
-    'youtube_source_address': '', 'youtube_start_interval': 3, 'youtube_cookie_fallback': False,
-    'youtube_cookie_usage': 'auto',
-    'youtube_throttle_cooldown': 300,
-    'youtube_sleep_preset': True,
-    'youtube_cookie_pool': [],
-    'youtube_cookie_session_limit': 2,
-    'youtube_cookie_pool_start_interval': 10,
-    'youtube_cookie_pool_worker_limit': 20, 'youtube_cookie_pool_preparation_workers': 4,
-    'youtube_pacing_mode': 'manual', 'youtube_hourly_start_limit': 80, 'youtube_daily_start_limit': 1200,
-    'postprocess_limit': 2,
-    'downmp3_quality': 'best', 'downmp3_timeout': 300,
-    'yt1d_quality': 'best', 'yt1d_timeout': 180,
-    'bergung_quality': 'best', 'bergung_timeout': 180,
-    **DISK_DEFAULTS,
-    **OSS_DEFAULTS,
-}
-DOWNLOAD_FIELDS = {'path', 'dir', 'url', 'proxy', 'proxy_mode', 'youtube_cookie', 'worker_count',
-                   'download_attempts', 'min_free_gb', 'log_retention_days', 'max_log_mb', 'shard_downloads', 'storage_mode',
-                   'download_method', 'download_methods', 'yt5s_quality', 'yt5s_browser_count', 'fragment_concurrency',
-                   'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
-                   'bergung_quality', 'bergung_timeout'}
-DOWNLOAD_FIELDS |= DISK_FIELDS
-DOWNLOAD_FIELDS.add('postprocess_limit')
-DOWNLOAD_FIELDS |= OSS_FIELDS
-DOWNLOAD_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
-DOWNLOAD_FIELDS |= {'scheduler_mode', 'download_channels', 'download_connection_limit', 'shared_parser', 'auto_channel_attempts'}
-DOWNLOAD_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit'}
-DOWNLOAD_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
-DOWNLOAD_FIELDS.add('youtube_cookie_usage')
-DOWNLOAD_FIELDS.add('youtube_sleep_preset')
-DOWNLOAD_FIELDS.add('youtube_throttle_cooldown')
-DOWNLOAD_FIELDS.add('youtube_cookie_pool')
-DOWNLOAD_FIELDS.add('youtube_cookie_session_limit')
-DOWNLOAD_FIELDS.add('youtube_cookie_pool_start_interval')
-DOWNLOAD_FIELDS |= {'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers'}
-from webapp.youtube_pacing import PACING_FIELDS
-DOWNLOAD_FIELDS |= PACING_FIELDS
-INTEGER_FIELDS = {'worker_count': (1, 64), 'download_attempts': (1, 10), 'min_free_gb': (0, 10000),
-                  'log_retention_days': (0, 3650), 'max_log_mb': (1, 1000), 'yt5s_browser_count': (1, 16),
-                  'fragment_concurrency': (1, 16), 'downmp3_timeout': (30, 1800), 'yt1d_timeout': (30, 1800),
-                  'bergung_timeout': (30, 1800)}
-INTEGER_FIELDS.update({key: (0 if key in ('disk_min_free_gb', 'disk_resume_free_gb') else 1, 100000)
-                       for key in DISK_FIELDS})
-INTEGER_FIELDS['bandwidth_mbps'] = (0, 100000)
-INTEGER_FIELDS['postprocess_limit'] = (1, 8)
-from Utils.oss_storage import OSS_INTEGER_FIELDS
-INTEGER_FIELDS.update(OSS_INTEGER_FIELDS)
-INTEGER_FIELDS['download_connection_limit'] = (2, 128)
-INTEGER_FIELDS['auto_channel_attempts'] = (1, 6)
-INTEGER_FIELDS.update(builtin_transfer_limit=(0, 64), builtin_resolver_limit=(1, 16))
-INTEGER_FIELDS['youtube_start_interval'] = (0, 600)
-INTEGER_FIELDS['youtube_cookie_session_limit'] = (1, 64)
-INTEGER_FIELDS['youtube_cookie_pool_start_interval'] = (0, 600)
-INTEGER_FIELDS['youtube_cookie_pool_worker_limit'] = (1, 64)
-INTEGER_FIELDS['youtube_cookie_pool_preparation_workers'] = (0, 16)
-INTEGER_FIELDS['youtube_throttle_cooldown'] = (30, 3600)
-INTEGER_FIELDS['youtube_hourly_start_limit'] = (1, 5000)
-INTEGER_FIELDS['youtube_daily_start_limit'] = (1, 5000)
+from Utils.oss_storage import validate_oss
+from webapp.config_schema import (DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, TEXT_FIELDS,
+                                  discard_retired_settings)
 
 
 def urls_from(value):
@@ -122,7 +50,7 @@ def download_methods(config):
 
 def validate_settings(config, *, download_only=False):
     # Retired setting: old files and task snapshots must not restore its cap.
-    config.pop('builtin_connection_limit', None)
+    discard_retired_settings(config)
     if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
         raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
     if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):
@@ -200,7 +128,7 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('请选择有效的下载连接方式。')
     for key, default in DEFAULTS.items():
         value = config.get(key, default)
-        if key in INTEGER_FIELDS or key in ('shard_downloads', 'js_runtimes', 'url', 'download_methods', 'download_channels', 'shared_parser', 'youtube_cookie_fallback', 'youtube_sleep_preset', 'youtube_cookie_pool'):
+        if key not in TEXT_FIELDS:
             continue
         if not isinstance(value, str) or len(value) > 4096 or '\x00' in value:
             raise ValueError(f'{key} 必须为有效文本。')

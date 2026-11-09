@@ -18,9 +18,13 @@ from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.channel_scheduler import ChannelScheduler
 from webapp.download_policy import (RecoveryPolicy, failure_evidence, recovery_policy, cooldown_deadline, remember_decision)
 from webapp.cookie_profiles import CookieProfiles
-from webapp.throughput import MAX_TRANSFERS, PipelineBusy
+from webapp.throughput import PipelineBusy
 from webapp.youtube_auth import AUTH_COOKIES, YouTubeAuthRequired
-from webapp.youtube_pacing import cookie_pool_start_interval
+from webapp.concurrency_policy import (MAX_TRANSFERS, cookie_pool_start_interval,
+                                      cookie_session_limit as session_limit)
+from webapp.cookie_policy import (account_interval, start_budget, retry_interval, account_limit_delay,
+                                  RECOVERY_INTERVAL, RECOVERY_WINDOW, RECOVERY_SUCCESSES)
+from webapp.config_schema import DEFAULTS
 
 
 @lru_cache(maxsize=256)
@@ -90,28 +94,25 @@ def account_group_key(name, data):
     return 'credential:' + credential_key(data)
 
 
-def session_limit(config, state):
-    """Pool concurrency depends only on session configuration and warmup."""
-    configured = max(1, min(64, int(config.get('youtube_cookie_session_limit', 2))))
-    return configured if state.get('limit', 1) > 1 and not state.get('recovery_mode') else 1
-
-
 def session_view(identity, name, state, config, stamp):
     cooling = state.get('cooldown_until', 0) > stamp
     recovery = bool(state.get('recovery_mode'))
+    starts, budget_until = start_budget(config, state, stamp)
     return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
-        active=int(state.get('active', 0)), next_start_at=state.get('next_at', 0),
+        active=int(state.get('active', 0)), next_start_at=max(state.get('next_at', 0), budget_until,
+            state.get('last_start', 0) + account_interval(config, state) if state.get('last_start') else 0),
+        hourly_used=sum(s > stamp - 3600 for s in starts), daily_used=len(starts), budget_until=budget_until,
+        hourly_limit=int(config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit'])),
+        daily_limit=int(config.get('youtube_daily_start_limit', DEFAULTS['youtube_daily_start_limit'])),
         cooldown_kind=state.get('cooldown_kind'), cooldown_until=state.get('cooldown_until', 0),
         last_failure_at=state.get('last_failure_at', 0),
         denied_count=len(state.get('denied_tasks', [])),
         limited_at=state.get('limited_at'), limited_count=state.get('limited_count', 0),
         recovery_started_at=state.get('recovery_started_at', 0),
         recovery_successes=state.get('recovery_successes', 0),
-        interval=max(int(config.get('youtube_start_interval', 60)),
-                     180 if recovery and state.get('recovery_successes', 0) < 3 else 120 if recovery else 30,
-                     state.get('interval', 60)),
+        interval=account_interval(config, state),
         limit=0 if cooling else session_limit(config, state),
-        configured_limit=int(config.get('youtube_cookie_session_limit', 2)))
+        configured_limit=int(config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit'])))
 
 
 def capacity_summary(snapshot, stamp=None):
@@ -232,11 +233,13 @@ class CookiePool:
             global_state = states.get(self.global_scope, {})
             accounts = [{'id': identity, **states.get(scope, {}),
                          'active': usage.get(scope, 0)} for identity, _, scope in self.accounts]
-            configured = int(self.config.get('youtube_cookie_session_limit', 2))
+            configured = int(self.config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit']))
             for account in accounts:
                 warming = account.get('limit', 1) < 2
                 account.update(limit=session_limit(self.config, account),
-                               configured_limit=configured, warming=warming)
+                               configured_limit=configured, warming=warming,
+                               interval=account_interval(self.config, account))
+                account['next_at'] = session_view(account['id'], '', account, self.config, stamp)['next_start_at']
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
@@ -286,7 +289,7 @@ class CookiePool:
         self.router.transaction_call(clear)
 
     @contextmanager
-    def assignment(self, profile_id=None, *, count_success=True):
+    def assignment(self, profile_id=None, *, count_success=True, manual_retry=False):
         router = self.router
         if not router.enabled or not self.accounts:
             raise ValueError('Cookie 账号池必须通过下载队列执行，且至少选择一个账号。')
@@ -301,6 +304,8 @@ class CookiePool:
                 return None, gate['cooldown_until'] - stamp
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp
+            if manual_retry and gate.get('retry_next_at', 0) > stamp:
+                return None, gate['retry_next_at'] - stamp
             scopes = [scope for _, _, scope in self.accounts]
             state_by_scope = router._states(db, scopes)
             active_by_scope = router._active_many(db, scopes, stamp)
@@ -312,8 +317,11 @@ class CookiePool:
             for identity, path, scope, state, active in states:
                 if profile_id and identity != self.aliases.get(profile_id, profile_id):
                     continue
-                if max(state.get('next_at', 0), state.get('cooldown_until', 0)) > stamp:
-                    delays.append(max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp)
+                _, budget_until = start_budget(self.config, state, stamp)
+                next_at = max(state.get('next_at', 0), state.get('cooldown_until', 0), budget_until,
+                    state.get('last_start', 0) + account_interval(self.config, state) if state.get('last_start') else 0)
+                if next_at > stamp:
+                    delays.append(next_at - stamp)
                     continue
                 cap = session_limit(self.config, state)
                 if active < cap:
@@ -328,18 +336,25 @@ class CookiePool:
             state = router._state(db, scope)
             if state.get('recovery_mode') and not state.get('recovery_started_at'):
                 state.update(recovery_started_at=stamp, recovery_successes=0)
-            # Keep the persisted per-account backoff.  Stable accounts may
-            # reach the mature 30s floor, while a fresh account always starts
-            # at the conservative 60s interval.
-            interval = max(30, int(self.config.get('youtube_start_interval', 60)),
-                           state.get('interval', 60))
+            # The configured floor also applies to accounts imported earlier.
+            interval = account_interval(self.config, state)
             jitter = min(10, max(2, interval * .2))
+            starts, _ = start_budget(self.config, state, stamp)
+            state['starts'] = [*starts, stamp]
+            pending = {key: value for key, value in state.get('pending_starts', {}).items()
+                       if value > stamp - 86400}
+            pending[router.task_id] = stamp
+            state['pending_starts'] = pending
             state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, jitter))
             router._save(db, scope, state)
             # The same setting also spaces parser starts in ChannelScheduler.
             # Per-account intervals and cooldowns remain independent.
             gate = router._state(db, self.global_scope)
             gate['next_at'] = stamp + cookie_pool_start_interval(self.config)
+            if manual_retry:
+                eligible = [s for _, _, _, s, _ in states if s.get('cooldown_until', 0) <= stamp
+                            and start_budget(self.config, s, stamp)[1] <= stamp]
+                gate['retry_next_at'] = stamp + retry_interval(self.config, eligible)
             router._save(db, self.global_scope, gate)
             return (identity, path, scope, token, stamp), 0
 
@@ -365,7 +380,23 @@ class CookiePool:
                 if error or completed and count_success:
                     self.outcome(scope, error, admitted_at=admitted_at)
             finally:
-                router._release(token)
+                try:
+                    # A local resource wait before any source request must not
+                    # consume the rolling account budget. Crashes conservatively
+                    # retain their reservation until the rolling window expires.
+                    def refund_unstarted(db, stamp):
+                        state = router._state(db, scope)
+                        pending = state.get('pending_starts', {})
+                        if pending.get(router.task_id) != admitted_at:
+                            return
+                        pending.pop(router.task_id)
+                        starts = state.get('starts', [])
+                        if admitted_at in starts:
+                            starts.remove(admitted_at)
+                        router._save(db, scope, state)
+                    router.transaction_call(refund_unstarted)
+                finally:
+                    router._release(token)
 
     def outcome(self, scope, error, *, admitted_at=None):
         profile_id = next((identity for identity, _, resource in self.accounts if resource == scope), None)
@@ -395,6 +426,10 @@ class CookiePool:
             state = self.router._state(db, scope)
             if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
                 return
+            if (failure and failure.kind in ('account_rate_limit', 'request_rate_limit')
+                    and admitted_at is not None and admitted_at < state.get('limited_at', 0)):
+                # An older in-flight request cannot prolong a newer cooldown.
+                return
             if denied:
                 recent = [row for row in state.get('denied_tasks', []) if row['time'] >= stamp - DENIED_WINDOW]
                 if any(row['task'] == failure.task_id for row in recent):
@@ -423,7 +458,11 @@ class CookiePool:
                 previous_interval = int(state.get('interval', 60))
                 previous_state = ('recovery' if state.get('recovery_mode') else
                                   'cooldown' if state.get('cooldown_until', 0) > stamp else 'ready')
-                until = cooldown_deadline(error, stamp, max(current_policy.delay, getattr(error, 'retry_after', 0) or 0))
+                delay = max(current_policy.delay, getattr(error, 'retry_after', 0) or 0)
+                if failure.kind == 'account_rate_limit':
+                    strikes, delay = account_limit_delay(state, stamp, delay)
+                    state['limit_strikes'] = strikes
+                until = cooldown_deadline(error, stamp, delay)
                 state.update(limit=1, streak=0, first_success=0,
                              cooldown_kind='repeated_http_403' if denied else failure.kind,
                              last_failure_at=stamp,
@@ -431,12 +470,12 @@ class CookiePool:
                              cooldown_until=max(state.get('cooldown_until', 0), until))
                 if state.get('recovery_mode'):
                     state.update(recovery_started_at=0, recovery_successes=0,
-                                 interval=max(180, state['interval']))
+                                 interval=max(RECOVERY_INTERVAL, state['interval']))
                 if denied or failure.kind in ('account_rate_limit', 'request_rate_limit'):
                     state.update(limited_at=stamp,
                                  limited_count=state.get('limited_count', 0) + 1,
                                  recovery_mode=True, recovery_started_at=0, recovery_successes=0,
-                                 interval=max(180, state['interval']), recovery_interval_floor=120)
+                                 interval=max(RECOVERY_INTERVAL, state['interval']), recovery_interval_floor=120)
                 remember_decision(state, failure, layer='session', scope='Cookie：' + self.profile_names.get(profile_id, profile_id),
                     action=current_policy.action, until=until, manual=current_policy.manual, stamp=stamp)
                 record_cookie_event(self.router.store, db=db, profile_id=profile_id,
@@ -478,24 +517,13 @@ class CookiePool:
                         return  # No recovery task has been admitted yet.
                     state['recovery_successes'] = state.get('recovery_successes', 0) + 1
                     successes = state['recovery_successes']
-                    if successes >= 3 and stamp - since >= 600:
-                        previous_interval = int(state.get('interval', 180))
-                        state['interval'] = max(120, int(self.config.get('youtube_start_interval', 60)))
-                        if state['interval'] != previous_interval:
-                            record_cookie_event(self.router.store, db=db, profile_id=profile_id,
-                                profile_name=self.profile_names.get(profile_id, profile_id),
-                                event_type='interval_change', phase='recovery', kind='stable_success',
-                                message='恢复观察达到 3 次成功并持续 10 分钟，降低启动间隔。',
-                                previous_interval=previous_interval, new_interval=state['interval'],
-                                previous_state='recovery', new_state='recovery',
-                                metadata={'recovery_successes': successes})
-                    if successes >= 5 and stamp - since >= 1800:
+                    if successes >= RECOVERY_SUCCESSES and stamp - since >= RECOVERY_WINDOW:
                         state.update(recovery_mode=False, limit=2, streak=successes, first_success=since,
                                      denied_cooldowns=0)
                         record_cookie_event(self.router.store, db=db, profile_id=profile_id,
                             profile_name=self.profile_names.get(profile_id, profile_id), event_type='recovery',
                             phase='recovery', kind='stable_success',
-                            message='恢复观察达到 5 次成功并持续 30 分钟，恢复设置的并发。',
+                            message='恢复观察达到 10 次成功并持续一小时，恢复设置的并发；启动间隔继续逐步缩短。',
                             previous_state='recovery', new_state='ready',
                             new_interval=int(state.get('interval', 120)),
                             metadata={'recovery_successes': successes})

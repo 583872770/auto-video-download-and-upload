@@ -65,15 +65,33 @@ class MySQLFixture:
         token = re.search(r'name="csrf-token" content="([^"]+)"', self.client.get('/').text)[1]
         self.headers = {'X-CSRF-Token': token}
         self.store = self.app.extensions['task_store']
+        self.addCleanup(self.store.db.engine.dispose)
         self.catalog = self.app.extensions['media_catalog']
 
 
-class MySQLJobTests(MySQLFixture, test_jobs.JobTests):
+class StandaloneMySQLFixture(MySQLFixture):
+    """Run SQLite queue contracts against MySQL without registering a fleet.
+
+    Fleet-specific contracts keep MySQLFixture and real fleet admission. The
+    mode is selected while creating extensions so app closures and TaskStore
+    agree; clearing store.fleet afterwards leaves a partially registered app.
+    """
+
     def setUp(self):
-        MySQLFixture.setUp(self)
-        self.store.fleet = None
-        with self.store.connect() as db:
-            db.execute(settings.delete().where(settings.c.key == 'fleet_enabled'))
+        from webapp.extensions import init_extensions
+
+        def standalone(*args, **kwargs):
+            return init_extensions(*args, **{**kwargs, 'registered': False})
+
+        with patch('webapp.extensions.init_extensions', side_effect=standalone):
+            super().setUp()
+        self.assertIsNone(self.store.fleet)
+        self.assertIsNone(self.app.extensions['fleet'])
+
+
+class MySQLJobTests(StandaloneMySQLFixture, test_jobs.JobTests):
+    def setUp(self):
+        StandaloneMySQLFixture.setUp(self)
         response = self.client.put('/api/config', json={'download_methods': ['downmp3']}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         config, base = self.app.extensions['settings_func']()
@@ -94,15 +112,9 @@ class MySQLHotPolicyTests(MySQLFixture, test_hot_policy.FleetHotPolicyTests):
         self.setup_fleet()
 
 
-class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
+class MySQLScaleTests(StandaloneMySQLFixture, test_scale.ScaleTests):
     def setUp(self):
-        MySQLFixture.setUp(self)
-        # These inherited contracts exercise the standalone queue. MySQL apps
-        # now initialize a paused fleet by default; fleet admission has its own
-        # MySQLFleetTests. Keep the same execution mode as the SQLite contract.
-        self.store.fleet = None
-        with self.store.connect() as db:
-            db.execute(settings.delete().where(settings.c.key == 'fleet_enabled'))
+        StandaloneMySQLFixture.setUp(self)
 
     def test_deadlock_retry_rolls_back_counters_and_attempts(self):
         from pymysql.err import OperationalError as MySQLError
@@ -208,19 +220,21 @@ class MySQLScaleTests(MySQLFixture, test_scale.ScaleTests):
         self.assertEqual(self.store.counts()['running'], 2)
 
 
-class MySQLControlTests(MySQLFixture, test_controls.ControlContract, unittest.TestCase):
+class MySQLControlTests(StandaloneMySQLFixture, test_controls.ControlContract, unittest.TestCase):
     pass
 
 
-class MySQLStorageTests(MySQLFixture, StorageContract, unittest.TestCase):
+class MySQLStorageTests(StandaloneMySQLFixture, StorageContract, unittest.TestCase):
     pass
 
 
-class MySQLAuthTests(MySQLFixture, AuthContract, unittest.TestCase):
+class MySQLAuthTests(AuthContract, StandaloneMySQLFixture, unittest.TestCase):
+    # AuthContract.setUp selects always-authenticated mode before each check.
+    # Keep it first so the database fixture does not shadow that setup.
     pass
 
 
-class MySQLTaskViewTests(MySQLFixture, TaskViewContract, unittest.TestCase):
+class MySQLTaskViewTests(StandaloneMySQLFixture, TaskViewContract, unittest.TestCase):
     pass
 
 

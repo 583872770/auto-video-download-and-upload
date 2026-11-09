@@ -221,6 +221,8 @@ class WebTests(unittest.TestCase):
         payload = self.store.get(task['id'], private=True)['payload']
         payload = self.store.effective_download_payload(task['id'], payload)
         options = build_ydl_options(payload['config'], Path(payload['base']))
+        self.assertNotIn('cookiefile', options)  # Saving a Cookie does not disable on-demand use.
+        options = build_ydl_options({**payload['config'], 'youtube_cookie_usage': 'always'}, Path(payload['base']))
         self.assertEqual(options['cookiefile'], str(target))
         for response in (response, self.client.get('/api/status'), self.client.get('/api/config')):
             self.assertNotIn('DO_NOT_EXPOSE', response.text)

@@ -2,6 +2,7 @@
 import os
 import asyncio
 from pathlib import Path
+from datetime import datetime
 import sys
 import tempfile
 import threading
@@ -18,6 +19,8 @@ from app import create_app
 from webapp.browser import browser_options
 from webapp.yt5s_browser import NativeBrowser
 from webapp.diagnostics import runtime_log
+from webapp.disk_budget import DISK_DEFAULTS
+from scripts.settings_roundtrip_checks import reveal_setting
 
 
 class QuietHandler(WSGIRequestHandler):
@@ -34,7 +37,9 @@ def main():
         config.write_text('path: videos\nproxy_mode: direct\n', encoding='utf-8')
         app = create_app(config, root / 'state', start_worker=False)
         store = app.extensions['task_store']
-        runtime_log(store.directory).write(b'fixture worker startup diagnostic\n')
+        # The current-boot view intentionally ignores un-timestamped old lines.
+        runtime_log(store.directory).write(
+            f'{datetime.now().astimezone().isoformat()} fixture worker startup diagnostic\n'.encode())
         task = store.create('check', {'config':{}, 'base':str(root)})
         store.finish(task['id'], result={'message':'fixture'})
         log = store.log_path(task['id'])
@@ -51,15 +56,16 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('console', lambda msg: errors.append(msg.text) if msg.type == 'error' and 'Content Security Policy' in msg.text else None)
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
-                expect(page.locator('input[name=disk_budget_gb]')).to_have_value('20')
+                reveal_setting(page, page.locator('input[name=disk_budget_gb]'))
+                expect(page.locator('input[name=disk_budget_gb]')).to_have_value(str(DISK_DEFAULTS['disk_budget_gb']))
                 expect(page.locator('#disk-summary')).to_contain_text('磁盘剩余')
-                expect(page.locator('input[name=disk_log_budget_mb]')).to_have_value('64')
+                expect(page.locator('input[name=disk_log_budget_mb]')).to_have_value(str(DISK_DEFAULTS['disk_log_budget_mb']))
                 page.locator('#instance-logs-open').click()
                 expect(page.locator('#instance-logs-dialog')).to_be_visible()
                 expect(page.locator('#instance-logs-content')).to_contain_text('fixture worker startup diagnostic')
                 page.locator('#instance-logs-close').click()
                 page.locator('input[name=disk_budget_gb]').fill('22')
-                page.get_by_role('button', name='保存设置', exact=True).click()
+                page.locator('#settings-form button[type=submit]').click()
                 expect(page.locator('#settings-save-state')).to_contain_text('设置已保存')
                 assert store.runtime()['disk_budget_gb'] == 22
                 page.locator('#disk-cleanup').click()

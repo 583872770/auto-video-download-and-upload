@@ -1865,7 +1865,8 @@ async function init() {
     else fillConfig((await api('/api/config')).config);
   } catch (error) { toast(`读取实例配置失败：${error.message}`, true); }
   try {
-    selectedJobId = /^[a-f0-9]{32}$/.test(initialJobId || '') ? initialJobId : '';
+    // Instance loading may already have restored the durable selection.
+    if (/^[a-f0-9]{32}$/.test(initialJobId || '')) selectedJobId = initialJobId;
     clearJobLink();
     await refreshSelectedJob().catch(error => toast(error.message, true));
     await loadDownloadJobs();

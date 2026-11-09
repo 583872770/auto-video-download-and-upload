@@ -179,6 +179,61 @@ class AdmissionTests(unittest.TestCase):
                     pass
         self.assertEqual(waits, ['local-upstream'])
 
+    def test_diagnostics_and_admission_agree_at_shared_policy_boundaries(self):
+        from webapp.concurrency_diagnostics import diagnose, read_context
+        config = dict(download_method='yt_dlp', worker_count=12, builtin_transfer_limit=8,
+                      download_connection_limit=32, fragment_concurrency=4)
+        routers = [self.scheduler(config=config) for _ in range(9)]
+        stamp = time.time()
+        for router in routers:
+            router.instance = 'node'
+            router.clock = lambda db: stamp
+        first = routers[0]
+        cases = [
+            ('normal', {}, 8),
+            ('peer', {'policies': {'peer': {'limit': 3, 'time': stamp - 89}}}, 3),
+            ('expired-peer', {'policies': {'peer': {'limit': 1, 'time': stamp - 90}}}, 8),
+            ('cooling', {'cooldown_until': stamp + 30, 'recover_until': stamp + 90}, 0),
+            ('recovering', {'cooldown_until': stamp, 'recover_until': stamp + 90}, 1),
+            ('zero-recovering', {'policies': {'peer': {'limit': 0, 'time': stamp}},
+                                 'recover_until': stamp + 90}, 0),
+            ('recovered', {'recover_until': stamp}, 8),
+        ]
+        for name, state, expected in cases:
+            with self.subTest(name=name):
+                first.transaction_call(lambda db, now: first._save(
+                    db, 'upstream:youtube-origin', state))
+                with first.store.connect() as db:
+                    context = read_context(db, [('node', config)], stamp)
+                view = diagnose(config, 'node', [], None, context, stamp)
+                self.assertEqual(view['effective_limit'], expected)
+                with ExitStack() as admitted:
+                    for router in routers[:expected]:
+                        admitted.enter_context(router.permit(router.channels[0], 'transfer', streams=2, timeout=0))
+                    with self.assertRaises(PipelineBusy):
+                        with routers[expected].permit(first.channels[0], 'transfer', streams=2, timeout=0):
+                            self.fail('admission exceeded the capacity displayed by diagnostics')
+                with first.store.connect() as db:
+                    self.assertEqual(db.execute(select(download_permits)).all(), [])
+
+    def test_hot_connection_reduction_keeps_holders_and_blocks_new_work(self):
+        config = dict(download_method='yt_dlp', worker_count=8, builtin_transfer_limit=8,
+                      download_connection_limit=4)
+        first, second = self.scheduler(config=config), self.scheduler(config=config)
+        reduced = self.scheduler(config={**config, 'download_connection_limit': 2})
+        with first.permit(first.channels[0], 'transfer', streams=2, timeout=0):
+            with second.permit(second.channels[0], 'transfer', streams=2, timeout=0):
+                with self.assertRaises(PipelineBusy):
+                    with reduced.permit(reduced.channels[0], 'transfer', timeout=0):
+                        self.fail('hot reduction admitted more connections')
+                used = first.snapshot(['local-connections:local'])[1]
+                self.assertEqual(used['local-connections:local'], 4)
+            with self.assertRaises(PipelineBusy):
+                with reduced.permit(reduced.channels[0], 'transfer', timeout=0):
+                    self.fail('existing holders should finish before admitting new work')
+        with reduced.permit(reduced.channels[0], 'transfer', streams=2, timeout=0):
+            pass
+
     def test_expired_and_reassigned_task_cannot_keep_or_obtain_capacity(self):
         first, second = self.scheduler(), self.scheduler(self.second)
         with first.permit(first.channels[0], 'transfer', timeout=0):

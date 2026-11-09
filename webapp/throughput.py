@@ -11,8 +11,9 @@ import tempfile
 
 import psutil
 
-MAX_TRANSFERS = 64
-MAX_WORKERS = 96
+from webapp.config_schema import PIPELINE_KEY_FIELDS
+from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, automatic, pool_process_limits
+
 MIB = 1024 ** 2
 
 
@@ -26,42 +27,15 @@ def policy_key(config):
     return ['cookie_pool' if pooled else config.get('throughput_mode', 'manual'),
             0 if pooled else int(config.get('worker_count', 1)),
             int(config.get('yt5s_browser_count', 2)), 0 if pooled else int(config.get('bandwidth_mbps', 0)),
-            hashlib.sha256(json.dumps({key: config.get(key) for key in ('download_methods', 'download_method',
-                'download_channels', 'scheduler_mode', 'download_connection_limit', 'builtin_transfer_limit',
-                'builtin_resolver_limit', 'fragment_concurrency', 'youtube_cookie_pool',
-                'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval',
-                'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers')}, sort_keys=True).encode()).hexdigest()[:16]]
+            hashlib.sha256(json.dumps({key: config.get(key) for key in PIPELINE_KEY_FIELDS},
+                                      sort_keys=True).encode()).hexdigest()[:16]]
 
 
 def pool_worker_limits(config, capacity, resources=None):
     """Size processes from static capacity; live permits still govern execution."""
-    from webapp.channels import group_caps, registry
-    from webapp.parallel_http import fragment_connection_budget
     from webapp.db_pool_calculator import connection_budget
-    capacity = max(1, min(MAX_TRANSFERS, int(capacity)))
-    channels = registry(config)
-    caps = group_caps(channels)
-    groups = {}
-    for channel in channels:
-        units = fragment_connection_budget(config, channel.connection_limit, capacity) if channel.adapter == 'yt_dlp' else 1
-        group = channel.upstream_group
-        limit = min(capacity, channel.transfer_limit, caps['upstream:' + group],
-                    int(config.get('download_connection_limit', 32)) // units)
-        if 'connections:' + group in caps:
-            limit = min(limit, caps['connections:' + group] // units)
-        groups[group] = max(groups.get(group, 0), limit)
-    transfer_capacity = min(capacity, sum(groups.values()), int(config.get('download_connection_limit', 32)))
-    preparation = max(0, min(16, int(config.get('youtube_cookie_pool_preparation_workers', 4))))
-    configured = max(1, min(MAX_TRANSFERS, int(config.get('youtube_cookie_pool_worker_limit', 20))))
     resources = resources if resources is not None else resource_limits()
-    memory_cap = max(1, int((resources['memory_total'] * .65 - 256 * MIB) / (160 * MIB)))
-    db_budget = connection_budget()
-    workers = max(1, min(capacity, configured, transfer_capacity + preparation, memory_cap, db_budget['workers']))
-    return {'workers': workers, 'configured_worker_limit': configured,
-            'preparation_workers': preparation, 'worker_transfer_capacity': transfer_capacity,
-            'memory_worker_cap': memory_cap, 'db_worker_cap': db_budget['workers'],
-            'db_connection_budget': db_budget['total'], 'db_main_connections': sum(db_budget['main']),
-            'db_auxiliary_connections': db_budget['auxiliary'], 'db_connections_per_worker': db_budget['per_worker']}
+    return pool_process_limits(config, capacity, resources['memory_total'], connection_budget())
 
 
 def worker_should_retire(directory, slot):
@@ -73,11 +47,6 @@ def worker_should_retire(directory, slot):
         return 0 <= time.time() - saved['time'] < 20 and slot >= max(1, int(saved['workers']))
     except (OSError, ValueError, KeyError, TypeError):
         return False
-
-
-def automatic(config):
-    # Channel routing and instance concurrency are independent policies.
-    return not config.get('youtube_cookie_pool') and config.get('throughput_mode', 'manual') == 'auto'
 
 
 def _number(path):

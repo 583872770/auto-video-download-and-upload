@@ -8,7 +8,7 @@ from unittest.mock import patch
 from sqlalchemy import event, select
 
 from tests import test_scale
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from webapp.clash import ClashError
 from webapp.database import snapshots, tasks
 from webapp.store import TaskStore
@@ -141,7 +141,8 @@ class ConnectionContract:
         with self.store.connect() as db:
             packed = self.store._pack(db, first)
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(payload=packed))
-        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_method': 'yt_dlp'},
+        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_method': 'yt_dlp',
+                                                             'youtube_cookie_usage': 'always'},
                                         headers=self.headers).status_code, 200)
         with patch('webapp.youtube_auth.YouTubeAuth.require', return_value={}) as auth:
             response = self.client.post('/api/downloads/resume', headers=self.headers)
@@ -204,7 +205,7 @@ class SQLiteConnectionTests(ConnectionContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
 
-class MySQLConnectionTests(MySQLFixture, ConnectionContract, unittest.TestCase):
+class MySQLConnectionTests(StandaloneMySQLFixture, ConnectionContract, unittest.TestCase):
     pass
 
 

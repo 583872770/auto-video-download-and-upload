@@ -11,7 +11,7 @@ from webapp.throughput import policy_key
 class ConcurrencyDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.config = {'download_method': 'yt_dlp', 'worker_count': 16,
-                       'fragment_concurrency': 4, 'download_connection_limit': 32}
+                       'fragment_concurrency': 4, 'download_connection_limit': 32, 'builtin_transfer_limit': 8}
         self.stamp = time.time()
 
     def show(self, states=None, progress=(), rate=None, **kwargs):
@@ -69,6 +69,12 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
             self.assertFalse(value['cookie_pool']['known'])
             self.assertEqual(value['youtube_cookie_pool_start_interval'], interval)
             self.assertEqual(value['cookie_allocation']['pool_start_interval'], interval)
+
+    def test_pool_adaptive_option_does_not_display_an_unused_instance_budget(self):
+        self.config.update(youtube_cookie_pool=['a', 'b'], youtube_pacing_mode='adaptive')
+        result = self.show({'youtube-pacing:instance:node': {'starts': [self.stamp] * 30}})
+        self.assertIsNone(result['youtube_pacing'])
+        self.assertIsNotNone(result['cookie_allocation'])
 
     def test_auto_native_parallel_connections_reduce_effective_video_limit(self):
         self.config.update(throughput_mode='auto', worker_count=4,

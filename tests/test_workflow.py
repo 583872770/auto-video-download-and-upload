@@ -51,7 +51,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(self.store.claim(self.store.owner))
         self.store.finish(running['id'], result={}, worker_id=self.store.owner)
         session = self.store.statistics.session(running['payload']['download_session_id'])
-        self.assertEqual(session['status'], 'completed')  # An unrelated new list cannot hold it open.
+        self.assertEqual(session['status'], 'active')  # Queue exhaustion does not stop the executor session.
+        self.assertEqual((session['running'], session['attempted']), (0, 1))
+        self.store.set_downloads_paused(True)
+        self.assertEqual(self.store.statistics.session(session['id'])['status'], 'paused')
 
     def test_import_runs_while_paused_but_videos_wait_and_proxy_stays_editable(self):
         self.store.set_downloads_paused(True)
@@ -68,24 +71,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'manual'}, headers=self.headers).status_code, 200)
         self.assertFalse(self.client.get('/api/clash').json['rotation_locked'])
 
-    def test_only_released_pending_imports_extend_a_session(self):
+    def test_instance_session_survives_queue_and_import_gaps_until_stopped(self):
         self.enqueue()
         self.store.activate_download_lists()
         video = self.store.claim(self.store.owner)
         self.client.post('/api/downloads/import', data={'file': (BytesIO(b'2Gu7q-KUXCk'), 'later.txt')}, headers=self.headers)
         self.store.finish(video['id'], result={}, worker_id=self.store.owner)
-        self.assertEqual(self.store.statistics.session(video['payload']['download_session_id'])['status'], 'completed')
-        # The released import will keep the next interval open until it ends,
-        # even if there is a short gap between imported chunks.
+        first_identity = video['payload']['download_session_id']
+        self.assertEqual(self.store.statistics.session(first_identity)['status'], 'active')
+        # Releasing an import continues the same instance lifecycle session,
+        # including short gaps between imported chunks.
         self.enqueue('WMu6ANTg8mk')
         self.store.activate_download_lists()
         video = self.store.claim(self.store.owner, actions=('download',))
         self.store.finish(video['id'], result={}, worker_id=self.store.owner)
         identity = video['payload']['download_session_id']
+        self.assertEqual(identity, first_identity)
         self.assertEqual(self.store.statistics.session(identity)['status'], 'active')
         imported = self.store.claim(self.store.owner, actions=('import',))
         self.store.finish(imported['id'], error='invalid file', worker_id=self.store.owner)
-        self.assertEqual(self.store.statistics.session(identity)['status'], 'completed')
+        self.assertEqual(self.store.statistics.session(identity)['status'], 'active')
+        self.store.set_downloads_paused(True)
+        self.assertEqual(self.store.statistics.session(identity)['status'], 'paused')
 
     def test_async_start_reports_stages_checks_selected_providers_and_can_cancel(self):
         self.enqueue()

@@ -176,7 +176,7 @@ def main():
                 page.locator('[name=subtitle_languages]').fill('en,zh-Hans')
                 page.get_by_role('tab', name='Cookie 与登录').click()
                 page.locator('#settings-pane-accounts .settings-policy-details > summary').click()
-                expect(page.locator('[name=youtube_start_interval]')).to_have_value('3')
+                expect(page.locator('[name=youtube_start_interval]')).to_have_value('120')
                 page.locator('[name=youtube_start_interval]').fill('5')
                 page.locator('[name=youtube_cookie_fallback]').select_option('false')
                 expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('true')

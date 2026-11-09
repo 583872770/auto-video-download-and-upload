@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, func, select, tuple_
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
-from webapp.database import Database, metadata, settings, tasks
+from webapp.database import BOOTSTRAP_SETTINGS, Database, metadata, schema_migrations, settings, tasks
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = '_mysql_migration_v1'
@@ -38,6 +38,27 @@ def row_filter(table):
 def counts(connection):
     return {table.name: connection.execute(select(func.count()).select_from(table).where(row_filter(table))).scalar_one()
             for table in metadata.sorted_tables}
+
+
+def pristine_target(connection):
+    """Allow only schema bootstrap rows, never existing business/config data."""
+    from webapp.migrations import STEPS
+    values = dict(connection.execute(select(settings.c.key, settings.c.value)).all())
+    if values.keys() != BOOTSTRAP_SETTINGS.keys():
+        return False
+    for key, expected in BOOTSTRAP_SETTINGS.items():
+        if expected is None:
+            try:
+                datetime.fromisoformat(values[key])
+            except (TypeError, ValueError):
+                return False
+        elif values[key] != expected:
+            return False
+    versions = set(connection.execute(select(schema_migrations.c.version)).scalars())
+    if versions != {version for version, _ in STEPS}:
+        return False
+    bootstrap = {settings.name, schema_migrations.name}
+    return not any(value for name, value in counts(connection).items() if name not in bootstrap)
 
 
 def migrate(source_url, target_url, state, *, chunk_size=500, activate=False):
@@ -74,8 +95,7 @@ def migrate(source_url, target_url, state, *, chunk_size=500, activate=False):
                 if progress['source'] != fingerprint:
                     raise ValueError('目标库包含其他来源的迁移记录，请使用空数据库。')
                 if not saved:
-                    existing = counts(writer)
-                    if any(n for name, n in existing.items() if name != settings.name) or existing[settings.name] != 1:
+                    if not pristine_target(writer):
                         raise ValueError('目标数据库非空，请新建空 MySQL 数据库后重试。')
                     writer.execute(target.upsert(settings, dict(key=MARKER, value=json.dumps(progress)), ['key']))
                     writer.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='true'))

@@ -13,7 +13,7 @@ from sqlalchemy import event, text
 
 from webapp.downloader import build_ydl_options
 from tests import test_scale
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from webapp.browser_pool import browser_slot
 from webapp.clash import ClashManager, parse_subscription
 from webapp.downloads import DownloadProgress
@@ -205,7 +205,7 @@ class SQLiteDispatchTests(DispatchContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
 
-class MySQLPerformanceTests(MySQLFixture, DispatchContract, unittest.TestCase):
+class MySQLPerformanceTests(StandaloneMySQLFixture, DispatchContract, unittest.TestCase):
     def test_connections_are_reused_bounded_and_recover_after_server_disconnect(self):
         engine = self.store.db.engine
         engine.dispose()

@@ -100,7 +100,8 @@ class SharedMihomoTests(unittest.TestCase):
             self.assertEqual(response.read(), b'B' * 1023)
             self.assertEqual(self.manager.owned_process().pid, pid)
 
-    def test_failed_subscription_reload_restores_every_workers_last_selection(self):
+    @patch('webapp.clash.validate_subscription_url')  # Trusted loopback fixture only; production checks remain active.
+    def test_failed_subscription_reload_restores_every_workers_last_selection(self, validate_url):
         self.manager.start()
         worker = self.manager.for_worker(1)
         worker.select('B', automatic=True)

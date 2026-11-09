@@ -179,7 +179,7 @@
     if(a==='filter-videos'){state.videoQuery=$('video-query').value.trim();state.videoStatus=$('video-filter').value;state.videoCursor=null;state.videoHistory=[];state.selected.clear();refresh();return}
     if(a==='clear'||a==='delete'){confirmTaskAction(a,b.dataset.jobId?state.jobs?.find(j=>j.id===b.dataset.jobId):state.job);return}
     if(a==='remove-selected'){if(!state.selected.size){toast('请先勾选视频条目');return}mutate(b,()=>api(endpoint(state.id)+'/videos/remove',{method:'POST',body:{ids:[...state.selected]}}));return}
-    mutate(b,async()=>{const result=await api(endpoint(state.id)+'/control',{method:'POST',body:{action:a},signal:AbortSignal.timeout(90000)});toast(result.warnings?.length?result.warnings.join('；'):a==='stop'?'停止指令已生效，执行进程将在下次心跳退出；其他任务继续。':({archive:'任务已归档；账单和已下载文件保留。',unarchive:'任务已恢复，请前往下载工作台选择后开始。',retry:'失败视频已重新排队；暂停中的任务需前往工作台开始。'}[a]||'任务操作已保存。'))});
+    mutate(b,async()=>{const result=await api(endpoint(state.id)+'/control',{method:'POST',body:{action:a},signal:AbortSignal.timeout(90000)});toast(result.warnings?.length?result.warnings.join('；'):a==='stop'?'停止指令已生效，执行进程将在下次心跳退出；其他任务继续。':({archive:'任务已归档；账单和已下载文件保留。',unarchive:'任务已恢复，请前往下载工作台选择后开始。',retry:'失败视频已分批排队，原账号限制继续生效；暂停中的任务需前往工作台开始。'}[a]||'任务操作已保存。'))});
   });
   document.addEventListener('change',e=>{if(e.target.dataset.select){e.target.checked?state.selected.add(e.target.dataset.select):state.selected.delete(e.target.dataset.select)}if(e.target.id==='select-page'){for(const v of state.rows)e.target.checked?state.selected.add(v.id):state.selected.delete(v.id);document.querySelectorAll('[data-select]').forEach(c=>c.checked=e.target.checked)}});
   $('jobs-mobile-menu').onclick=()=>$('sidebar').classList.toggle('mobile-open');

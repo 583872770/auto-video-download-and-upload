@@ -67,6 +67,16 @@ rotations = Table('rotation_counters', metadata, Column('id', String(128), prima
 sequences = Table('sequence_counters', metadata, Column('key', String(32), primary_key=True),
                   Column('value', BigInteger, nullable=False))
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
+# None denotes the timestamp at database initialization, not a stored NULL.
+# Migration admission shares this definition to distinguish empty schema
+# metadata from a destination containing application data or custom settings.
+BOOTSTRAP_SETTINGS = {
+    'downloads_paused': 'false',
+    'download_statistics_active': '',
+    'download_statistics_since': None,
+    'download_test_statistics_since': None,
+    'download_method_statistics_since': None,
+}
 cookie_profiles = Table('youtube_cookie_profiles', metadata,
     Column('scope', String(64), primary_key=True), Column('id', String(32), primary_key=True),
     Column('name', String(80), nullable=False), Column('content', Text, nullable=False),
@@ -458,14 +468,9 @@ class Database:
         for index in schema.tables['tasks'].indexes:
             index.create(engine, checkfirst=True)
         with engine.begin() as db:
-            self.ensure(db, settings, {'key': 'downloads_paused', 'value': 'false'})
-            self.ensure(db, settings, {'key': 'download_statistics_active', 'value': ''})
-            self.ensure(db, settings, {'key': 'download_statistics_since',
-                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
-            self.ensure(db, settings, {'key': 'download_test_statistics_since',
-                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
-            self.ensure(db, settings, {'key': 'download_method_statistics_since',
-                                      'value': datetime.now().astimezone().isoformat(timespec='seconds')})
+            stamp = datetime.now().astimezone().isoformat(timespec='seconds')
+            for key, value in BOOTSTRAP_SETTINGS.items():
+                self.ensure(db, settings, {'key': key, 'value': stamp if value is None else value})
         if old:
             # One-time upgrade only; regular requests never enumerate task history.
             with engine.begin() as db:

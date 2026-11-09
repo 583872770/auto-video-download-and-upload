@@ -16,6 +16,7 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_jobs import QuietHandler
+from scripts.browser_checks import wait_for_workbench_ready
 from webapp.browser import browser_options
 from webapp.fleet_routes import rpc as instance_rpc
 from webapp.database import instances
@@ -90,6 +91,9 @@ def main():
                 expect(page.locator('#download-job')).to_have_value(a)
                 page.goto(base)  # Restore from the database even without URL or browser storage.
                 expect(page.locator('#download-job')).to_have_value(a)
+                # Finish initialization before deliberately hanging the status
+                # endpoint; otherwise we test an unfinished initial page load.
+                wait_for_workbench_ready(page)
 
                 # A slow instance-status RPC must not keep the workbench on
                 # "queued" after a worker has already claimed its video.

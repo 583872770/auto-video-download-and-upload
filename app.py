@@ -28,6 +28,7 @@ from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
 from webapp.media import VIDEO_SUFFIXES
 from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, download_methods, save_settings, urls_from, validate_settings, validate_method_urls
+from webapp.config_schema import discard_retired_settings
 from webapp.tasks import TaskRunner, TaskStore
 from webapp.clash import ClashError
 from webapp.clash_routes import register_clash
@@ -229,7 +230,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def update_config():
         data = body()
         # A cached older frontend may still submit this retired field.
-        data.pop('builtin_connection_limit', None)
+        discard_retired_settings(data)
         if fleet and fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.fleet_routes import selected_id, update_configuration
             if selected_id() != fleet.id:
@@ -792,7 +793,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 item['instance_id'] = item['root'][1:].split('|', 1)[0]
             return jsonify(counts=store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
                 download_counts=store.counts(actions=('download',)), accounting=accounting,
-                media={'count': total}, recent_media=recent,
+                media={'count': int(total)}, recent_media=recent,
                 recent_tasks=store.page(limit=5, actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
         return jsonify(counts=store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
                        download_counts=store.counts(actions=('download',)), accounting=accounting,

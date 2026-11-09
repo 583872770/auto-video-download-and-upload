@@ -383,18 +383,14 @@ class Jobs:
             elif action == 'unarchive':
                 db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(archived=0))
             elif action == 'retry':
-                rows = db.execute(select(tasks).where(tasks.c.batch_id == identity,
-                    tasks.c.action == 'download', tasks.c.status.in_(('failed','interrupted'))).with_for_update()).mappings().all()
-                for task in rows:
-                    self.store._transition(db, task, 'queued')
-                    db.execute(tasks.update().where(tasks.c.id == task['id']).values(status='queued', attempts=0,
-                        error=None, finished_at=None, progress=None, available_at=0, worker_id=None, lease_until=None))
+                from webapp.job_retry import requeue_failed
+                retry_message = requeue_failed(self.store, db, identity, config)
             else:
                 raise ValueError('不支持的任务操作。')
             if action in ('archive', 'unarchive', 'delete'):
                 db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(
                     edit_version=value['edit_version']+1, updated_at=stamp()))
-            event(self.store, db, identity, {'start':'开始任务','pause':'完成当前视频后暂停','stop':'立即停止当前任务',
+            event(self.store, db, identity, retry_message if action == 'retry' else {'start':'开始任务','pause':'完成当前视频后暂停','stop':'立即停止当前任务',
                 'archive':'归档任务','delete':'删除任务（保留账本与文件）','unarchive':'恢复归档任务','retry':'重新入队失败视频'}[action])
             self.store.statistics.settle(db, instance_id=session_scope)
 

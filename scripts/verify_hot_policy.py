@@ -13,7 +13,7 @@ from werkzeug.serving import make_server
 
 from app import create_app
 from scripts.verify_web import QuietHandler
-from scripts.settings_roundtrip_checks import check_settings_roundtrip
+from scripts.settings_roundtrip_checks import check_settings_roundtrip, reveal_setting
 from webapp.browser import browser_options
 from webapp.database import instances
 
@@ -92,7 +92,7 @@ def main(hybrid=False):
                     assert final['policy_version'] == worker.fleet.policy()['version']
                     assert worker.get(new['id'], private=True)['payload']['config']['download_methods'] == ['yt5s', 'downmp3']
                     page.screenshot(path=str(output / 'order-hot-save.png'), full_page=True)
-                    form.locator('[name=scheduler_mode]').select_option('auto')
+                    reveal_setting(page, form.locator('[name=scheduler_mode]')).select_option('auto')
                     form.locator('[name=auto_channel_attempts]').fill('4')
                     form.locator('[name=shared_parser]').select_option('false')
                     form.locator('button[type=submit]').click()
@@ -102,18 +102,18 @@ def main(hybrid=False):
                     expect(form.locator('[name=scheduler_mode]')).to_have_value('auto')
                     expect(form.locator('[name=auto_channel_attempts]')).to_have_value('4')
                     expect(form.locator('[name=shared_parser]')).to_have_value('false')
-                    expect(form.locator('[name=throughput_mode]')).to_have_value('auto')
-                    expect(form.locator('[name=throughput_mode]')).to_be_disabled()
+                    expect(form.locator('[name=throughput_mode]')).to_have_value('manual')
+                    expect(form.locator('[name=throughput_mode]')).to_be_enabled()
                     assert store.fleet.local_settings()['config']['scheduler_mode'] == 'ordered_fallback'
                     # Restore ordered display for the instance-card checks below.
-                    form.locator('[name=scheduler_mode]').select_option('ordered_fallback')
+                    reveal_setting(page, form.locator('[name=scheduler_mode]')).select_option('ordered_fallback')
                     form.locator('button[type=submit]').click()
                     expect(page.locator('#settings-save-state')).to_contain_text('后续领取')
                     expect(form.locator('button[type=submit]')).to_be_enabled()
                     page.goto(addresses['manager'] + '/#instances')
                     card = page.locator('[data-instance-form=worker]')
-                    expect(card).to_contain_text('下载顺序：downmp3 → yt5s')
-                    card.get_by_role('link', name='下载策略与磁盘').click()
+                    expect(card).to_contain_text('手动并发')
+                    card.get_by_role('link', name='Cookie 与完整设置').click()
                     expect(page.locator('#fleet-selection')).to_have_value('worker')
                     expect(page.locator('[data-provider=downmp3]')).to_contain_text('优先使用')
                     page.set_viewport_size({'width': 390, 'height': 844})

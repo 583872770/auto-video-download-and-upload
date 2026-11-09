@@ -6,6 +6,7 @@ New Bergung entrances inherit the existing groups until the operator changes the
 from dataclasses import dataclass
 import re
 from urllib.parse import urlsplit
+from webapp.config_schema import DEFAULTS
 
 
 SITE = 'https://bergung.hoffnungfuerdiezukunft.net/'
@@ -96,10 +97,10 @@ def registry(config):
     for adapter in download_methods(config):
         upstream = 'youtube-origin' if adapter == 'yt_dlp' else 'unverified-media'
         default = Channel(adapter, adapter, PROVIDERS[adapter], upstream, adapter, adapter,
-                                transfer_limit=int(config.get('builtin_transfer_limit') or (32 if config.get('scheduler_mode') == 'auto' else 8)),
+                                transfer_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']) or (32 if config.get('scheduler_mode') == 'auto' else 8)),
                                 resolver_limit=int(config.get('builtin_resolver_limit', 4)),
                                 connection_limit=None,
-                                task_limit=int(config.get('builtin_transfer_limit') or (32 if config.get('scheduler_mode') == 'auto' else 8)),
+                                task_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']) or (32 if config.get('scheduler_mode') == 'auto' else 8)),
                                 site_url=SITE if adapter == 'bergung' else '',
                                 api_url=API if adapter == 'bergung' else '')
         channels.append(next((channel for channel in extra if channel.id == adapter), default))

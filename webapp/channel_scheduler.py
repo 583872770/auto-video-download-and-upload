@@ -17,7 +17,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from webapp.channels import backend_key, group_caps, observed_group, registry
 from webapp.database import download_permits as permits, download_resources as resources, tasks
 from webapp.throughput import PipelineBusy, runtime_limits
-from webapp.youtube_pacing import cookie_pool_start_interval
+from webapp.concurrency_policy import (assignment_transfer_limit, backend_limits, live_policies,
+                                      resolver_requirements, resource_capacity, transfer_requirements,
+                                      youtube_start_interval)
 from webapp.download_policy import (failure_evidence, recovery_policy, retry_after,
                                     cooldown_deadline, remember_decision)
 
@@ -61,16 +63,11 @@ class ChannelScheduler:
         self.store, self.config, self.task_id = store, config, task_id
         self.channels = registry(config)
         self.caps = group_caps(self.channels)
-        self.backend_caps = {}
-        for channel in self.channels:
-            key = backend_key(channel)
-            limits = (channel.task_limit, channel.resolver_limit, channel.transfer_limit)
-            previous = self.backend_caps.get(key, limits)
-            self.backend_caps[key] = tuple(min(a, b) for a, b in zip(previous, limits))
+        self.backend_caps = backend_limits(self.channels)
         self.instance = store.fleet.id if store and store.fleet else 'local'
         self.enabled = bool(store and task_id)
         self.youtube_pacing = None
-        if self.enabled and config.get('youtube_pacing_mode') == 'adaptive':
+        if self.enabled and config.get('youtube_pacing_mode') == 'adaptive' and not config.get('youtube_cookie_pool'):
             from webapp.youtube_pacing import YouTubePacing
             self.youtube_pacing = YouTubePacing(self, base)
 
@@ -163,14 +160,12 @@ class ChannelScheduler:
                 self.blocked_resource = scope.split(':', 1)[0] + ':cooldown'
                 return None, state['cooldown_until'] - stamp
             # Take the minimum of live instance policies for this shared group.
-            policies = {k: v for k, v in state.get('policies', {}).items() if v['time'] > stamp - 90}
+            policies = live_policies(state, stamp)
             policies[self.instance] = {'limit': cap, 'time': stamp}
             state['policies'] = policies
-            cap = min(v['limit'] for v in policies.values())
-            if state.get('recover_until', 0) > stamp:
-                cap = 1
+            capacity = resource_capacity(cap, state, stamp)
             self._save(db, scope, state)
-            if self._active(db, scope, stamp) + units > cap:
+            if self._active(db, scope, stamp) + units > capacity.effective:
                 self.blocked_resource = scope.split(':', 1)[0]
                 return None, 2
         token = uuid.uuid4().hex
@@ -224,9 +219,7 @@ class ChannelScheduler:
                 if any(self._state(db, key).get('cooldown_until', 0) > stamp for key in scopes):
                     continue
                 local = runtime_limits(self.config, self.store.directory)
-                limit = min(channel.transfer_limit, local.get('groups', {}).get(channel.upstream_group, {}).get('limit', local['transfers']))
-                if channel.upstream_group == 'unverified-media':
-                    limit = min(channel.transfer_limit, max(limit, local.get('groups', {}).get('youtube-origin', {}).get('limit', limit)))
+                limit = assignment_transfer_limit(channel, local)
                 backlog = 'local-assignment:' + self.instance + ':' + channel.upstream_group
                 if self._active(db, backlog, stamp) >= limit + min(2, local['browsers']) + local['browsers']:
                     continue
@@ -314,10 +307,7 @@ class ChannelScheduler:
                     continue
                 state = states.get('channel:' + channel.id, {})
                 group = channel.upstream_group
-                group_limit = min(channel.transfer_limit, local.get('groups', {}).get(group, {}).get('limit', local['transfers']))
-                if group == 'unverified-media':
-                    group_limit = min(channel.transfer_limit, max(group_limit,
-                        local.get('groups', {}).get('youtube-origin', {}).get('limit', group_limit)))
+                group_limit = assignment_transfer_limit(channel, local)
                 preparing = load.get('local-assignment:' + self.instance + ':' + group, 0)
                 if preparing >= group_limit + min(4, local['browsers'] * 2):
                     continue
@@ -415,10 +405,7 @@ class ChannelScheduler:
                 error.retry_after = max(2, min(300, delay))
                 raise error
             return
-        interval = int(self.config.get('youtube_start_interval', 3))
-        if self.config.get('_cookie_pool_selected'):
-            # Match account admission; do not retain a separate hidden 10s floor.
-            interval = cookie_pool_start_interval(self.config)
+        interval = youtube_start_interval(self.config)
         if not self.enabled or channel.adapter != 'yt_dlp' or (interval <= 0 and not self.config.get('_cookie_pool_selected')):
             return
         def reserve(db, stamp):
@@ -452,21 +439,7 @@ class ChannelScheduler:
             return
         actual = replace(channel, upstream_group=observed_group(channel, info or {})) if phase == 'transfer' else channel
         if phase == 'resolve':
-            requirements = [('resolver:' + actual.resolver_group, self.caps['resolver:' + actual.resolver_group], 1),
-                            ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
-        def transfer_requirements():
-            ceiling = self.caps.get('upstream:' + actual.upstream_group, actual.transfer_limit)
-            local = runtime_limits(self.config, self.store.directory)
-            limit = min(ceiling, local.get('groups', {}).get(actual.upstream_group, {}).get('limit', ceiling))
-            requirements = [('upstream:' + actual.upstream_group, ceiling, 1),
-                    ('local-transfers:' + self.instance, local['transfers'], 1),
-                    ('local-upstream:' + self.instance + ':' + actual.upstream_group, limit, 1),
-                    ('local-connections:' + self.instance, int(self.config.get('download_connection_limit', 32)), streams),
-                    ('quota:' + actual.quota_group, self.caps['quota:' + actual.quota_group], 1)]
-            shared = self.caps.get('connections:' + actual.upstream_group, actual.connection_limit)
-            if shared is not None:
-                requirements.append(('connections:' + actual.upstream_group, shared, streams))
-            return requirements
+            requirements = resolver_requirements(actual, self.caps)
         backend = []
         if self.config.get('scheduler_mode') == 'auto':
             _, resolving, quota = self.backend_caps[backend_key(channel)]
@@ -477,10 +450,20 @@ class ChannelScheduler:
         while True:
             # Waiting owners must see a controller limit change immediately;
             # capturing the old limit until timeout caused needless re-parses.
-            current = (transfer_requirements() if phase == 'transfer' else requirements) + backend
+            current = (transfer_requirements(self.config, self.instance, actual, self.caps,
+                       runtime_limits(self.config, self.store.directory), streams)
+                       if phase == 'transfer' else requirements) + backend
             def admit(db, stamp):
                 self._check_cookie_cooldown(db, stamp)
-                return self._admit(db, stamp, current)
+                token, delay = self._admit(db, stamp, current)
+                scope = self.config.get('_cookie_pool_scope')
+                if token and phase == 'resolve' and channel.adapter == 'yt_dlp' and scope:
+                    state = self._state(db, scope)
+                    pending = state.get('pending_starts', {})
+                    if pending.get(self.task_id) == self.config.get('_cookie_pool_admitted_at'):
+                        pending.pop(self.task_id)
+                        self._save(db, scope, state)
+                return token, delay
             token, delay = self.transaction_call(admit)
             if token:
                 break

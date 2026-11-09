@@ -11,41 +11,12 @@ import uuid
 from sqlalchemy import func, select, text
 
 from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles
-from webapp.disk_budget import DISK_FIELDS
+from webapp.config_schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, DEFAULTS
 from webapp.service_role import normalize_role
 
-POLICY_FIELDS = {'download_methods', 'download_method', 'download_format', 'download_attempts',
-                 'yt5s_quality', 'downmp3_quality', 'downmp3_timeout', 'yt1d_quality', 'yt1d_timeout',
-                 'bergung_quality', 'bergung_timeout',
-                 'fragment_concurrency', 'storage_mode'}
-POLICY_FIELDS |= {'scheduler_mode', 'download_channels', 'auto_channel_attempts'}
-POLICY_FIELDS |= {'subtitle_mode', 'subtitle_languages', 'builtin_transfer_limit', 'builtin_resolver_limit'}
-LOCAL_FIELDS = {'path', 'dir', 'url', 'proxy_mode', 'proxy', 'youtube_cookie', 'browser_executable',
-                'js_runtimes', 'worker_count', 'yt5s_browser_count', 'min_free_gb',
-                'max_log_mb', 'log_retention_days', 'shard_downloads'}
-LOCAL_FIELDS |= DISK_FIELDS
-from Utils.oss_storage import OSS_FIELDS
-LOCAL_FIELDS |= OSS_FIELDS
-LOCAL_FIELDS |= {'throughput_mode', 'bandwidth_mbps'}
-LOCAL_FIELDS |= {'download_connection_limit', 'shared_parser'}
-LOCAL_FIELDS.add('postprocess_limit')
-LOCAL_FIELDS |= {'youtube_source_address', 'youtube_start_interval', 'youtube_cookie_fallback'}
-LOCAL_FIELDS.add('youtube_cookie_usage')
-LOCAL_FIELDS.add('youtube_throttle_cooldown')
-LOCAL_FIELDS.add('youtube_sleep_preset')
-LOCAL_FIELDS.add('youtube_cookie_pool')
-LOCAL_FIELDS.add('youtube_cookie_session_limit')
-LOCAL_FIELDS.add('youtube_cookie_pool_start_interval')
-LOCAL_FIELDS |= {'youtube_cookie_pool_worker_limit', 'youtube_cookie_pool_preparation_workers'}
-from webapp.youtube_pacing import PACING_FIELDS
-LOCAL_FIELDS |= PACING_FIELDS
 ONLINE_SECONDS = 45
 # Recognize peers that have not been upgraded yet; new rows always use hybrid.
 DOWNLOAD_ROLES = ('worker', 'hybrid')
-RESOURCE_LIMITS = {'worker_count': (1, 64), 'yt5s_browser_count': (1, 16), 'min_free_gb': (0, 10000)}
-RESOURCE_LIMITS.update(builtin_transfer_limit=(0, 64), youtube_cookie_session_limit=(1, 64),
-                       youtube_cookie_pool_start_interval=(0, 600), youtube_cookie_pool_worker_limit=(1, 64),
-                       youtube_cookie_pool_preparation_workers=(0, 16))
 
 
 class InstanceIdentityConflict(ValueError):
@@ -310,8 +281,9 @@ class Fleet:
                     'policy_version': local.get('policy_version', 1),
                     'min_free_gb': config.get('min_free_gb', 2), 'statistics': totals.get(row['id'], {})})
                 result[-1]['resources'] = {key: config.get(key, default) for key, default in (
-                    ('builtin_transfer_limit', 0), ('youtube_cookie_session_limit', 2),
-                    ('youtube_cookie_pool_start_interval', 10), ('youtube_cookie_pool_worker_limit', 20),
+                    ('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']),
+                    ('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit']),
+                    ('youtube_cookie_pool_start_interval', DEFAULTS['youtube_cookie_pool_start_interval']), ('youtube_cookie_pool_worker_limit', 20),
                     ('youtube_cookie_pool_preparation_workers', 4))}
                 result[-1]['cookie_count'] = len(config.get('youtube_cookie_pool', []))
                 result[-1]['has_cookie'] = bool(config.get('youtube_cookie'))

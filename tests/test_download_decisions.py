@@ -67,8 +67,8 @@ class DownloadDecisionTests(unittest.TestCase):
     def test_attributed_429_does_not_cool_global_resources(self):
         error = RuntimeError('HTTP Error 429: Too Many Requests')
         pool, router = self.apply_failure(error, phase='subtitles')
-        for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp',
-                      router.youtube_pacing.instance_scope, router.youtube_pacing.session_scope):
+        self.assertIsNone(router.youtube_pacing)  # The pool owns account budgets in both modes.
+        for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp'):
             self.assertFalse(self.state(router, scope).get('cooldown_until'))
         scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
         state = self.state(router, scope)
@@ -99,7 +99,7 @@ class DownloadDecisionTests(unittest.TestCase):
         self.now += 3600
         with self.pool().assignment(limited_id):
             recovering = next(s for s in pool.status()['session_states'] if s['id'] == limited_id)
-            self.assertEqual((recovering['state'], recovering['limit'], recovering['interval']), ('recovery', 1, 180))
+            self.assertEqual((recovering['state'], recovering['limit'], recovering['interval']), ('recovery', 1, 300))
         value = self.diagnostic(pool)
         self.assertFalse(value['decisions']['manual_required'])
         self.assertEqual(len(value['decisions']['history']), 1)
@@ -207,9 +207,11 @@ class DownloadDecisionTests(unittest.TestCase):
         with patch('web_worker.TaskStore', return_value=self.store), patch('web_worker.execute',
                 side_effect=[error, {'message': 'healthy account completed', 'file_count': 1}]) as execute:
             drain(self.store.directory, 0, 'download')
-        first, second = [self.store.get(job['id']) for job in jobs]
+        first, second = [self.store.get(job['id'], private=True) for job in jobs]
         self.assertFalse(self.store.downloads_paused())
-        self.assertEqual((first['status'], first['attempts']), ('queued', 0))
+        self.assertEqual((first['status'], first['attempts']), ('queued', 1))
+        self.assertGreaterEqual(first['available_at'] - time.time(), 3598)
+        self.assertEqual(first['payload']['_retry_cookie_profile_id'], self.config['youtube_cookie_pool'][0])
         self.assertEqual(first['progress']['retry_reason'], 'youtube_session_rate_limit')
         self.assertEqual(first['progress']['last_failure']['profile_name'], 'Account A')
         self.assertEqual(second['status'], 'succeeded')
@@ -256,7 +258,7 @@ assert(!failure.includes('<img'));
 const pool = {available_sessions:1,cooling_sessions:1,sessions:[{name:'<img src=x onerror=alert(1)>',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:data.time+3600}]};
 const accounts = cookieAccountNoticesHTML(pool, data.time);
 assert(accounts.includes('其他账号继续调度'));
-assert(accounts.includes('180 秒'));
+assert(accounts.includes('300 秒'));
 assert(accounts.includes('冷却中不发送下载、字幕或登录检测请求'));
 assert(accounts.includes('data-capacity-deadline'));
 assert(!accounts.includes('<img'));
@@ -265,7 +267,7 @@ assert(cookieAccountNoticesHTML(pool, data.time).includes('无需手动恢复'))
 assert(cookieAccountNoticesHTML(pool, data.time, false).includes('当前状态待确认'));
 pool.cooling_sessions = 0;
 pool.available_sessions = 1;
-pool.sessions[0] = {name:'Account A',state:'recovery',limit:1,interval:180,recovery_successes:2,cooldown_kind:'account_rate_limit'};
+pool.sessions[0] = {name:'Account A',state:'recovery',limit:1,interval:300,recovery_successes:2,cooldown_kind:'account_rate_limit'};
 assert(cookieAccountNoticesHTML(pool, data.time).includes('本轮连续成功 2 次'));
 data.time -= 60;
 assert(decisionExplanationHTML(data, 'main').includes('摘要已过期'));

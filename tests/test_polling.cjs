@@ -5,7 +5,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('static/app.js', 'utf8');
 const fleet = fs.readFileSync('static/fleet.js', 'utf8');
-const section = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
+const section = (text, start, end) => {
+  const from = text.indexOf(start);
+  assert.notEqual(from, -1, `Missing source anchor: ${start}`);
+  const to = text.indexOf(end, from + start.length);
+  assert.notEqual(to, -1, `Missing source anchor after ${start}: ${end}`);
+  return text.slice(from, to);
+};
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -13,7 +19,9 @@ function deferred() {
   return { promise, resolve, reject };
 }
 async function requests() {
-  const context = vm.createContext({ state: { instanceId: 'a' }, csrf: 'test', AbortController, DOMException,
+  const context = vm.createContext({
+    state: { instanceId: 'a', instanceEpoch: 1, instanceReady: true, configInstance: 'a' },
+    fleetEnabled: true, csrf: 'test', AbortController, DOMException,
     FormData, setTimeout, clearTimeout, location: { assign() {} }, fetch: async (path, options) =>
       new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason))) });
   vm.runInContext(section(source, 'async function api(', '\nfunction setView('), context);
@@ -29,10 +37,21 @@ async function requests() {
   await context.api('/write', options);
   assert.equal(sends, 1);
   assert.equal(typeof options.body, 'object');
+  context.state.instanceReady = false;
+  await assert.rejects(context.api('/api/config', options), /所选实例尚未就绪/);
+  assert.equal(sends, 1, 'unready instance must not receive a write');
+  context.state.instanceReady = true;
+  const late = deferred();
+  context.fetch = () => late.promise;
+  const oldRead = context.api('/api/config');
+  context.state.instanceEpoch += 1;
+  late.resolve({ ok: true, status: 200, text: async () => '{}' });
+  await assert.rejects(oldRead, error => error.name === 'AbortError');
+  assert.equal(context.state.instanceWrites || 0, 0);
 }
 async function polling() {
   const pending = deferred(), calls = [], applied = [];
-  const context = vm.createContext({ AbortController, Date, Promise, Map, queueMicrotask,
+  const context = vm.createContext({ AbortController, Date, Promise, Map, queueMicrotask, performance,
     state: { instanceId: 'a', selectedTask: null }, fleetEnabled: true,
     location: { hash: '#overview' }, $: () => ({ value: '', open: false }),
     listQuery: () => '', refreshExecution: async () => {}, updateTaskDetail: async () => {},
@@ -61,7 +80,7 @@ async function polling() {
 }
 function applying() {
   const elements = new Map();
-  const context = vm.createContext({ JSON,
+  const context = vm.createContext({ JSON, performance, fleetEnabled: true,
     state: { media: [], overview: { media: {}, recent_media: [] } }, pages: { media: {}, tasks: {} },
     $: selector => { if (!elements.has(selector)) elements.set(selector, {}); return elements.get(selector); },
     renderMedia() {}, renderTasks() {}, renderClash() {}, renderDownloadControl() {}, renderStatus() {}, renderPagination() {} });
@@ -70,13 +89,17 @@ function applying() {
   assert.ok(elements.get('#database-backend').textContent.includes('MySQL'));
   assert.ok(elements.get('#database-backend').textContent.includes('缓存已启用'));
   vm.runInContext(section(source, 'function liveTransferSpeed(', '\nfunction progressFreshness(') +
-    section(fleet, 'function instanceCurrentTasks(', '\nfunction instanceLive('), context);
+    section(fleet, 'function instanceMode(', '\nfunction instanceState('), context);
   context.Date = Date;
   context.escapeHTML = String;
   context.progressLabel = () => 'progress';
   context.bytes = String;
-  const html = context.instanceCurrentTasks({ current_tasks: [{ progress: { stage: 'downloading', speed: 123, _reported_at: Date.now()/1000-30 } }] });
-  assert.ok(!html.includes('123/s'), 'stale speed must also disappear from fleet cards');
+  const task = { status: 'running', progress: { stage: 'downloading', speed: 123, _reported_at: Date.now()/1000-30 } };
+  assert.equal(context.liveTransferSpeed(task), null, 'expired progress must not contribute live speed');
+  task.progress._reported_at = Date.now()/1000;
+  assert.equal(context.liveTransferSpeed(task), 123, 'fresh transfer speed must remain visible');
+  const html = context.instanceLive({ online: false, speed: 123 });
+  assert.ok(!html.includes('123/s'), 'offline fleet cards must hide their last reported speed');
 }
 async function fleetUpdates() {
   const elements = new Map();
@@ -86,10 +109,11 @@ async function fleetUpdates() {
   };
   let cards = 0, calls = 0, blocked;
   const item = { id: 'a', role: 'worker', online: true, name: 'fixture', worker_count: 2 };
-  const context = vm.createContext({ Date, Promise, Set, state: { instanceId: 'a', config: null }, fleetEnabled: true,
+  const context = vm.createContext({ Date, Promise, Set, performance, state: { instanceId: 'a', config: null }, fleetEnabled: true,
     location: { hash: '#instances' }, document: { activeElement: null }, $, $$: () => [],
     lastStartedJobId: null, settingsDirty: false,
     api: async () => { calls++; if (blocked) await blocked.promise; return { items: [item], instance_id: 'a', global_limit: 4 }; },
+    applyStartup() {}, instanceMode: item => item.throughput_mode || 'manual',
     renderFleetJob() {}, renderDownloadControl() {}, renderInstanceScope() {}, renderConcurrency() {}, syncInstanceControls() {},
     instanceState: () => 'online', instanceLive: () => 'progress', bytes: String, escapeHTML: String,
     instanceCard: () => { cards++; return 'card'; }, emptyState: () => '' });
@@ -116,5 +140,23 @@ async function fleetUpdates() {
   blocked.resolve();
   await first;
 }
-(async () => { await requests(); applying(); await polling(); await fleetUpdates(); console.log('PASS: request timeout/cancel, independent polling, stale response fencing, status rendering, stable fleet DOM'); })()
+async function initialization() {
+  const persisted = 'a'.repeat(32), linked = 'b'.repeat(32);
+  for (const initialJobId of [null, 'invalid-link', linked]) {
+    const reads = [];
+    const context = vm.createContext({ initialJobId, selectedJobId: '', state: {}, fleetEnabled: true,
+      location: { hash: '#overview' }, $: () => ({}), setInterval() {},
+      renderMedia() {}, renderTasks() {}, setView() {}, clearJobLink() {},
+      initializeFleet: async () => {},
+      loadSelectedInstance: async () => { context.selectedJobId = persisted; },
+      refreshSelectedJob: async () => { reads.push(context.selectedJobId); },
+      loadDownloadJobs: async () => {}, pollStartup: async () => {}, refresh: async () => {},
+      toast: message => { throw new Error(message); } });
+    vm.runInContext(section(source, 'async function init() {', '\nrenderDownloadMethod();'), context);
+    await context.init();
+    assert.deepEqual(reads, [initialJobId === linked ? linked : persisted],
+      'initialization must preserve the restored job unless a valid deep link overrides it');
+  }
+}
+(async () => { await requests(); applying(); await polling(); await fleetUpdates(); await initialization(); console.log('PASS: request timeout/cancel, independent polling, stale response fencing, status rendering, stable fleet DOM, initial job restoration'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

@@ -2,16 +2,12 @@
 from pathlib import Path
 import math
 from webapp.download_policy import cooldown_deadline, remember_decision
+from webapp.config_schema import PACING_FIELDS, DEFAULTS
+from webapp.concurrency_policy import cookie_pool_start_interval
 
 
-PACING_FIELDS = {'youtube_pacing_mode', 'youtube_hourly_start_limit', 'youtube_daily_start_limit'}
 DAY = 86400
 CLEAN_WINDOW = 6 * 3600
-
-
-def cookie_pool_start_interval(config):
-    """Shared pool/instance start spacing; zero disables only this interval."""
-    return int(config.get('youtube_cookie_pool_start_interval', 10))
 
 
 def session_scope(config, base, instance):
@@ -41,7 +37,7 @@ def session_scope(config, base, instance):
 
 def summary(config, state, stamp):
     starts = [s for s in state.get('starts', []) if s > stamp - DAY]
-    minimum = int(config.get('youtube_start_interval', 3))
+    minimum = int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval']))
     interval = max(minimum, state.get('interval', 60))
     reason = state.get('interval_reason_code')
     if minimum >= state.get('interval', 60):
@@ -69,8 +65,8 @@ def summary(config, state, stamp):
             'interval_reason': explanations.get(reason, explanations['adaptive_backoff']),
             'hourly_used': sum(s > stamp - 3600 for s in starts),
             'daily_used': len(starts),
-            'hourly_limit': int(config.get('youtube_hourly_start_limit', 80)),
-            'daily_limit': int(config.get('youtube_daily_start_limit', 1200)),
+            'hourly_limit': int(config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit'])),
+            'daily_limit': int(config.get('youtube_daily_start_limit', DEFAULTS['youtube_daily_start_limit'])),
             'next_start_at': max(state.get('next_at', 0), state.get('blocked_until', 0), state.get('cooldown_until', 0)),
             'reason': state.get('wait_reason', ''),
             'cooldown_seconds': max(0, math.ceil(state.get('cooldown_until', 0) - stamp))}
@@ -103,7 +99,7 @@ class YouTubePacing:
         rows = []
         for scope in self.scopes:
             state = self.router._state(db, scope)
-            floor = max(1, int(self.config.get('youtube_start_interval', 45)))
+            floor = max(1, int(self.config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])))
             if 'interval' not in state:
                 state.update(interval=max(60, floor), clean_since=stamp, clean_successes=0,
                              interval_reason_code='initial')
@@ -129,8 +125,8 @@ class YouTubePacing:
             raise DownloadLeaseLost('请求节奏等待期间任务租约已失效。')
         rows = self._states(db, stamp, channel)
         next_at, reason = stamp, ''
-        hourly = int(self.config.get('youtube_hourly_start_limit', 80))
-        daily = int(self.config.get('youtube_daily_start_limit', 1200))
+        hourly = int(self.config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit']))
+        daily = int(self.config.get('youtube_daily_start_limit', DEFAULTS['youtube_daily_start_limit']))
         for _, state in rows:
             candidates = [(state.get('cooldown_until', 0), '账号或源站正在冷却'),
                           (state.get('next_at', 0), '等待下一次视频启动')]
@@ -213,7 +209,7 @@ class YouTubePacing:
                 if (state['clean_successes'] >= 100 and stamp - state['clean_since'] >= CLEAN_WINDOW
                         and stamp - state.get('last_adjust_at', state['clean_since']) >= 7200):
                     previous_interval = int(state.get('interval', 60))
-                    state['interval'] = max(int(self.config.get('youtube_start_interval', 45)),
+                    state['interval'] = max(int(self.config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])),
                                             state['interval'] - 5)
                     state['interval_reason_code'] = 'stable_success'
                     state['last_adjust_at'] = stamp

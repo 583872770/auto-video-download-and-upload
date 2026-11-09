@@ -72,12 +72,12 @@ class ControlModeTests(unittest.TestCase):
             value = diagnose(config, 'node', [], rate, ({}, {}, {}), time.time())
             self.assertEqual(value['effective_limit'], 1)
 
-    def test_pool_dispatch_is_independent_of_mode_worker_limit_and_auto_pressure(self):
+    def test_pool_capacity_ignores_legacy_mode_but_processes_respect_resource_pressure(self):
         config = {'throughput_mode': 'auto', 'worker_count': 1, 'download_methods': ['yt_dlp'],
                   'youtube_cookie_pool': ['a' * 32, 'b' * 32], 'youtube_cookie_session_limit': 4,
                   'bandwidth_mbps': 100}
         capacity = {'known': True, 'capacity': 8, 'effective_sessions': 2, 'reason': 'pool capacity'}
-        sample = dict(cpu_cores=.5, memory_total=512*MIB, memory_available=64*MIB,
+        sample = dict(cpu_cores=.5, memory_total=8192*MIB, memory_available=64*MIB,
                       cpu_percent=99, io_pressure=20, rx=0)
         with tempfile.TemporaryDirectory() as root:
             tick = [100]
@@ -90,10 +90,13 @@ class ControlModeTests(unittest.TestCase):
                         self.assertEqual(policy_key(config), policy_key(changed))
                         tick[0] += 61
                         state = controller.update(changed, force=True, cookie_capacity=capacity)
-                        self.assertEqual((state['workers'], state['transfers'], state['mode']), (8, 8, 'cookie_pool'))
+                        expected_workers = 2 if mode == 'auto' and workers == 1 else 1
+                        self.assertEqual((state['workers'], state['transfers'], state['mode']),
+                                         (expected_workers, 8, 'cookie_pool'))
+                        self.assertTrue(state['worker_pressure_limited'])
                         self.assertEqual(state['target_mbps'], 0)
                         runtime = runtime_limits(changed, root)
-                        self.assertEqual((runtime['workers'], runtime['transfers']), (8, 8))
+                        self.assertEqual((runtime['workers'], runtime['transfers']), (expected_workers, 8))
                         diagnostic = diagnose(changed, 'node', [], state, ({}, {}, {}), time.time())
                         self.assertEqual(diagnostic['requested'], 8)
                         self.assertEqual(diagnostic['mode'], 'cookie_pool')

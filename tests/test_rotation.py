@@ -313,7 +313,10 @@ class RotationTests(unittest.TestCase):
         self.manager.save()
         self.manager.start()
         self.addCleanup(self.manager.stop)
-        response = self.client.put('/api/config', json={'proxy_mode': 'clash', 'worker_count': 2}, headers=self.headers)
+        # These are local HTTP fixtures, not YouTube requests. Test routing
+        # independently of the native downloader's 10-20 second sleep preset.
+        response = self.client.put('/api/config', json={'proxy_mode': 'clash', 'worker_count': 2,
+                                                       'youtube_sleep_preset': False}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         self.store.set_runtime({'worker_count': 2, 'min_free_gb': 0})
         response = self.post('/api/clash/rotation', self.rotation(nodes=['A', 'B'], every=1))

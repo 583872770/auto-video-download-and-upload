@@ -205,6 +205,9 @@ class FleetTests(unittest.TestCase):
         response.close()
 
     def test_overview_uses_workers_current_directories_without_interpreting_remote_paths(self):
+        empty_count = self.client.get('/api/overview').json['media']['count']
+        self.assertEqual(empty_count, 0)
+        self.assertIs(type(empty_count), int)
         catalog = self.apps['alpha'].extensions['media_catalog']
         old = self.root / 'alpha/videos-alpha'
         old.mkdir()

@@ -7,7 +7,7 @@ from sqlalchemy import event, inspect
 from werkzeug.exceptions import Conflict
 
 from tests import test_jobs, test_scale, test_fleet
-from tests.test_mysql import MySQLFixture
+from tests.test_mysql import StandaloneMySQLFixture
 from webapp.database import download_lists, schema_migrations
 from webapp.jobs import Jobs
 
@@ -26,6 +26,7 @@ class RedesignContract:
         for identity in (a, b):
             self.control(identity, 'start')
             task = self.store.claim(self.store.owner)
+            self.assertIsNotNone(task)
             path = self.root / (identity + '.mp4')
             path.write_bytes(b'x' * 1000000)
             self.store.statistics.record_file(task['id'], path)
@@ -190,11 +191,13 @@ class SQLiteRedesignTests(RedesignContract, unittest.TestCase):
     setUp = test_jobs.JobTests.setUp
 
 
-class MySQLRedesignTests(MySQLFixture, RedesignContract, unittest.TestCase):
+class MySQLRedesignTests(StandaloneMySQLFixture, RedesignContract, unittest.TestCase):
     def setUp(self):
-        MySQLFixture.setUp(self)
+        StandaloneMySQLFixture.setUp(self)
         response = self.client.put('/api/config',json={'download_methods':['downmp3']},headers=self.headers)
         self.assertEqual(response.status_code,200,response.json)
+        config, base = self.app.extensions['settings_func']()
+        self.store.set_download_settings(config, base, self.root / 'clash')
 
 
 class NodeIsolationTests(unittest.TestCase):

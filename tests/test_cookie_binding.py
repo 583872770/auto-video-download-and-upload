@@ -147,7 +147,7 @@ class CookieBindingTests(unittest.TestCase):
         from webapp.channels import registry
         from webapp.youtube_pacing import cookie_pool_start_interval
         self.serve('alpha')
-        limits = {'builtin_transfer_limit': 12, 'youtube_cookie_session_limit': 3,
+        limits = {'builtin_transfer_limit': 11, 'youtube_cookie_session_limit': 3,
                   'youtube_cookie_pool_start_interval': 7}
         response = self.client.put('/api/instances/alpha', json=limits, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
@@ -156,9 +156,9 @@ class CookieBindingTests(unittest.TestCase):
             self.assertEqual(config[key], value)
         effective = self.a.fleet.local_settings()['config']
         effective.update(download_methods=['yt_dlp'], download_channels=[])
-        self.assertEqual(registry(effective)[0].transfer_limit, 12)
+        self.assertEqual(registry(effective)[0].transfer_limit, 11)
         self.assertEqual(cookie_pool_start_interval(effective), 7)
-        self.assertNotEqual(self.b.fleet.local_settings()['config']['builtin_transfer_limit'], 12)
+        self.assertNotEqual(self.b.fleet.local_settings()['config']['builtin_transfer_limit'], 11)
         # Saving full settings must also replace the resource overlay.
         response = self.client.put('/api/config', json={'builtin_transfer_limit': 9},
             headers={**self.headers, 'X-Instance-ID': 'alpha'})

@@ -117,6 +117,20 @@ class WorkerBudgetTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 calculate_pool_size()
 
+    def test_preparation_capacity_counts_upstream_groups_instead_of_aliases(self):
+        def entrance(identity, group, limit):
+            return dict(id=identity, adapter='bergung', upstream_group=group,
+                        resolver_group=group, quota_group=group, transfer_limit=limit)
+        config = dict(self.config, download_methods=['bergung'], download_connection_limit=8,
+                      download_channels=[entrance('bergung', 'shared', 2), entrance('alias', 'shared', 2)])
+        shared = pool_worker_limits(config, 8, self.resources)
+        self.assertEqual((shared['worker_transfer_capacity'], shared['workers']), (2, 6))
+        config['download_channels'].append(entrance('independent', 'other', 3))
+        separate = pool_worker_limits(config, 8, self.resources)
+        self.assertEqual((separate['worker_transfer_capacity'], separate['workers']), (5, 8))
+        config['youtube_cookie_pool_preparation_workers'] = 0
+        self.assertEqual(pool_worker_limits(config, 8, self.resources)['workers'], 5)
+
     def test_low_memory_and_saved_limits_cannot_restore_session_sized_workers(self):
         low = {**self.resources, 'memory_total': 1024*MIB}
         self.assertLessEqual(pool_worker_limits(self.config, 36, low)['workers'], 2)
@@ -289,6 +303,30 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertFalse(paths[1].exists())
         policy = json.loads((self.store.directory/'log-retention.json').read_text())
         self.assertEqual(policy['unexpired_failure_files_removed'], 0)
+
+    def test_account_limit_retries_are_bounded_and_keep_cookie_on_terminal_failure(self):
+        for kind in ('account_rate_limit', 'request_rate_limit'):
+            profile = 'b' * 32
+            task = self.task({'cookie_profile_id': profile,
+                'last_failure': {'kind': kind, 'profile_id': profile}})
+            with self.store.connect() as db:
+                db.execute(tasks.update().where(tasks.c.id == task['id']).values(instance_id='alpha'))
+            before = time.time()
+            self.store.finish(task['id'], error='limited', worker_id=self.store.owner,
+                retryable=True, retry_after=7200)
+            queued = self.store.get(task['id'], private=True)
+            self.assertEqual((queued['status'], queued['attempts']), ('queued', 1))
+            self.assertGreaterEqual(queued['available_at'], before + 7200)
+            self.assertEqual(queued['payload']['_retry_cookie_profile_id'], profile)
+            with self.store.connect() as db:
+                db.execute(tasks.update().where(tasks.c.id == task['id']).values(status='running', attempts=3,
+                    worker_id=self.store.owner, lease_until=time.time() + 60))
+            self.store.finish(task['id'], error='limited again', worker_id=self.store.owner,
+                retryable=True, retry_after=14400)
+            terminal = self.store.get(task['id'], private=True)
+            self.assertEqual((terminal['status'], terminal['attempts']), ('failed', 3))
+            self.assertEqual(terminal['payload']['_retry_cookie_profile_id'], profile)
+            self.assertEqual(terminal['target_instance_id'], 'alpha')
 
 
 class RuntimeSummaryWebTests(unittest.TestCase):
