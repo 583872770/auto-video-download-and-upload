@@ -15,8 +15,9 @@ def register_compression(app):
         if not textual or request.method != 'GET':
             return response
         response.vary.add('Accept-Encoding')
+        disposition = response.headers.get('Content-Disposition', '').split(';', 1)[0].strip().lower()
         if (response.status_code != 200 or response.headers.get('Content-Encoding')
-                or response.headers.get('Content-Disposition') or 'Range' in request.headers
+                or disposition not in ('', 'inline') or 'Range' in request.headers
                 or response.cache_control.no_transform or request.accept_encodings['gzip'] <= 0):
             return response
         # send_file uses a file wrapper even for small static assets. Only those

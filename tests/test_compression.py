@@ -18,7 +18,8 @@ class CompressionTests(unittest.TestCase):
 
         @self.app.get('/static/example.js')
         def static_asset():
-            response = send_file(BytesIO(b'const value = 123;\n' * 200), mimetype='text/javascript', etag='asset-v1')
+            response = send_file(BytesIO(b'const value = 123;\n' * 200), mimetype='text/javascript',
+                                 download_name='example.js', etag='asset-v1')
             response.cache_control.no_cache = True
             return response
 
@@ -50,6 +51,7 @@ class CompressionTests(unittest.TestCase):
 
     def test_static_range_and_cache_validation(self):
         compressed = self.client.get('/static/example.js', headers={'Accept-Encoding': 'gzip'})
+        self.assertTrue(compressed.headers['Content-Disposition'].startswith('inline;'))
         self.assertEqual(compressed.headers['Content-Encoding'], 'gzip')
         self.assertTrue(compressed.get_etag()[1])
         self.assertEqual(gzip.decompress(compressed.data), b'const value = 123;\n' * 200)
