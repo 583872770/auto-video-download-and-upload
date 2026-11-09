@@ -51,8 +51,9 @@ def source(mode='ranges', *, size=CHUNK):
                     # Allow independent requests to overlap, and make the first
                     # block slower so results arrive in a different order.
                     time.sleep(.045 if start == 0 else .015)
-                if not probe and mode in ('throttle', 'unavailable'):
-                    self.send_response(429 if mode == 'throttle' else 503)
+                if not probe and (mode in ('throttle', 'unavailable', 'forbidden')
+                        or mode == 'recovery-throttle' and start == 0 and call >= 2):
+                    self.send_response(403 if mode == 'forbidden' else 503 if mode == 'unavailable' else 429)
                     self.send_header('Retry-After', '30')
                     self.send_header('Content-Length', '0')
                     self.end_headers()
@@ -77,6 +78,10 @@ def source(mode='ranges', *, size=CHUNK):
                     content = content[:len(content)//2]
                 if mode == 'always-short' and not probe:
                     content = content[:len(content)//2]
+                if mode == 'recovery-throttle' and not probe and start == size and call <= 2:
+                    content = content[:len(content)//2]
+                if mode == 'read-timeout' and not probe and start == size and call <= 2:
+                    state['stopped'].wait(.6)
                 if mode == 'slow' and not probe:
                     for offset in range(0, len(content), 4096):
                         self.wfile.write(content[offset:offset+4096])
@@ -202,15 +207,97 @@ class ParallelHttpTests(unittest.TestCase):
                 self.download(url, hook=lambda value: values.append(dict(value)), overrides={'ignoreerrors': False})
         self.assertFalse(self.path.exists())
         self.assertNotIn('finished', [value['status'] for value in values])
-        self.assertLessEqual(max(state['counts'].values()), 2)
+        # Original range retries, followed by one single-connection attempt.
+        self.assertLessEqual(max(state['counts'].values()), 4)
+
+    def test_read_timeouts_recover_once_with_one_connection_and_valid_bytes(self):
+        from unittest.mock import patch
+        from webapp.parallel_http import ParallelHttpFD
+        original = ParallelHttpFD._parallel_download
+        attempts = []
+
+        def download(fd, filename, info):
+            attempts.append(fd.params['concurrent_fragment_downloads'])
+            return original(fd, filename, info)
+
+        with source('read-timeout') as (url, state), patch.object(ParallelHttpFD, '_parallel_download', download):
+            self.assertTrue(self.download(url, overrides={'socket_timeout': .2})[0])
+        self.assert_file()
+        self.assertEqual(attempts, [3, 1])
+        self.assertEqual(state['counts'][CHUNK, 2*CHUNK-1], 3)
+
+    def test_probe_transport_failure_has_one_recovery_and_no_published_error(self):
+        from unittest.mock import patch
+        from yt_dlp.networking.exceptions import TransportError
+        options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
+        options.update(quiet=True, noprogress=True, http_chunk_size=CHUNK, proxy='',
+                       retries=0, fragment_retries=1)
+        with source() as (url, state), ParallelYoutubeDL(options) as ydl:
+            original = ydl.urlopen
+            failed = False
+
+            def urlopen(request):
+                nonlocal failed
+                if not failed:
+                    failed = True
+                    raise TransportError('Read timed out')
+                return original(request)
+
+            with patch.object(ydl, 'urlopen', urlopen):
+                self.assertTrue(ydl.dl(str(self.path), dict(url=url, protocol='http', filesize=len(DATA)))[0])
+            self.assertEqual(ydl._download_retcode, 0)
+            self.assertFalse(hasattr(ydl, 'http_range_error'))
+        self.assert_file()
+        self.assertEqual(state['peak'], 1)
+
+    def test_recovery_http_limit_preserves_status_and_retry_after(self):
+        from webapp.channel_scheduler import throttle_details
+        options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
+        options.update(quiet=True, noprogress=True, http_chunk_size=CHUNK, proxy='',
+                       retries=0, fragment_retries=1, concurrent_fragment_downloads=3)
+        with source('recovery-throttle') as (url, state), ParallelYoutubeDL(options) as ydl:
+            self.assertFalse(ydl.dl(str(self.path), dict(url=url, protocol='http', filesize=len(DATA)))[0])
+            self.assertEqual(throttle_details(ydl.http_range_error), (429, 30))
+        self.assertFalse(self.path.exists())
+        self.assertEqual(state['counts'][0, CHUNK-1], 2)
+
+    def test_transport_failure_message_is_specific_and_redacts_credentials(self):
+        from unittest.mock import patch
+        from yt_dlp.networking.exceptions import TransportError
+        from webapp.downloads import DownloadFailure
+        from webapp.download_policy import failure_evidence
+        failure = DownloadFailure()
+        options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
+        options.update(quiet=True, http_chunk_size=CHUNK, logger=type('Logger', (), {'debug': lambda *args: None,
+            'warning': lambda *args: None, 'error': lambda _, msg: failure.error(msg)})())
+        with ParallelYoutubeDL(options) as ydl:
+            with patch.object(ydl, 'urlopen', side_effect=TransportError('Read timed out https://user:SECRET@example.test/file?token=SECRET')) as opened:
+                self.assertFalse(ydl.dl(str(self.path), dict(url='https://example.test/file', protocol='http', filesize=len(DATA)))[0])
+            self.assertEqual(opened.call_count, 2)
+            self.assertIn('连接读取超时', failure.message())
+            self.assertNotIn('SECRET', failure.message())
+            evidence = failure_evidence(failure.as_error(ydl.http_range_error))
+            self.assertEqual(evidence.kind, 'transient_failure')
+            self.assertTrue(evidence.retryable)
+
+    def test_certificate_failures_are_not_retried_as_connection_recovery(self):
+        from unittest.mock import patch
+        from yt_dlp.networking.exceptions import CertificateVerifyError
+        options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
+        options.update(quiet=True, noprogress=True, http_chunk_size=CHUNK)
+        with ParallelYoutubeDL(options) as ydl:
+            with patch.object(ydl, 'urlopen', side_effect=CertificateVerifyError('certificate verify failed')) as opened:
+                self.assertFalse(ydl.dl(str(self.path), dict(url='https://example.test/file', protocol='http', filesize=len(DATA)))[0])
+            self.assertEqual(opened.call_count, 1)
 
     def test_throttle_is_preserved_and_does_not_start_serial_fallback(self):
-        with source('throttle') as (url, state):
-            with self.assertRaisesRegex(yt_dlp.utils.DownloadError, 'HTTP Error 429'):
-                self.download(url, overrides={'ignoreerrors': False})
-        self.assertFalse(self.path.exists())
-        self.assertEqual(max(state['counts'].values()), 1)
-        self.assertLessEqual(len(state['calls']), 4)
+        for mode, status in (('throttle', 429), ('forbidden', 403)):
+            with self.subTest(status=status), source(mode) as (url, state):
+                with self.assertRaisesRegex(yt_dlp.utils.DownloadError, f'HTTP Error {status}'):
+                    self.download(url, overrides={'ignoreerrors': False})
+                self.assertFalse(self.path.exists())
+                self.assertEqual(max(state['counts'].values()), 1)
+                self.assertLessEqual(len(state['calls']), 4)
 
     def test_resume_only_requests_bytes_after_contiguous_partial(self):
         resume = CHUNK + 123

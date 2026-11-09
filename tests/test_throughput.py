@@ -114,6 +114,33 @@ class ResourceFeedbackTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
 
+    def test_pool_snapshot_carries_local_claim_wait_to_instance_diagnostics(self):
+        from webapp.concurrency_diagnostics import diagnose
+        from webapp.download_start_gate import DownloadStartGate
+
+        config = {'download_method': 'yt_dlp', 'youtube_cookie_pool': ['a']}
+        deadline = time.time() + 60
+        _atomic(self.directory / 'download-start-gate.json', {
+            'policy': policy_key(config), 'next_at': deadline,
+            'token': None, 'owner': None, 'expires_at': 0})
+        controller = ThroughputController(self.directory)
+        sample = {'cpu_cores': 4, 'memory_total': 8192 * MIB,
+                  'memory_available': 4096 * MIB, 'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        with patch.object(controller, 'sample', return_value=sample):
+            controller.update(config, cookie_capacity={
+                'known': True, 'capacity': 1, 'reason': 'ready',
+                'profiles': [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 1}]})
+        rate = json.loads((self.directory / 'throughput.json').read_text(encoding='utf-8'))
+        self.assertEqual(rate['download_start_gate'], {'next_at': deadline})
+        value = diagnose(config, 'node', [], rate, ({}, {}, {}), time.time())
+        self.assertIn('等待下一次任务领取', value['bottleneck'])
+        self.assertEqual(value['cookie_allocation']['accounts'][0]['reasons'][0]['code'],
+                         'dispatch_interval')
+        with patch.object(controller, 'sample', return_value=sample), \
+                patch.object(DownloadStartGate, 'status', return_value={}):
+            cleared = controller.update(config, force=True)
+        self.assertEqual(cleared['download_start_gate'], {})
+
     def test_container_quota_and_memory_override_host_totals(self):
         (self.directory/'cpu.max').write_text('50000 100000')
         (self.directory/'memory.max').write_text(str(768*MIB))

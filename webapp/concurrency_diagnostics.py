@@ -86,7 +86,7 @@ def transfer_allocation(config, identity, channels, caps, context, effective, cu
 
 
 def cookie_allocation(config, identity, pool, allocation, context, stamp, current_tasks, profiles, *,
-                      paused=False, online=True, disk_blocked=False, worker_limit=None):
+                      paused=False, online=True, disk_blocked=False, worker_limit=None, start_gate=None):
     """Explain observed admission gates without assigning idle permits to accounts."""
     if not config.get('youtube_cookie_pool'):
         return None
@@ -135,6 +135,11 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             add('disk', '磁盘空间限制新任务')
         if worker_limit and len(current_tasks) >= worker_limit:
             add('worker_limit', '本机下载进程已占满，等待当前任务完成')
+        if (start_gate or {}).get('next_at', 0) > stamp:
+            add('dispatch_interval', '本机正在等待下一次任务领取', start_gate['next_at'])
+        elif (start_gate or {}).get('preparing_until', 0) > stamp:
+            # Lease expiry bounds stale hints; it is not an estimated duration.
+            add('dispatch_preparing', '本机正在为已领取的视频分配账号')
         if gate.get('halted'):
             add('pool_halted', '账号池已拦截，需人工检查后恢复')
         if gate.get('cooldown_until', 0) > stamp:
@@ -169,7 +174,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
         if profile_id not in config['youtube_cookie_pool']:
             add('removed', '已移出账号池，当前任务结束后不再分配')
         if not reasons:
-            add('unassigned', '尚未分配新任务；当前未观测到账号或启动间隔限制')
+            add('unassigned', '当前未分配任务；仍需等待队列调度')
         accounts.append({'id': profile_id, 'name': names.get(profile_id) or sample.get('name') or profile_id,
                          'known': known, 'state': sample.get('state', 'unknown'),
                          'shared_with': shared, 'shared_name': names.get(shared) or sampled.get(shared, {}).get('name'),
@@ -284,6 +289,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     waits = Counter(p.get('transfer_wait_resource') or 'local-transfers' for p in progress if p.get('stage') == 'waiting_transfer')
     disk = disks.get(identity, {})
     disk_fresh = 0 <= stamp - disk.get('time', 0) < 90
+    start_gate = (rate.get('download_start_gate') or {}) if pooled and fresh and online else {}
     if pooled:
         upper = min(upper, cookie_pool['capacity'])
         if fresh and rate.get('workers'):
@@ -298,6 +304,10 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         bottleneck = '实例已停止领取新任务'
     elif disk_fresh and disk.get('blocked'):
         bottleneck = disk.get('message') or '磁盘空间限制新任务'
+    elif start_gate.get('next_at', 0) > stamp:
+        bottleneck = '本机正在等待下一次任务领取，剩余时间见账号卡片'
+    elif start_gate.get('preparing_until', 0) > stamp:
+        bottleneck = '本机正在为已领取的视频分配账号，完成后继续领取'
     elif cookie_pool and cookie_pool['capacity'] <= upper:
         bottleneck = cookie_pool['reason']
     elif global_limit and upper < transfers:
@@ -328,7 +338,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'cookie_allocation': cookie_allocation(config, identity, cookie_pool, allocation, context, stamp,
                 current_tasks, cookie_profiles, paused=paused, online=online,
                 disk_blocked=bool(disk_fresh and disk.get('blocked')),
-                worker_limit=int(rate['workers']) if fresh and rate.get('workers') else None),
+                worker_limit=int(rate['workers']) if fresh and rate.get('workers') else None,
+                start_gate=start_gate),
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,
             'cookie_pool': cookie_pool, 'bottleneck': bottleneck,

@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='concurrency.css') }}">
   <script id="risk-guide-data" type="application/json">{{ risk_guide | tojson }}</script>
+  <script src="{{ url_for('static', filename='dialogs.js') }}" defer></script>
   <script src="{{ url_for('static', filename='risks.js') }}" defer></script>
   <script src="{{ url_for('static', filename='concurrency.js') }}" defer></script>
   <script src="{{ url_for('static', filename='cookie_recovery.js') }}" defer></script>

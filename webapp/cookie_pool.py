@@ -310,11 +310,11 @@ class CookiePool:
                     'source': 'cookie_pool_halted', 'halted_at': gate.get('halted_at'),
                     'halt_kind': gate.get('halt_kind'), 'message': halt_message(gate, previous=True)})
             if gate.get('cooldown_until', 0) > stamp:
-                return None, gate['cooldown_until'] - stamp
+                return None, gate['cooldown_until'] - stamp, 'pool'
             if gate.get('next_at', 0) > stamp:
-                return None, gate['next_at'] - stamp
+                return None, gate['next_at'] - stamp, 'pool'
             if manual_retry and gate.get('retry_next_at', 0) > stamp:
-                return None, gate['retry_next_at'] - stamp
+                return None, gate['retry_next_at'] - stamp, 'manual_retry'
             scopes = [scope for _, _, scope in self.accounts]
             state_by_scope = router._states(db, scopes)
             active_by_scope = router._active_many(db, scopes, stamp)
@@ -336,11 +336,12 @@ class CookiePool:
                 if active < cap:
                     candidates.append((active, state.get('last_start', 0), identity, path, scope, state, cap))
             if not candidates:
-                return None, min(delays, default=10)
+                return None, min(delays, default=10), 'account' if profile_id else 'pool'
             _, _, identity, path, scope, state, cap = min(candidates, key=lambda x: x[:3])
             token, delay = router._admit(db, stamp, [(self.global_scope, capacity, 1), (scope, cap, 1)])
             if not token:
-                return None, delay
+                resource = (router.blocked_resource or '').split(':', 1)[0]
+                return None, delay, 'account' if resource == 'youtube-account' else 'pool'
             # Preserve the permit policy written by _admit.
             state = router._state(db, scope)
             if state.get('recovery_mode') and not state.get('recovery_started_at'):
@@ -365,12 +366,21 @@ class CookiePool:
                             and start_budget(self.config, s, stamp)[1] <= stamp]
                 gate['retry_next_at'] = stamp + retry_interval(self.config, eligible)
             router._save(db, self.global_scope, gate)
-            return (identity, path, scope, token, stamp), 0
+            return (identity, path, scope, token, stamp), 0, 'pool'
 
-        selected, delay = router.transaction_call(reserve)
+        selected, delay, wait_scope = router.transaction_call(reserve)
         if not selected:
-            error = PipelineBusy('Cookie 账号池正在按账号并发及请求间隔等待。')
+            messages = {
+                'pool': 'Cookie 账号池正在按账号并发及请求间隔等待。',
+                'account': '该任务对应的 Cookie 正在等待账号并发、启动间隔或冷却，其他账号继续调度。',
+                'manual_retry': '手动重试正在等待启动份额，普通任务继续调度。',
+            }
+            error = PipelineBusy(messages[wait_scope])
             error.retry_after = max(2, min(60, delay))
+            # Only waits affecting the whole pool may delay other task claims.
+            # A pinned account/replay keeps its own available_at deadline.
+            error.start_gate_delay = error.retry_after if wait_scope == 'pool' else 0
+            error.wait_scope = wait_scope
             raise error
         identity, path, scope, token, admitted_at = selected
         error = None

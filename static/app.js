@@ -1542,7 +1542,7 @@ async function loadCookieProfiles() {
     remove.addEventListener('click', () => runButton(remove, async () => {
       const selectionNote = item.active ? (data.items.length > 1
         ? '删除后将自动选择列表中的其他 Cookie 作为当前使用项。' : '删除后将进入无 Cookie 状态。') : '';
-      if (!window.confirm(`删除“${item.name}”？${selectionNote}删除后需重新上传才能使用。`)) return;
+      if (!await confirmDialog(`删除“${item.name}”？${selectionNote}删除后需重新上传才能使用。`, {title: '删除 Cookie', confirmText: '确认删除'})) return;
       const result = await api('/api/youtube/cookies/delete', { method: 'POST', body: { id: item.id } });
       if (state.config) {
         state.config.youtube_cookie = result.cookie_path;

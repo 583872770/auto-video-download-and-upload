@@ -109,6 +109,13 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertEqual(value.kind, 'unknown')
         self.assertIsNone(value.http_status)
 
+    def test_typed_transport_failure_is_retryable_without_message_keyword(self):
+        from yt_dlp.networking.exceptions import TransportError
+        value = failure_evidence(TransportError('connection interrupted by peer'))
+        self.assertEqual(value.kind, 'transient_failure')
+        self.assertTrue(value.retryable)
+        self.assertIsNone(value.http_status)
+
     def test_suppressed_exception_context_is_not_evidence(self):
         error = RuntimeError('unrelated')
         error.__context__ = YouTubeAccountLimited('Your account has been rate-limited')

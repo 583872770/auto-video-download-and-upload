@@ -55,9 +55,11 @@ class CookiePoolTests(unittest.TestCase):
         first, second = self.pool(), self.pool()
         with first.assignment() as selected:
             self.assertIn(selected['_cookie_pool_selected'], self.ids)
-            with self.assertRaises(PipelineBusy):
+            with self.assertRaises(PipelineBusy) as waiting:
                 with second.assignment():
                     self.fail('Global pacing bypassed')
+            self.assertEqual(waiting.exception.wait_scope, 'pool')
+            self.assertEqual(waiting.exception.start_gate_delay, waiting.exception.retry_after)
             self.ungate(first)
             with second.assignment() as other:
                 self.assertNotEqual(other['_cookie_pool_selected'], selected['_cookie_pool_selected'])
@@ -91,15 +93,36 @@ class CookiePoolTests(unittest.TestCase):
             self.assertEqual(selected['_cookie_pool_next_at'], stamp)
             with second.assignment(count_success=False) as other:
                 self.assertNotEqual(other['_cookie_pool_selected'], identity)
-        with self.assertRaises(PipelineBusy):
+        with self.assertRaises(PipelineBusy) as waiting:
             with second.assignment(profile_id=identity, count_success=False):
                 self.fail('Account interval bypassed')
+        self.assertEqual(waiting.exception.wait_scope, 'account')
+        self.assertEqual(waiting.exception.start_gate_delay, 0)
+        self.assertGreater(waiting.exception.retry_after, 0)
         scope = next(scope for account, _, scope in first.accounts if account == identity)
         first.outcome(scope, YouTubeAccountLimited('Your account has been rate-limited'))
         stamp += 120
-        with self.assertRaises(PipelineBusy):
+        with self.assertRaises(PipelineBusy) as waiting:
             with second.assignment(profile_id=identity, count_success=False):
                 self.fail('Account cooldown bypassed')
+        self.assertEqual(waiting.exception.wait_scope, 'account')
+        self.assertEqual(waiting.exception.start_gate_delay, 0)
+
+    def test_all_accounts_waiting_still_back_off_the_whole_pool(self):
+        pool = self.pool()
+
+        def block(db, stamp):
+            for _, _, scope in pool.accounts:
+                state = pool.router._state(db, scope)
+                state['next_at'] = stamp + 300
+                pool.router._save(db, scope, state)
+        pool.router.transaction_call(block)
+        with self.assertRaises(PipelineBusy) as waiting:
+            with pool.assignment():
+                self.fail('Account intervals bypassed')
+        self.assertEqual(waiting.exception.wait_scope, 'pool')
+        self.assertEqual(waiting.exception.start_gate_delay, waiting.exception.retry_after)
+        self.assertGreater(waiting.exception.retry_after, 0)
 
     def test_reducing_shared_interval_preserves_reserved_deadline(self):
         first = self.pool({**self.config, 'youtube_cookie_pool_start_interval': 10})
@@ -674,9 +697,12 @@ class CookiePoolTests(unittest.TestCase):
         with normal.assignment(count_success=False):
             pass
         now += 5
-        with self.assertRaises(PipelineBusy):
+        with self.assertRaises(PipelineBusy) as waiting:
             with normal.assignment(manual_retry=True):
                 self.fail('Restart or normal work cleared retry gate')
+        self.assertEqual(waiting.exception.wait_scope, 'manual_retry')
+        self.assertEqual(waiting.exception.start_gate_delay, 0)
+        self.assertGreater(waiting.exception.retry_after, 0)
         gate = pool.router.transaction_call(lambda db, stamp: pool.router._state(db, pool.global_scope))
         self.assertGreaterEqual(gate['retry_next_at'], now + 190)
 

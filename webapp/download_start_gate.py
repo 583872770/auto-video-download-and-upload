@@ -5,7 +5,7 @@ import time
 import uuid
 
 from webapp.disk_budget import alive, file_lock, process_identity
-from webapp.throughput import _atomic
+from webapp.throughput import _atomic, policy_key
 
 
 class StartTicket:
@@ -38,6 +38,21 @@ class DownloadStartGate:
             return json.loads(self.path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             return {}
+
+    def status(self, config, stamp=None):
+        """Publish only live local claim waits, without exposing owner tokens."""
+        if not config.get('youtube_cookie_pool'):
+            return {}
+        stamp = time.time() if stamp is None else stamp
+        state = self.read()
+        if state.get('policy') != policy_key(config):
+            return {}
+        if state.get('next_at', 0) > stamp:
+            return {'next_at': state['next_at']}
+        if (state.get('token') and state.get('expires_at', 0) > stamp
+                and alive(state.get('owner') or {})):
+            return {'preparing_until': state['expires_at']}
+        return {}
 
     def acquire(self):
         """Return (ticket, waiting). Missing/old snapshots use original DB admission.

@@ -12,6 +12,7 @@ import time
 import uuid
 
 from yt_dlp.networking.exceptions import IncompleteRead as YtdlpIncompleteRead
+from yt_dlp.networking.exceptions import CertificateVerifyError, TransportError
 
 from webapp.diagnostics import safe_text
 
@@ -98,6 +99,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     local = any(any(cls.__name__ in local_types for cls in type(c).__mro__) or type(c).__module__.startswith('sqlalchemy') or
                 isinstance(c, OSError) and c.errno in (5, 13, 28, 30, 122) for c in chain)
     transient = any(bool(getattr(c, 'retryable', False)) or isinstance(c, (TimeoutError, ConnectionError))
+                    or isinstance(c, TransportError) and not isinstance(c, CertificateVerifyError)
                     or type(c).__name__ == 'WebsiteTimeoutError' for c in chain)
     # yt-dlp may flatten IncompleteRead into its terminal error message before
     # returning a failure code. Match its byte-count diagnostic as well as the

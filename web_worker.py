@@ -1092,17 +1092,21 @@ def drain(directory, slot=0, role='all'):
                           file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
                           stage_seconds=last_progress.get('stage_seconds', {}))
                 except PipelineBusy as error:
+                    start_delay = getattr(error, 'start_gate_delay', error.retry_after)
                     if start_ticket:
-                        start_ticket.finish(error.retry_after)
+                        start_ticket.finish(start_delay)
                     store.update_progress(task['id'], {**last_progress, 'stage': 'scheduling_wait',
                         'speed': None, 'eta': None, 'wait_reason': str(error),
                         'retry_at': time.time() + error.retry_after,
                         'retry_delay_seconds': error.retry_after}, store.owner)
                     lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=error.retry_after)
-                    worker_delay = max(2, min(60, error.retry_after))
+                    # The task keeps its backoff, but an account-specific wait
+                    # must not put every worker to sleep ahead of healthy work.
+                    worker_delay = 0 if start_delay == 0 else max(2, min(60, start_delay))
                     next_claim_after = time.monotonic() + worker_delay
                     event('attempt_released', reason='pipeline_backpressure', message=str(error),
-                          retry_after=error.retry_after, worker_delay_seconds=worker_delay)
+                          retry_after=error.retry_after, worker_delay_seconds=worker_delay,
+                          wait_scope=getattr(error, 'wait_scope', None))
                     continue
                 except DiskPressure as error:
                     resource_wait = str(error)

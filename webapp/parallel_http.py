@@ -3,17 +3,21 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import suppress
 import os
+from pathlib import Path
 import threading
 import time
 
 import yt_dlp
 from yt_dlp.downloader import get_suitable_downloader
 from yt_dlp.downloader.http import HttpFD
+from yt_dlp.downloader.hls import HlsFD
 from yt_dlp.networking import Request
-from yt_dlp.networking.exceptions import HTTPError, TransportError
+from yt_dlp.networking.exceptions import CertificateVerifyError, HTTPError, IncompleteRead, TransportError
 from yt_dlp.utils import parse_http_range
 from yt_dlp.utils.networking import HTTPHeaderDict
 from webapp.concurrency_policy import fragment_connection_budget
+from webapp.diagnostics import safe_text
+from webapp.hls_download import YoutubeHlsFD
 
 
 CHUNK_SIZE = 10 * 1024 * 1024
@@ -31,12 +35,39 @@ class RangeUnsupported(Exception):
     """The source cannot safely serve independent byte ranges."""
 
 
+def transport_error_message(error):
+    detail = safe_text(str(error))[:400]
+    text = detail.lower()
+    reason = ('TLS 证书验证失败' if isinstance(error, CertificateVerifyError) else
+              '连接读取超时' if 'timed out' in text or 'timeout' in text else
+              '分块响应不完整' if isinstance(error, IncompleteRead) or 'incomplete http range' in text else
+              '连接传输中断')
+    return f'{reason}（{type(error).__name__}）' + (f'：{detail}' if detail else '')
+
+
 class ParallelHttpFD(HttpFD):
     FD_NAME = 'parallel-http'
 
     def real_download(self, filename, info_dict):
         try:
-            return self._parallel_download(filename, info_dict)
+            try:
+                return self._parallel_download(filename, info_dict)
+            except TransportError as error:
+                if isinstance(error, CertificateVerifyError):
+                    raise
+                # All original workers and responses have stopped by now.
+                # Retry once with a single connection, using the same signed
+                # URL, cookie jar and route, without another task admission.
+                self.report_warning(f'HTTP 并行下载出现{transport_error_message(error)}；降为单连接重新下载一次。')
+                previous = self.params
+                self.params = {**previous, 'concurrent_fragment_downloads': 1, 'continuedl': False}
+                try:
+                    # A new probe can observe a different object or trigger
+                    # native fallback; neither may append to the old prefix.
+                    Path(self.temp_name(filename)).unlink(missing_ok=True)
+                    return self._parallel_download(filename, info_dict)
+                finally:
+                    self.params = previous
         except RangeUnsupported:
             # A changed object or invalid range must never be combined with
             # bytes from another response. All parallel workers have stopped.
@@ -45,7 +76,7 @@ class ParallelHttpFD(HttpFD):
         except (HTTPError, TransportError) as error:
             # Preserve the HTTP status for the shared cooldown classifier,
             # without copying signed URLs or authorization headers into logs.
-            status = f'HTTP Error {error.status}' if isinstance(error, HTTPError) else type(error).__name__
+            status = f'HTTP Error {error.status}' if isinstance(error, HTTPError) else transport_error_message(error)
             if isinstance(error, HTTPError):
                 error.retry_after = error.response.headers.get('Retry-After')
                 error.close()
@@ -229,8 +260,19 @@ class ParallelHttpFD(HttpFD):
 
 
 class ParallelYoutubeDL(yt_dlp.YoutubeDL):
-    """Use parallel HTTP only for eligible media; leave other protocols native."""
+    """Use bounded HTTP transfers and verified empty-tail HLS recovery."""
     def dl(self, name, info, subtitle=False, test=False):
+        if (not subtitle and not test and name != '-' and not hasattr(name, 'write')
+                and not self.params.get('test') and not info.get('is_live')
+                and (info.get('extractor_key') == 'Youtube' or info.get('extractor') == 'youtube')
+                and get_suitable_downloader(info, self.params, to_stdout=False) is HlsFD):
+            new_info = self._copy_infodict(info)
+            if new_info.get('http_headers') is None:
+                new_info['http_headers'] = self._calc_headers(new_info)
+            fd = YoutubeHlsFD(self, self.params)
+            for hook in self._progress_hooks:
+                fd.add_progress_hook(hook)
+            return fd.download(name, new_info, subtitle)
         eligible = (self.params.get('_parallel_http') and not subtitle and not test
             and name != '-' and not hasattr(name, 'write')
             and self.params.get('concurrent_fragment_downloads', 1) > 1

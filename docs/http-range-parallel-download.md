@@ -23,8 +23,22 @@ max(1, min(分片并发数, floor(本机连接预算 / 实例传输额度)))
 
 日志中出现 `HTTP 分块并行：最多 2 个连接，每块 10 MiB` 表示已进入并行路径。并行可能改善请求等待造成的空闲，但实际收益取决于 CDN、线路和限流状态，不保证随连接数等比例提高。
 
+## 传输异常的有限恢复
+
+2026-11-09 核实账号池近 24 小时记录：3 个任务出现 `HTTP 分块下载失败：TransportError`，其中两个在第二次任务尝试成功；另一个后续因 HLS 空尾片失败。保留的堆栈明确显示 YouTube CDN 的 `Read timed out`，发生在分块内容读取阶段，未观察到 HTTP 403/429。其他两个成功任务的详细日志已按保留策略清理，不能仅凭统一报错推断其具体传输原因。
+
+分块仍先按已有 `fragment_retries` 重试。传输异常耗尽重试后，等待所有并行连接退出，用同一 Cookie、同一出口和同一媒体 URL 降为单连接重建一次。此次降级属于同一次任务和账号准入，不重新解析视频、不重新申请启动次数。旧的部分文件会丢弃，避免资源变化时拼接不同时刻的数据。恢复成功不先报告下载失败，因此不会因该次已恢复异常触发任务重排或 Cookie 失败退避。
+
+降级只有一次，不循环恢复；持续故障仍按原有任务重试上限处理。403/429、带 `Retry-After` 的 HTTP 限制及证书验证失败不会触发此单连接恢复。降级中遇到 HTTP 限制时，保留状态码和 `Retry-After` 交给原有冷却策略。
+
+最终错误提示保留具体的超时、响应不完整或连接中断说明，详细原因先脱敏再显示，不再只显示 `TransportError` 类名。此机制减少瞬时网络问题造成的任务失败，不能保证持续异常的 CDN 或线路必然恢复。
+
 本地验证：
 
 ```powershell
 .venv\Scripts\python.exe -m unittest tests.test_parallel_http tests.test_concurrency_diagnostics tests.test_provider_selection
 ```
+
+本次回归命令：`python -m unittest tests.test_parallel_http tests.test_download_policy tests.test_hls_download -v`。包含真实读取超时后的降级与文件哈希验证、持续故障退出、探测失败恢复、403/429 和 Retry-After 保留、取消清理、错误脱敏及空尾片兼容。
+
+2026-11-09 验证结果：Windows 本地 44 项通过；线上 Linux / yt-dlp 2026.10.26 在临时目录和隔离进程中运行同组 44 项，全部通过、无跳过。验证未替换线上运行代码。

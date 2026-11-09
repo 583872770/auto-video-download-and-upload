@@ -148,6 +148,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
     const reasons = account.reasons || [];
     const idleLabels = {paused: '已停止领取', account_budget: '等待账号预算', account_interval: '等待账号间隔', pool_interval: '等待共用启动间隔',
       start_interval: '等待实例启动间隔', transfer_limit: '等待传输额度', disk: '等待磁盘空间',
+      dispatch_interval: '等待任务领取', dispatch_preparing: '等待账号分配',
       removed: '已移出账号池', unassigned: '待分配任务'};
     const blocked = reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
     const status = !live ? {kind: 'unknown', label: '状态待确认'} : blocked

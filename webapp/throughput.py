@@ -472,6 +472,8 @@ class ThroughputController:
                       'cookie_pool': cookie_capacity if pooled else None}
         if pooled:
             self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
+            from webapp.download_start_gate import DownloadStartGate
+            self.state['download_start_gate'] = DownloadStartGate(self.directory).status(config, self.state['time'])
         _atomic(self.directory / 'throughput.json', self.state)
         self.previous, self.last = resources, tick
         return self.state

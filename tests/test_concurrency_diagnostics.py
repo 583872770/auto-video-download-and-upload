@@ -192,16 +192,18 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         value = self.allocation(['downloading'] * 3, pool=True)
         self.assertEqual((value['configured'], value['effective']), (12, 12))
 
-    def cookie_cards(self, profiles, *, states=None, current_tasks=(), paused=False, stamp=None):
+    def cookie_cards(self, profiles, *, states=None, current_tasks=(), paused=False, stamp=None,
+                     start_gate=None, online=True):
         self.config.update(youtube_cookie_pool=['a', 'b', 'copy', 'bad'], builtin_transfer_limit=12,
                            builtin_connection_limit=64, download_connection_limit=64)
         pool = {'known': True, 'capacity': 6, 'effective_sessions': 2, 'reason': 'ready',
                 'sampled_at': self.stamp, 'profiles': profiles}
-        rate = {'policy': policy_key(self.config), 'time': self.stamp, 'cookie_pool': pool}
+        rate = {'policy': policy_key(self.config), 'time': self.stamp, 'cookie_pool': pool,
+                'download_start_gate': start_gate or {}}
         value = diagnose(self.config, 'node', [], rate, (states or {}, {}, {}, {}),
                          self.stamp if stamp is None else stamp, current_tasks=current_tasks,
                          cookie_profiles=[{'id': p, 'name': 'Cookie ' + p} for p in self.config['youtube_cookie_pool']],
-                         paused=paused)
+                         paused=paused, online=online)
         return {a['id']: a for a in value['cookie_allocation']['accounts']}
 
     def test_idle_accounts_explain_observed_account_and_shared_gates(self):
@@ -245,9 +247,34 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         profiles = [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}]
         card = self.cookie_cards(profiles)['a']
         self.assertEqual(card['reasons'][0]['code'], 'unassigned')
-        self.assertIn('未观测到', card['reasons'][0]['label'])
+        self.assertEqual(card['reasons'][0]['label'], '当前未分配任务；仍需等待队列调度')
         card = self.cookie_cards(profiles, paused=True)['a']
         self.assertEqual(card['reasons'][0]['code'], 'paused')
+
+    def test_live_local_claim_wait_is_visible_and_expired_or_offline_wait_is_not(self):
+        profiles = [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}]
+        for field, code in [('next_at', 'dispatch_interval'), ('preparing_until', 'dispatch_preparing')]:
+            with self.subTest(field=field):
+                gate = {field: self.stamp + 15}
+                reason = self.cookie_cards(profiles, start_gate=gate)['a']['reasons'][0]
+                self.assertEqual(reason['code'], code)
+                self.assertEqual(reason['until'], self.stamp + 15 if field == 'next_at' else None)
+                for kwargs in ({'stamp': self.stamp + 16}, {'stamp': self.stamp + 21}, {'online': False}):
+                    reasons = self.cookie_cards(profiles, start_gate=gate, **kwargs)['a']['reasons']
+                    self.assertNotIn(code, {r['code'] for r in reasons})
+
+    def test_bottleneck_reports_local_claim_wait_only_for_fresh_matching_policy(self):
+        self.config['youtube_cookie_pool'] = ['a']
+        for field, label in [('next_at', '等待下一次任务领取'), ('preparing_until', '分配账号')]:
+            with self.subTest(field=field):
+                rate = {'policy': policy_key(self.config), 'time': self.stamp,
+                        'cookie_pool': {'known': True, 'capacity': 1, 'reason': 'ready'},
+                        'download_start_gate': {field: self.stamp + 60}}
+                self.assertIn(label, self.show(rate=rate)['bottleneck'])
+                rate['policy'] = []
+                self.assertNotIn(label, self.show(rate=rate)['bottleneck'])
+                rate.update(policy=policy_key(self.config), time=self.stamp - 21)
+                self.assertNotIn(label, self.show(rate=rate)['bottleneck'])
 
     def test_shared_start_gates_show_later_deadline_without_duplicate_reasons(self):
         cards = self.cookie_cards([{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 2}], states={
