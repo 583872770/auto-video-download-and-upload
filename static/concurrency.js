@@ -23,6 +23,42 @@ function concurrencyCountdown(seconds, sampledAt) {
   const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
   return `<span data-capacity-deadline="${deadline}">${left ? left + ' 秒' : '等待状态更新'}</span>`;
 }
+function workerControlHTML(data, {compact = false} = {}) {
+  if (data.mode !== 'cookie_pool') return '';
+  const fresh = data.online && data.sample_fresh && Date.now() / 1000 - data.time <= 20 &&
+    (!data.sample_time || Date.now() / 1000 - data.sample_time <= 20);
+  if (!fresh) return '<section class="worker-control stale"><strong>任务进程状态待更新</strong><p>实例离线或资源采样已过期，当前占用、动态上限和恢复进度待确认。</p></section>';
+  const worker = data.worker_control;
+  if (!worker) return '';
+  const measurements = worker.measurements || {};
+  const source = measurements.io_pressure_source;
+  const ioName = source === 'cgroup' ? '本实例 I/O 压力' : source === 'host' ? '整机 I/O 压力（回退采样）' : 'I/O 压力';
+  const percent = value => Number.isFinite(value) ? `${Number(value.toFixed(1))}%` : '未取得';
+  function causeText(reason) {
+    if (reason.code === 'io') return `${reason.source === 'cgroup' ? '本实例' : reason.source === 'host' ? '整机' : ''} I/O 压力 ${percent(reason.value)} ≥ ${reason.threshold}%`;
+    if (reason.code === 'cpu') return `CPU ${percent(reason.value)} ≥ ${reason.threshold}%`;
+    if (reason.code === 'memory') return `可用内存 ${reason.value} MB < ${reason.threshold} MB`;
+    return '资源压力';
+  }
+  const reduction = worker.last_reduction;
+  const protectedState = worker.resource_limited;
+  const recovery = worker.recovery || {};
+  const stages = worker.stages || {};
+  const heading = protectedState ? reduction ? worker.pressure?.active ? '资源保护已降低上限' : '资源保护恢复中' : '进程上限逐步恢复中' : '按常规上限调度';
+  const causes = reduction?.reasons?.map(causeText).join('；') || '等待缩容原因采样';
+  const reductionText = protectedState && reduction ? `<p>最近一次缩容：${Number(reduction.from)} → ${Number(reduction.to)} 个；${escapeHTML(causes)}。</p>` : '';
+  const blockers = (recovery.blocked_by || []).filter(code => code !== 'pressure')
+    .map(code => ({cpu: 'CPU 尚未低于恢复阈值', io: 'I/O 压力尚未低于恢复阈值', memory: '可用内存尚未达到恢复水位'}[code] || '资源压力尚未解除'));
+  const deadline = recovery.eligible_at > data.time
+    ? `距下次可调整检查还有 ${concurrencyCountdown(recovery.eligible_at - data.time, data.time)}`
+    : '调整间隔已到，等待新采样检查';
+  const ioRequirement = source === 'unavailable' ? 'I/O 指标未取得，当前按 CPU 和内存检查' : `I/O 压力 &lt; ${Number(recovery.io_below)}%`;
+  const readyText = source === 'unavailable' ? '当前 CPU 和内存样本满足恢复条件。' : '当前样本满足资源恢复条件。';
+  const recoveryText = protectedState ? `<div class="worker-recovery"><p><strong>恢复条件：</strong>CPU &lt; ${Number(recovery.cpu_below)}%、${ioRequirement}、可用内存 ≥ ${Number(recovery.memory_at_least_mb)} MB。</p><p>${blockers.length ? escapeHTML(blockers.join('；')) + '。' : readyText}${deadline}；满足条件后每 ${Number(recovery.interval_seconds)} 秒最多增加 ${Number(recovery.step)} 个，恢复至常规上限。倒计时结束后仍需新采样确认。</p></div>` : '';
+  const ioNote = source === 'cgroup' ? `整机 ${percent(measurements.io_pressure_host)}，仅供参考`
+    : source === 'host' ? '本实例 I/O 指标不可用，当前使用整机指标' : '当前未取得 I/O 指标，CPU 和内存保护继续生效';
+  return `<section class="worker-control${protectedState ? ' protected' : ''}" aria-label="本机任务进程与资源保护"><div class="worker-control-heading"><strong>任务进程占用 <b>${Number(worker.used)} / ${Number(worker.dynamic_limit)}</b></strong><span>${heading}</span></div><p>当前占用 / 动态上限 · 常规上限 ${Number(worker.normal_limit)} · 配置上限 ${Number(worker.configured_limit)}</p>${compact ? '' : `<p>实际传输 ${Number(stages.transferring || 0)} · 等待 / 解析 ${Number(stages.preparing || 0)} · 后处理 ${Number(stages.processing || 0)}；这些阶段均占用任务进程。</p>`}${Number(worker.used) > Number(worker.dynamic_limit) ? '<p>已有任务超出新上限，完成后释放名额；当前暂停新增。</p>' : ''}${reductionText}<p>${escapeHTML(ioName)} ${percent(measurements.io_pressure)} · ${escapeHTML(ioNote)}</p>${recoveryText}${compact ? '' : '<p class="worker-control-note">常规上限综合账号、传输、内存和数据库预算计算；进程名额与视频传输名额分别控制。</p>'}</section>`;
+}
 function decisionExplanationHTML(data, key) {
   const value = data.decisions;
   if (!value) return '';
@@ -168,7 +204,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
   const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
     ? '已保存的账号池共用启动间隔已关闭。' : `已保存的账号池共用启动间隔为 ${Number(cookies.pool_start_interval)} 秒。`
     : '账号池启动间隔等待采样确认。';
-  return `<section class="transfer-allocation cookie-allocation" aria-label="Cookie 账号任务与等待原因">${heading}${filters}${summary}${grid}${!compact && current && cookies.unassigned_tasks?.length ? `<div class="transfer-outside"><strong>尚未关联 Cookie 的任务（不参与账号筛选）</strong><div class="cookie-unassigned-tasks">${cookies.unassigned_tasks.map(taskHTML).join('')}</div></div>` : ''}<p class="transfer-slot-note">每格对应一份已选 Cookie；同一账号的重复 Cookie 共用额度。${spacing}原因依据当前准入记录；等待时间到期后仍需满足其他条件。未观测到限制不代表可以立即启动。点击视频查看任务日志。</p></section>`;
+  return `<section class="transfer-allocation cookie-allocation" aria-label="Cookie 账号任务与等待原因">${heading}${workerControlHTML(data, {compact})}${filters}${summary}${grid}${!compact && current && cookies.unassigned_tasks?.length ? `<div class="transfer-outside"><strong>尚未关联 Cookie 的任务（不参与账号筛选）</strong><div class="cookie-unassigned-tasks">${cookies.unassigned_tasks.map(taskHTML).join('')}</div></div>` : ''}<p class="transfer-slot-note">每格对应一份已选 Cookie；同一账号的重复 Cookie 共用额度。${spacing}原因依据当前准入记录；等待时间到期后仍需满足其他条件。未观测到限制不代表可以立即启动。点击视频查看任务日志。</p></section>`;
 }
 function transferSlotsHTML(data, {compact = false} = {}) {
   const allocation = data.transfer_allocation;
@@ -308,13 +344,53 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
     <p class="capacity-footnote">并发与共享额度定期刷新，资源采样约每 5 秒更新。${data.sample_fresh ? '' : '资源吞吐采样尚未更新；渠道状态以上次读取为准。'}</p>
     ${key === 'overview' ? '</details>' : ''}</div>`;
 }
-// Retain the live filter controls and their ancestors in the document. A full
-// innerHTML replacement on every sample would close an open native dropdown.
-function replaceAroundAnchor(parent, anchor, nextParent, nextAnchor) {
-  while (parent.firstChild !== anchor) parent.firstChild.remove();
-  while (anchor.nextSibling) anchor.nextSibling.remove();
-  while (nextParent.firstChild !== nextAnchor) parent.insertBefore(nextParent.firstChild, anchor);
-  while (nextAnchor.nextSibling) parent.append(nextAnchor.nextSibling);
+// Reconcile the diagnostic panel in place. Keep accounts, task buttons,
+// native filters and open details attached while their text changes.
+function capacityNodeKey(node) {
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  for (const name of ['data-cookie-id', 'data-task', 'data-capacity-details',
+    'data-cookie-filter-scope', 'data-cookie-task-filter', 'data-cookie-account-filter',
+    'data-cookie-recovery', 'data-cookie-reason']) {
+    if (node.hasAttribute(name)) return `${node.tagName}:${name}:${node.getAttribute(name)}`;
+  }
+  return node.id ? `${node.tagName}:id:${node.id}` : `${node.tagName}:${node.classList[0] || ''}`;
+}
+function patchCapacityNode(current, next) {
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+    return;
+  }
+  if (current.nodeType !== Node.ELEMENT_NODE) return;
+  const value = next.value;
+  for (const attribute of [...current.attributes]) {
+    if (attribute.name !== 'open' && !next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+  }
+  for (const attribute of next.attributes) {
+    if (attribute.name !== 'open' && current.getAttribute(attribute.name) !== attribute.value) {
+      current.setAttribute(attribute.name, attribute.value);
+    }
+  }
+  patchCapacityChildren(current, next);
+  if (current.tagName === 'SELECT' && current.value !== value) current.value = value;
+}
+function patchCapacityChildren(current, next) {
+  const previous = [...current.childNodes];
+  const used = new Set();
+  let cursor = current.firstChild;
+  for (const child of [...next.childNodes]) {
+    const key = capacityNodeKey(child);
+    const retained = previous.find(node => !used.has(node) && node.nodeType === child.nodeType
+      && (node.nodeType !== Node.ELEMENT_NODE || capacityNodeKey(node) === key));
+    if (retained) {
+      used.add(retained);
+      patchCapacityNode(retained, child);
+      if (retained !== cursor) current.insertBefore(retained, cursor);
+      cursor = retained.nextSibling;
+    } else {
+      current.insertBefore(child, cursor);
+    }
+  }
+  for (const node of previous) if (!used.has(node)) node.remove();
 }
 function updateCookieFilterPanel(target, html) {
   const controls = target.querySelector(':scope > .capacity-body > .cookie-allocation > .cookie-runtime-filters');
@@ -323,26 +399,7 @@ function updateCookieFilterPanel(target, html) {
   template.innerHTML = html;
   const next = template.content.querySelector('.cookie-runtime-filters');
   if (!next || next.dataset.cookieFilterScope !== controls.dataset.cookieFilterScope) return false;
-  for (const button of controls.querySelectorAll('[data-cookie-task-filter]')) {
-    const updated = next.querySelector(`[data-cookie-task-filter="${button.dataset.cookieTaskFilter}"]`);
-    button.setAttribute('aria-pressed', updated.getAttribute('aria-pressed'));
-    const count = button.querySelector('[data-cookie-filter-count]');
-    const text = updated.querySelector('[data-cookie-filter-count]').textContent;
-    if (count.textContent !== text) count.textContent = text;
-  }
-  const selector = controls.querySelector('[data-cookie-account-filter]');
-  const updatedSelector = next.querySelector('[data-cookie-account-filter]');
-  for (const option of selector.options) {
-    const text = [...updatedSelector.options].find(item => item.value === option.value).textContent;
-    if (option.textContent !== text) option.textContent = text;
-  }
-  if (selector.value !== updatedSelector.value) selector.value = updatedSelector.value;
-  controls.querySelector('[data-cookie-filters-clear]').disabled = next.querySelector('[data-cookie-filters-clear]').disabled;
-  const allocation = controls.parentElement, nextAllocation = next.parentElement;
-  const body = allocation.parentElement, nextBody = nextAllocation.parentElement;
-  replaceAroundAnchor(allocation, controls, nextAllocation, next);
-  replaceAroundAnchor(body, allocation, nextBody, nextAllocation);
-  body.dataset.tone = nextBody.dataset.tone;
+  patchCapacityChildren(target, template.content);
   return true;
 }
 document.addEventListener('click', event => {

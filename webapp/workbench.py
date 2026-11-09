@@ -1,4 +1,7 @@
 """The download workbench controls one executor, with a durable job selection."""
+import math
+import time
+
 from flask import jsonify, request
 from sqlalchemy import func, select
 from werkzeug.exceptions import Conflict
@@ -6,6 +9,31 @@ from werkzeug.exceptions import Conflict
 from webapp.database import instances, settings, tasks
 from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
 from webapp.jobs import Jobs
+
+
+def compact_status(value):
+    """Keep task details in the inspector; the workbench needs one speed sum."""
+    value = dict(value)
+    stamp = time.time()
+    transferring, measured, speed = 0, 0, 0
+    for task in value.pop('active_tasks', []):
+        progress = task.get('progress') or {}
+        if task.get('status') != 'running' or progress.get('stage') != 'downloading':
+            continue
+        transferring += 1
+        reported = task.get('progress_updated_at') or progress.get('_reported_at')
+        changed = progress.get('last_bytes_at')
+        rate = progress.get('speed')
+        if ((reported and stamp - reported > 10) or (changed and stamp - changed > 10)
+                or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 0):
+            continue
+        measured += 1
+        speed += rate
+    value['transfer_summary'] = dict(time=stamp, transferring=transferring, measured=measured, speed=speed)
+    if value.get('job'):
+        value['job'] = {key: item for key, item in value['job'].items()
+                        if key not in ('running_videos', 'imports', 'transfer_speed')}
+    return value
 
 
 class Workbench:
@@ -52,7 +80,7 @@ class Workbench:
             result.append(task)
         return result
 
-    def status(self, identity, preview=None):
+    def status(self, identity, preview=None, *, compact=False):
         with self.store.connect() as db:
             row = self.node(identity, db)
             selected = db.execute(select(settings.c.value).where(
@@ -72,7 +100,7 @@ class Workbench:
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
         active = self.decorate_cookie_names(active, None, self.store, scope=identity)
-        job = self.jobs.detail(preview or selected) if preview or selected else None
+        job = self.jobs.detail(preview or selected, details=not compact) if preview or selected else None
         if job and job['deleted']:
             job = None
         if job:
@@ -141,6 +169,7 @@ def register_workbench(app, store, configuration, preflight):
 
     @app.route('/api/jobs/workbench', methods=['GET', 'POST'])
     def download_workbench():
+        compact = request.args.get('compact') == '1'
         fleet = store.fleet
         if not fleet:
             # A standalone service has exactly one executor.
@@ -159,15 +188,16 @@ def register_workbench(app, store, configuration, preflight):
                 workbench.jobs.control(data.get('job_id') or store.selected_download_job(), action,
                     config, {'resume_system': action == 'start'})
             identity = store.selected_download_job()
-            job = workbench.jobs.detail(request.args.get('job_id') or identity) if request.args.get('job_id') or identity else None
+            job = workbench.jobs.detail(request.args.get('job_id') or identity, details=not compact) if request.args.get('job_id') or identity else None
             queue = store.download_queue()
             active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
             active = Workbench.decorate_cookie_names(active, base, store)
             with store.connect() as db:
                 session = store.statistics.current_session(db)
-            return jsonify(instance_id=None, selected_job_id=identity, job=job,
+            value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session)
+            return jsonify(compact_status(value) if compact else value)
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         from webapp.fleet_routes import selected_id, rpc
@@ -185,4 +215,6 @@ def register_workbench(app, store, configuration, preflight):
                 rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
             workbench.control(identity, data.get('action'), data.get('job_id'), expected)
         preview = request.args.get('job_id')
-        return jsonify(views.read(('workbench', identity, preview), lambda: workbench.status(identity, preview)))
+        value = views.read(('workbench', identity, preview, compact),
+                           lambda: workbench.status(identity, preview, compact=compact))
+        return jsonify(compact_status(value) if compact else value)

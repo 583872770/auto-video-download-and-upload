@@ -16,6 +16,55 @@ class WorkbenchFleetTests(unittest.TestCase):
     setup_fleet = test_fleet.FleetTests.setup_fleet
     create = test_jobs.JobTests.create
 
+    def test_compact_fleet_details_and_poll_cache_follow_selected_instance(self):
+        from webapp.display_cache import display_cache
+        display_cache(self.apps['manager']).cache.ttl = 60
+        for selected, other in [('alpha', 'beta'), ('beta', 'alpha'), ('alpha', 'beta')]:
+            response = self.client.get('/api/instances?poll=1&compact=1', headers={'X-Instance-ID': selected})
+            self.assertEqual(response.status_code, 200)
+            items = {item['id']: item for item in response.json['items']}
+            self.assertIn('concurrency', items[selected])
+            self.assertNotIn('concurrency', items[other])
+            self.assertNotIn('throughput', items[selected])
+            self.assertNotIn('current_tasks', items[selected])
+        full = self.client.get('/api/instances?poll=1').json
+        self.assertTrue(all('concurrency' in item for item in full['items'] if item['role'] == 'worker'))
+
+    def test_compact_workbench_retains_counts_session_and_fresh_speed(self):
+        self.pair()
+        task = self.a.claim('alpha-owner')
+        other = self.b.claim('beta-owner')
+        self.a.update_progress(task['id'], dict(stage='downloading', speed=123456, last_bytes_at=time.time()), 'alpha-owner')
+        self.b.update_progress(other['id'], dict(stage='downloading', speed=999999, last_bytes_at=time.time()), 'beta-owner')
+        response = self.client.get('/api/jobs/workbench?poll=1&compact=1', headers={'X-Instance-ID': 'alpha'})
+        value = response.json
+        self.assertEqual(value['running'], 1)
+        self.assertEqual(value['job']['running'], 1)
+        self.assertIsNotNone(value['session'])
+        self.assertNotIn('active_tasks', value)
+        self.assertNotIn('running_videos', value['job'])
+        self.assertEqual(value['transfer_summary']['speed'], 123456)
+        self.assertEqual(value['transfer_summary']['transferring'], 1)
+        full = self.client.get('/api/jobs/workbench?poll=1', headers={'X-Instance-ID': 'alpha'}).json
+        self.assertEqual([item['id'] for item in full['active_tasks']], [task['id']])
+
+    def test_compact_speed_excludes_stale_samples_and_forwarded_json_is_decodable(self):
+        from webapp.workbench import compact_status
+        old = dict(status='running', progress=dict(stage='downloading', speed=1000, _reported_at=time.time() - 20))
+        value = compact_status(dict(active_tasks=[old]))
+        self.assertEqual(value['transfer_summary']['transferring'], 1)
+        self.assertEqual(value['transfer_summary']['measured'], 0)
+        self.assertEqual(value['transfer_summary']['speed'], 0)
+        test_fleet.FleetTests.serve(self, 'alpha')
+        import gzip
+        for encoding in ('gzip', 'identity'):
+            response = self.client.get('/api/status', headers={'X-Instance-ID': 'alpha', 'Accept-Encoding': encoding})
+            self.assertEqual(response.status_code, 200)
+            payload = gzip.decompress(response.data) if encoding == 'gzip' else response.data
+            self.assertIn('tools', json.loads(payload))
+            if encoding == 'identity':
+                self.assertNotIn('Content-Encoding', response.headers)
+
     def test_instance_poll_includes_fresh_console_startup_outside_snapshot(self):
         from webapp.display_cache import display_cache
         display_cache(self.apps['manager']).cache.ttl = 60

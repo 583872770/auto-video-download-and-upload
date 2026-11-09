@@ -133,6 +133,7 @@ def register_fleet(app, fleet):
         headers = {key: value for key, value in request.headers if key.lower() in
                    ('content-type', 'content-length', 'range', 'if-range', 'if-none-match', 'if-modified-since')}
         headers['Authorization'] = 'Bearer ' + row['token']
+        headers['Accept-Encoding'] = request.headers.get('Accept-Encoding', 'identity')
         session = requests.Session()
         session.trust_env = False
         query = [(key, value) for key, value in request.args.items(multi=True) if key != 'instance_id']
@@ -170,7 +171,10 @@ def register_fleet(app, fleet):
     def list_instances():
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
-        return jsonify(**views.read(('instances',), fleet.list),
+        compact = request.args.get('compact') == '1'
+        detail = selected_id() if compact else None
+        return jsonify(**views.read(('instances', compact, detail),
+                       lambda: fleet.list(compact=compact, detail_id=detail)),
                        startup=app.extensions['download_startup'].status(),
                        execution=app.extensions['execution_control'].status())
 

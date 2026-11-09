@@ -107,8 +107,29 @@ h2, .jobs-workspace h2 { font-size: 15px; font-weight: 600; }
 .fleet-selection label { gap: 10px; margin: 0; }
 .fleet-selection select { padding: 6px 9px; font: inherit; background: #fff; min-width: 200px; }
 .fleet-selection .micro-copy { margin: 0; font-size: 11px; flex: 1; }
-.workbench-grid { display: grid; grid-template-columns: minmax(320px,.85fr) minmax(0,1.45fr); gap: 14px; align-items: start; }
-.download-console, #batch-progress-panel { margin: 0; min-width: 0; }
+#overview-view > .download-console { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); align-items: start; gap: 0 24px; margin: 0 0 14px; min-width: 0; }
+#overview-view > .download-console > .panel-heading,
+#overview-view > .download-console > .download-queue-controls,
+#overview-view > .download-console > .startup-panel { grid-column: 1 / -1; }
+#overview-view > .download-console > .selected-job-summary { margin: 0 16px 12px 0; padding: 0; }
+#overview-view > .download-console:has(> .selected-job-summary[hidden]) { grid-template-columns: minmax(0,1fr); }
+#overview-view .selected-job-counts { grid-template-columns: repeat(3,minmax(0,1fr)); }
+#overview-view .download-console .download-job-picker { display: grid; grid-template-columns: minmax(0,.8fr) minmax(0,1.2fr); }
+#overview-view .download-job-picker > .field-label,
+#overview-view .download-job-picker > .micro-copy { grid-column: 1 / -1; }
+#overview-view .download-job-picker input,
+#overview-view .download-job-picker .job-picker-row { min-width: 0; width: 100%; }
+#overview-view .download-queue-controls > .button { flex: 0 1 auto; min-width: 130px; }
+#overview-view .download-queue-controls > .text-button { margin-left: auto; }
+@media (max-width: 850px) {
+  #overview-view > .download-console { grid-template-columns: minmax(0,1fr); gap: 0; }
+  #overview-view > .download-console > .selected-job-summary { margin: 0 16px 12px; }
+}
+@media (max-width: 500px) {
+  #overview-view .download-console .download-job-picker { grid-template-columns: minmax(0,1fr); }
+  #overview-view .download-queue-controls > .button { flex: 1 1 100%; }
+  #overview-view .download-queue-controls > .text-button { margin-left: 0; }
+}
 .download-console .download-job-picker { margin: 0 16px 12px; padding: 0; background: transparent; border: 0; gap: 8px; }
 .download-job-picker input, .download-job-picker select { padding: 8px 10px; border-radius: 6px; font-size: 13px; }
 .download-job-picker .field-label { margin: 0; font-size: 12px; }

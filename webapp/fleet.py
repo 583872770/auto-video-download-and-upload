@@ -235,7 +235,7 @@ class Fleet:
                 # boot's health result must not touch the current session.
                 self.store.statistics.stop_session(db, identity)
 
-    def list(self):
+    def list(self, *, compact=False, detail_id=None):
         from webapp.settings import download_methods
         with self.store.connect() as db:
             stamp = self.clock(db)
@@ -293,7 +293,8 @@ class Fleet:
             budget = int(db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget')).scalar_one())
             from webapp.concurrency_diagnostics import diagnose, read_context
             configurations = [(row['id'], {**json.loads(row['config']).get('config', {}), **self.resource_limits(row)})
-                              for row in rows if row['role'] in DOWNLOAD_ROLES]
+                              for row in rows if row['role'] in DOWNLOAD_ROLES
+                              and (not compact or row['id'] == detail_id)]
             context = read_context(db, configurations, stamp)
             configs = dict(configurations)
             profile_ids = {profile for config in configs.values() for profile in config.get('youtube_cookie_pool', [])}
@@ -316,6 +317,12 @@ class Fleet:
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],
                         auths.get(item['id']), stamp, error=item['error'])
                     item['concurrency']['auth_checked_at'] = auths.get(item['id'], {}).get('checked_at')
+            if compact:
+                for item in result:
+                    item['mode'] = ('cookie_pool' if item['cookie_count'] else
+                                    (item.get('throughput') or {}).get('mode', 'manual'))
+                    for key in ('throughput', 'current_tasks', 'policy'):
+                        item.pop(key, None)
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
     def control(self, identity, data):

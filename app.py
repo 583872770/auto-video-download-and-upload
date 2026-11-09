@@ -50,6 +50,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         configure_database_environment(env_file)
     service_role = normalize_role(role or os.environ.get('VIDEO_SERVICE_ROLE'))
     app = Flask(__name__)
+    from webapp.compression import register_compression
+    register_compression(app)
     from webapp.disk_uploads import BudgetRequest
     app.request_class = BudgetRequest
     app.json.ensure_ascii = False

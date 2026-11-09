@@ -49,6 +49,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
     }
     setInstanceReady(true);
     renderDownloadControl();
+    await loadFleet();
     if (location.hash === '#settings') loadCookieProfiles().catch(error => {
       if (epoch === state.instanceEpoch && instance === state.instanceId && error.name !== 'AbortError') {
         $('#youtube-cookie-list').textContent = error.message;
@@ -125,14 +126,14 @@ function mediaAddress(kind, name, identity) {
   return `/media/${kind}/${encodeURIComponent(name)}${target ? `?instance_id=${encodeURIComponent(target)}` : ''}`;
 }
 function instanceMode(item) {
-  return item.cookie_count ? 'cookie_pool' : item.concurrency?.mode || item.throughput?.mode || 'manual';
+  return item.cookie_count ? 'cookie_pool' : item.concurrency?.mode || item.mode || item.throughput?.mode || 'manual';
 }
 function instanceLive(item) {
   const job = item.selected_job;
   const mode = instanceMode(item), pool = item.concurrency?.cookie_pool;
   const source = mode === 'cookie_pool' ? `本实例 Cookie 池 · ${item.cookie_count || 0} 份${pool?.effective_sessions == null ? '' : ` · ${pool.effective_sessions} 个核心会话`}` : `${mode === 'auto' ? '自动并发' : '手动并发'} · ${item.has_cookie ? '本实例单 Cookie' : '未配置 Cookie'}`;
   const limit = item.concurrency?.effective_limit;
-  const capacity = !item.online || item.paused ? '' : mode === 'cookie_pool' && !pool?.known ? ' · 会话容量待采样'
+  const capacity = !item.online || item.paused ? '' : mode === 'cookie_pool' && item.concurrency && !pool?.known ? ' · 会话容量待采样'
     : limit == null ? '' : ` · 有效传输上限 ${escapeHTML(limit)}`;
   return `<div class="instance-task"><span class="micro-copy">下载任务</span><strong>${job ? escapeHTML(job.customer)+' / '+escapeHTML(job.name) : '尚未选择任务'}</strong></div><div class="fleet-metrics instance-live-metrics"><span>处理中视频 <b>${item.online ? item.running : '—'}</b></span><span>传输中视频 <b>${item.online ? item.transferring : '—'}</b></span><span>总传输速度 <b>${item.online ? bytes(item.speed)+'/s' : '—'}</b></span></div><p class="micro-copy instance-capacity">${escapeHTML(source)}${capacity}</p>`;
 }
@@ -186,7 +187,9 @@ async function loadFleet({ poll = false } = {}) {
   const requestedInstance = state.instanceId;
   const sampledAt = performance.now();
   try {
-  const data = await api('/api/instances' + (poll ? '?poll=1' : ''));
+  const query = new URLSearchParams({compact: '1'});
+  if (poll) query.set('poll', '1');
+  const data = await api('/api/instances?' + query);
   if (requestedInstance !== state.instanceId) return;
   fleetFailures = 0;
   state.fleet = data;

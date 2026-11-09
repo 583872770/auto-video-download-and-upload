@@ -272,7 +272,7 @@ class Jobs:
             ('waiting' if result['waiting_reason'] else 'queued') if result['desired_running'] and result['queued'] else
             'paused' if result['queued'] else 'partial' if result['failed'] else 'completed')
 
-    def detail(self, identity):
+    def detail(self, identity, *, details=True):
         with self.store.connect() as db:
             row = db.execute(select(download_lists, batches.c.created_at).join(batches,
                 batches.c.id == download_lists.c.id).where(download_lists.c.id == identity)).mappings().first()
@@ -282,9 +282,9 @@ class Jobs:
             counts = self.store._counts(db, ['batch:' + identity])
             paused, execution = self.execution_context(db, [row])
             running_videos = [self.store.decode(item) for item in db.execute(select(tasks).where(
-                tasks.c.batch_id==identity,tasks.c.action=='download',tasks.c.status=='running').order_by(tasks.c.seq).limit(16)).mappings()]
+                tasks.c.batch_id==identity,tasks.c.action=='download',tasks.c.status=='running').order_by(tasks.c.seq).limit(16)).mappings()] if details else []
             import_ids = select(job_imports.c.id).where(job_imports.c.job_id == identity)
-            records = db.execute(select(imports).where(or_(imports.c.id.in_(import_ids),imports.c.id==identity)).order_by(imports.c.id).limit(100)).mappings().all()
+            records = db.execute(select(imports).where(or_(imports.c.id.in_(import_ids),imports.c.id==identity)).order_by(imports.c.id).limit(100)).mappings().all() if details else []
             importing = db.execute(select(func.count()).select_from(imports).where(
                 or_(imports.c.id.in_(import_ids),imports.c.id==identity), imports.c.finished == 0)).scalar_one()
             result = self.describe(row, value, counts, paused, execution[identity], importing)

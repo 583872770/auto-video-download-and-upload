@@ -35,14 +35,13 @@ let rotationSavedSignature = '';
 let rotationNodeSignature = '';
 const pages = Object.fromEntries(['tasks', 'media'].map(name => [name, { cursor: null, next: null, history: [] }]));
 state.overview = { recent_media: [], recent_tasks: [], media: { count: 0 } };
-state.batchTasks = [];
 
 const actionNames = { download: '下载视频', subtitles: '补下载字幕', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
   instances: ['下载实例', '下载实例', '汇总全部实例的处理进度、传输速度与异常；每个实例可单独启动和停止。'],
-  overview: ['下载工作台', '下载工作台', '选择实例与任务，启动下载并查看视频处理进度。'],
+  overview: ['下载工作台', '下载工作台', '选择任务并控制下载，按 Cookie 查看传输与等待状态。'],
   media: ['素材库', '素材库', '查看当前实例的成品、封面和文件大小。'],
   tasks: ['执行日志', '执行日志', '排查单个视频或后台操作的执行结果；客户任务在任务中心管理。'],
   statistics: ['交付与账单', '交付与账单', '按客户清单累计成品大小和费用，保留每次开始与暂停的会话明细。'],
@@ -232,24 +231,6 @@ function progressLabel(task) {
   if (browserStages[stage]) return `${providerNames[task.progress?.download_method] || '下载器'} · ${browserStages[stage]}`;
   return { waiting_request: '\u7b49\u5f85 YouTube \u8bf7\u6c42\u95f4\u9694', checking_environment: '检查下载环境', checking_login: '正在检测 YouTube 登录', extracting: '正在解析视频', waiting_transfer: '已解析 · 等待传输', waiting_processing: '等待本地后处理名额', downloading: '正在传输', processing: '合并 / 处理文件', cleaning: '测试下载完成 · 正在清理文件', skipped: '已下载过 · 已跳过', completed: '下载完成' }[stage] || '准备下载';
 }
-function progressVisualState(task) {
-  if (task.status === 'failed') return { className: 'failed', order: 90, label: '失败' };
-  if (task.status === 'interrupted') return { className: 'failed', order: 91, label: '已中断' };
-  if (task.status === 'succeeded') return { className: 'success', order: 92, label: '已完成' };
-  if (task.status === 'queued') return { className: 'queued', order: 80, label: taskPaused(task) ? '等待启动' : '排队中' };
-  const stage = task.progress?.stage || '';
-  if (stage === 'downloading') return { className: 'transferring', order: 0, label: '正在传输' };
-  if (stage === 'uploading_oss') return { className: 'finalizing', order: 30, label: '上传 OSS' };
-  if (stage === 'processing' || stage === 'cleaning') return { className: 'finalizing', order: 30, label: stage === 'cleaning' ? '正在清理' : '合并 / 处理' };
-  if (stage.startsWith('waiting_') || stage === 'disk_wait' || stage === 'switching_provider') {
-    const labels = { waiting_request: '等待请求', waiting_cookie: '等待 Cookie', waiting_transfer: '等待传输', waiting_processing: '等待后处理', waiting_resolver: '等待解析', waiting_browser: '等待浏览器', waiting_verification: '等待验证', waiting_api_conversion: '等待转换', disk_wait: '等待空间', switching_provider: '切换渠道' };
-    return { className: 'waiting', order: 20, label: labels[stage] || '等待资源' };
-  }
-  if (stage === 'extracting' || stage === 'checking_environment' || stage === 'checking_login' || stage === 'preparing_workspace' || stage === 'preparing_proxy') {
-    return { className: 'preparing', order: 10, label: stage === 'extracting' ? '正在解析' : '准备中' };
-  }
-  return { className: 'preparing', order: 15, label: '处理中' };
-}
 function liveTransferSpeed(task) {
   const p = task.progress || {};
   if (task.status !== 'running' || !['downloading', 'uploading_oss'].includes(p.stage)) return null;
@@ -293,24 +274,6 @@ function downloadProgress(task) {
   const cookie = active && data.cookie_profile_name ? `<span class="active-cookie-metric">Cookie <b>${escapeHTML(data.cookie_profile_name)}</b></span>` : '';
   return `<div class="download-meter"><div class="download-meter-label"><span>${escapeHTML(progressLabel(task))}${active && data.stage === 'downloading' && data.format ? ` · ${escapeHTML(data.format)}` : ''}</span><strong>${label}</strong></div><progress max="100"${percentage === null ? '' : ` value="${percentage}"`} aria-label="${importing ? '导入' : uploading ? '上传' : '下载'}进度"></progress><div class="download-metrics"><span>${importing ? '已读取' : uploading ? '当前文件已上传' : queued ? '上次已下载' : '已下载'} <b>${Number.isFinite(transferred) ? bytes(transferred) : '—'}</b>${total ? ` / ${bytes(total)}` : ''}</span><span>${importing ? '处理速度' : '传输速度'} <b>${speed}</b></span><span>${importing ? '预计剩余' : '当前文件剩余'} <b>${active ? etaText(data.eta) : '—'}</b></span>${cookie}${provider ? `<span>${queued ? '上次下载器' : '下载器'} <b>${provider}${data.fallback_used ? '（已自动切换）' : ''}</b></span>` : ''}${data.proxy_node ? `<span>${queued ? '上次节点' : '节点'} <b>${escapeHTML(data.proxy_node)}</b></span>` : ''}</div>${uploading && data.oss_object ? `<p class="micro-copy">OSS 对象：${escapeHTML(data.oss_object)}</p>` : ''}${policy}${timing}${progressFreshness(task)}${data.fallback_reason ? `<p class="micro-copy">${escapeHTML(data.fallback_from || "上一下载器")} 失败原因：${escapeHTML(data.fallback_reason)}</p>` : ''}</div>`;
 }
-function renderBatches() {
-  const tasks = state.batchTasks.filter(task => task.batch_id === selectedJobId);
-  if (!selectedJobId) {
-    $('#batch-count').textContent = '0';
-    $('#batch-summary').textContent = '查看所选任务在当前实例的处理进度。';
-    $('#batch-progress').innerHTML = emptyState('请选择下载任务', '任务视频在任务中心准备；选择任务后可以开始下载。');
-    return;
-  }
-  const queue = state.workbench || {};
-  $('#batch-count').textContent = tasks.length;
-  $('#batch-summary').textContent = `${selectedJob?.name || '所选任务'} · 当前实例执行中的视频，按处理阶段排序`;
-  const orderedTasks = [...tasks].sort((a, b) => {
-    const left = progressVisualState(a), right = progressVisualState(b);
-    return left.order - right.order || (Number(a.seq) || 0) - (Number(b.seq) || 0);
-  });
-  $('#batch-progress').innerHTML = orderedTasks.length ? orderedTasks.map((task, index) => { const visual = progressVisualState(task); const cookie = task.status === 'running' && task.progress?.cookie_profile_name ? ` · Cookie：${escapeHTML(task.progress.cookie_profile_name)}` : ''; return `<article class="batch-video batch-video-${visual.className}" data-download-id="${task.id}" data-progress-state="${visual.className}"><div class="batch-video-heading"><span class="batch-video-index">${index + 1}</span><div class="batch-video-title"><strong title="${escapeHTML(task.progress?.title || task.url || '')}">${escapeHTML(task.progress?.title || task.video_id || task.url || '视频')}</strong><small>${escapeHTML(task.video_id || task.id.slice(0, 8))}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}${cookie}</small></div><span class="batch-video-state"><i aria-hidden="true"></i>${visual.label}</span><button type="button" class="text-button" data-task="${task.id}">查看日志 ↗</button></div>${downloadProgress(task)}${task.error ? `<p class="batch-video-error">${escapeHTML(readableError(task.error))}</p>` : ''}</article>`; }).join('') : emptyState('当前实例没有正在处理的所选任务视频', state.workbench?.paused ? '启动后，在这里查看视频处理进度。' : '视频开始处理后在这里显示进度；已结束的视频请到任务详情查看。');
-  renderPagination();
-}
 function renderPagination() {
   for (const [name, page] of Object.entries(pages)) {
     const prev = $(`[data-page="${name}"][data-direction="prev"]`);
@@ -334,16 +297,20 @@ function decimalGB(value) {
 }
 function renderWorkbenchSpeed() {
   const workbench = state.workbench;
+  const summary = workbench?.transfer_summary;
   const transfers = (workbench?.active_tasks || []).filter(task => task.status === 'running' && task.progress?.stage === 'downloading');
   const measured = transfers.filter(task => liveTransferSpeed(task) !== null);
   const available = workbench && workbench.online !== false;
-  const rate = measured.reduce((sum, task) => sum + liveTransferSpeed(task), 0);
-  const known = available && (!transfers.length || measured.length);
+  const count = summary?.transferring ?? transfers.length;
+  const measuredCount = summary?.measured ?? measured.length;
+  const rate = summary?.speed ?? measured.reduce((sum, task) => sum + liveTransferSpeed(task), 0);
+  const fresh = !summary || Date.now() / 1000 - summary.time <= 10;
+  const known = available && fresh && (!count || measuredCount);
   const [value, unit] = known ? bytes(rate).split(' ') : ['—', ''];
   $('#stat-speed').textContent = value;
   $('#stat-speed-unit').textContent = unit ? `${unit}/s` : '';
-  $('#speed-caption').textContent = !workbench ? '等待实例状态' : !available ? '当前实例离线' : !transfers.length ? '当前没有视频传输' :
-    measured.length < transfers.length ? '部分视频速度待更新' : '汇总当前正在传输的视频速度';
+  $('#speed-caption').textContent = !workbench ? '等待实例状态' : !available ? '当前实例离线' : !fresh ? '传输速度待更新' : !count ? '当前没有视频传输' :
+    measuredCount < count ? '部分视频速度待更新' : '汇总当前正在传输的视频速度';
 }
 function renderOutputSpeed() {
   const element = $('#stat-output-speed');
@@ -371,6 +338,7 @@ function renderOutputSpeed() {
 
 let outputChartSelection = null;
 let outputChartSession = null;
+let outputChartKey = '';
 const outputChartTime = value => new Date(value * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false});
 function renderOutputChart(session) {
   const chart = $('#output-chart-points');
@@ -380,7 +348,10 @@ function renderOutputChart(session) {
   $('#output-chart-content').hidden = !points.length;
   $('#output-chart-empty').hidden = !!points.length;
   if (session?.id !== outputChartSession) { outputChartSelection = null; outputChartSession = session?.id; }
-  if (!points.length) return;
+  if (!points.length) { outputChartKey = ''; return; }
+  const key = JSON.stringify([session.id, points]);
+  if (key === outputChartKey) return;
+  outputChartKey = key;
   const peak = Math.max(0, ...points.map(point => Number(point.output_mbps) || 0));
   const magnitude = 10 ** Math.floor(Math.log10(peak || 1));
   const scale = Math.max(1, Math.ceil(peak / magnitude / 2) * magnitude * 2);
@@ -466,8 +437,10 @@ function renderTasks() {
   $('#stat-complete').textContent = selectedJob?.file_count || 0;
   $('#nav-task-count').textContent = state.counts ? ['succeeded', 'failed', 'interrupted'].reduce((sum, status) => sum + (state.counts[status] || 0), 0) : state.tasks.length;
   $('#active-caption').textContent = selectedJob ? '本任务在全部实例间共享的待下载视频' : '选择任务后查看待下载视频';
-  $('#all-tasks').innerHTML = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
-  renderBatches();
+  if (!$('#tasks-view').hidden) {
+    const html = state.tasks.length ? taskRows(state.tasks) : emptyState('暂无已结束的任务', '可调整搜索条件；任务结束后会自动显示在这里。');
+    if ($('#all-tasks').innerHTML !== html) $('#all-tasks').innerHTML = html;
+  }
 }
 function renderStatus() {
   if (!state.status) return;
@@ -943,15 +916,15 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
   try {
     const view = location.hash.slice(1) || 'overview';
     const stamp = Date.now();
-    const due = (name, visible, interval) => !poll || (visible &&
+    const due = (name, visible, interval) => visible && (!poll || (
       (viewChanged || stamp >= (refreshFailures[name]?.nextAt || 0)) &&
-      (viewChanged || stamp - (refreshedAt[name] || 0) >= interval));
+      (viewChanged || stamp - (refreshedAt[name] || 0) >= interval)));
     const requests = {
       media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
       tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
-      status: due('status', true, $('#youtube-login-dialog').open || (!fleetEnabled && view === 'overview') ? 2000 : 10000) ? '/api/status' : null,
+      status: due('status', view !== 'overview' || !fleetEnabled || !state.status || $('#youtube-login-dialog').open, $('#youtube-login-dialog').open || (!fleetEnabled && view === 'overview') ? 2000 : 10000) ? '/api/status' : null,
       clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
-      overview: due('overview', true, 10000) ? '/api/overview' : null,
+      overview: due('overview', ['tasks', 'media'].includes(view), 10000) ? '/api/overview' : null,
     };
     await Promise.allSettled(Object.entries(requests).filter(([name, path]) => {
       if (!path) return false;
@@ -1023,9 +996,15 @@ function renderStartup() {
 function renderJobOptions() {
   const options = jobOptions.map(job => job.id === selectedJob?.id ? selectedJob : job);
   if (selectedJob && !options.some(job => job.id === selectedJob.id)) options.unshift(selectedJob);
-  $('#download-job').replaceChildren(new Option('请选择一个任务', ''), ...options.map(job =>
-    new Option(`${job.customer} / ${job.name} · 待下载 ${job.queued}`, job.id)));
-  $('#download-job').value = selectedJobId;
+  const selector = $('#download-job');
+  if (selector.options.length !== options.length + 1 || options.some((job, index) => selector.options[index + 1]?.value !== job.id)) {
+    selector.replaceChildren(new Option('请选择一个任务', ''), ...options.map(job => new Option('', job.id)));
+  }
+  options.forEach((job, index) => {
+    const text = `${job.customer} / ${job.name} · 待下载 ${job.queued}`;
+    if (selector.options[index + 1].textContent !== text) selector.options[index + 1].textContent = text;
+  });
+  if (selector.value !== selectedJobId) selector.value = selectedJobId;
   $('#download-jobs-more').hidden = !jobsCursor;
 }
 async function loadDownloadJobs(more = false) {
@@ -1052,7 +1031,7 @@ async function refreshExecution({force = false} = {}) {
   const key = `${state.instanceId || ''}:${selectedJobId || ''}`;
   const stamp = Date.now();
   if (executionPolling || document.hidden || (!force && (stamp < executionRetryAt ||
-      (key === executionSampleKey && stamp - executionSampleAt < 1800)))) return;
+      (key === executionSampleKey && stamp - executionSampleAt < 3800)))) return;
   executionPolling = true;
   executionSampleAt = stamp; executionSampleKey = key;
   try {
@@ -1070,7 +1049,7 @@ async function refreshSelectedJob({poll = false} = {}) {
   const instance = state.instanceId;
   const epoch = ++workbenchEpoch;
   try {
-    const query = new URLSearchParams();
+    const query = new URLSearchParams({compact: '1'});
     if (id) query.set('job_id', id);
     if (poll) query.set('poll', '1');
     const workbench = await api(`/api/jobs/workbench${query.size ? '?' + query : ''}`);
@@ -1091,7 +1070,7 @@ function applyWorkbench(workbench) {
   const id = workbench.selected_job_id || '';
   if (lastStartedJobId !== id && !queueControlBusy && (lastStartedJobId !== null || !selectedJobId)) {
     selectedJobId = id; queueResumeError = '';
-    clearJobLink(); renderJobOptions(); renderBatches();
+    clearJobLink(); renderJobOptions();
     if (workbench.job?.id !== id) {
       selectedJob = null;
       // The selected job changed in another tab; fetch its details next.
@@ -1101,13 +1080,12 @@ function applyWorkbench(workbench) {
   lastStartedJobId = id;
   state.workbench = workbench;
   selectedJob = workbench.job?.id === selectedJobId ? workbench.job : null;
-  state.batchTasks = workbench.active_tasks || [];
   renderTasks();
 }
 async function resetWorkbench() {
   ++workbenchEpoch;
   state.workbench = null; state.config = null; selectedJobId = ''; selectedJob = null; lastStartedJobId = null;
-  state.batchTasks = []; queueResumeError = '';
+  queueResumeError = '';
   clearJobLink(); renderJobOptions(); renderTasks(); renderDownloadControl();
   await refreshSelectedJob();
 }
@@ -1134,7 +1112,7 @@ $('#download-jobs-more').addEventListener('click', () => loadDownloadJobs(true).
 $('#download-job').addEventListener('change', async event => {
   selectedJobId = event.target.value; selectedJob = null; queueResumeError = '';
   clearJobLink();
-  state.batchTasks = []; renderBatches(); renderDownloadControl();
+  renderDownloadControl();
   refresh().catch(error => toast(error.message, true));
   try { await refreshSelectedJob(); } catch (error) { toast(error.message, true); }
 });
@@ -1149,7 +1127,8 @@ function renderDownloadControl() {
   $('#download-job-detail').href = job ? `/jobs#${job.id}` : '/jobs';
   const summary = $('#download-job-summary'); summary.hidden = !job;
   if (job) {
-    summary.innerHTML = `<div class="selected-job-counts">${[['任务待下载视频',job.queued],['当前实例处理中视频',job.running],['任务处理成功',job.succeeded],['任务处理失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
+    const html = `<div class="selected-job-counts">${[['当前实例处理中',job.running],['任务处理成功',job.succeeded],['任务处理失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
+    if (summary.innerHTML !== html) summary.innerHTML = html;
   }
   const alreadyStarted = !!job?.released && !queue?.paused && queue?.selected_job_id===job.id;
   $('#download-queue-start').textContent = queueResuming ? '正在启动…' : alreadyStarted ? '已启动' : '启动';
@@ -1157,8 +1136,6 @@ function renderDownloadControl() {
   $('#download-queue-start').disabled = viewer || queueControlBusy || starting || !state.config || !queue || !queue.online || !job || job.archived || (!job.queued && !job.running && !job.importing) || alreadyStarted || (queue.stop_requested && !!queue.running);
   $('#download-job-pause').disabled = viewer || queueControlBusy || !queue || queue.paused;
   $('#download-job-stop').disabled = viewer || queueControlBusy || !queue || (queue.paused && !queue.running);
-  $('#download-queue-toggle').textContent = '立即停止';
-  $('#download-queue-toggle').disabled = viewer || queueControlBusy || (!starting && (!queue || (queue.paused && !queue.running) || (!queue.running && !queue.queued)));
   const differentJob = queue?.selected_job_id && queue.selected_job_id !== selectedJobId;
   $('#download-selection-status').textContent = differentJob ? '点击“启动”后，当前实例切换到所选任务。' : !job ? '' : job.waiting_reason || (job.running ? (queue?.paused ? '当前实例将在正在处理的视频全部完成后停止。' : '当前实例正在处理所选任务的视频。') : job.released && job.importing ? '等待文件导入，随后自动下载。' : !job.queued && !job.importing ? '没有待下载视频。请到该任务中添加视频或重试失败条目。' : job.released ? '已启动，等待处理所选任务的待下载视频。' : '任务已就绪，点击“启动”开始处理。');
   $('#download-queue-status').textContent = queue ? `当前实例：${instanceState(queue)} · 处理中视频 ${queue.running} 个。` : '正在读取当前实例状态…';
@@ -1208,7 +1185,7 @@ $('#download-queue-start').addEventListener('click', async () => {
   ++workbenchEpoch;
   renderDownloadControl();
   try {
-    const result = await api('/api/jobs/workbench', { method: 'POST', body: { action: 'start', job_id: id }, signal: AbortSignal.timeout(90000) });
+    const result = await api('/api/jobs/workbench?compact=1', { method: 'POST', body: { action: 'start', job_id: id }, signal: AbortSignal.timeout(90000) });
     ++workbenchEpoch; applyWorkbench(result);
     lastStartedJobId = result.job.id; clearJobLink();
     toast(result.warnings?.length ? result.warnings.join('；') : `已启动：${result.job.customer} / ${result.job.name}`);
@@ -1225,35 +1202,13 @@ for (const [selector, action] of [['#download-job-pause','pause'],['#download-jo
     queueControlBusy = true; queueResumeError = ''; renderDownloadControl();
     ++workbenchEpoch;
     try {
-      const result = await api('/api/jobs/workbench',{method:'POST',body:{action}});
+      const result = await api('/api/jobs/workbench?compact=1',{method:'POST',body:{action}});
       ++workbenchEpoch; applyWorkbench(result);
       toast(action==='pause'?'当前实例将在正在处理的视频全部完成后停止。':'已发送立即停止指令，正在停止当前实例的下载。');
       await refresh();
     } catch (error) { queueResumeError = error.message; toast(error.message,true); }
     finally { queueControlBusy = false; renderDownloadControl(); }
   });
-}
-$('#download-queue-toggle').addEventListener('click', async () => {
-  if (queueControlBusy) return;
-  queueControlBusy = true;
-  ++workbenchEpoch;
-  renderDownloadControl();
-  try {
-    const result = await api('/api/jobs/workbench', { method: 'POST', body: {action:'stop'} });
-    ++workbenchEpoch; applyWorkbench(result);
-    toast('已发送立即停止指令，正在停止当前实例的下载。');
-    await pollStartup();
-    await refresh();
-  } catch (error) { toast(error.message, true); }
-  finally { queueControlBusy = false; renderDownloadControl(); }
-});
-
-async function startTask(action, extra = {}) {
-  if (!state.config) throw new Error('配置尚未读取完成，请稍后重试。');
-  const task = await api('/api/tasks', { method: 'POST', body: { action, scope: 'download', ...extra } });
-  toast(`${actionNames[action]}已加入后台队列。`);
-  await openTask(task.id);
-  return task;
 }
 async function openTask(taskId) {
   state.selectedTask = taskId;
@@ -1876,6 +1831,7 @@ async function init() {
   let failures = 0;
   setInterval(async () => {
     if (document.hidden) return;
+    if ((location.hash.slice(1) || 'overview') === 'overview') renderWorkbenchSpeed();
     try { await refresh({ poll: true }); failures = 0; }
     catch { failures += 1; if (failures === 3) toast('暂时无法连接服务，正在自动重试。', true); }
   }, 2000);

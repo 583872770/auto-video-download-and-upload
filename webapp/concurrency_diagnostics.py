@@ -86,7 +86,8 @@ def transfer_allocation(config, identity, channels, caps, context, effective, cu
 
 
 def cookie_allocation(config, identity, pool, allocation, context, stamp, current_tasks, profiles, *,
-                      paused=False, online=True, disk_blocked=False, worker_limit=None, start_gate=None):
+                      paused=False, online=True, disk_blocked=False, worker_limit=None, worker_used=None,
+                      worker_protected=False, start_gate=None):
     """Explain observed admission gates without assigning idle permits to accounts."""
     if not config.get('youtube_cookie_pool'):
         return None
@@ -133,8 +134,10 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             add('paused', '实例已停止领取新任务')
         if disk_blocked:
             add('disk', '磁盘空间限制新任务')
-        if worker_limit and len(current_tasks) >= worker_limit:
-            add('worker_limit', '本机下载进程已占满，等待当前任务完成')
+        occupied_workers = len(current_tasks) if worker_used is None else worker_used
+        if online and worker_limit and occupied_workers >= worker_limit and not grouped.get(profile_id):
+            add('worker_limit', f'本机任务进程 {occupied_workers} / {worker_limit}；' +
+                ('资源保护已降低上限，恢复条件见上方' if worker_protected else '等待当前任务完成后释放名额'))
         if (start_gate or {}).get('next_at', 0) > stamp:
             add('dispatch_interval', '本机正在等待下一次任务领取', start_gate['next_at'])
         elif (start_gate or {}).get('preparing_until', 0) > stamp:
@@ -290,6 +293,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     disk = disks.get(identity, {})
     disk_fresh = 0 <= stamp - disk.get('time', 0) < 90
     start_gate = (rate.get('download_start_gate') or {}) if pooled and fresh and online else {}
+    worker_status = (rate or {}).get('worker_control') if pooled and fresh and online else None
     if pooled:
         upper = min(upper, cookie_pool['capacity'])
         if fresh and rate.get('workers'):
@@ -313,7 +317,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     elif global_limit and upper < transfers:
         bottleneck = '渠道、连接预算或全部实例共享上限限制当前额度'
     elif pooled and fresh and rate.get('workers') and upper == int(rate['workers']) and upper < transfers:
-        bottleneck = '本机下载进程上限限制当前额度；可在 Cookie 设置中调整，仍受内存和数据库预算约束'
+        bottleneck = (f"资源保护下本机任务进程动态上限为 {int(rate['workers'])}，恢复条件见进程状态"
+                      if worker_status and worker_status['resource_limited'] else
+                      f"本机任务进程上限 {int(rate['workers'])} 限制当前额度，仍受配置、内存和数据库预算约束")
     elif upper < transfers:
         bottleneck = '渠道或连接额度低于实例设置'
     elif auto and transfers < requested:
@@ -329,16 +335,24 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                        if key in own_scopes and (pooled or not key.startswith('youtube-cookie-pool:'))}
     decisions = explain(decision_states, rows, cookie_pool, pacing, stamp, paused=paused, running=len(progress))
     allocation = transfer_allocation(config, identity, channels, caps, context, upper, current_tasks)
+    if worker_status:
+        worker_status = {**worker_status, 'used': len(progress),
+                         'stages': {'transferring': stages.get('downloading', 0),
+                             'processing': sum(stages.get(name, 0) for name in
+                                 ('processing', 'waiting_processing', 'cleaning', 'uploading_oss'))}}
+        worker_status['stages']['preparing'] = max(0, len(progress) - sum(worker_status['stages'].values()))
     return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
             'mode': 'cookie_pool' if pooled else 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
             'local_health': (rate or {}).get('risk_local'),
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
             'transfer_allocation': allocation,
+            'worker_control': worker_status,
             'cookie_allocation': cookie_allocation(config, identity, cookie_pool, allocation, context, stamp,
                 current_tasks, cookie_profiles, paused=paused, online=online,
                 disk_blocked=bool(disk_fresh and disk.get('blocked')),
                 worker_limit=int(rate['workers']) if fresh and rate.get('workers') else None,
+                worker_used=len(progress), worker_protected=bool(worker_status and worker_status['resource_limited']),
                 start_gate=start_gate),
             'global_running': global_running,
             'adjustment_reason': rate.get('reason') if fresh else None,

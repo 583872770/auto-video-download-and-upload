@@ -13,6 +13,9 @@ import psutil
 
 from webapp.config_schema import PIPELINE_KEY_FIELDS
 from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, automatic, pool_process_limits
+from webapp.resource_pressure import (CPU_HIGH, CPU_RECOVER, IO_HIGH, WORKER_ADJUST_SECONDS,
+                                      WORKER_REDUCTION, memory_thresholds, pressure_state,
+                                      sample_io_pressure, worker_control)
 
 MIB = 1024 ** 2
 
@@ -189,6 +192,8 @@ class ThroughputController:
         self.browser_trial = None
         self.browser_until = 0
         self.pool_adjusted = 0
+        self.pool_last_reduction = None
+        self.pressure_source = None
 
     def sample(self):
         resources = resource_limits()
@@ -197,12 +202,7 @@ class ThroughputController:
         physical = [v for k, v in net.items() if k != 'lo' and not k.startswith(('veth', 'br-', 'docker', 'Loopback'))]
         resources['rx'] = sum(v.bytes_recv for v in physical)
         resources['cpu_percent'] = psutil.cpu_percent(None)
-        resources['io_pressure'] = 0.0
-        try:
-            line = Path('/proc/pressure/io').read_text().splitlines()[0]
-            resources['io_pressure'] = float(line.split('avg10=')[1].split()[0])
-        except (OSError, ValueError, IndexError):
-            pass
+        resources.update(sample_io_pressure())
         # Host CPU percent alone misses CPU quotas smaller than one host core.
         try:
             content = Path('/sys/fs/cgroup/cpu.stat').read_text()
@@ -231,6 +231,8 @@ class ThroughputController:
             self.group_control.clear()
             self.browser_trial = None
             self.probe_baseline = None
+            self.pool_last_reduction = None
+            self.pressure_hits = 0
         browsers = min(browser_ceiling, self.state['browsers']) if same else min(2, browser_ceiling)
         nominal_workers = max(1, int((resources['memory_total'] * .65 - 256 * MIB -
                                      (browsers * 384 * MIB if browser_methods else 0)) / (128 * MIB)))
@@ -303,8 +305,14 @@ class ThroughputController:
             if 'cpu_usec' in resources and 'cpu_usec' in self.previous:
                 quota_cpu = max(0, resources['cpu_usec'] - self.previous['cpu_usec']) / 1e6 / elapsed / resources['cpu_cores'] * 100
                 cpu = max(cpu, quota_cpu)
-        self.pressure_hits = self.pressure_hits + 1 if cpu >= 90 or resources['io_pressure'] >= 15 else 0
-        pressure = (self.pressure_hits >= 3 or cpu >= 97 or resources['memory_available'] < max(256 * MIB, resources['memory_total'] * .08))
+        source = resources.get('io_pressure_source')
+        if source != self.pressure_source:
+            self.pressure_hits = 0
+            self.pressure_source = source
+        io_pressure = resources.get('io_pressure') or 0
+        self.pressure_hits = self.pressure_hits + 1 if cpu >= CPU_HIGH or io_pressure >= IO_HIGH else 0
+        protection = pressure_state(resources, cpu, self.pressure_hits)
+        pressure = protection['active']
         # Host traffic may include image pulls, backups, and unrelated services.
         # Never use it as evidence that an extra media transfer is productive.
         control_rate = media_rate
@@ -316,7 +324,7 @@ class ThroughputController:
             if pressure:
                 parsing = sum(counts.get(stage, 0) for stage in ('starting_browser', 'connecting_browser',
                     'opening_site', 'waiting_verification', 'submitting_site'))
-                if (parsing and browsers > 1 and resources['io_pressure'] < 15
+                if (parsing and browsers > 1 and io_pressure < IO_HIGH
                         and resources['memory_available'] >= max(384 * MIB, resources['memory_total'] * .08)):
                     # Retire idle parser slots first; admitted media transfers
                     # should not be penalized for browser startup CPU spikes.
@@ -431,16 +439,23 @@ class ThroughputController:
                 if same:
                     previous_workers = min(workers, self.state['workers'])
                     workers = previous_workers
-                    if pressure and tick - self.pool_adjusted >= 60:
-                        workers = max(1, math.floor(previous_workers * .8))
-                    elif (not pressure and cpu < 80 and tick - self.pool_adjusted >= 60
-                          and resources['memory_available'] >= max(512*MIB, resources['memory_total'] * .12)):
+                    if pressure and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS:
+                        workers = max(1, math.floor(previous_workers * WORKER_REDUCTION))
+                        if workers < previous_workers:
+                            self.pool_last_reduction = {'at': time.time(), 'from': previous_workers,
+                                'to': workers, 'reasons': protection['reasons']}
+                    elif (not pressure and cpu < CPU_RECOVER and io_pressure < IO_HIGH
+                          and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS
+                          and resources['memory_available'] >= memory_thresholds(resources['memory_total'])[1]):
                         workers = min(pool_limits['workers'], previous_workers + 1)
                     if workers != self.state['workers']:
                         self.pool_adjusted = tick
                 else:
-                    if resources['memory_available'] < max(256*MIB, resources['memory_total'] * .08):
+                    if resources['memory_available'] < memory_thresholds(resources['memory_total'])[0]:
                         workers = min(workers, 2)
+                        if workers < pool_limits['workers']:
+                            self.pool_last_reduction = {'at': time.time(), 'from': pool_limits['workers'],
+                                'to': workers, 'reasons': protection['reasons']}
                     self.pool_adjusted = tick
                 reason += f'；本机下载进程上限 {workers}，额外任务等待空闲进程'
                 if workers < pool_limits['workers']:
@@ -472,6 +487,11 @@ class ThroughputController:
                       'cookie_pool': cookie_capacity if pooled else None}
         if pooled:
             self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
+            self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
+                self.pool_last_reduction,
+                self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)))
+        self.state.update({key: resources.get(key) for key in ('io_pressure_source', 'io_pressure_host')})
+        if pooled:
             from webapp.download_start_gate import DownloadStartGate
             self.state['download_start_gate'] = DownloadStartGate(self.directory).status(config, self.state['time'])
         _atomic(self.directory / 'throughput.json', self.state)
