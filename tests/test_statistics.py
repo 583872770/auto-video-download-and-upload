@@ -11,24 +11,27 @@ import unittest
 from unittest.mock import patch
 
 from sqlalchemy import event, select
+from sqlalchemy.exc import OperationalError
 
 from tests import test_scale
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.database import archive, deliveries, download_sessions, settings, tasks, test_files, test_totals
+from webapp.database import (archive, deliveries, download_lists, download_sessions, method_totals,
+                             settings, tasks, test_files, test_totals)
 from webapp.statistics import describe
 from webapp.store import TaskStore
 from web_worker import execute
 
 
 class StatisticsContract:
-    def job(self, video='npNnbj46_ik', **config):
+    def job(self, video='npNnbj46_ik', *, batch_id=None, **config):
         # Set the page's current settings for the next execution, rather than
         # relying on a queued task's config to select its provider.
         from webapp.settings import DEFAULTS
         self.store.set_download_settings({**DEFAULTS, 'path': 'videos', 'proxy_mode': 'direct', **config},
                                          self.root, self.store.directory / 'clash')
         return self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', **config},
-            'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=' + video]})
+            'base': str(self.root), 'batch_id': batch_id,
+            'urls': ['https://www.youtube.com/watch?v=' + video]})
 
     def overview(self):
         response = self.client.get('/api/statistics')
@@ -114,6 +117,91 @@ class StatisticsContract:
         self.assertEqual(sorted(results), [False, True])
         current = self.store.statistics.session(job['payload']['download_session_id'])
         self.assertEqual((current['file_count'], current['file_bytes']), (1, 1024))
+
+    def test_file_registration_retries_rolled_back_statistics_without_double_counting(self):
+        for testing in (False, True):
+            with self.subTest(testing=testing):
+                batch = ('a' if testing else 'b') * 32
+                with self.store.connect() as db:
+                    self.store.lists.create(db, batch, {}, 'Retry statistics')
+                    self.store.lists.release(db)
+                self.job('2Gu7q-KUXCk' if testing else 'npNnbj46_ik', batch_id=batch)
+                task = self.claim()
+                path = self.final_file(batch + '.mp4', 1234)
+                session = task['payload']['download_session_id']
+                before = self.store.statistics.session(session)
+                record = self.store.lists.record_file
+                attempts = []
+
+                def deadlock_after_list_update(db, row, size, test):
+                    record(db, row, size, test)
+                    attempts.append(1)
+                    if len(attempts) == 1:
+                        raise OperationalError('fixture', {}, Exception(1213, 'Deadlock'))
+
+                with patch.object(self.store.lists, 'record_file', side_effect=deadlock_after_list_update), \
+                        patch('webapp.db_retry.time.sleep'):
+                    self.assertTrue(self.store.statistics.record_file(task['id'], path, test_mode=testing))
+                self.assertEqual(len(attempts), 2)
+                self.assertFalse(self.store.statistics.record_file(task['id'], path, test_mode=testing))
+                prefix = 'test_file' if testing else 'file'
+                after = self.store.statistics.session(session)
+                self.assertEqual(after[prefix + '_count'] - before[prefix + '_count'], 1)
+                self.assertEqual(after[prefix + '_bytes'] - before[prefix + '_bytes'], 1234)
+                ledger = test_files if testing else deliveries
+                with self.store.connect() as db:
+                    rows = db.execute(select(ledger).where(ledger.c.task_id == task['id'])).all()
+                    listing = db.execute(select(download_lists).where(download_lists.c.id == batch)).mappings().one()
+                    method = db.execute(select(method_totals).where(method_totals.c.session_id == session,
+                        method_totals.c.method == 'yt_dlp')).mappings().one()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual((listing[prefix + '_count'], listing[prefix + '_bytes']), (1, 1234))
+                self.assertEqual((method[prefix + '_count'], method[prefix + '_bytes']), (1, 1234))
+                self.assertEqual(path.stat().st_size, 1234)
+                self.assertEqual(self.store.get(task['id'])['attempts'], 1)
+
+    def test_file_registration_exhaustion_or_lost_connection_rolls_back_all_writes(self):
+        for code, expected_calls in ((1213, 3), (1205, 3), (2006, 1)):
+            with self.subTest(code=code):
+                self.job(str(code).zfill(11))
+                task = self.claim()
+                session = task['payload']['download_session_id']
+                before = self.store.statistics.session(session)
+                record = self.store.lists.record_file
+                calls = []
+
+                def fail_after_updates(db, row, size, test):
+                    record(db, row, size, test)
+                    calls.append(1)
+                    raise OperationalError('fixture', {}, Exception(code, 'database error'))
+
+                with patch.object(self.store.lists, 'record_file', side_effect=fail_after_updates), \
+                        patch('webapp.db_retry.time.sleep'):
+                    with self.assertRaises(OperationalError):
+                        self.store.statistics.record_file(task['id'], self.final_file(str(code) + '.mp4'))
+                self.assertEqual(len(calls), expected_calls)
+                self.assertEqual(self.store.statistics.session(session), before)
+                with self.store.connect() as db:
+                    self.assertFalse(db.execute(select(deliveries).where(deliveries.c.task_id == task['id'])).first())
+
+    def test_file_registration_retry_rechecks_task_ownership(self):
+        from webapp.downloads import DownloadLeaseLost
+        self.job()
+        task = self.claim()
+        path = self.final_file()
+
+        def replace_owner(_):
+            with self.store.connect() as db:
+                db.execute(tasks.update().where(tasks.c.id == task['id']).values(worker_id='new-owner'))
+
+        with patch.object(self.store.lists, 'record_file',
+                side_effect=OperationalError('fixture', {}, Exception(1213, 'Deadlock'))) as record, \
+                patch('webapp.db_retry.time.sleep', side_effect=replace_owner):
+            with self.assertRaises(DownloadLeaseLost):
+                self.store.statistics.record_file(task['id'], path)
+        self.assertEqual(record.call_count, 1)
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(select(deliveries).where(deliveries.c.task_id == task['id'])).first())
 
     def test_pricing_csrf_rounding_units_and_invalid_input_leave_totals_intact(self):
         route = '/api/statistics/pricing'
@@ -311,6 +399,55 @@ class StatisticsContract:
 
 class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
+
+    def test_post_hook_deadlock_does_not_repeat_the_download(self):
+        from webapp.parallel_http import ParallelYoutubeDL
+        content = b'completed video fixture\n' * 100
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        response = self.client.put('/api/config', json={
+            'storage_mode': 'test', 'youtube_sleep_preset': False}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.store.create('download', {'config': {'storage_mode': 'test'}, 'base': str(self.root),
+            'urls': [f'http://127.0.0.1:{server.server_port}/video.mp4']})
+        task = self.claim()
+        record = self.store.lists.record_file
+        calls = []
+
+        def deadlock_once(db, row, size, test):
+            record(db, row, size, test)
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError('fixture', {}, Exception(1213, 'Deadlock'))
+
+        with patch.object(self.store.lists, 'record_file', side_effect=deadlock_once), \
+                patch('webapp.db_retry.time.sleep'), \
+                patch('webapp.downloader.require_download_tools'), \
+                patch.object(ParallelYoutubeDL, 'download', autospec=True,
+                    side_effect=ParallelYoutubeDL.download) as download:
+            result = execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual((result['file_count'], result['file_bytes'], result['files_deleted']),
+                         (1, len(content), True))
+        self.assertTrue(self.store.finish(task['id'], result=result, worker_id=self.store.owner))
+        self.assertEqual(self.store.get(task['id'])['status'], 'succeeded')
+        summary = self.store.statistics.session(task['payload']['download_session_id'])
+        self.assertEqual((summary['test_file_count'], summary['test_file_bytes']), (1, len(content)))
 
     def test_actual_final_files_count_but_test_download_and_archive_skip_do_not_bill(self):
         content = b'actual final video fixture\n' * 201

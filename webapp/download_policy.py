@@ -102,10 +102,12 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
                     or isinstance(c, TransportError) and not isinstance(c, CertificateVerifyError)
                     or type(c).__name__ == 'WebsiteTimeoutError' for c in chain)
     # yt-dlp may flatten IncompleteRead into its terminal error message before
-    # returning a failure code. Match its byte-count diagnostic as well as the
-    # original exception; a partial response is not a permanent content error.
+    # returning a failure code, including responses with no expected byte count.
+    # Match that short form only in the downloader's error/retry diagnostic.
     incomplete_read = any(isinstance(c, (IncompleteRead, YtdlpIncompleteRead)) for c in chain) or bool(re.search(
-        r'\b\d+ bytes read,\s*\d+ more expected\b', lower))
+        r'\b\d+ bytes read,\s*\d+ more expected\b|'
+        r'\[download\]\s+got error:\s*\d+ bytes read\.\s*'
+        r'(?:giving up after \d+ retries|retrying\s*\(\d+/\d+\))', lower))
     no_data = 'did not get any data blocks' in lower
     if any(type(c).__name__ == 'OSSUploadError' for c in chain):
         kind, source, phase = 'storage_failure', 'oss', 'upload'

@@ -333,6 +333,17 @@ class DownloadStatistics:
         size = path.stat().st_size
         if not size:
             return False
+        from webapp.db_retry import transaction_retry
+        # Retry only a completely rolled-back ledger transaction. The caller's
+        # download, final-file processing and receipt publication run just once.
+        recorded = transaction_retry(lambda: self._record_file(
+            task_id, path, size, video_id, title, test_mode=test_mode))
+        if recorded:
+            self._history_cache.clear()
+            self._dashboard_cache.clear()
+        return recorded
+
+    def _record_file(self, task_id, path, size, video_id, title, *, test_mode):
         # A delivered path is registered once across retries and sessions.
         ledger = test_files if test_mode else deliveries
         with self.store.connect() as db:
@@ -372,8 +383,6 @@ class DownloadStatistics:
                 prefix = 'test_file' if test_mode else 'file'
                 self.store._counter(db, scope, prefix + '_count', 1)
                 self.store._counter(db, scope, prefix + '_bytes', size)
-        self._history_cache.clear()
-        self._dashboard_cache.clear()
         return True
 
     def session_rows(self, db, cursor=None, query='', limit=21):

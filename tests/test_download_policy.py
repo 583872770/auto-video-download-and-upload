@@ -109,6 +109,36 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertEqual(value.kind, 'unknown')
         self.assertIsNone(value.http_status)
 
+    def test_incomplete_response_without_expected_length_remains_retryable(self):
+        from webapp.downloads import DownloadFailure
+        from yt_dlp.networking.exceptions import IncompleteRead as YtdlpIncompleteRead
+
+        diagnostic = f'[download] Got error: {YtdlpIncompleteRead(231816)}. Giving up after 2 retries'
+        failure = DownloadFailure()
+        failure.error(diagnostic)
+        for error in (failure.as_error(), RuntimeError(diagnostic)):
+            with self.subTest(error=str(error)):
+                evidence = failure_evidence(error, phase='transfer', source='youtube')
+                self.assertEqual((evidence.kind, evidence.reason, evidence.retryable),
+                                 ('transient_failure', 'incomplete_response', True))
+                self.assertIsNone(evidence.http_status)
+        # Bounded retries must still respect restrictions and local exceptions.
+        for prefix, expected in (('HTTP Error 403: ', 'access_denied'),
+                                 ('HTTP Error 429: ', 'request_rate_limit'),
+                                 ('Requested format is not available: ', 'content_restriction'),
+                                 ('Sign in to confirm you are not a bot: ', 'verification_required')):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(failure_evidence(RuntimeError(prefix + diagnostic)).kind, expected)
+        self.assertEqual(failure_evidence(PipelineBusy(diagnostic)).kind, 'local_resource')
+
+    def test_ordinary_byte_counts_and_urls_do_not_become_incomplete_responses(self):
+        for message in ('231816 bytes read', 'Downloaded 231816 bytes read successfully.',
+                        '[download] 231816 bytes read. Giving up after 2 retries',
+                        'failure https://example.test/[download]GotError?message=231816',
+                        'cookie: [download] Got error: 231816 bytes read. Giving up after 2 retries'):
+            with self.subTest(message=message):
+                self.assertEqual(failure_evidence(RuntimeError(message)).kind, 'unknown')
+
     def test_typed_transport_failure_is_retryable_without_message_keyword(self):
         from yt_dlp.networking.exceptions import TransportError
         value = failure_evidence(TransportError('connection interrupted by peer'))
