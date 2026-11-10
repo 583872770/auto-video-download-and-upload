@@ -161,6 +161,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         from webapp.fleet_routes import register_fleet
         register_fleet(app, fleet)
 
+    from webapp.account_routes import register_accounts
+    register_accounts(app)
+
     @app.after_request
     def response_headers(response):
         response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -313,7 +316,18 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             budget = db.execute(select(diagnostic_settings.c.value).where(diagnostic_settings.c.key == 'fleet_budget')).scalar_one_or_none()
             global_running = db.execute(select(func.count()).select_from(diagnostic_tasks).where(
                 diagnostic_tasks.c.status == 'running', diagnostic_tasks.c.action == 'download')).scalar_one() if int(budget or 0) else 0
-            concurrency = diagnose(config, identity, progress, rate, context, stamp,
+            from webapp.database import cookie_profiles as diagnostic_profiles, youtube_account_cookies as diagnostic_links, youtube_accounts as diagnostic_accounts
+            from webapp.cookie_profiles import CookieProfiles
+            profile_metadata = []
+            if config.get('youtube_cookie_pool'):
+                source = diagnostic_profiles.outerjoin(diagnostic_links,
+                    (diagnostic_links.c.instance_id == diagnostic_profiles.c.scope) & (diagnostic_links.c.profile_id == diagnostic_profiles.c.id))
+                source = source.outerjoin(diagnostic_accounts, diagnostic_accounts.c.id == diagnostic_links.c.account_id)
+                profile_metadata = list(db.execute(select(diagnostic_profiles.c.id, diagnostic_profiles.c.name,
+                    diagnostic_accounts.c.id.label('account_id'), diagnostic_accounts.c.email).select_from(source).where(
+                        diagnostic_profiles.c.scope == CookieProfiles.scope_for(base, store), diagnostic_profiles.c.deleted == 0,
+                        diagnostic_profiles.c.id.in_(config['youtube_cookie_pool']))).mappings())
+            concurrency = diagnose(config, identity, progress, rate, context, stamp, cookie_profiles=profile_metadata,
                 global_limit=int(budget or 0), global_running=global_running,
                 paused=bool(fleet.row(db)['paused']) if fleet else queue.get('paused', False))
             from webapp.subtitles import summary as subtitle_summary
@@ -632,7 +646,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             item = CookieProfiles(base, store).add(request.form.get('name'), data, uploaded.filename)
             # A first upload must be immediately usable. Keep an explicitly
             # selected Cookie untouched when adding a second profile.
-            activated = not bool(config.get('youtube_cookie'))
+            activated = request.form.get('activate') != 'false' and not bool(config.get('youtube_cookie'))
             if activated:
                 config['youtube_cookie'] = f"Cookies/profiles/{item['id']}.txt"
                 config['youtube_cookie_pool'] = []

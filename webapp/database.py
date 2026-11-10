@@ -86,6 +86,33 @@ cookie_bindings = Table('youtube_cookie_bindings', metadata,
     Column('credential', String(64), primary_key=True),
     Column('scope', String(64), nullable=False))
 
+# Global account metadata is independent of executor-local credentials. Secrets
+# are authenticated ciphertext; ordinary queries never need the encryption key.
+youtube_accounts = Table('youtube_accounts', metadata,
+    Column('id', String(32), primary_key=True),
+    Column('email', String(254), nullable=False),
+    Column('normalized_email', String(254), nullable=False, unique=True),
+    Column('secrets_ciphertext', Text, nullable=False), Column('key_id', String(32), nullable=False),
+    Column('note', Text, nullable=False), Column('instance_id', String(64)),
+    Column('version', Integer, nullable=False),
+    Column('created_at', Float, nullable=False), Column('updated_at', Float, nullable=False))
+Index('ix_youtube_accounts_instance', youtube_accounts.c.instance_id)
+youtube_account_owners = Table('youtube_account_owners', metadata,
+    Column('normalized_email', String(254), primary_key=True), Column('instance_id', String(64), nullable=False))
+youtube_account_cookies = Table('youtube_account_cookies', metadata,
+    Column('instance_id', String(64), primary_key=True), Column('profile_id', String(32), primary_key=True),
+    Column('account_id', String(32), nullable=False), Column('confirmed_by', String(64), nullable=False),
+    Column('created_at', Float, nullable=False))
+Index('ix_youtube_account_cookies_account', youtube_account_cookies.c.account_id)
+youtube_account_audit = Table('youtube_account_audit', metadata,
+    Column('id', String(32), primary_key=True), Column('account_id', String(32), nullable=False),
+    Column('actor', String(64), nullable=False), Column('action', String(32), nullable=False),
+    Column('occurred_at', Float, nullable=False))
+youtube_profile_auth = Table('youtube_profile_auth', metadata,
+    Column('instance_id', String(64), primary_key=True), Column('profile_id', String(32), primary_key=True),
+    Column('fingerprint', String(64), nullable=False), Column('context', String(64), nullable=False),
+    Column('auth', Text, nullable=False), Column('last_valid_at', Float, nullable=False))
+
 # Updated in the existing fenced settlement transaction, without extra commits.
 runtime_hours = Table('download_runtime_hours', metadata,
     Column('scope', String(64), primary_key=True), Column('hour', BigInteger, primary_key=True),

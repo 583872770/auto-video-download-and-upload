@@ -95,6 +95,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
     states = context[0]
     sampled = {p['id']: p for p in (pool or {}).get('profiles', [])}
     names = {p['id']: p['name'] for p in profiles}
+    account_metadata = {p['id']: {k:p.get(k) for k in ('account_id','email')} for p in profiles}
     selected = list(dict.fromkeys(config['youtube_cookie_pool']))
     holders = {p['task_id'] for p in allocation['occupied']}
     grouped, unassigned = {}, []
@@ -186,6 +187,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
         if not reasons:
             add('unassigned', '当前未分配任务；仍需等待队列调度')
         accounts.append({'id': profile_id, 'name': names.get(profile_id) or sample.get('name') or profile_id,
+                         **account_metadata.get(profile_id, {}),
                          'known': known, 'state': sample.get('state', 'unknown'),
                          'shared_with': shared, 'shared_name': names.get(shared) or sampled.get(shared, {}).get('name'),
                          'limit': sample.get('limit'), 'active': sample.get('active'),

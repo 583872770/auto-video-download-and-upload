@@ -1,6 +1,6 @@
 # 账号、Cookie 与下载实例的整体页面设计
 
-此文扩展 [账号资料库设计](youtube-account-library-design.md)，页面结构以本文为准。当前交付为设计与可交互演示，不改线上界面、不导入用户实际账号。已有接口、调度和 Cookie 独占绑定规则继续复用。
+此文扩展 [账号资料库设计](youtube-account-library-design.md)，页面结构以本文为准。统一账号管理已接入应用代码，尚未部署或导入用户实际账号；首次部署的密钥配置见 [使用与部署说明](youtube-account-management.md)。已有接口、调度和 Cookie 独占绑定规则继续复用。
 
 ## 一、导航与职责
 

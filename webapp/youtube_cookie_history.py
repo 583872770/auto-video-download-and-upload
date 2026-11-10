@@ -30,7 +30,7 @@ def record(store, *, profile_id=None, profile_name=None, event_type='failure',
                previous_state=safe_text(previous_state)[:32] if previous_state else None,
                new_state=safe_text(new_state)[:32] if new_state else None,
                cooldown_until=cooldown_until, task_id=str(task_id)[:32] if task_id else None,
-               metadata=json.dumps(metadata or {}, ensure_ascii=False)[:4000])
+               metadata=json.dumps({**(metadata or {}), 'instance_id': store.fleet.id if store.fleet else None}, ensure_ascii=False)[:4000])
     def insert(connection):
         row['seq'] = store.db.sequence(connection, 'youtube-cookie-event')
         connection.execute(youtube_cookie_events.insert().values(row))

@@ -19,3 +19,5 @@
   </div>
 </section>
 {% include 'channel_settings.html' %}
+
+<section class="panel settings-panel"><h2>Cookie 池进程容量</h2><div class="scale-fields"><label>Cookie 池下载进程上限<input name="youtube_cookie_pool_worker_limit" type="number" min="1" max="64" required><small>默认 20。控制本实例常驻下载进程，不改变单个 Cookie 的并发和绑定。保存后逐步生效；缩小时，现有任务完成后退出多余进程。</small></label><label>Cookie 池准备进程余量<input name="youtube_cookie_pool_preparation_workers" type="number" min="0" max="16" required><small>默认 4。在渠道与连接预算允许的传输量之外，为解析和请求等待预留的进程额度；与上面的总上限同时生效。</small></label></div><p class="micro-copy">成员和每会话节奏请到账号管理修改。</p></section>

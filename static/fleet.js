@@ -13,7 +13,7 @@ function setInstanceReady(ready, error = '') {
 function instanceHasDraft() {
   const subscriptionName = $('#clash-subscription-name').value.trim();
   const savedName = state.clash?.subscriptions?.find(item => item.id === subscriptionSelection)?.name || '';
-  return state.deploymentDirty || settingsDirty || providerDraft || cookiePoolDraft || rotationDirty ||
+  return state.deploymentDirty || settingsDirty || providerDraft || cookiePoolDraft || state.accountPoolDirty || state.accountSourceDirty || (typeof accountHasDraft === 'function' && accountHasDraft()) || rotationDirty ||
     !!$('#clash-subscription-url').value.trim() || subscriptionName !== savedName ||
     !!$('[data-cookie-file]', $('#youtube-cookie-form')).files.length ||
     !!$('[data-cookie-name]', $('#youtube-cookie-form')).value.trim();
@@ -50,7 +50,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
     setInstanceReady(true);
     renderDownloadControl();
     await loadFleet();
-    if (location.hash === '#settings') loadCookieProfiles().catch(error => {
+    if (location.hash === '#accounts' && typeof accountTab !== 'undefined' && accountTab === 'pool') loadCookieProfiles().catch(error => {
       if (epoch === state.instanceEpoch && instance === state.instanceId && error.name !== 'AbortError') {
         $('#youtube-cookie-list').textContent = error.message;
       }
@@ -74,7 +74,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
 }
 
 function renderInstanceScope() {
-  const local = ['overview','media','settings','clash','instances','deployment',''].includes(location.hash.slice(1));
+  const local = ['overview','media','settings','clash','instances','deployment',''].includes(location.hash.slice(1)) || location.hash === '#accounts' && document.querySelector('[data-account-pane=pool]')?.hidden === false;
   $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
   const target = instanceName(state.instanceId);
   const item = state.fleet?.items.find(item => item.id === state.instanceId);
@@ -95,6 +95,7 @@ function renderInstanceScope() {
     if (button?.lastChild?.nodeType === Node.TEXT_NODE && button.lastChild.textContent !== label) button.lastChild.textContent = label;
   }
   renderInstanceChoices();
+  if (typeof renderAccountScope === 'function') renderAccountScope();
   if (state.instanceError || state.instanceLoading) {
     $('#fleet-selection-note').textContent = state.instanceError || `正在读取“${instanceName(state.instanceId)}”，操作将在读取完成后恢复。`;
   } else if (state.fleet?.items.some(item => ['worker', 'hybrid'].includes(item.role))) {
@@ -156,21 +157,13 @@ function syncInstanceControls() {
 function instanceCard(item, expanded) {
   const id=escapeHTML(item.id), address=encodeURIComponent(item.id);
   const disabled = action => instanceActionDisabled(item, action) ? ' disabled' : '';
-  const pooled = instanceMode(item) === 'cookie_pool', resources = item.resources || {};
-  const field = (label, name, value, min, max) => `<label>${label}<input name="${name}" type="number" min="${min}" max="${max}" value="${escapeHTML(value)}" required></label>`;
-  const capacityFields = pooled ? field('yt-dlp 传输上限（0 = 默认）', 'builtin_transfer_limit', resources.builtin_transfer_limit ?? 0, 0, 64)
-    + field('每核心会话并发上限', 'youtube_cookie_session_limit', resources.youtube_cookie_session_limit ?? 1, 1, 64)
-    + field('共用启动间隔（秒）', 'youtube_cookie_pool_start_interval', resources.youtube_cookie_pool_start_interval ?? 5, 0, 600)
-    + field('本机下载进程上限', 'youtube_cookie_pool_worker_limit', resources.youtube_cookie_pool_worker_limit ?? 20, 1, 64)
-    : field(instanceMode(item) === 'auto' ? '自动调度传输上限' : '视频处理并发上限', 'worker_count', item.worker_count, 1, 64)
-      + (item.uses_browser ? field('浏览器并发上限', 'yt5s_browser_count', item.yt5s_browser_count, 1, 16) : '');
   return `<article class="fleet-instance panel"><form data-instance-form="${id}">
     <div class="panel-heading"><div><h2>${escapeHTML(item.name)}${item.id===state.fleet.instance_id?'（本机访问入口）':''}</h2><p class="micro-copy">${escapeHTML(item.host)}</p></div><span class="count-pill" data-instance-state="${id}" data-online="${item.online}">${instanceState(item)}</span></div>
     <p class="task-error" data-instance-error="${id}" ${item.error?'':'hidden'}>${escapeHTML(item.error || '')}</p>
     <div data-instance-live="${id}">${instanceLive(item)}</div>
-    <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">工作台与诊断 ↗</a><a class="text-button" href="/?instance_id=${address}#settings">Cookie 与完整设置 ↗</a></div>
+    <div class="instance-links"><a class="text-button" href="/?instance_id=${address}#overview">下载工作台 ↗</a><button type="button" class="text-button" data-manage-account-instance="${id}">管理账号 ↗</button><a class="text-button" href="/?instance_id=${address}#settings">实例设置 ↗</a></div>
     <div class="media-library-actions instance-controls"><button type="button" class="button button-white" data-instance-action="resume" data-instance="${id}"${disabled('resume')}>启动</button><button type="button" class="button button-white" data-instance-action="drain" data-instance="${id}"${disabled('drain')}>完成当前后停止</button><button type="button" class="button button-danger" data-instance-action="stop" data-instance="${id}"${disabled('stop')}>立即停止</button></div>
-    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例配置 <span>${pooled ? 'Cookie 池调度' : '并发'} · 磁盘预留</span></summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label>${capacityFields}${field('最低剩余磁盘空间（GB）', 'min_free_gb', item.min_free_gb, 0, 10000)}</div>${pooled ? '<p class="micro-copy">池按会话预热、冷却和可用容量调度，并受 yt-dlp 传输上限约束；0 使用渠道默认上限。调小上限后，已开始的传输继续完成。</p>' : ''}<p class="micro-copy">Cookie 仅归属本实例，同一核心登录凭据不能跨实例使用。删除或离线不会解除绑定。</p><p class="micro-copy">实例 ID：${id}<br>素材目录：${escapeHTML(item.directory)}</p><button type="submit" class="button button-white">保存实例配置到「${escapeHTML(item.name)}」</button><p class="micro-copy">仅保存本实例，后续调度读取新值。离线实例重新连接后才会处理停止指令。</p></details>
+    <details class="instance-options" data-instance-options="${id}" ${expanded?'open':''}><summary>实例详情与名称</summary><div class="fleet-fields"><label>显示名称<input name="name" value="${escapeHTML(item.name)}" required maxlength="100"></label></div><p class="micro-copy">实例 ID：${id}<br>主机：${escapeHTML(item.host)}<br>素材目录：${escapeHTML(item.directory)}</p><p class="micro-copy">进程容量在系统设置修改；账号池成员和节奏在账号管理统一保存。</p><button type="submit" class="button button-white">保存显示名称</button></details>
   </form></article>`;
 }
 let fleetLoading = false;

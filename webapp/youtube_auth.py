@@ -287,9 +287,13 @@ class YouTubeAuth:
                 error.retry_after = max(1, session['cooldown_until'] - time.time())
                 raise error
         # Library checks must not overwrite the selected account's live status.
+        generation = self._read('youtube_auth_generation', '')
+        observed_data = None
         def publish(result):
             if publish_latest:
                 self._write('youtube_auth_latest', result)
+            from webapp.account_auth import publish_profile_auth
+            publish_profile_auth(self.store, config, base, result, generation, observed_data)
 
         if proxy is None:
             proxy = '' if config.get('proxy_mode') == 'direct' else config.get('proxy', '')
@@ -315,6 +319,7 @@ class YouTubeAuth:
             path = resolve_path(base, config['youtube_cookie'])
             with path.open('rb') as stream:
                 data = stream.read(1024 * 1024 + 1)
+            observed_data = data
             cookies = parse_youtube_cookie_file(data)
         except OSError:
             publish(result)
@@ -333,7 +338,6 @@ class YouTubeAuth:
             result.update(state='not_logged_in', message='Cookie 中没有 YouTube 登录凭据，请先登录或上传登录后的 Cookie。')
             publish(result)
             return result
-        generation = self._read('youtube_auth_generation', '')
         signature = hashlib.sha256(data + b'\0' + json.dumps([proxy, node, source, generation]).encode()).hexdigest()
         key = 'youtube_auth:' + signature
         deadline = time.monotonic() + 20

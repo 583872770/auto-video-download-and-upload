@@ -205,7 +205,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
     const metadata = account.shared_with ? `共享账号：${escapeHTML(account.shared_name || account.shared_with)}`
       : cooling ? '冷却期间不再分配新任务，已开始的任务可结束'
       : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}${account.hourly_limit ? ` · 小时启动 ${Number(account.hourly_used || 0)} / ${Number(account.hourly_limit)} · 近24小时启动 ${Number(account.daily_used || 0)} / ${Number(account.daily_limit)}` : ''}`;
-    return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}${live && account.state !== 'unavailable' ? `<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(account.shared_with || account.id)}" aria-haspopup="dialog">${account.state === 'recovery' ? '查看恢复进度与间隔调整' : '查看启动间隔与调整记录'}</button>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
+    return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.email || account.name)}"><button type="button" class="text-button" data-credential-open="${escapeHTML(state.instanceId || accountPoolInstance)}:${escapeHTML(account.id)}">${escapeHTML(account.email || account.name)}</button>${account.email ? `<small>${escapeHTML(account.name)}</small>` : ''}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}${live && account.state !== 'unavailable' ? `<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(account.shared_with || account.id)}" aria-haspopup="dialog">${account.state === 'recovery' ? '查看恢复进度与间隔调整' : '查看启动间隔与调整记录'}</button>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
   }).join('')}</div>` : '<div class="cookie-filter-empty"><strong>没有符合当前筛选条件的 Cookie</strong><p>可清除筛选查看全部账号；账号状态与任务变化后会自动更新结果。</p></div>';
   const spacing = Number.isFinite(cookies.pool_start_interval) ? cookies.pool_start_interval === 0
     ? '已保存的账号池共用启动间隔已关闭。' : `已保存的账号池共用启动间隔为 ${Number(cookies.pool_start_interval)} 秒。`
@@ -283,11 +283,11 @@ function youtubePacingRuntimeHTML(data, draft = {}) {
 }
 function renderYouTubePacingRuntime(data = fleetEnabled
   ? state.fleet?.items.find(value => value.id === state.instanceId)?.concurrency : state.status?.concurrency) {
-  const form = document.querySelector('#settings-form');
+  const form = document.querySelector('#account-pool-form');
   const draft = {mode: form?.elements.youtube_pacing_mode?.value,
     minimum: form?.elements.youtube_start_interval?.value,
     rest: form?.elements.youtube_task_rest_interval?.value,
-    shared: form?.elements.youtube_cookie_pool_start_interval?.value, saved: !settingsDirty};
+    shared: form?.elements.youtube_cookie_pool_start_interval?.value, saved: !state.accountPoolDirty};
   for (const target of document.querySelectorAll('[data-youtube-pacing-runtime]')) {
     if (target.closest('[hidden]')) continue;
     const html = youtubePacingRuntimeHTML(data, draft);

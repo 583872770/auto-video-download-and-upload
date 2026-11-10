@@ -300,7 +300,12 @@ class Fleet:
             profile_ids = {profile for config in configs.values() for profile in config.get('youtube_cookie_pool', [])}
             profile_names = {}
             if profile_ids:
-                for profile in db.execute(select(cookie_profiles.c.scope, cookie_profiles.c.id, cookie_profiles.c.name)
+                from webapp.database import youtube_accounts, youtube_account_cookies
+                source = cookie_profiles.outerjoin(youtube_account_cookies,
+                    (youtube_account_cookies.c.instance_id == cookie_profiles.c.scope) & (youtube_account_cookies.c.profile_id == cookie_profiles.c.id))
+                source = source.outerjoin(youtube_accounts, youtube_accounts.c.id == youtube_account_cookies.c.account_id)
+                for profile in db.execute(select(cookie_profiles.c.scope, cookie_profiles.c.id, cookie_profiles.c.name,
+                        youtube_accounts.c.id.label('account_id'), youtube_accounts.c.email).select_from(source)
                         .where(cookie_profiles.c.scope.in_(configs), cookie_profiles.c.id.in_(profile_ids),
                                cookie_profiles.c.deleted == 0)).mappings():
                     profile_names.setdefault(profile['scope'], []).append(dict(profile))

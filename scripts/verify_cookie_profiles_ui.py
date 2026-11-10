@@ -32,7 +32,7 @@ def main():
                 page = browser.new_page(viewport={'width': 1440, 'height': 1000})
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
-                expect(page.get_by_role('tab')).to_have_count(5)
+                expect(page.locator('.settings-tabs [role=tab]')).to_have_count(4)
                 expect(page.locator('[name="worker_count"]')).to_have_value('1')
                 # Controls and their categories exist before application JS runs.
                 # Hydration must not clone fields or change their constraints.
@@ -46,34 +46,35 @@ def main():
                 live_fields = page.locator('#settings-form [name]').evaluate_all(schema)
                 assert static_fields and static_fields == live_fields
                 assert len({field['name'] for field in static_fields}) == len(static_fields)
-                expect(plain.locator('[role="tabpanel"]')).to_have_count(5)
+                expect(plain.locator('#settings-form [role="tabpanel"]')).to_have_count(4)
                 assert page.evaluate("""() => { const ids = [...document.querySelectorAll('[id]')].map(node => node.id);
                     return ids.length === new Set(ids).size; }"""), 'duplicate DOM ids'
                 plain.close()
                 page.locator('#settings-tab-download').focus()
                 page.keyboard.press('ArrowRight')
-                expect(page.locator('#settings-tab-accounts')).to_be_focused()
-                expect(page.locator('#settings-pane-accounts')).to_be_visible()
+                expect(page.locator('#settings-tab-performance')).to_be_focused()
+                expect(page.locator('#settings-pane-performance')).to_be_visible()
                 page.keyboard.press('End')
                 expect(page.locator('#settings-pane-diagnostics')).to_be_visible()
                 page.keyboard.press('Home')
                 expect(page.locator('#settings-pane-download')).to_be_visible()
-                page.get_by_role('tab', name='Cookie 与登录').click()
+                page.evaluate("setView('accounts'); selectAccountTab('pool')")
                 policy = page.locator('.settings-policy-details')
                 policy.locator('summary').click()
                 interval = page.locator('[name="youtube_start_interval"]')
                 interval_value = interval.input_value()
                 interval.fill('')
                 policy.locator('summary').click()
-                page.get_by_role('tab', name='下载策略').click()
-                page.locator('#settings-form button[type="submit"]').click()
-                expect(page.locator('#settings-pane-accounts')).to_be_visible()
+                page.locator('#account-pool-form button[type="submit"]').click()
                 expect(interval).to_be_visible()
                 interval.fill(interval_value)
+                page.locator('#account-pool-form button[type="submit"]').click()
+                expect(page.locator('#account-pool-save-state')).to_contain_text('已保存')
                 policy.locator('summary').click()
+                page.evaluate("setView('settings')")
                 preview = Path('.cache/workspace-layout-preview')
                 preview.mkdir(parents=True, exist_ok=True)
-                for key in ('download', 'accounts', 'performance', 'storage', 'diagnostics'):
+                for key in ('download', 'performance', 'storage', 'diagnostics'):
                     page.locator(f'#settings-tab-{key}').click()
                     expect(page.locator(f'#settings-pane-{key}')).to_be_visible()
                     expect(page.locator('.settings-category:visible')).to_have_count(1)
@@ -101,16 +102,17 @@ def main():
                 assert saved['worker_count'] == 2 and saved['dir'] == 'layout-check'
                 assert saved['throughput_mode'] == 'manual'
                 page.set_viewport_size({'width': 390, 'height': 844})
-                for key in ('download', 'accounts', 'performance', 'storage', 'diagnostics'):
+                for key in ('download', 'performance', 'storage', 'diagnostics'):
                     page.locator(f'#settings-tab-{key}').click()
                     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), key
                     page.screenshot(path=str(preview / f'{key}-mobile.png'), full_page=True)
                 page.set_viewport_size({'width': 1440, 'height': 1000})
-                page.get_by_role('tab', name='Cookie 与登录').click()
+                page.evaluate("setView('accounts'); selectAccountTab('pool')")
                 section = page.locator('#youtube-cookie-section')
                 expect(section).to_be_visible()
                 expect(section).to_contain_text('当前未选用已保存的 Cookie')
                 form = section.locator('#youtube-cookie-form')
+                section.locator('details summary').last.click()
                 for name in ('Account A', '<b>Account B</b>'):
                     form.locator('[data-cookie-name]').fill(name)
                     form.locator('[data-cookie-file]').set_input_files({'name': 'cookies.txt', 'mimeType': 'text/plain',
@@ -129,12 +131,12 @@ def main():
                 rows.filter(has_text='Account B').get_by_role('button', name='使用此 Cookie').click()
                 expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
                 # Cancelling deletion keeps the selected account and both rows.
-                page.once('dialog', lambda prompt: prompt.dismiss())
                 rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
+                page.get_by_role('button',name='取消',exact=True).last.click()
                 expect(rows).to_have_count(2)
                 expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
-                page.once('dialog', lambda prompt: prompt.accept())
                 rows.filter(has_text='Account A').get_by_role('button', name='删除').click()
+                page.get_by_role('button',name='确认删除',exact=True).last.click()
                 expect(rows).to_have_count(1)
                 expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
                 expect(section.locator('b')).to_have_count(0)
@@ -144,7 +146,7 @@ def main():
                 form.locator('#youtube-cookie-submit').click()
                 expect(section.locator('.cookie-profile-row').filter(has_text='filename-default.txt')).to_be_visible()
                 expect(rows).to_have_count(2)
-                expect(section).to_contain_text('当前实例数据库')
+                expect(section).to_contain_text('Cookie 绑定当前实例')
                 assert 'DUMMY_SECRET' not in section.inner_text()
                 output = Path('.cache/cookie-profiles-preview')
                 output.mkdir(parents=True, exist_ok=True)
@@ -153,8 +155,8 @@ def main():
                 assert section.evaluate('(e) => e.scrollWidth <= e.clientWidth'), 'Mobile Cookie section overflows'
                 page.screenshot(path=str(output / 'mobile.png'))
                 # Deleting the selected profile selects the remaining upload.
-                page.once('dialog', lambda prompt: prompt.accept())
                 rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
+                page.get_by_role('button',name='确认删除',exact=True).last.click()
                 expect(rows).to_have_count(1)
                 expect(rows.filter(has_text='filename-default.txt')).to_contain_text('当前使用')
                 selected = page.request.get(f'http://127.0.0.1:{server.server_port}/api/youtube/cookies').json()['items'][0]
@@ -163,19 +165,19 @@ def main():
                 # Historical browser-login success cannot overwrite the selection.
                 app.extensions['youtube_login']._write({'state': 'succeeded', 'message': 'Fixture past login'})
                 page.reload()
-                page.get_by_role('tab', name='Cookie 与登录').click()
+                page.evaluate("setView('accounts'); selectAccountTab('pool')")
                 expect(rows).to_have_count(1)
                 expect(rows.first).to_contain_text('当前使用')
                 assert page.evaluate('state.config.youtube_cookie') == selected_path
-                page.once('dialog', lambda prompt: prompt.accept())
                 rows.first.get_by_role('button', name='删除').click()
+                page.get_by_role('button',name='确认删除',exact=True).last.click()
                 expect(rows).to_have_count(0)
                 expect(section).to_contain_text('当前未选用已保存的 Cookie')
                 expect(page.locator('[data-youtube-status]').first).to_have_text('尚未登录 YouTube')
                 assert page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']['youtube_cookie'] == ''
                 assert page.evaluate('state.config.youtube_cookie') == ''
                 page.reload()
-                page.get_by_role('tab', name='Cookie 与登录').click()
+                page.evaluate("setView('accounts'); selectAccountTab('pool')")
                 expect(rows).to_have_count(0)
                 expect(section).to_contain_text('当前未选用已保存的 Cookie')
                 assert not errors, errors

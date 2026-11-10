@@ -13,10 +13,10 @@
       <label class="cookie-pool-toggle"><input id="youtube-cookie-pool-enabled" type="checkbox">启用账号池</label>
     </div>
     <div class="cookie-pool-actions">
-      <span id="youtube-cookie-pool-status" class="micro-copy" role="status">选择至少 2 份 Cookie，点击页面底部“保存设置”后生效。</span>
+      <span id="youtube-cookie-pool-status" class="micro-copy" role="status">选择至少 2 份 Cookie，点击页面底部“保存账号池与节奏”后生效。</span>
     </div>
     <div class="cookie-pool-explanation"><strong>一个账号限流，只暂停这个账号</strong><p>明确账号限流：休息至少 1 小时，其他健康账号继续；全部账号冷却时队列自动等待，无需手动恢复。HTTP 429 单独按配置冷却，默认 300 秒；源站要求更长则延长。</p><p>冷却结束自动低频恢复：先单任务、至少 300 秒间隔；从首个获准启动的恢复任务开始观察，成功至少 10 次且满 1 小时后，在成功结算时恢复设置的会话并发。当次不缩短间隔，后续稳定成功才逐步下调，仍受配置和保护下限约束。再次发生影响账号节奏的故障会重置观察并按策略退避。可在下载工作台点击“账号低频恢复”查看条件、进度与间隔调整记录。</p><p>同账号重复导出共享限制；冷却中不发下载、字幕或登录检测请求。登录有效不代表没有限流。登录失效、验证码和旧版本人工拦截仍需按提示处理。</p></div>
-    <p class="micro-copy">账号池开关、成员勾选和每会话任务上限，统一点击页面底部“保存设置”。可在下载中调整；新配置从后续领取或重试的视频生效，已分配 Cookie 的任务继续使用原会话。</p>
+    <p class="micro-copy">账号池开关、成员勾选和每会话任务上限，统一点击页面底部“保存账号池与节奏”。可在下载中调整；新配置从后续领取或重试的视频生效，已分配 Cookie 的任务继续使用原会话。</p>
     <div id="youtube-cookie-pool-live" aria-live="polite"></div>
   </div>
   <div class="cookie-list-card">
@@ -34,7 +34,7 @@
       <p>不要用 <code>--cookies COOKIEFILE --cookies-from-browser BROWSER</code> 导出这段无痕会话。官方说明该方式会读取普通浏览器 Cookie，拿不到无痕 YouTube 会话。</p>
     </details>
   </div>
-  <div id="youtube-cookie-form" class="cookie-upload-card">
+  <details><summary>上传未关联资料的历史 Cookie（当前实例）</summary><div id="youtube-cookie-form" class="cookie-upload-card">
     <div class="cookie-card-heading"><div><h4>新增 Cookie</h4><p class="micro-copy">导出 YouTube 的 Netscape Cookie 文件后上传；名称留空时自动使用文件名。</p></div></div>
     <div class="cookie-upload-fields">
       <label>名称 / 账号备注<input data-cookie-name maxlength="80" placeholder="选填，例如：主账号" autocomplete="off"></label>
@@ -43,6 +43,7 @@
     <p id="youtube-cookie-error" class="task-error" role="alert" hidden></p>
     <div class="cookie-upload-footer"><span class="micro-copy">上传后首份会自动启用；已有当前 Cookie 时不会覆盖。</span><button id="youtube-cookie-submit" class="button button-dark" type="button"><svg><use href="#i-upload"/></svg>上传并保存</button></div>
   </div>
+  </details>
   <dialog id="youtube-cookie-timeline-dialog" class="cookie-timeline-dialog" aria-labelledby="youtube-cookie-timeline-title">
     <div class="dialog-heading"><div><span class="section-kicker">YOUTUBE / COOKIE HISTORY</span><h2 id="youtube-cookie-timeline-title">Cookie 事件时间线</h2></div><button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
     <p id="youtube-cookie-timeline-summary" class="micro-copy"></p>

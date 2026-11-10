@@ -127,6 +127,12 @@ async function refreshCookieRecoveryHistory() {
 document.addEventListener('click', event => {
   const button = event.target.closest('[data-cookie-recovery]');
   if (!button) return;
+  if (typeof openAccountCookie === 'function') {
+    const sessions = cookieRecoverySessions();
+    const selected = sessions.find(s => s.id === button.dataset.cookieRecovery) || sessions.find(s => s.state === 'recovery') || sessions[0];
+    if (selected) openAccountCookie(state.instanceId || accountPoolInstance, selected.id, 'schedule').catch(error => toast(error.message,true));
+    return;
+  }
   const dialog = document.getElementById('cookie-recovery-dialog');
   const sessions = cookieRecoverySessions();
   if (!dialog || !sessions.length) return;

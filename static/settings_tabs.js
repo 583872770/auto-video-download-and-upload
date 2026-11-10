@@ -20,7 +20,9 @@
   };
   document.addEventListener('click', event => {
     const target = event.target.closest('[data-settings-target]');
-    if (target) select(target.dataset.settingsTarget);
+    if (target?.dataset.settingsTarget === 'accounts' && typeof selectAccountTab === 'function') {
+      setView('accounts'); selectAccountTab('cookies');
+    } else if (target) select(target.dataset.settingsTarget);
   });
   document.querySelector('.settings-tabs').addEventListener('keydown', event => {
     const index = tabs.indexOf(document.activeElement);

@@ -10,7 +10,7 @@ import uuid
 from sqlalchemy import select
 from Utils.config import resolve_path
 from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
-from webapp.database import cookie_profiles as table, cookie_bindings
+from webapp.database import cookie_profiles as table, cookie_bindings, youtube_account_cookies, youtube_accounts
 from webapp.cookie_binding import claim, credential_keys, CookieBindingConflict
 
 
@@ -68,7 +68,11 @@ class CookieProfiles:
     def items(self, active=''):
         current = resolve_path(self.base, active).resolve() if active else None
         with self.store.connect() as db:
-            rows = db.execute(select(table.c.id, table.c.name, table.c.created_at).where(
+            source = table.outerjoin(youtube_account_cookies,
+                (youtube_account_cookies.c.instance_id == table.c.scope) & (youtube_account_cookies.c.profile_id == table.c.id))
+            source = source.outerjoin(youtube_accounts, youtube_accounts.c.id == youtube_account_cookies.c.account_id)
+            rows = db.execute(select(table.c.id, table.c.name, table.c.created_at,
+                youtube_accounts.c.id.label('account_id'), youtube_accounts.c.email).select_from(source).where(
                 self._where() & (table.c.deleted == 0)).order_by(table.c.created_at, table.c.id)).mappings().all()
         return [{**row, 'instance_id': self.scope, 'active': self.path(row['id']).resolve() == current} for row in rows]
 

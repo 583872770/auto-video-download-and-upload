@@ -352,7 +352,7 @@ global.$ = ()=>live;
 global.document = {querySelectorAll:selector=>{assert.equal(selector,'[data-cookie-profile-row]'); return [row];}};
 global.cookieAccountNoticesHTML = ()=>'<p>Account A cooling</p>';
 global.failureKindNames = {account_rate_limit:'明确账号限流'};
-const source = fs.readFileSync('static/app.js','utf8');
+const source = fs.readFileSync('static/cookie_profiles.js','utf8');
 vm.runInThisContext(source.slice(source.indexOf('function updateCookiePoolLive('),source.indexOf('let cookiePoolPolling')));
 const session = {id:'a',name:'Account A',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:Date.now()/1000+3600,limit:0,interval:180};
 const data = {pool:{accounts:[{id:'a',configured_limit:3}],session_states:[session],capacity_summary:{}}};

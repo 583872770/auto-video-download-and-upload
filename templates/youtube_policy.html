@@ -1,18 +1,18 @@
 <div class="scale-fields" data-provider-setting="yt_dlp">
-  <label>直连源地址<input name="youtube_source_address" placeholder="留空自动选择；:: 表示仅 IPv6"><small>仅直连生效，登录检测与 yt-dlp 使用相同源地址。修改前需停止当前实例，等待下载、字幕等相关任务结束，并完成或取消浏览器登录；排队任务可保留，保存后使用新地址。Docker 需先具备 IPv6 网络。:: 由系统选择 IPv6，不会自动轮换 16 个地址。</small></label>
+
   <label>YouTube 请求节奏<select name="youtube_pacing_mode"><option value="manual">固定间隔</option><option value="adaptive">渐进调速与累计预算</option></select><small>此选项用于非 Cookie 池模式。渐进模式从至少 60 秒起步，仍受所设最小间隔约束；连续稳定交付至少 6 小时且完成 100 个视频后，每两小时最多缩短 5 秒。Cookie 池在两种模式下均执行逐账号间隔、滚动预算和冷却恢复保护。已开始的文件传输不限制字节速度。</small></label>
 <label>YouTube Cookie 使用策略<select name="youtube_cookie_usage"><option value="auto">按需使用（推荐）</option><option value="always">始终使用已选 Cookie</option><option value="never">仅匿名，不使用 Cookie</option></select><small>按需模式先用匿名请求公开内容；只有 yt-dlp 明确要求登录时才用当前 Cookie 重试一次。Cookie 池始终使用池内会话。</small></label>
-  <label>账号池共用启动间隔（秒）<input name="youtube_cookie_pool_start_interval" type="number" min="0" max="600" required><small>仅 Cookie 账号池生效，默认 5 秒。同一实例的全部 Cookie 共用，分配新视频和开始解析均使用此值；0 表示关闭这项共用间隔。点击“保存设置”后，后续领取的任务使用新值，已预留的等待窗口保留到期。</small></label>
+  <label>账号池共用启动间隔（秒）<input name="youtube_cookie_pool_start_interval" type="number" min="0" max="600" required><small>仅 Cookie 账号池生效，默认 5 秒。同一实例的全部 Cookie 共用，分配新视频和开始解析均使用此值；0 表示关闭这项共用间隔。点击“保存账号池与节奏”后，后续领取的任务使用新值，已预留的等待窗口保留到期。</small></label>
   <label>两次任务启动最小间隔（秒）<input name="youtube_start_interval" type="number" min="0" max="600" required><small>默认 120 秒。从上一个视频任务启动时开始计时。账号池按每个 Cookie 单独计算，非账号池按当前实例计算；预热、恢复和历史退避可能延长实际间隔。历史限流账号降至 120 秒后，每档至少观察 15 分钟且成功 5 次，再减少最多 15 秒，逐步接近此值；降低设置不会立即清除账号保护。固定模式 0 表示关闭，渐进模式以此为提速下限。</small></label>
   <label>任务结束后休息时间（秒）<input name="youtube_task_rest_interval" type="number" min="0" max="3600" required><small>默认 0 秒（关闭）。视频任务结束后再计时，成功和已发起请求的失败均生效；仅等待本地资源、尚未开始请求的任务不计入。账号池每个 Cookie 独立休息，其他账号继续调度；非账号池作用于当前实例。两项限制取更晚的可启动时间，不直接相加。例如启动间隔 100 秒、休息 30 秒：任务耗时 20 秒，下次最早在启动后第 100 秒；耗时 150 秒，则最早在第 180 秒。保存后供后续任务使用，已有任务继续运行。</small></label>
-  <label>Cookie 池每会话任务上限<input name="youtube_cookie_session_limit" type="number" min="1" max="64" required><small>默认 1，每会话最多同时处理 1 个任务；调高后，预热和恢复期仍限制为 1 个任务。账号容量按有效会话累计，最多 64；本机实际进程还受下面的上限、内存和数据库预算约束。冷却、登录拦截和启动间隔仍生效。</small></label>
-  <label>Cookie 池下载进程上限<input name="youtube_cookie_pool_worker_limit" type="number" min="1" max="64" required><small>默认 20。控制本实例常驻下载进程，不改变单个 Cookie 的并发和绑定。保存后逐步生效；缩小时，现有任务完成后退出多余进程。</small></label>
-  <label>Cookie 池准备进程余量<input name="youtube_cookie_pool_preparation_workers" type="number" min="0" max="16" required><small>默认 4。在渠道与连接预算允许的传输量之外，为解析和请求等待预留的进程额度；与上面的总上限同时生效。</small></label>
+  <label>Cookie 池每会话任务上限<input name="youtube_cookie_session_limit" type="number" min="1" max="64" required><small>默认 1，每会话最多同时处理 1 个任务；调高后，预热和恢复期仍限制为 1 个任务。账号容量按有效会话累计，最多 64；本机实际进程还受系统设置中的进程上限、内存和数据库预算约束。冷却、登录拦截和启动间隔仍生效。</small></label>
+
+
   <div class="youtube-pacing-runtime" data-youtube-pacing-runtime role="status" aria-live="polite">正在读取当前实例的实际启动间隔…</div>
   <label>滚动一小时启动预算<input name="youtube_hourly_start_limit" type="number" min="1" max="5000" required><small>默认每账号 30 次。账号池在固定和渐进模式下均生效，正常视频与重试共用额度，内容失败也计入。非池模式仅渐进模式生效，并同时约束实例与登录会话（包括字幕补下载）。</small></label>
-  <label>滚动二十四小时启动预算<input name="youtube_daily_start_limit" type="number" min="1" max="5000" required><small>默认每账号 720 次。账号池在固定和渐进模式下均生效；用完后等待滚动窗口释放，保存设置、重启或同名账号重新导入不会清空池内记录。单 Cookie 渐进模式使用独立的实例与会话记录。这是本地保护预算，不是平台配额。</small></label>
-  <label>Cookie 会话返回不可用时<select name="youtube_cookie_fallback"><option value="false">保留原始错误，不增加匿名请求（推荐）</option><option value="true">同一出口不带 Cookie 重试一次</option></select><small>匿名重试可能触发机器人验证，默认关闭。验证失败仍暂停实例，不能据此断定 Cookie 失效。</small></label>
+  <label>滚动二十四小时启动预算<input name="youtube_daily_start_limit" type="number" min="1" max="5000" required><small>默认每账号 720 次。账号池在固定和渐进模式下均生效；用完后等待滚动窗口释放，保存账号池与节奏、重启或同名账号重新导入不会清空池内记录。单 Cookie 渐进模式使用独立的实例与会话记录。这是本地保护预算，不是平台配额。</small></label>
+  <label>Cookie 会话返回不可用时<select name="youtube_cookie_fallback"><option value="false">保留原始错误，不增加匿名请求（推荐）</option><option value="true">同一出口不带 Cookie 重试一次</option></select><small>匿名重试可能触发机器人验证，默认关闭。池内可归属账号的验证失败只暂停该账号，不能据此断定 Cookie 失效。</small></label>
   <label>yt-dlp 请求等待预设<select name="youtube_sleep_preset"><option value="true">启用 sleep 预设（推荐）</option><option value="false">关闭预设等待</option></select><small>采用 yt-dlp 的 sleep 预设：解析请求间隔 0.75 秒、每个媒体文件开始前等待 10～20 秒、字幕等待 5 秒。视频 / 音轨可能分别等待；不限制已开始文件的字节传输速度。它与上面的视频启动间隔共同生效，不能保证免限流。</small></label>
   <p class="micro-copy">账号被限流时，源站可能不返回 HTTP 429。Cookie 池中识别到具体限流账号时，任务绑定原账号等待，其他账号按各自间隔和额度继续，不承接其重试压力；同一账号一天内重复限流按 1 / 2 / 4 / 8 小时递增冷却。到期自动单路、至少 300 秒间隔恢复，达到 10 次成功且观察满一小时后恢复配置容量，间隔继续逐步缩短。非池模式或无法确定账号时，仍停止实例并要求人工确认。登录有效、固定 IP 和更多 IPv6 都不代表账号没有配额限制。</p>
-  <label>YouTube HTTP 429 最短冷却（秒）<input name="youtube_throttle_cooldown" type="number" min="30" max="3600" required><small>默认 300 秒；若源站 Retry-After 更长则按更长时间等待，之后保留现有单路恢复观察。机器人验证或登录失效仍会暂停实例，不能靠冷却保证恢复。</small></label>
+  <label>YouTube HTTP 429 最短冷却（秒）<input name="youtube_throttle_cooldown" type="number" min="30" max="3600" required><small>默认 300 秒；若源站 Retry-After 更长则按更长时间等待，之后保留现有单路恢复观察。池内可归属的机器人验证或登录失效只暂停该账号，不能靠冷却保证恢复。</small></label>
 </div>

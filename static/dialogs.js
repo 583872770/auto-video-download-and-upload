@@ -5,6 +5,9 @@
 (() => {
   let backdropPress = null;
   let confirmationNumber = 0;
+  window.closeWorkspaceDialog = dialog => {
+    if (dialog.dispatchEvent(new CustomEvent('dialogbeforeclose', {cancelable:true}))) dialog.close();
+  };
 
   // Keep confirmation windows dismissible as well. Closing without pressing
   // the affirmative button always resolves to cancellation.
@@ -73,6 +76,6 @@
     // from inside the dialog from dismissing it on release over the backdrop.
     if (event.button !== 0 || !pressed || !outsideDialog(event, pressed.dialog)) return;
     event.preventDefault();
-    pressed.dialog.close();
+    closeWorkspaceDialog(pressed.dialog);
   }, true);
 })();
