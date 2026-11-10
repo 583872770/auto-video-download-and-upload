@@ -13,6 +13,7 @@ from webapp.concurrency_policy import (automatic, backend_limits, cookie_pool_st
 from webapp.throughput import policy_key
 from webapp.decision_diagnostics import public_failure
 from webapp.config_schema import DEFAULTS
+from webapp.cookie_policy import task_rest_until
 
 
 def scopes_for(config, identity):
@@ -161,8 +162,12 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
                     add('account_busy', '账号并发已满，等待当前任务结束')
                 if sample.get('budget_until', 0) > stamp:
                     add('account_budget', '账号滚动启动预算已用完', sample['budget_until'])
+                elif sample.get('rest_until', 0) > stamp:
+                    add('account_rest', '等待任务结束后休息时间', sample['rest_until'])
+                    if sample.get('next_start_at', 0) > sample['rest_until']:
+                        add('account_interval', '等待两次任务启动最小间隔', sample['next_start_at'])
                 elif sample.get('next_start_at', 0) > stamp:
-                    add('account_interval', '等待账号启动间隔', sample['next_start_at'])
+                    add('account_interval', '等待两次任务启动最小间隔', sample['next_start_at'])
                 pool_next, start_next = gate.get('next_at', 0), start.get('next_at', 0)
                 if pool_next > stamp and start_next > stamp:
                     add('pool_interval', '等待共用启动间隔', max(pool_next, start_next))
@@ -366,6 +371,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
             'subtitle_mode': config.get('subtitle_mode', 'optional'),
             'youtube_start_interval': int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])),
+            'youtube_task_rest_interval': int(config.get('youtube_task_rest_interval', DEFAULTS['youtube_task_rest_interval'])),
+            'youtube_task_rest_until': task_rest_until(config, states.get('youtube-start:' + identity, {})) if not pooled else 0,
             'youtube_cookie_pool_start_interval': cookie_pool_start_interval(config),
             'youtube_pacing': pacing,
             'youtube_waiting': stages.get('waiting_request', 0),

@@ -24,10 +24,9 @@ from webapp.concurrency_policy import (MAX_TRANSFERS, cookie_pool_start_interval
                                       cookie_session_limit as session_limit)
 from webapp.cookie_policy import (account_interval, start_budget, retry_interval, account_limit_delay,
                                   RECOVERY_INTERVAL, RECOVERY_WINDOW, RECOVERY_SUCCESSES,
-                                  STABLE_ACCOUNT_INTERVAL, MATURE_ACCOUNT_INTERVAL,
-                                  STABLE_SUCCESSES, STABLE_WINDOW, MATURE_SUCCESSES, MATURE_WINDOW,
-                                  STABLE_STEP, MATURE_STEP,
-                                  pacing_progress)
+                                  STABLE_SUCCESSES, STABLE_WINDOW, PROTECTION_INTERVAL,
+                                  pacing_progress, task_rest_until, next_account_start,
+                                  advance_account_interval)
 from webapp.config_schema import DEFAULTS
 
 
@@ -101,8 +100,8 @@ def session_view(identity, name, state, config, stamp, *, pacing=None):
     recovery = bool(state.get('recovery_mode'))
     starts, budget_until = start_budget(config, state, stamp)
     return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
-        active=int(state.get('active', 0)), next_start_at=max(state.get('next_at', 0), budget_until,
-            state.get('last_start', 0) + account_interval(config, state) if state.get('last_start') else 0),
+        active=int(state.get('active', 0)), next_start_at=next_account_start(config, state, budget_until),
+        last_finished_at=state.get('last_finished_at', 0), rest_until=task_rest_until(config, state),
         hourly_used=sum(s > stamp - 3600 for s in starts), daily_used=len(starts), budget_until=budget_until,
         hourly_limit=int(config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit'])),
         daily_limit=int(config.get('youtube_daily_start_limit', DEFAULTS['youtube_daily_start_limit'])),
@@ -298,7 +297,7 @@ class CookiePool:
         self.router.transaction_call(clear)
 
     @contextmanager
-    def assignment(self, profile_id=None, *, count_success=True, manual_retry=False):
+    def assignment(self, profile_id=None, *, count_success=True, manual_retry=False, rest_on_finish=True):
         router = self.router
         if not router.enabled or not self.accounts:
             raise ValueError('Cookie 账号池必须通过下载队列执行，且至少选择一个账号。')
@@ -327,8 +326,7 @@ class CookiePool:
                 if profile_id and identity != self.aliases.get(profile_id, profile_id):
                     continue
                 _, budget_until = start_budget(self.config, state, stamp)
-                next_at = max(state.get('next_at', 0), state.get('cooldown_until', 0), budget_until,
-                    state.get('last_start', 0) + account_interval(self.config, state) if state.get('last_start') else 0)
+                next_at = max(state.get('cooldown_until', 0), next_account_start(self.config, state, budget_until))
                 if next_at > stamp:
                     delays.append(next_at - stamp)
                     continue
@@ -403,17 +401,23 @@ class CookiePool:
                     # A local resource wait before any source request must not
                     # consume the rolling account budget. Crashes conservatively
                     # retain their reservation until the rolling window expires.
-                    def refund_unstarted(db, stamp):
+                    def finish_assignment(db, stamp):
                         state = router._state(db, scope)
                         pending = state.get('pending_starts', {})
                         if pending.get(router.task_id) != admitted_at:
+                            # Resolution consumed this reservation: success,
+                            # content errors and transfer failures all end an
+                            # attempt. Local waits before resolution do not.
+                            if rest_on_finish and router._owned(db, stamp):
+                                state['last_finished_at'] = max(state.get('last_finished_at', 0), stamp)
+                                router._save(db, scope, state)
                             return
                         pending.pop(router.task_id)
                         starts = state.get('starts', [])
                         if admitted_at in starts:
                             starts.remove(admitted_at)
                         router._save(db, scope, state)
-                    router.transaction_call(refund_unstarted)
+                    router.transaction_call(finish_assignment)
                 finally:
                     router._release(token)
 
@@ -474,6 +478,12 @@ class CookiePool:
                     self.router._save(db, scope, state)
                     return
             if failure:
+                # Any source failure affecting account pacing invalidates the
+                # current stage's observations. Content/local errors returned
+                # above never reach this branch.
+                state.pop('protection_stage', None)
+                if state.get('recovery_interval_floor'):
+                    state['recovery_interval_floor'] = PROTECTION_INTERVAL
                 previous_interval = int(state.get('interval', 60))
                 previous_state = ('recovery' if state.get('recovery_mode') else
                                   'cooldown' if state.get('cooldown_until', 0) > stamp else 'ready')
@@ -485,7 +495,7 @@ class CookiePool:
                 state.update(limit=1, streak=0, first_success=0,
                              cooldown_kind='repeated_http_403' if denied else failure.kind,
                              last_failure_at=stamp,
-                             interval=min(600, max(120, state.get('interval', 60) * 2)),
+                             interval=min(600, max(PROTECTION_INTERVAL, state.get('interval', 60) * 2)),
                              cooldown_until=max(state.get('cooldown_until', 0), until))
                 if state.get('recovery_mode'):
                     state.update(recovery_started_at=0, recovery_successes=0,
@@ -494,7 +504,8 @@ class CookiePool:
                     state.update(limited_at=stamp,
                                  limited_count=state.get('limited_count', 0) + 1,
                                  recovery_mode=True, recovery_started_at=0, recovery_successes=0,
-                                 interval=max(RECOVERY_INTERVAL, state['interval']), recovery_interval_floor=120)
+                                 interval=max(RECOVERY_INTERVAL, state['interval']),
+                                 recovery_interval_floor=PROTECTION_INTERVAL)
                 remember_decision(state, failure, layer='session', scope='Cookie：' + self.profile_names.get(profile_id, profile_id),
                     action=current_policy.action, until=until, manual=current_policy.manual, stamp=stamp)
                 record_cookie_event(self.router.store, db=db, profile_id=profile_id,
@@ -555,23 +566,16 @@ class CookiePool:
                     # Keep the legacy warmup marker; session_limit() applies
                     # the current per-session configuration after warmup.
                     state['limit'] = 2
-                    # The first stable window only moves to 45s.  A mature
-                    # session (20 clean completions over at least 30 minutes)
-                    # can step down to 30s; any error below resets it to 120s.
-                    floor = (MATURE_ACCOUNT_INTERVAL
-                             if state['successes'] >= MATURE_SUCCESSES and stamp - state['first_success'] >= MATURE_WINDOW
-                             else STABLE_ACCOUNT_INTERVAL)
-                    step = MATURE_STEP if floor == MATURE_ACCOUNT_INTERVAL else STABLE_STEP
-                    previous_interval = int(state.get('interval', 60))
-                    state['interval'] = max(floor, state.get('recovery_interval_floor', 0),
-                                            state.get('interval', 60) - step)
-                    if state['interval'] != previous_interval:
-                        record_cookie_event(self.router.store, db=db, profile_id=profile_id,
-                            profile_name=self.profile_names.get(profile_id, profile_id),
-                            event_type='interval_change', phase='success', kind='stable_success',
-                            message='连续稳定完成任务，逐步缩短启动间隔。',
-                            previous_interval=previous_interval, new_interval=state['interval'],
-                            previous_state='ready', new_state='ready',
-                            metadata={'successes': state['successes'], 'streak': state['streak']})
+                previous_interval = int(state.get('interval', 60))
+                kind = advance_account_interval(self.config, state, stamp, admitted_at=admitted_at)
+                if state.get('interval', 60) != previous_interval:
+                    record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                        profile_name=self.profile_names.get(profile_id, profile_id),
+                        event_type='interval_change', phase='success', kind=kind,
+                        message=('本档观察至少 15 分钟且有效成功至少 5 次，降低一档启动间隔。'
+                                 if kind == 'protection_stage' else '连续稳定完成任务，逐步缩短启动间隔。'),
+                        previous_interval=previous_interval, new_interval=state['interval'],
+                        previous_state='ready', new_state='ready',
+                        metadata={'successes': state['successes'], 'streak': state['streak']})
             self.router._save(db, scope, state)
         self.router.transaction_call(record)

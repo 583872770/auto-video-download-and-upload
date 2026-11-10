@@ -127,6 +127,50 @@ class YouTubePolicyTests(unittest.TestCase):
         with self.assertRaises(DownloadLeaseLost):
             scheduler.wait_youtube_start(scheduler.channels[0])
 
+    def test_nonpool_task_rest_applies_in_manual_and_adaptive_modes(self):
+        from webapp.throughput import PipelineBusy
+        from webapp.youtube_pacing import YouTubePacing
+        for mode in ('manual', 'adaptive'):
+            scheduler = self.scheduler()
+            scheduler.config.update(youtube_start_interval=0, youtube_task_rest_interval=30)
+            if mode == 'adaptive':
+                scheduler.youtube_pacing = YouTubePacing(scheduler)
+            now = time.time()
+            scheduler.clock = lambda db: now
+            scheduler.finish_youtube_task()
+            with self.assertRaises(PipelineBusy) as waiting:
+                scheduler.wait_youtube_start(scheduler.channels[0])
+            self.assertIn('休息', str(waiting.exception))
+            now += 30
+            scheduler.wait_youtube_start(scheduler.channels[0])
+
+    def test_execute_records_rest_after_source_attempt_even_on_content_failure(self):
+        from web_worker import execute
+        for started, failed in ((False, False), (True, False), (True, True)):
+            with self.subTest(started=started, failed=failed):
+                scheduler = self.scheduler()
+                def perform(action, payload, *args):
+                    if started:
+                        active = ChannelScheduler(self.store, payload['config'], scheduler.task_id)
+                        with active.permit(active.channels[0], 'resolve'):
+                            pass
+                    if failed:
+                        raise RuntimeError('Video has been removed by the uploader')
+                    return {'skipped': True, 'file_count': 0}
+                payload = {'base': str(self.root), 'urls': ['https://youtu.be/00000000001'],
+                           'config': {'path': str(self.root / 'videos'), 'youtube_task_rest_interval': 30,
+                                      'disk_min_free_gb': 0, 'disk_resume_free_gb': 0}}
+                def finish(router):
+                    self.assertEqual(router.task_id, scheduler.task_id)
+                with patch('web_worker._execute', side_effect=perform), \
+                        patch.object(ChannelScheduler, 'finish_youtube_task', autospec=True, side_effect=finish) as record:
+                    if failed:
+                        with self.assertRaisesRegex(RuntimeError, 'removed'):
+                            execute('download', payload, store=self.store, task_id=scheduler.task_id)
+                    else:
+                        execute('download', payload, store=self.store, task_id=scheduler.task_id)
+                self.assertEqual(record.call_count, int(started))
+
     def test_pool_parser_uses_configured_shared_interval_and_preserves_old_window(self):
         scheduler = self.scheduler()
         scheduler.config.update(_cookie_pool_selected='fixture', youtube_cookie_pool_start_interval=3,

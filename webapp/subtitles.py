@@ -52,7 +52,7 @@ def run_subtitles(store, payload, report):
         pool = CookiePool(store, config, payload['base'], payload.get('_task_id'))
         # Sidecars must use the original video's account and share its cooling,
         # permits and start interval. A subtitle is not a successful video.
-        with pool.assignment(config.get('_cookie_pool_selected'), count_success=False) as selected:
+        with pool.assignment(config.get('_cookie_pool_selected'), count_success=False, rest_on_finish=False) as selected:
             return run_subtitles(store, {**payload, 'config': selected,
                 '_subtitle_pool_admitted': True}, report)
     scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=payload['base'])

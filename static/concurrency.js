@@ -109,7 +109,7 @@ function cookieTaskState(stage) {
 
 const cookieTaskFilters = [
   ['all', '全部'], ['transferring', '正在传输'], ['preparing', '准备 / 解析'],
-  ['waiting', '等待中'], ['processing', '后处理中'], ['idle', '无任务'],
+  ['waiting', '等待中'], ['processing', '后处理中'], ['cooldown', '账号冷却中'], ['idle', '无任务'],
 ];
 const cookieAccountFilters = [
   ['all', '全部账号'], ['normal', '正常'], ['cooldown', '冷却中'],
@@ -134,7 +134,8 @@ function cookieFilterStates(account, current) {
   const stages = new Set();
   if (current) {
     const tasks = account.tasks || [];
-    if (!tasks.length) stages.add('idle');
+    if (health === 'cooldown') stages.add('cooldown');
+    else if (!tasks.length) stages.add('idle');
     for (const task of tasks) {
       const stage = typeof task.stage === 'string' ? task.stage : '';
       if (stage === 'downloading') stages.add('transferring');
@@ -171,7 +172,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
   const selection = compact ? null : cookieFilterSelection();
   const view = compact ? null : cookieFilterView(cookies.accounts, current, selection);
   const filters = compact ? '' : cookieFiltersHTML(view, selection);
-  const summary = compact ? '' : `<p class="cookie-filter-summary" role="status">当前展示 <b>${view.accounts.length} / ${cookies.accounts.length}</b> 个 Cookie · 上方为实例整体数据。<span>数量按 Cookie 卡片统计，同一卡片可匹配多个任务状态；两项筛选同时满足才展示。${current ? '“等待中”指已有任务等待；“无任务”的具体原因见卡片。' : '实例离线或采样已过期，当前任务状态待确认。'}</span></p>`;
+  const summary = compact ? '' : `<p class="cookie-filter-summary" role="status">当前展示 <b>${view.accounts.length} / ${cookies.accounts.length}</b> 个 Cookie · 上方为实例整体数据。<span>数量按 Cookie 卡片统计，同一卡片可匹配多个任务状态；两项筛选同时满足才展示。${current ? '“等待中”指已有任务等待；冷却账号单列为“账号冷却中”，不计入“无任务”。' : '实例离线或采样已过期，当前任务状态待确认。'}</span></p>`;
   const heading = `<div class="transfer-allocation-heading"><div><h3>Cookie 账号 <strong>${cookies.accounts.length}<small> 个</small></strong></h3><p>${known ? `已占用 ${allocation.occupied.length} 路 · 空闲 ${allocation.unoccupied} 路${allocation.restricted ? ` · 受限 ${allocation.restricted} 路` : ''}` : current ? `已占用 ${allocation.occupied.length} 路 · 剩余额度待确认` : '当前任务与等待原因待确认'}</p></div><span class="transfer-effective">传输上限 <b>${allocation.configured}</b> 路<br>当前额度估算 <b>${known ? allocation.effective : '—'}</b> 路</span></div>`;
   function taskHTML(task) {
     const status = cookieTaskState(task.stage);
@@ -182,13 +183,14 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
     const live = current && account.known;
     const downloading = tasks.filter(task => task.stage === 'downloading').length;
     const reasons = account.reasons || [];
-    const idleLabels = {paused: '已停止领取', account_budget: '等待账号预算', account_interval: '等待账号间隔', pool_interval: '等待共用启动间隔',
+    const cooling = cookieFilterStates(account, current).stages.has('cooldown');
+    const idleLabels = {paused: '已停止领取', account_budget: '等待账号预算', account_interval: '等待启动间隔', account_rest: '任务结束后休息中', pool_interval: '等待共用启动间隔',
       start_interval: '等待实例启动间隔', transfer_limit: '等待传输额度', disk: '等待磁盘空间',
       dispatch_interval: '等待任务领取', dispatch_preparing: '等待账号分配',
       removed: '已移出账号池', unassigned: '待分配任务'};
-    const blocked = reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
+    const blocked = cooling || reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
     const status = !live ? {kind: 'unknown', label: '状态待确认'} : blocked
-      ? {kind: 'restricted', label: account.state === 'unavailable' ? 'Cookie 不可用' : account.state === 'cooldown' ? '账号冷却中' : '暂停新增任务'}
+      ? {kind: 'restricted', label: account.state === 'unavailable' ? 'Cookie 不可用' : cooling ? '账号冷却中' : '暂停新增任务'}
       : downloading ? {kind: 'transferring', label: `${downloading} 个正在传输`}
       : tasks.length ? {kind: 'preparing', label: `${tasks.length} 个任务处理中`}
       : account.shared_with ? {kind: 'reserved', label: '共用账号额度'}
@@ -197,7 +199,7 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
       ? reasons.map(reason => `<li data-cookie-reason="${escapeHTML(reason.code)}">${escapeHTML(reason.label)}${reason.until > data.time ? ` · ${concurrencyCountdown(reason.until - data.time, data.time)}` : ''}</li>`).join('')
       : '<li>实例离线或账号采样未更新，当前原因待确认。</li>';
     const metadata = account.shared_with ? `共享账号：${escapeHTML(account.shared_name || account.shared_with)}`
-      : account.state === 'cooldown' ? '冷却期间不再分配新任务，已开始的任务可结束'
+      : cooling ? '冷却期间不再分配新任务，已开始的任务可结束'
       : `账号并发 ${Number(account.active || 0)} / ${Number(account.limit || 0)}${account.interval ? ` · 启动间隔至少 ${Number(account.interval)} 秒` : ''}${account.state === 'recovery' ? ' · 低频恢复中' : ''}${account.hourly_limit ? ` · 小时启动 ${Number(account.hourly_used || 0)} / ${Number(account.hourly_limit)} · 近24小时启动 ${Number(account.daily_used || 0)} / ${Number(account.daily_limit)}` : ''}`;
     return `<article class="cookie-runtime-card ${status.kind}" data-cookie-id="${escapeHTML(account.id)}"><div class="cookie-runtime-heading"><strong title="${escapeHTML(account.name)}">${escapeHTML(account.name)}</strong><span>${status.label}</span></div>${current && tasks.length ? `<div class="cookie-runtime-tasks">${tasks.map(taskHTML).join('')}</div>` : ''}${live && account.state !== 'unavailable' ? `<p class="cookie-runtime-meta">${metadata}</p>` : ''}${live && account.state !== 'unavailable' ? `<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(account.shared_with || account.id)}" aria-haspopup="dialog">${account.state === 'recovery' ? '查看恢复进度与间隔调整' : '查看启动间隔与调整记录'}</button>` : ''}<div class="cookie-runtime-reasons"><strong>${live ? tasks.length ? '暂未新增任务的原因' : '为什么没有任务' : '状态说明'}</strong><ul>${reasonHTML}</ul>${live && account.cooldown_kind && account.state === 'cooldown' ? `<p>触发原因：${escapeHTML(failureKindNames[account.cooldown_kind] || account.cooldown_kind)}</p>` : ''}</div></article>`;
   }).join('')}</div>` : '<div class="cookie-filter-empty"><strong>没有符合当前筛选条件的 Cookie</strong><p>可清除筛选查看全部账号；账号状态与任务变化后会自动更新结果。</p></div>';
@@ -245,35 +247,42 @@ function youtubePacingRuntimeHTML(data, draft = {}) {
   const pacing = data.youtube_pacing;
   const mode = pacing ? 'adaptive' : 'manual';
   const minimum = Number(pacing?.minimum_interval ?? data.youtube_start_interval ?? 0);
+  const rest = Number(data.youtube_task_rest_interval ?? 0);
+  const restText = `任务结束后休息时间：${rest ? rest + ' 秒' : '已关闭'}；与两次任务启动最小间隔取更晚的可启动时间。`;
   const stale = Date.now() / 1000 - data.time > 20;
   const current = data.online && !stale;
   if (data.cookie_pool) {
     const shared = Number(data.youtube_cookie_pool_start_interval ?? data.cookie_allocation?.pool_start_interval ?? 5);
     const pending = (draft.shared !== undefined && draft.shared !== '' && Number(draft.shared) !== shared) ||
+      (draft.rest !== undefined && draft.rest !== '' && Number(draft.rest) !== rest) ||
       (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum) ||
       (draft.mode !== undefined && draft.mode !== mode);
     const pool = data.cookie_pool;
     const next = current && pool.known && pool.next_start_at > data.time
       ? `<p>下一账号池准入窗口：${concurrencyCountdown(pool.next_start_at - data.time, data.time)}</p>` : '';
-    return `<div class="youtube-pacing-runtime-heading"><strong>已保存的账号池共用启动间隔：${shared ? shared + ' 秒' : '已关闭'}</strong><span>全部 Cookie 共用</span></div><p>每个账号自身的最小间隔设置：${minimum} 秒${current && pool.known && pool.min_interval ? `；当前会话采样最短 ${Number(pool.min_interval)} 秒` : ''}。</p>${pacing ? `<p>渐进调速另行约束启动，当前记录间隔 ${Number(pacing.interval)} 秒；累计预算仍生效。</p>` : ''}${next}<p>保存后，后续领取的任务使用新配置；已预留的等待窗口保留到期。账号自身间隔、并发与冷却仍独立生效。</p>${!current || !pool.known ? '<p class="youtube-pacing-runtime-note">运行采样未更新，当前实际等待以新鲜采样为准。</p>' : ''}${pending ? '<p class="youtube-pacing-runtime-note">请求节奏有待确认的修改；上方显示已保存值，统一点击“保存设置”后生效。</p>' : ''}`;
+    return `<div class="youtube-pacing-runtime-heading"><strong>已保存的账号池共用启动间隔：${shared ? shared + ' 秒' : '已关闭'}</strong><span>全部 Cookie 共用</span></div><p>每个账号的两次任务启动最小间隔：${minimum} 秒${current && pool.known && pool.min_interval ? `；当前会话采样最短 ${Number(pool.min_interval)} 秒` : ''}。</p><p>${restText}</p>${pacing ? `<p>渐进调速另行约束启动，当前记录间隔 ${Number(pacing.interval)} 秒；累计预算仍生效。</p>` : ''}${next}<p>保存后，后续领取的任务使用新配置；已预留的启动等待窗口保留到期。账号自身间隔、并发与冷却仍独立生效。</p>${!current || !pool.known ? '<p class="youtube-pacing-runtime-note">运行采样未更新，当前实际等待以新鲜采样为准。</p>' : ''}${pending ? '<p class="youtube-pacing-runtime-note">请求节奏有待确认的修改；上方显示已保存值，统一点击“保存设置”后生效。</p>' : ''}`;
   }
   const pending = (draft.mode !== undefined && draft.mode !== mode) ||
+    (draft.rest !== undefined && draft.rest !== '' && Number(draft.rest) !== rest) ||
     (draft.minimum !== undefined && draft.minimum !== '' && Number(draft.minimum) !== minimum);
   const actual = pacing && pacing.initialized === false ? '待首次启动确认' : `${Number(pacing?.interval ?? minimum)} 秒`;
   const reason = pacing?.initialized === false ? '尚无执行记录；渐进模式首次从至少 60 秒起步。' :
     pacing?.interval_reason || (pacing ? '系统根据已保存的运行记录自动调整启动间隔。' :
       minimum ? '按已保存的固定间隔启动视频。' : '已关闭固定启动间隔。');
-  const next = current && pacing?.next_start_at > data.time
-    ? `<p>下一启动窗口：${concurrencyCountdown(pacing.next_start_at - data.time, data.time)}${pacing.reason ? ` · ${escapeHTML(pacing.reason)}` : ''}</p>` : '';
+  const nextAt = Math.max(pacing?.next_start_at || 0, data.youtube_task_rest_until || 0);
+  const resting = data.youtube_task_rest_until > data.time;
+  const next = current && nextAt > data.time
+    ? `<p>下一启动窗口：${concurrencyCountdown(nextAt - data.time, data.time)}${resting ? ' · 任务结束后休息中' : pacing?.reason ? ` · ${escapeHTML(pacing.reason)}` : ''}</p>` : '';
   const pendingText = draft.saved ? '设置已保存，等待后续调度状态更新；上方保留最近一次运行采样。' :
     '请求节奏设置尚未保存；上方显示已保存策略的运行状态，保存后在后续调度中生效。';
-  return `<div class="youtube-pacing-runtime-heading"><strong>${current ? '当前实际启动间隔' : '上次记录的启动间隔'}：${actual}</strong><span>${pacing ? '渐进调速' : '固定间隔'}</span></div><p>已保存的最小间隔：${minimum} 秒</p><p>调整原因：${escapeHTML(reason)}</p>${next}${!current ? `<p class="youtube-pacing-runtime-note">${data.online ? '运行状态已过期，等待实例更新。' : '实例离线，当前实际间隔待确认。'}</p>` : ''}${pending ? `<p class="youtube-pacing-runtime-note">${pendingText}</p>` : ''}${data.cookie_pool ? '<p>Cookie 会话间隔、启动预算和冷却也可能延长等待。</p>' : ''}`;
+  return `<div class="youtube-pacing-runtime-heading"><strong>${current ? '当前实际启动间隔' : '上次记录的启动间隔'}：${actual}</strong><span>${pacing ? '渐进调速' : '固定间隔'}</span></div><p>已保存的两次任务启动最小间隔：${minimum} 秒</p><p>${restText}</p><p>调整原因：${escapeHTML(reason)}</p>${next}${!current ? `<p class="youtube-pacing-runtime-note">${data.online ? '运行状态已过期，等待实例更新。' : '实例离线，当前实际间隔待确认。'}</p>` : ''}${pending ? `<p class="youtube-pacing-runtime-note">${pendingText}</p>` : ''}${data.cookie_pool ? '<p>Cookie 会话间隔、启动预算和冷却也可能延长等待。</p>' : ''}`;
 }
 function renderYouTubePacingRuntime(data = fleetEnabled
   ? state.fleet?.items.find(value => value.id === state.instanceId)?.concurrency : state.status?.concurrency) {
   const form = document.querySelector('#settings-form');
   const draft = {mode: form?.elements.youtube_pacing_mode?.value,
     minimum: form?.elements.youtube_start_interval?.value,
+    rest: form?.elements.youtube_task_rest_interval?.value,
     shared: form?.elements.youtube_cookie_pool_start_interval?.value, saved: !settingsDirty};
   for (const target of document.querySelectorAll('[data-youtube-pacing-runtime]')) {
     if (target.closest('[hidden]')) continue;

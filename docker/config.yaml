@@ -18,5 +18,6 @@ download_method: yt_dlp
 yt5s_quality: best
 yt5s_browser_count: 2
 fragment_concurrency: 4
+youtube_task_rest_interval: 0
 downmp3_quality: best
 downmp3_timeout: 300

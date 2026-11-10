@@ -235,6 +235,23 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         self.assertEqual(cards['a']['reasons'][0]['code'], 'account_busy')
         self.assertIn('removed', {r['code'] for r in cards['removed']['reasons']})
 
+    def test_account_rest_is_distinct_from_start_spacing_and_expires(self):
+        profiles = [{'id': 'a', 'state': 'ready', 'active': 0, 'limit': 1,
+                     'rest_until': self.stamp + 30, 'next_start_at': self.stamp + 60}]
+        reasons = {r['code']: r for r in self.cookie_cards(profiles)['a']['reasons']}
+        self.assertEqual(reasons['account_rest']['until'], self.stamp + 30)
+        self.assertEqual(reasons['account_interval']['until'], self.stamp + 60)
+        profiles[0]['rest_until'] = self.stamp - 1
+        reasons = {r['code'] for r in self.cookie_cards(profiles)['a']['reasons']}
+        self.assertNotIn('account_rest', reasons)
+        self.assertIn('account_interval', reasons)
+
+    def test_nonpool_rest_uses_instance_completion_timestamp(self):
+        self.config['youtube_task_rest_interval'] = 30
+        value = self.show({'youtube-start:node': {'last_finished_at': self.stamp - 10}})
+        self.assertEqual(value['youtube_task_rest_interval'], 30)
+        self.assertEqual(value['youtube_task_rest_until'], self.stamp + 20)
+
     def test_missing_or_stale_account_samples_do_not_invent_idle_reasons(self):
         cards = self.cookie_cards([])
         self.assertTrue(all(not a['known'] for a in cards.values()))

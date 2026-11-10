@@ -22,6 +22,7 @@ from webapp.concurrency_policy import (assignment_transfer_limit, backend_limits
                                       youtube_start_interval)
 from webapp.download_policy import (failure_evidence, recovery_policy, retry_after,
                                     cooldown_deadline, remember_decision)
+from webapp.cookie_policy import task_rest_until
 
 
 def throttle_details(error):
@@ -396,6 +397,7 @@ class ChannelScheduler:
         if self.youtube_pacing and channel.adapter == 'yt_dlp':
             def paced(db, stamp):
                 self._check_cookie_cooldown(db, stamp)
+                self._check_task_rest(db, stamp)
                 return self.youtube_pacing.reserve(db, stamp, channel)
             delay, reason = self.transaction_call(paced)
             if delay:
@@ -406,7 +408,8 @@ class ChannelScheduler:
                 raise error
             return
         interval = youtube_start_interval(self.config)
-        if not self.enabled or channel.adapter != 'yt_dlp' or (interval <= 0 and not self.config.get('_cookie_pool_selected')):
+        if not self.enabled or channel.adapter != 'yt_dlp' or (interval <= 0 and not self.config.get('_cookie_pool_selected')
+                and not self.config.get('youtube_task_rest_interval')):
             return
         def reserve(db, stamp):
             self._check_cookie_cooldown(db, stamp)
@@ -415,12 +418,14 @@ class ChannelScheduler:
                 raise DownloadLeaseLost('请求节奏等待期间任务租约已失效。')
             scope = 'youtube-start:' + self.instance
             state = self._state(db, scope)
+            self._check_task_rest(db, stamp, state)
             # A settings save must not cancel a previously reserved window,
             # including when shared spacing is changed to zero.
             delay = max(0, state.get('next_at', 0) - stamp)
             if delay:
                 return delay
-            self._save(db, scope, {'next_at': stamp + interval, 'interval': interval})
+            state.update(next_at=stamp + interval, interval=interval)
+            self._save(db, scope, state)
             return 0
         deadline = time.monotonic() + 90
         while True:
@@ -432,6 +437,28 @@ class ChannelScheduler:
             if time.monotonic() >= deadline:
                 raise PipelineBusy('正在按 YouTube 请求节奏等待，稍后继续。')
             time.sleep(min(.5, delay))
+
+    def _check_task_rest(self, db, stamp, state=None):
+        if self.config.get('_cookie_pool_selected'):
+            return  # CookiePool checks the account before assigning a task.
+        state = self._state(db, 'youtube-start:' + self.instance) if state is None else state
+        delay = task_rest_until(self.config, state) - stamp
+        if delay > 0:
+            error = PipelineBusy('等待任务结束后休息时间，已保留任务稍后启动。')
+            error.retry_after = max(2, min(300, delay))
+            raise error
+
+    def finish_youtube_task(self):
+        """Record a completed non-pool attempt independently of source health."""
+        def finish(db, stamp):
+            if not self._owned(db, stamp):
+                return
+            scope = 'youtube-start:' + self.instance
+            state = self._state(db, scope)
+            state['last_finished_at'] = max(state.get('last_finished_at', 0), stamp)
+            self._save(db, scope, state)
+        self.transaction_call(finish)
+
     @contextmanager
     def permit(self, channel, phase, *, info=None, streams=1, on_wait=None, timeout=90):
         if not self.enabled:
@@ -466,6 +493,9 @@ class ChannelScheduler:
                 return token, delay
             token, delay = self.transaction_call(admit)
             if token:
+                activity = self.config.get('_youtube_task_activity')
+                if channel.adapter == 'yt_dlp' and activity is not None:
+                    activity['started'] = True
                 break
             if on_wait:
                 on_wait()

@@ -59,3 +59,27 @@ MySQL 与 Redis 未替换。异常 MySQL `youtube-downloader-local-mysql-1` 继�
 这些证据已把当前阻塞位置缩小到块层 WBT 与 ext4/jbd2 刷盘等待链。它仍不能区分是内核等待/记账异常，还是下层虚拟存储长延迟使 WBT 等待不释放；也不能重建临时参数操作之前的全部因果关系。
 
 建议的归因方法：保留现场后恢复服务，在不构建镜像的情况下先观察无新下载时的磁盘完成量/延迟，再按 1、2、4 路逐步恢复下载，并同步采集容器 I/O、MySQL 提交等待、PSI、磁盘完成量及内核栈。低负载也复发则不能只归因于下载并发；达到相近负载才稳定复现则进一步区分磁盘限额与应用写放大。服务商需核查北京时间 11 月 9 日 23:05 至 11 月 10 日 00:13（UTC 11 月 9 日 15:05–16:13）的宿主机存储延迟、IOPS/吞吐限制及突发额度。重启后恢复本身不能证明根因。
+
+## 已授权执行正常重启
+
+用户明确要求“帮我重启服务器”。北京时间 11 月 10 日 00:22:02 左右，先读取 boot ID `38b4e663-35f2-43c9-9b9f-71e30bf4f6ad` 和运行时间约 309814 秒，随后执行 `systemctl reboot --no-block`，返回码 0。未执行强制 reboot、SysRq 或再次写入磁盘内核参数。
+
+命令后 SSH 握手断开，HTTP 请求也被关闭，数分钟内多次重新连接均未取得 SSH banner。系统接受重启请求不等于已完成重启；尚未观察到新的 boot ID，尚未验证容器或磁盘恢复。已向用户请求 VPS 服务商及管理后台地址，以便在关机持续阻塞时通过宿主机控制台处理。
+
+辅助脚本 `.cache/workbench-performance-deploy/reboot_host.py`；本地状态为 `reboot-state.json`，后续观测记录为 `reboot-monitor.jsonl`。这些文件不含连接密码。恢复后需核对健康 MySQL、Redis、应用和所有停止容器，尤其禁止启动共用卷的异常 MySQL 容器。
+
+用户提供 FDC 管理后台 `https://portal.fdcservers.net/index.php?rp=/user/accounts`。尝试 computer-use 技能及浏览器入口：浏览器访问宿主不可用，原生桌面管道报 `Computer Use native pipe is unavailable`，备用 `@oai/sky` 也报同一管道缺失，无法登录或操作后台；没有通过其他方式读取浏览器凭据。已请求用户在后台查看该 IP 的控制台，若关机卡住则执行 Reset/强制重启。约 00:29 的 SSH 探测仍未取得服务端 banner，不能报告重启成功。
+
+## 重启完成及业务恢复
+
+00:30:59 取得新 boot ID `33128261-5e49-456a-9960-5d3375e48383`，运行时间约 130 秒，确认整机已完成重启。随后已明确告知用户不要再重复后台重启。无法仅根据外部连接过程确认期间用户是否另在后台操作；本助手仅执行过一次正常系统重启。
+
+开机初期 PSI 曾接近 100%、Docker 查询超时；00:31:54 磁盘计数已继续推进，00:33:42 some/full avg10 均降至 0%。不能将开机时的高等待直接当成原有永久阻塞复发。只读核对 WBT 已回到默认 2000。当前内核为启动日志所示 `6.8.0-147-generic`，此前为 `6.8.0-139-generic`；本次没有执行内核安装或升级，重启使用了服务器已有的内核。
+
+内核在开机约 60–71 秒记录 RCU CPU stall，调用栈涉及启动阶段的 `free_initrd_mem`、跨 CPU TLB 同步等；该日志发生于容器业务启动前，是新增的系统层调查线索，不能直接证明它与此前 WBT 阻塞同源或确定服务商责任。未进行进一步内核参数修改或磁盘压力测试。
+
+应用、健康 MySQL 和 Redis 自动启动，旧应用及异常 MySQL 保持停止。但业务检查揭示启动时序问题：应用与 MySQL 同时启动，MySQL 连接失败（2003）后应用停在 setup 页，`/health` 仍返回 HTTP 200，Docker 因此误判 healthy。此前 `verify_host.py` 的严格日志检查失败，随后已用实际 `/health` JSON 和工作台接口确定这一问题。
+
+确认健康数据库已就绪、异常 MySQL 停止后，仅执行 `docker restart -t 30 youtube-downloader-local-app-1`。重启约 4 秒后 `/health` 为 `status=ok, role=hybrid`。00:36 左右工作台认证接口 HTTP 200，耗时约 0.091 秒，实例 online=true、paused=false、stop_requested=false、running=2、error 为空；当时 transferring=0，不能把两个处理中任务表述成两个实际传输。MySQL 当前行锁等待数为 0、Threads_running=2；整机 PSI some avg10 2.65%、full avg10 1.29%。这是恢复后的短时采样，不代表原始根因已解决。
+
+自动启动遇到数据库暂未就绪后不会自动恢复，以及健康检查不区分 setup/starting 与业务 ready，是已识别但尚未修改的可靠性问题。r2 静态压缩补丁和真实浏览器验收也仍待完成；本轮优先完成用户要求的重启与业务恢复，未构建或切换应用镜像。

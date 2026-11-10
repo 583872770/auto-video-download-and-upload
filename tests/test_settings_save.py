@@ -12,6 +12,22 @@ from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_task_rest_is_saved_as_local_instance_setting_and_reaches_next_claim(self):
+        key = 'youtube_task_rest_interval'
+        self.assertEqual(self.client.get('/api/config').json['config'][key], 0)
+        identity = self.create()
+        self.start(identity)
+        first = self.store.claim(self.store.owner)
+        self.assertEqual(first['payload']['config'][key], 0)
+        response = self.client.put('/api/config', json={key: 30}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.client.get('/api/config').json['config'][key], 30)
+        self.assertEqual(self.store.get(first['id'], private=True)['payload']['config'][key], 0)
+        self.assertEqual(self.store.claim('next-owner')['payload']['config'][key], 30)
+        for invalid in (-1, 3601, True, 1.5):
+            response = self.client.put('/api/config', json={key: invalid}, headers=self.headers)
+            self.assertEqual(response.status_code, 400)
+
     def test_cached_frontend_retired_connection_field_is_ignored_and_not_persisted(self):
         response = self.client.put('/api/config', json={
             'builtin_connection_limit': 1, 'download_connection_limit': 24}, headers=self.headers)

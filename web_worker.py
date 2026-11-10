@@ -127,7 +127,15 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
             else:
                 if start_ticket:
                     start_ticket.finish(0)
-                result = _execute(action, payload, report, rotation_completed, store, worker_slot)
+                # A mutable marker follows configuration copies inside _execute.
+                # Only a granted source permit starts the end-of-task rest clock.
+                activity = prepared['_youtube_task_activity'] = {}
+                try:
+                    result = _execute(action, payload, report, rotation_completed, store, worker_slot)
+                finally:
+                    if store and task_id and is_youtube(payload['urls']) and activity.get('started'):
+                        from webapp.channel_scheduler import ChannelScheduler
+                        ChannelScheduler(store, prepared, task_id).finish_youtube_task()
             if result.get('file_count'):
                 try:
                     budget.record_video_size(result['file_bytes'] // result['file_count'],

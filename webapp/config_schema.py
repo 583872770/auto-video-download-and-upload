@@ -82,6 +82,7 @@ SETTINGS = MappingProxyType({
     'builtin_resolver_limit': Setting(4, limits=(1, 16), scope='policy', persist_runtime=True, pipeline_key=True),
     'youtube_source_address': Setting(),
     'youtube_start_interval': Setting(120, limits=(0, 600)),
+    'youtube_task_rest_interval': Setting(0, limits=(0, 3600), persist_runtime=True, pipeline_key=True),
     'youtube_cookie_fallback': Setting(False),
     'youtube_cookie_usage': Setting('auto'),
     'youtube_throttle_cooldown': Setting(300, limits=(30, 3600)),

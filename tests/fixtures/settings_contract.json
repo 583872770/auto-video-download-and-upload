@@ -35,6 +35,7 @@
     "builtin_resolver_limit": 4,
     "youtube_source_address": "",
     "youtube_start_interval": 120,
+    "youtube_task_rest_interval": 0,
     "youtube_cookie_fallback": false,
     "youtube_cookie_usage": "auto",
     "youtube_throttle_cooldown": 300,
@@ -141,6 +142,7 @@
     "youtube_sleep_preset",
     "youtube_source_address",
     "youtube_start_interval",
+    "youtube_task_rest_interval",
     "youtube_throttle_cooldown",
     "yt1d_quality",
     "yt1d_timeout",
@@ -272,6 +274,10 @@
       0,
       600
     ],
+    "youtube_task_rest_interval": [
+      0,
+      3600
+    ],
     "youtube_cookie_session_limit": [
       1,
       64
@@ -375,6 +381,7 @@
     "youtube_sleep_preset",
     "youtube_source_address",
     "youtube_start_interval",
+    "youtube_task_rest_interval",
     "youtube_throttle_cooldown",
     "yt5s_browser_count"
   ],
@@ -445,6 +452,7 @@
     "youtube_cookie_pool_start_interval",
     "youtube_cookie_pool_worker_limit",
     "youtube_cookie_session_limit",
+    "youtube_task_rest_interval",
     "yt5s_browser_count"
   ],
   "policy_hash_fields": [
@@ -460,7 +468,8 @@
     "youtube_cookie_pool_preparation_workers",
     "youtube_cookie_pool_start_interval",
     "youtube_cookie_pool_worker_limit",
-    "youtube_cookie_session_limit"
+    "youtube_cookie_session_limit",
+    "youtube_task_rest_interval"
   ],
   "disk_defaults": {
     "disk_budget_gb": 20,

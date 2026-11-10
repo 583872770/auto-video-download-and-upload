@@ -66,6 +66,79 @@ class CookiePoolTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(len(db.execute(select(download_permits)).all()), 0)
 
+    def test_task_rest_starts_at_completion_and_does_not_block_other_accounts(self):
+        config = {**self.config, 'youtube_start_interval': 100,
+                  'youtube_task_rest_interval': 30, 'youtube_cookie_pool_start_interval': 0}
+        first, second = self.pool(config), self.pool(config)
+        started = now = time.time()
+        first.router.clock = second.router.clock = lambda db: now
+        with patch('webapp.cookie_pool.random.uniform', return_value=0):
+            with first.assignment(profile_id=self.ids[0], count_success=False) as selected:
+                self.request_source(first, selected)
+                now += 150
+        view = first.status()['session_states'][0]
+        self.assertEqual(view['last_finished_at'], now)
+        self.assertEqual(view['rest_until'], started + 180)
+        self.assertEqual(view['next_start_at'], started + 180)
+        with self.assertRaises(PipelineBusy):
+            with second.assignment(profile_id=self.ids[0]):
+                self.fail('Finished account bypassed rest')
+        with second.assignment(count_success=False) as selected:
+            self.assertNotEqual(selected['_cookie_pool_selected'], self.ids[0])
+        now = started + 180
+        with second.assignment(profile_id=self.ids[0], count_success=False):
+            pass
+
+    def test_short_task_uses_start_deadline_instead_of_adding_rest_to_it(self):
+        config = {**self.config, 'youtube_start_interval': 100,
+                  'youtube_task_rest_interval': 30, 'youtube_cookie_pool_start_interval': 0}
+        pool = self.pool(config)
+        started = now = time.time()
+        pool.router.clock = lambda db: now
+        with patch('webapp.cookie_pool.random.uniform', return_value=0):
+            with pool.assignment(profile_id=self.ids[0], count_success=False) as selected:
+                self.request_source(pool, selected)
+                now += 20
+        view = pool.status()['session_states'][0]
+        self.assertEqual(view['rest_until'], started + 50)
+        self.assertEqual(view['next_start_at'], started + 100)
+        now = started + 100
+        with pool.assignment(profile_id=self.ids[0], count_success=False):
+            pass
+
+    def test_rest_survives_new_pool_and_uses_hot_settings_without_changing_health(self):
+        config = {**self.config, 'youtube_task_rest_interval': 300,
+                  'youtube_cookie_pool_start_interval': 0}
+        pool = self.pool(config)
+        now = time.time()
+        pool.router.clock = lambda db: now
+        with self.assertRaises(RuntimeError):
+            with pool.assignment(profile_id=self.ids[0]) as selected:
+                self.request_source(pool, selected)
+                now += 200
+                raise RuntimeError('Video has been removed by the uploader')
+        view = pool.status()['session_states'][0]
+        self.assertEqual(view['state'], 'ready')
+        self.assertEqual(view['cooldown_until'], 0)
+        self.assertEqual(view['rest_until'], now + 300)
+        restarted = self.pool(config)
+        restarted.router.clock = lambda db: now
+        with self.assertRaises(PipelineBusy):
+            with restarted.assignment(profile_id=self.ids[0]):
+                self.fail('New process bypassed persisted rest')
+        restarted.config = {**config, 'youtube_task_rest_interval': 0}
+        with restarted.assignment(profile_id=self.ids[0], count_success=False):
+            pass
+
+    def test_unstarted_local_wait_does_not_start_task_rest(self):
+        pool = self.pool({**self.config, 'youtube_task_rest_interval': 300})
+        with self.assertRaises(PipelineBusy):
+            with pool.assignment(profile_id=self.ids[0]):
+                raise PipelineBusy('Waiting for local resource')
+        view = pool.status()['session_states'][0]
+        self.assertEqual(view['last_finished_at'], 0)
+        self.assertEqual(view['rest_until'], 0)
+
     def test_configured_shared_spacing_controls_admission_and_start_hint(self):
         config = {**self.config, 'youtube_cookie_pool_start_interval': 3}
         first, second = self.pool(config), self.pool(config)
