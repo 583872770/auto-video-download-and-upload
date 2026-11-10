@@ -501,6 +501,29 @@ class CookieProfileTests(unittest.TestCase):
         self.assertTrue(self.store.download_queue()['paused'])
         self.assertEqual(self.client.post('/api/youtube/cookies/pool/recover', json={}).status_code, 403)
 
+    def test_manual_account_check_resumes_only_that_account_without_pausing_downloads(self):
+        from webapp.cookie_pool import CookiePool
+        from webapp.youtube_auth import YouTubeAuthRequired
+        identity = self.add().json['item']['id']
+        config = yaml.safe_load(self.config.read_text())
+        config['youtube_cookie_pool'] = [identity]
+        self.config.write_text(yaml.safe_dump(config))
+        self.store.set_downloads_paused(False)
+        # Establish a cached success before the download reports a new login failure.
+        with patch('webapp.youtube_auth.probe', return_value=('valid', 'old login')):
+            self.assertEqual(self.action('check', identity).status_code, 200)
+        pool = CookiePool(self.store, config, self.root, None)
+        pool.outcome(pool.accounts[0][2], YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
+        listed = self.client.get('/api/youtube/cookies').json['pool']
+        self.assertEqual(listed['session_states'][0]['state'], 'manual')
+        with patch('webapp.youtube_auth.probe', return_value=('valid', 'fresh login')) as probe:
+            response = self.action('check', identity)
+            probe.assert_called_once()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json['auth']['account_resumed'])
+        self.assertEqual(pool.status()['session_states'][0]['state'], 'ready')
+        self.assertFalse(self.store.downloads_paused())
+
 
 if __name__ == '__main__':
     unittest.main()

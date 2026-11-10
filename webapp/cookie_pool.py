@@ -41,7 +41,7 @@ def _member_identity(name, content):
 # A newly imported account remains deliberately conservative.  Once the same
 # session has produced a long, clean run, its start interval can be reduced in
 # small steps.  The floor still leaves a visible gap between authenticated
-# YouTube requests and is restored by any timeout/throttle outcome below.
+# YouTube requests and is restored only by account protection outcomes below.
 DENIED_WINDOW = 15 * 60
 DENIED_THRESHOLD = 3
 DENIED_COOLDOWN = 15 * 60
@@ -99,7 +99,9 @@ def session_view(identity, name, state, config, stamp, *, pacing=None):
     cooling = state.get('cooldown_until', 0) > stamp
     recovery = bool(state.get('recovery_mode'))
     starts, budget_until = start_budget(config, state, stamp)
-    return dict(id=identity, name=name, state='cooldown' if cooling else 'recovery' if recovery else 'ready',
+    return dict(id=identity, name=name, state='manual' if state.get('halted') else 'cooldown' if cooling else 'recovery' if recovery else 'ready',
+        halted=bool(state.get('halted')), halt_kind=state.get('halt_kind'), halted_at=state.get('halted_at'),
+        halt_incident_id=state.get('halt_revision') or (state.get('halt_decision') or {}).get('incident_id'),
         active=int(state.get('active', 0)), next_start_at=next_account_start(config, state, budget_until),
         last_finished_at=state.get('last_finished_at', 0), rest_until=task_rest_until(config, state),
         hourly_used=sum(s > stamp - 3600 for s in starts), daily_used=len(starts), budget_until=budget_until,
@@ -113,7 +115,7 @@ def session_view(identity, name, state, config, stamp, *, pacing=None):
         recovery_successes=state.get('recovery_successes', 0),
         pacing=pacing if pacing is not None else pacing_progress(config, state, stamp),
         interval=account_interval(config, state),
-        limit=0 if cooling else session_limit(config, state),
+        limit=0 if cooling or state.get('halted') else session_limit(config, state),
         configured_limit=int(config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit'])))
 
 
@@ -122,21 +124,25 @@ def capacity_summary(snapshot, stamp=None):
     stamp = time.time() if stamp is None else stamp
     sessions = [a for a in snapshot['accounts'] if not a.get('shared_with') and not a.get('unavailable')]
     capacities = [(a, max(1, int(a.get('limit', 1)))) for a in sessions]
-    capacity = sum(limit for a, limit in capacities if a.get('cooldown_until', 0) <= stamp)
+    capacity = sum(limit for a, limit in capacities if not a.get('halted') and a.get('cooldown_until', 0) <= stamp)
     capacity = min(capacity, MAX_TRANSFERS)
     active = sum(a.get('active', 0) for a in sessions)
     next_starts = [max(snapshot.get('next_at', 0), a.get('next_at', 0), a.get('cooldown_until', 0), stamp)
-                   for a, limit in capacities if a.get('active', 0) < limit]
+                   for a, limit in capacities if not a.get('halted') and a.get('active', 0) < limit]
     blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
     capacity = 0 if blocked else capacity
     warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
     session_states = snapshot.get('session_states', [])
     cooling_sessions = [s for s in session_states if s['state'] == 'cooldown']
     recovery_sessions = [s for s in session_states if s['state'] == 'recovery']
+    manual_sessions = [s for s in session_states if s['state'] == 'manual']
     reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if snapshot.get('halted') else
               'Cookie 会话池临时冷却，到期后重新准入检查' if snapshot.get('cooldown_until', 0) > stamp else
               '没有可用的 Cookie 会话' if not sessions else
+              '账号需要人工处理登录或验证，请在账号管理中重新检测；其他冷却中的账号到期后可继续'
+              if not capacity and manual_sessions else
               '全部账号正在冷却，自动等待最早到期的账号；无需手动恢复' if not capacity else
+              f'{len(manual_sessions)} 个账号需人工处理，其他可用账号继续调度' if manual_sessions else
               f'{len(cooling_sessions)} 个账号冷却，其他 {len(sessions) - len(cooling_sessions)} 个账号继续调度；冷却后自动低频恢复'
               if cooling_sessions else
               f"{snapshot.get('configured_files', len(snapshot['accounts']))} 份 Cookie 合并为 {len(sessions)} 个核心会话，"
@@ -150,7 +156,9 @@ def capacity_summary(snapshot, stamp=None):
             'min_interval': min(intervals) if intervals else None,
             'profiles': snapshot.get('profile_states', []),
             'sessions': session_states, 'cooling_sessions': len(cooling_sessions),
-            'available_sessions': len(sessions) - len(cooling_sessions),
+            'available_sessions': len(sessions) - len(cooling_sessions) - len(manual_sessions),
+            'manual_sessions': len(manual_sessions),
+            'session_halts': [a['halt_decision'] for a in sessions if a.get('halted') and a.get('halt_decision')],
             'recovery_sessions': len(recovery_sessions),
             'halted': bool(snapshot.get('halted')), 'cooling': snapshot.get('cooldown_until', 0) > stamp,
             'cooldown_until': snapshot.get('cooldown_until', 0),
@@ -159,10 +167,13 @@ def capacity_summary(snapshot, stamp=None):
             'limited_profile_id': snapshot.get('limited_profile_id'),
             'limited_profile_name': snapshot.get('limited_profile_name'),
             'decisions': sorted([*snapshot.get('decisions', []),
-                *(r for a in sessions for r in a.get('decisions', []))],
+                *(r for a in sessions for r in a.get('decisions', [])),
+                *(a['halt_decision'] for a in sessions if a.get('halted') and a.get('halt_decision'))],
                 key=lambda r: r.get('time', 0))[-8:], 'reason': reason,
             'session_restrictions': [dict(scope='Cookie：' + s['name'], action='cooldown',
-                until=s['cooldown_until'], manual=False, reason=s['cooldown_kind']) for s in cooling_sessions],
+                until=s['cooldown_until'], manual=False, reason=s['cooldown_kind']) for s in cooling_sessions] + [
+                dict(scope='Cookie：' + s['name'], action='halt', until=0, manual=True,
+                     reason=s['halt_kind']) for s in manual_sessions],
             'next_start_at': min(next_starts) if next_starts and not blocked else None}
 
 
@@ -296,11 +307,32 @@ class CookiePool:
             self.router._save(db, self.global_scope, gate)
         self.router.transaction_call(clear)
 
+    def clear_account_after_check(self, profile_id, incident_id, checked_at):
+        """A fresh manual check may clear only the halt it actually observed."""
+        profile_id = self.aliases.get(profile_id, profile_id)
+        scope = next((s for i, _, s in self.accounts if i == profile_id), None)
+        if not scope or not incident_id:
+            return False
+        def clear(db, stamp):
+            state = self.router._state(db, scope)
+            if (not state.get('halted') or (state.get('halt_revision') or
+                    (state.get('halt_decision') or {}).get('incident_id')) != incident_id
+                    or checked_at < state.get('halted_at', 0)):
+                return False
+            state.update(halted=False, halt_kind=None, halted_at=None, halt_decision=None, halt_revision=None)
+            self.router._save(db, scope, state)
+            return True
+        return self.router.transaction_call(clear)
+
     @contextmanager
     def assignment(self, profile_id=None, *, count_success=True, manual_retry=False, rest_on_finish=True):
         router = self.router
-        if not router.enabled or not self.accounts:
-            raise ValueError('Cookie 账号池必须通过下载队列执行，且至少选择一个账号。')
+        if not router.enabled:
+            raise ValueError('Cookie 账号池必须通过下载队列执行。')
+        if not self.accounts:
+            error = PipelineBusy('账号池没有可用 Cookie，请在账号管理中更新或重新检测。')
+            error.retry_after = 60
+            raise error
 
         def reserve(db, stamp):
             gate = router._state(db, self.global_scope)
@@ -320,10 +352,12 @@ class CookiePool:
             states = [(identity, path, scope, state_by_scope.get(scope, {}), active_by_scope.get(scope, 0))
                       for identity, path, scope in self.accounts]
             capacity = min(MAX_TRANSFERS, sum(session_limit(self.config, state)
-                for _, _, _, state, _ in states if state.get('cooldown_until', 0) <= stamp))
+                for _, _, _, state, _ in states if not state.get('halted') and state.get('cooldown_until', 0) <= stamp))
             candidates, delays = [], []
             for identity, path, scope, state, active in states:
                 if profile_id and identity != self.aliases.get(profile_id, profile_id):
+                    continue
+                if state.get('halted'):
                     continue
                 _, budget_until = start_budget(self.config, state, stamp)
                 next_at = max(state.get('cooldown_until', 0), next_account_start(self.config, state, budget_until))
@@ -334,6 +368,10 @@ class CookiePool:
                 if active < cap:
                     candidates.append((active, state.get('last_start', 0), identity, path, scope, state, cap))
             if not candidates:
+                halted = [s for i, _, _, s, _ in states
+                          if (not profile_id or i == self.aliases.get(profile_id, profile_id)) and s.get('halted')]
+                if halted and (profile_id or all(s.get('halted') for _, _, _, s, _ in states)):
+                    return None, 60, 'manual_account'
                 return None, min(delays, default=10), 'account' if profile_id else 'pool'
             _, _, identity, path, scope, state, cap = min(candidates, key=lambda x: x[:3])
             token, delay = router._admit(db, stamp, [(self.global_scope, capacity, 1), (scope, cap, 1)])
@@ -360,7 +398,7 @@ class CookiePool:
             gate = router._state(db, self.global_scope)
             gate['next_at'] = stamp + cookie_pool_start_interval(self.config)
             if manual_retry:
-                eligible = [s for _, _, _, s, _ in states if s.get('cooldown_until', 0) <= stamp
+                eligible = [s for _, _, _, s, _ in states if not s.get('halted') and s.get('cooldown_until', 0) <= stamp
                             and start_budget(self.config, s, stamp)[1] <= stamp]
                 gate['retry_next_at'] = stamp + retry_interval(self.config, eligible)
             router._save(db, self.global_scope, gate)
@@ -372,6 +410,7 @@ class CookiePool:
                 'pool': 'Cookie 账号池正在按账号并发及请求间隔等待。',
                 'account': '该任务对应的 Cookie 正在等待账号并发、启动间隔或冷却，其他账号继续调度。',
                 'manual_retry': '手动重试正在等待启动份额，普通任务继续调度。',
+                'manual_account': '该账号需要人工处理登录或网页验证；处理后在账号管理点击“检测登录”，其他健康账号继续。',
             }
             error = PipelineBusy(messages[wait_scope])
             error.retry_after = max(2, min(60, delay))
@@ -434,8 +473,8 @@ class CookiePool:
         denied = bool(failure and failure.kind == 'access_denied' and failure.http_status == 403
                       and failure.source == 'youtube' and failure.phase == 'transfer' and failure.task_id)
         from webapp.youtube_cookie_history import record as record_cookie_event
-        if failure and policy.action == 'none' and not denied:
-            # Content-specific failures do not alter pacing, but remain visible
+        if failure and (policy.action == 'none' or failure.kind == 'transient_failure') and not denied:
+            # Content/connectivity failures do not alter pacing, but remain visible
             # in the per-Cookie timeline for diagnosis.
             record_cookie_event(self.router.store, profile_id=profile_id,
                 profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
@@ -448,6 +487,23 @@ class CookiePool:
             current_policy = policy
             state = self.router._state(db, scope)
             if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
+                return
+            if failure and current_policy.manual and current_policy.targets == ('session',):
+                first_halt = not state.get('halted')
+                if first_halt:
+                    state.update(halted=True, halt_kind=failure.kind, halted_at=stamp)
+                state.update(last_failure_at=stamp, halt_revision=failure.incident_id)
+                decision = remember_decision(state, failure, layer='session',
+                    scope='Cookie：' + self.profile_names.get(profile_id, profile_id), action='halt',
+                    manual=True, stamp=stamp)
+                if first_halt:
+                    state['halt_decision'] = decision
+                self.router._save(db, scope, state)
+                record_cookie_event(self.router.store, db=db, profile_id=profile_id,
+                    profile_name=self.profile_names.get(profile_id, profile_id), event_type='failure',
+                    phase=failure.phase, kind=failure.kind, message=failure.message,
+                    incident_id=failure.incident_id, http_status=failure.http_status,
+                    task_id=failure.task_id, new_state='manual', metadata={'action': 'halt', 'targets': ('session',)})
                 return
             if (failure and failure.kind in ('account_rate_limit', 'request_rate_limit')
                     and admitted_at is not None and admitted_at < state.get('limited_at', 0)):
@@ -534,6 +590,8 @@ class CookiePool:
                     gate['halt_decision'] = decision
                 self.router._save(db, self.global_scope, gate)
             elif not failure:
+                if state.get('halted'):
+                    return  # A late completion cannot clear a manual account halt.
                 # A task already in flight cannot undo a newer failure's backoff.
                 if state.get('cooldown_until', 0) > stamp:
                     return

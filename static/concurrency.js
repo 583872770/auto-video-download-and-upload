@@ -68,17 +68,20 @@ function decisionExplanationHTML(data, key) {
   const restrictions = value.restrictions || [];
   const active = restrictions.length ? restrictions.map(row => `<li><b>${escapeHTML(row.scope)}</b>：${escapeHTML(actions[row.action] || row.action)}${row.until > data.time ? `，${concurrencyCountdown(row.until - data.time, data.time)}` : row.manual ? row.until ? '；冷却时间已到，仍需人工检查' : '；需人工检查后恢复' : ''}${row.reason ? `。${escapeHTML(failureKindNames[row.reason] || row.reason)}` : ''}${row.legacy ? '。历史记录缺少完整触发证据' : ''}</li>`).join('') : '<li>当前摘要未记录生效中的冷却或启动等待；仍需满足队列和其他资源条件。</li>';
   const recovery = value.recovery || {};
-  const checks = value.manual_required ? `<p>恢复条件：实例${recovery.instance_stopped ? '已停止领取' : '仍可领取，需先停止'}；${recovery.downloads_idle ? '当前无执行中的视频' : '需等待执行中的视频结束'}；${recovery.cooldown_complete ? '已记录的等待时间已到' : '仍有等待未到期'}。账号检测结果以解除拦截时的重新检查为准。</p>` : '';
+  const checks = value.manual_required && !recovery.account_only ? `<p>恢复条件：实例${recovery.instance_stopped ? '已停止领取' : '仍可领取，需先停止'}；${recovery.downloads_idle ? '当前无执行中的视频' : '需等待执行中的视频结束'}；${recovery.cooldown_complete ? '已记录的等待时间已到' : '仍有等待未到期'}。账号检测结果以解除拦截时的重新检查为准。</p>` : '';
   const history = (value.history || []).map(item => `<article class="risk-guide-item"><h3>${escapeHTML(time(item.failure?.observed_at || item.time))} · 事件 ${escapeHTML(item.incident_id.slice(0, 8))}</h3>${failureEvidenceHTML(item.failure)}<p><b>采取的措施：</b>${item.effects.map(effect => `${escapeHTML(effect.scope)}：${escapeHTML(actions[effect.action] || effect.action)}${effect.until ? `（截止 ${escapeHTML(time(effect.until))}）` : ''}`).join('；')}。</p></article>`).join('');
   return `<div class="capacity-admission decision-explanation"><strong>${current ? '等待与恢复依据' : '上次记录的等待与恢复依据'}</strong>${!current ? '<p>实例离线或摘要已过期，以下不能确认当前状态。</p>' : ''}<ul>${active}</ul><p>${escapeHTML(value.combination || '')}</p>${checks}<p>${escapeHTML(recovery.instructions || '')}</p><details class="capacity-details" data-capacity-details="${escapeHTML(key)}-decisions"><summary>最近触发事件与处理记录 <span>${(value.history || []).length} 个事件 · 同次失败合并展示</span></summary>${history || '<p>暂无结构化事件记录；历史错误不会被补写成新的源站响应。</p>'}</details></div>`;
 }
 function cookieAccountNoticesHTML(pool, sampledAt, current = true) {
   const affected = (pool?.sessions || []).filter(s => s.state !== 'ready');
   if (!affected.length) return '';
-  const title = !current ? '上次记录的账号状态，当前状态待确认' : pool.halted ? '池仍有人工拦截，请查看原拦截原因' : !pool.cooling_sessions
+  const title = !current ? '上次记录的账号状态，当前状态待确认' : pool.halted ? '池仍有人工拦截，请查看原拦截原因' : pool.manual_sessions ? pool.available_sessions ? '部分账号需人工处理，其他可用账号继续调度' : '当前无可调度账号，请处理登录或验证，或等待其他账号冷却结束' : !pool.cooling_sessions
     ? '受影响账号正在低频恢复，其他账号正常调度' : pool.available_sessions
     ? '仅受影响账号暂停，其他账号继续调度' : '全部账号冷却中，队列自动等待，无需手动恢复';
-  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮有效成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动单路、至少 300 秒间隔恢复；成功至少 10 次且观察满一小时后恢复设置的会话并发，启动间隔继续逐步缩短。一天内重复账号限流按 1 / 2 / 4 / 8 小时冷却；连续 403 按 15 / 30 / 60 分钟保护性冷却。源站要求更久则延长等待。</p>' : ''}<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(s.id)}" aria-haspopup="dialog">查看恢复进度与间隔调整</button></article>`).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
+  return `<div class="cookie-account-notices"><strong>${title}</strong>${affected.map(s => {
+    if (s.state === 'manual') return `<article class="cookie-account-notice cooldown"><strong>${escapeHTML(s.name)} · 需人工处理</strong><p>原因：${escapeHTML(failureKindNames[s.halt_kind] || '登录或网页验证未通过')}。仅暂停该账号的新请求；其他健康账号继续。</p><p>处理后在账号管理点击“检测登录”，新检测通过后恢复该账号；已有的限流冷却仍需等待。</p></article>`;
+    return `<article class="cookie-account-notice ${s.state === 'cooldown' ? 'cooldown' : 'recovery'}"><strong>${escapeHTML(s.name)} · ${s.state === 'cooldown' ? s.cooldown_kind === 'repeated_http_403' ? '保护性冷却' : '冷却中' : '低频恢复中'}</strong><p>原因：${escapeHTML(failureKindNames[s.cooldown_kind] || '临时故障退避')}。${s.state === 'cooldown' ? `恢复检查时间：${escapeHTML(new Date(s.cooldown_until * 1000).toLocaleString('zh-CN'))} · 剩余 ${concurrencyCountdown(s.cooldown_until - sampledAt, sampledAt)}。冷却中不发送下载、字幕或登录检测请求；已开始的任务可结束。` : `当前最多 ${Number(s.limit)} 个任务，启动间隔至少 ${Number(s.interval)} 秒；本轮有效成功 ${Number(s.recovery_successes)} 次。`}</p>${s.last_failure_at ? `<p>最近异常：${escapeHTML(new Date(s.last_failure_at * 1000).toLocaleString('zh-CN'))}。</p>` : ''}${['account_rate_limit', 'request_rate_limit', 'repeated_http_403'].includes(s.cooldown_kind) ? '<p>到期自动单路、至少 300 秒间隔恢复；成功至少 10 次且观察满一小时后恢复设置的会话并发，启动间隔继续逐步缩短。一天内重复账号限流按 1 / 2 / 4 / 8 小时冷却；连续 403 按 15 / 30 / 60 分钟保护性冷却。源站要求更久则延长等待。</p>' : ''}<button type="button" class="text-button" data-cookie-recovery="${escapeHTML(s.id)}" aria-haspopup="dialog">查看恢复进度与间隔调整</button></article>`;
+  }).join('')}<small>这是本地重新检查准入的时间，不保证源站届时解除限制；其他共享预算仍然生效。</small></div>`;
 }
 function concurrencyAdmissionHTML(data) {
   const pool = data.cookie_pool;
@@ -128,13 +131,14 @@ function cookieFilterStates(account, current) {
   const reasons = new Set((account.reasons || []).map(reason => reason.code));
   const health = !current || !account.known ? 'unknown'
     : account.state === 'unavailable' || reasons.has('unavailable') ? 'unavailable'
-    : reasons.has('pool_halted') ? 'manual'
+    : account.state === 'manual' || reasons.has('account_halted') || reasons.has('pool_halted') ? 'manual'
     : account.state === 'cooldown' || reasons.has('account_cooldown') || reasons.has('pool_cooldown') ? 'cooldown'
     : account.state === 'recovery' ? 'recovery' : account.state === 'ready' ? 'normal' : 'unknown';
   const stages = new Set();
   if (current) {
     const tasks = account.tasks || [];
     if (health === 'cooldown') stages.add('cooldown');
+    else if (health === 'manual') stages.add('waiting');
     else if (!tasks.length) stages.add('idle');
     for (const task of tasks) {
       const stage = typeof task.stage === 'string' ? task.stage : '';
@@ -188,9 +192,9 @@ function cookieAccountsHTML(data, {compact = false} = {}) {
       start_interval: '等待实例启动间隔', transfer_limit: '等待传输额度', disk: '等待磁盘空间',
       dispatch_interval: '等待任务领取', dispatch_preparing: '等待账号分配',
       removed: '已移出账号池', unassigned: '待分配任务'};
-    const blocked = cooling || reasons.some(reason => ['account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
+    const blocked = account.state === 'manual' || cooling || reasons.some(reason => ['account_halted', 'account_cooldown', 'pool_cooldown', 'pool_halted', 'unavailable'].includes(reason.code));
     const status = !live ? {kind: 'unknown', label: '状态待确认'} : blocked
-      ? {kind: 'restricted', label: account.state === 'unavailable' ? 'Cookie 不可用' : cooling ? '账号冷却中' : '暂停新增任务'}
+      ? {kind: 'restricted', label: account.state === 'manual' ? '需人工处理' : account.state === 'unavailable' ? 'Cookie 不可用' : cooling ? '账号冷却中' : '暂停新增任务'}
       : downloading ? {kind: 'transferring', label: `${downloading} 个正在传输`}
       : tasks.length ? {kind: 'preparing', label: `${tasks.length} 个任务处理中`}
       : account.shared_with ? {kind: 'reserved', label: '共用账号额度'}

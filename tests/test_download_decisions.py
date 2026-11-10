@@ -64,6 +64,64 @@ class DownloadDecisionTests(unittest.TestCase):
             context = read_context(db, [('local', self.config)], self.now)
         return diagnose(self.config, 'local', [], rate, context, self.now, paused=True)
 
+    def test_network_outage_does_not_penalize_pool_channels_or_existing_recovery(self):
+        for message in ('[Errno 101] Network is unreachable',
+                        "Failed to resolve 'www.youtube.com' ([Errno -3] Temporary failure in name resolution)"):
+            with self.subTest(message=message):
+                pool, router = self.apply_failure(RuntimeError(message), phase='transfer')
+                for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp'):
+                    self.assertFalse(self.state(router, scope).get('cooldown_until'))
+                self.assertEqual(self.state(router, 'channel:yt_dlp'), {})
+                for _, _, scope in pool.accounts:
+                    state = self.state(router, scope)
+                    self.assertFalse(state.get('cooldown_until'))
+                    self.assertFalse(state.get('last_failure_at'))
+                    self.assertFalse(state.get('last_decision'))
+                scope = pool.accounts[0][2]
+                def seed(db, stamp):
+                    state = router._state(db, scope)
+                    state.update(interval=300, cooldown_until=stamp + 600, recovery_mode=True,
+                                 recovery_started_at=stamp - 60, recovery_successes=3,
+                                 recovery_interval_floor=105,
+                                 protection_stage={'started_at': stamp - 30, 'successes': 2})
+                    router._save(db, scope, state)
+                router.transaction_call(seed)
+                before = self.state(router, scope)
+                pool.outcome(scope, RuntimeError(message))
+                self.assertEqual(self.state(router, scope), before)
+                with self.store.connect() as db:
+                    self.assertEqual(db.execute(select(download_permits)).all(), [])
+                # The next subtest needs fresh accounts, rather than seeded cooldowns.
+                def reset(db, stamp):
+                    for _, _, account in pool.accounts:
+                        router._save(db, account, {})
+                    router._save(db, pool.global_scope, {})
+                router.transaction_call(reset)
+
+    def test_worker_network_errors_have_bounded_task_retries_and_specific_statistics(self):
+        from web_worker import drain
+        from webapp.runtime_summary import read
+        self.store.set_runtime({'min_free_gb': 0})
+        self.store.set_downloads_paused(False)
+        for message, reason in (('[Errno 101] Network is unreachable', 'network_unreachable'),
+                                ('Temporary failure in name resolution', 'dns_resolution')):
+            with self.subTest(reason=reason):
+                job = self.store.create('download', dict(base=str(self.root), urls=['https://youtu.be/00000000001'],
+                    config={'path': 'videos', 'min_free_gb': 0, 'download_attempts': 2}))
+                for attempt in (1, 2):
+                    with self.store.connect() as db:
+                        db.execute(tasks.update().where(tasks.c.id == job['id']).values(available_at=0))
+                    with patch('web_worker.TaskStore', return_value=self.store), \
+                            patch('web_worker.execute', side_effect=RuntimeError(message)) as execute:
+                        drain(self.store.directory, 0, 'download')
+                    saved = self.store.get(job['id'])
+                    self.assertFalse(self.store.downloads_paused())
+                    self.assertEqual(saved['attempts'], attempt)
+                    self.assertEqual(saved['status'], 'queued' if attempt == 1 else 'failed')
+                    self.assertEqual(saved['progress']['last_failure']['reason'], reason)
+                    execute.assert_called_once()
+                self.assertEqual(read(self.store)['failure_reasons'][reason], 1)
+
     def test_attributed_429_does_not_cool_global_resources(self):
         error = RuntimeError('HTTP Error 429: Too Many Requests')
         pool, router = self.apply_failure(error, phase='subtitles')
@@ -158,9 +216,15 @@ class DownloadDecisionTests(unittest.TestCase):
         self.assertEqual(value['longest_wait_until'], self.now + 600)
 
     def test_ordinary_request_limit_never_clears_a_previous_manual_halt(self):
-        pool, router = self.apply_failure(YouTubeAuthRequired({'state': 'verification_required', 'message': 'Login rejected'}))
+        pool = self.pool()
+        router = pool.router
+        def legacy_halt(db, stamp):
+            router._state(db, pool.global_scope)
+            router._save(db, pool.global_scope, dict(halted=True, halt_kind='authentication_required',
+                                                    cooldown_until=stamp - 1))
+        router.transaction_call(legacy_halt)
         before = self.state(router, pool.global_scope)
-        pool.outcome(pool.accounts[1][2], YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
+        pool.outcome(pool.accounts[1][2], RuntimeError('HTTP Error 429'))
         after = self.state(router, pool.global_scope)
         self.assertTrue(after['halted'])
         self.assertEqual(after['halt_kind'], 'authentication_required')
@@ -170,10 +234,11 @@ class DownloadDecisionTests(unittest.TestCase):
         error = YouTubeAuthRequired({'state': 'verification_required', 'message': 'Login rejected'})
         pool, router = self.apply_failure(error)
         identity = failure_evidence(error).incident_id
+        scope = next(s for i, _, s in pool.accounts if i == failure_evidence(error).profile_id)
         for _ in range(10):
             self.now += 1
-            pool.outcome(pool.accounts[1][2], YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
-        gate = self.state(router, pool.global_scope)
+            pool.outcome(scope, YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
+        gate = self.state(router, scope)
         self.assertEqual(len(gate['decisions']), 8)
         value = self.diagnostic(pool)
         self.assertEqual(len(value['decisions']['history']), 8)

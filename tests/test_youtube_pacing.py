@@ -166,16 +166,43 @@ class YouTubePacingTests(unittest.TestCase):
         self.assertEqual(self.reserve(router)[0], 4000)
         self.assertEqual(self.state(router)['interval'], 120)
 
-    def test_timeout_slows_but_content_and_local_errors_do_not(self):
+    def test_timeout_does_not_slow_account_pacing(self):
         router = self.scheduler()
         self.reserve(router)
         for error in (PipelineBusy('capacity'),):
             self.feedback(router, success=False, error=error)
         self.assertEqual(self.state(router)['interval'], 60)
         self.feedback(router, success=False, error=TimeoutError('connection timed out'))
-        self.assertEqual(self.state(router)['interval'], 90)
-        self.assertEqual(summary(self.config, self.state(router), self.now)['interval_reason_code'], 'transient_error')
+        self.assertEqual(self.state(router)['interval'], 60)
+        self.assertEqual(summary(self.config, self.state(router), self.now)['interval_reason_code'], 'initial')
         self.assertGreater(self.reserve(router)[0], 0)
+
+    def test_network_outage_preserves_both_pacing_scopes_and_channel_health(self):
+        from webapp.download_policy import failure_evidence, recovery_policy
+        for mode in ('ordered_fallback', 'auto'):
+            router = self.scheduler(scheduler_mode=mode)
+            self.reserve(router)
+            for message in ('Network is unreachable', 'Temporary failure in name resolution'):
+                before = [self.state(router, session) for session in (False, True)]
+                error = RuntimeError(message)
+                for _ in range(4):  # Repeated reports must not trip the channel circuit.
+                    self.feedback(router, success=False, error=error)
+                self.assertEqual([self.state(router, session) for session in (False, True)], before)
+                failure = failure_evidence(error)
+                router.transaction_call(lambda db, stamp: router.youtube_pacing.outcome(
+                    db, stamp, router.channels[0], success=False, size=0, failure=failure,
+                    delay=recovery_policy(failure, router.config).delay, error=error))
+                self.assertEqual([self.state(router, session) for session in (False, True)], before)
+                channel = router.transaction_call(lambda db, stamp: router._state(db, 'channel:yt_dlp'))
+                self.assertEqual(channel, {})
+
+    def test_server_errors_preserve_adaptive_observations_and_intervals(self):
+        router = self.scheduler()
+        self.reserve(router)
+        before = [self.state(router, session) for session in (False, True)]
+        for status in (408, 500, 502, 503, 504):
+            self.feedback(router, success=False, error=RuntimeError(f'HTTP Error {status}'))
+        self.assertEqual([self.state(router, session) for session in (False, True)], before)
 
     def test_summary_explains_legacy_account_backoff_separately_from_wait(self):
         state = dict(interval=120, last_limit_at=self.now - 7200,

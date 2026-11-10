@@ -51,6 +51,8 @@ def explain(states, channels, pool, pacing, stamp, *, paused=False, running=0):
             active_halt = pool['halt_decision']
             _incident(incidents, active_halt)
         restrictions.extend(pool.get('session_restrictions', []))
+        for record in pool.get('session_halts', []):
+            _incident(incidents, record)
         for record in pool.get('decisions', [])[-8:]:
             _incident(incidents, record)
         if (pool.get('halted') or pool.get('known') and pool.get('cooldown_until', 0) > stamp) and not any(
@@ -67,15 +69,21 @@ def explain(states, channels, pool, pacing, stamp, *, paused=False, running=0):
     history = sorted(incidents.values(), key=lambda r: r['time'], reverse=True)[:8]
     if active_halt and not any(r['incident_id'] == active_halt['incident_id'] for r in history):
         history = [*history[:7], incidents[active_halt['incident_id']]]
+    for record in (pool or {}).get('session_halts', []):
+        if record.get('incident_id') in incidents and not any(r['incident_id'] == record['incident_id'] for r in history):
+            history = [*history[:7], incidents[record['incident_id']]]
     manual = any(r['manual'] for r in restrictions)
     waits = [r for r in restrictions if r['until'] > stamp and r['action'] != 'observe']
     return dict(restrictions=restrictions, history=history, manual_required=manual,
         longest_wait_until=max((r['until'] for r in waits), default=0),
         combination='各层截止时间取较晚者，不将冷却时长相加；不同渠道和阶段按各自资源检查。',
         recovery=dict(instance_stopped=bool(paused), downloads_idle=running == 0,
+            account_only=bool(manual and pool and not pool.get('halted') and pool.get('manual_sessions')),
             cooldown_complete=not any(r['until'] > stamp and r['action'] in ('halt', 'cooldown') for r in restrictions),
             instructions='先停止实例并等待当前任务结束；冷却到期后检测全部池成员并解除拦截，再手动恢复。'
-                         if manual and pool else '处理记录中的故障并等待冷却结束，再检查并手动恢复实例。'
+                         if manual and pool and pool.get('halted') else
+                         '仅暂停需要登录或验证的账号，其他可用账号继续。处理后在账号管理点击“检测登录”，新检测通过后恢复该账号；原有限流冷却仍需等待。'
+                         if manual and pool and pool.get('manual_sessions') else '处理记录中的故障并等待冷却结束，再检查并手动恢复实例。'
                          if manual else '仅冷却受影响账号，其他健康账号继续；全部账号冷却则自动等待。到期自动单任务低频恢复，无需手动恢复；仍受共享预算约束，到期不保证源站已恢复。'
                          if pool and pool.get('cooling_sessions') else '临时冷却到期后重新检查资源准入；到期不保证源站已恢复。'))
 

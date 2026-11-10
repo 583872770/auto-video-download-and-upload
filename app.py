@@ -351,9 +351,11 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
     def youtube_auth_required(error):
         from webapp.download_policy import failure_evidence, recovery_policy
         failure = failure_evidence(error)
-        if recovery_policy(failure, settings()[0]).targets == ('session',):
+        policy = recovery_policy(failure, settings()[0])
+        if policy.targets == ('session',):
             return jsonify(error=str(error), auth=error.result, failure=failure.public(),
-                           message='仅该账号请求冷却，其他健康账号继续，实例未暂停。'), 409
+                           message='仅该账号需要人工处理登录或验证，其他健康账号继续。' if policy.manual else
+                                   '仅该账号请求冷却，其他健康账号继续，实例未暂停。'), 409
         youtube_auth.block(error.result)
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
@@ -567,7 +569,7 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             if config.get('proxy_mode') == 'clash':
                 snapshot = clash.snapshot()
                 options.update(proxy=snapshot['proxy'], node=snapshot['node'])
-            result = youtube_auth.check_profile(identity, config, base, **options)
+            result = youtube_auth.check_profile(identity, config, base, recover=True, **options)
         return jsonify(auth=result, message=result['message'])
 
     @app.get('/api/youtube/cookies/<identity>/timeline')

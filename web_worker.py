@@ -101,7 +101,7 @@ def execute(action, payload, report_progress=None, rotation_completed=None, stor
                 raise RuntimeError('本任务重试绑定的 Cookie 池已关闭，请检查配置后手动重试。')
             if prepared.get('youtube_cookie_pool') and is_youtube(payload['urls']):
                 from webapp.cookie_pool import CookiePool
-                pool = CookiePool(store, prepared, payload['base'], task_id)
+                pool = CookiePool(store, prepared, payload['base'], task_id, strict=False)
                 retry_profile = payload.get('_retry_cookie_profile_id')
                 if retry_profile and (retry_profile not in pool.profile_names or
                         retry_profile not in {identity for identity, _, _ in pool.accounts} | set(pool.aliases) or
@@ -469,7 +469,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
                     # Stop at the first invalid-session warning, before yt-dlp
                     # falls back to more clients or downloads anonymously.
                     result = YouTubeAuth(store).reject(failure.message(),
-                        node=config.get('_resolved_clash_node', ''))
+                        node=config.get('_resolved_clash_node', ''), profile_id=config.get('_cookie_pool_selected'))
                     raise YouTubeAuthRequired(result)
                 return super().report_warning(message, *args, **kwargs)
 
@@ -676,7 +676,7 @@ def _execute(action, payload, report_progress=None, rotation_completed=None, sto
             def reject_auth(message):
                 return YouTubeAuth(store).reject(message,
                     request_mode='anonymous_fallback' if without_cookies else 'authenticated',
-                    node=config.get('_resolved_clash_node', ''))
+                    node=config.get('_resolved_clash_node', ''), profile_id=config.get('_cookie_pool_selected'))
 
             try:
                 with download_cookie_session(options) as session_options:
@@ -1035,11 +1035,24 @@ def drain(directory, slot=0, role='all'):
                 last_progress['last_failure'] = evidence.public()
                 store.update_progress(task['id'], dict(last_progress), store.owner)
 
-            def stop_for_account_limit(error):
+            def settle_account_failure(error):
                 from webapp.execution import isolate_download_failure
                 failure = failure_evidence(error)
                 policy = recovery_policy(failure, {**runtime, **config})
                 if policy.targets == ('session',):
+                    if policy.manual:
+                        reason = (f'账号「{failure.profile_name or failure.profile_id}」需要处理登录或网页验证；'
+                                  '该账号暂停新增请求，任务绑定原账号等待，其他健康账号继续。'
+                                  '处理后在账号管理点击“检测登录”，检查通过即可恢复该账号。')
+                        store.update_progress(task['id'], {**last_progress, 'stage': 'retrying',
+                            'speed': None, 'eta': None, 'retry_delay_seconds': 30,
+                            'retry_reason': 'youtube_session_auth_required'}, store.owner)
+                        lease_guard.settle(store.finish, task['id'], error=reason, worker_id=store.owner,
+                                           retryable=True, retry_after=30)
+                        event('account_auth_settled', reason='youtube_session_auth_required',
+                              instance_paused=False, **error_details(error))
+                        print(reason, flush=True)
+                        return False
                     delay = max(policy.delay, getattr(error, '_download_recovery_delay', 0), failure.retry_after or 0)
                     wait = f'至少 {int(delay)} 秒'
                     reason = (f'账号「{failure.profile_name or failure.profile_id}」限流，'
@@ -1134,7 +1147,7 @@ def drain(directory, slot=0, role='all'):
                     record_failure(error)
                     failure = failure_evidence(error)
                     if recovery_policy(failure, {**runtime, **config}).targets == ('session',):
-                        stop_for_account_limit(error)
+                        settle_account_failure(error)
                         continue
                     if error.retryable:
                         retry_after = (recovery_policy(failure, {**runtime, **config}).delay
@@ -1159,17 +1172,20 @@ def drain(directory, slot=0, role='all'):
                     break
                 except YouTubeAccountLimited as error:
                     record_failure(error)
-                    if stop_for_account_limit(error):
+                    if settle_account_failure(error):
                         break
                     continue
                 except BaseException as error:
                     record_failure(error)
                     failure = failure_evidence(error)
                     if failure.kind == 'account_rate_limit':
-                        if stop_for_account_limit(error):
+                        if settle_account_failure(error):
                             break
                         continue
                     if failure.kind in ('authentication_required', 'verification_required'):
+                        if recovery_policy(failure, {**runtime, **config}).targets == ('session',):
+                            settle_account_failure(error)
+                            continue
                         from webapp.execution import isolate_download_failure
                         isolate_download_failure(store, error)
                         lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)

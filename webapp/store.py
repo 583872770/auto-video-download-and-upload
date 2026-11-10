@@ -978,7 +978,8 @@ class TaskStore:
             failure = progress.get('last_failure') or {}
             retry_profile = failure.get('profile_id') or progress.get('cookie_profile_id')
             pin_retry = bool(error) and retry_profile and (failure.get('reason') == 'no_data'
-                or failure.get('kind') in ('account_rate_limit', 'request_rate_limit'))
+                or failure.get('kind') in ('account_rate_limit', 'request_rate_limit',
+                                          'authentication_required', 'verification_required'))
             if pin_retry or not retry and progress.get('retry_cookie_profile_id'):
                 payload = self.decode(row, private=True, db=db)['payload']
                 if pin_retry:

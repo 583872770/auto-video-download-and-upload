@@ -381,7 +381,12 @@ class ChannelScheduler:
         scope = self.config.get('_cookie_pool_scope')
         if not scope or not scope.startswith('youtube-account:'):
             return
-        until = self._state(db, scope).get('cooldown_until', 0)
+        state = self._state(db, scope)
+        if state.get('halted'):
+            error = PipelineBusy('该账号需要人工处理登录或验证；其他健康账号继续。')
+            error.retry_after = 60
+            raise error
+        until = state.get('cooldown_until', 0)
         if until > stamp:
             name = self.config.get('_cookie_pool_profile_name', self.config.get('_cookie_pool_selected'))
             error = PipelineBusy(f'账号「{name}」正在冷却，已保留任务等待；其他健康账号继续。')
@@ -482,6 +487,10 @@ class ChannelScheduler:
                        if phase == 'transfer' else requirements) + backend
             def admit(db, stamp):
                 self._check_cookie_cooldown(db, stamp)
+                health = self._state(db, 'channel:' + channel.id)
+                if health.get('cooldown_kind') == 'server_failure' and health.get('cooldown_until', 0) > stamp:
+                    self.blocked_resource = 'channel:' + channel.id
+                    return None, health['cooldown_until'] - stamp
                 token, delay = self._admit(db, stamp, current)
                 scope = self.config.get('_cookie_pool_scope')
                 if token and phase == 'resolve' and channel.adapter == 'yt_dlp' and scope:
@@ -500,7 +509,9 @@ class ChannelScheduler:
             if on_wait:
                 on_wait()
             if delay > 2 or time.monotonic() >= deadline:
-                error = PipelineBusy('上游额度繁忙或已限流，任务稍后继续。')
+                error = PipelineBusy('渠道连续返回服务端错误，短暂等待后重试。'
+                                     if (self.blocked_resource or '').startswith('channel:') else
+                                     '上游额度繁忙或已限流，任务稍后继续。')
                 error.retry_after = max(2, min(60, delay)) + random.uniform(0, 2)
                 raise error
             time.sleep(.5 + random.uniform(0, .2))
@@ -518,6 +529,10 @@ class ChannelScheduler:
             profile_id=self.config.get('_cookie_pool_selected'),
             profile_name=self.config.get('_cookie_pool_profile_name')) if error else None
         policy = recovery_policy(failure, self.config, youtube=channel.adapter == 'yt_dlp') if failure else None
+        if failure and failure.kind == 'transient_failure' and 'channel' not in policy.targets:
+            # Connectivity failures remain in task/Cookie diagnostics. They
+            # must not degrade channel health or trigger a second backoff.
+            return
         if (failure and policy.targets == ('session',) and channel.adapter == 'yt_dlp'):
             # CookiePool owns this account's cooldown. Neither channel health,
             # shared quotas nor instance pacing should block unrelated accounts.
@@ -535,6 +550,22 @@ class ChannelScheduler:
             state = self._state(db, key)
             if failure and state.get('last_decision', {}).get('incident_id') == failure.incident_id:
                 return
+            if failure and failure.kind == 'transient_failure':
+                # Three different tasks reporting 5xx within a minute indicate
+                # a channel outage. A single bad video never slows an account.
+                samples = [item for item in state.get('server_failures', [])
+                           if item['time'] > stamp - 60 and item['task'] != self.task_id]
+                samples.append({'task': self.task_id, 'time': stamp})
+                state['server_failures'] = samples[-16:]
+                if len(samples) >= 3:
+                    state.update(cooldown_until=max(state.get('cooldown_until', 0),
+                                 cooldown_deadline(error, stamp, max(30, failure.retry_after or 0))),
+                                 cooldown_status=status, cooldown_kind='server_failure')
+                remember_decision(state, failure, layer='channel', scope='渠道服务端故障',
+                    action='cooldown' if state.get('cooldown_until', 0) > stamp else 'record',
+                    until=state.get('cooldown_until', 0), stamp=stamp)
+                self._save(db, key, state)
+                return
             if self.youtube_pacing and channel.adapter == 'yt_dlp':
                 delay = self.youtube_pacing.outcome(db, stamp, channel, success=success, size=size,
                     failure=failure, delay=delay, error=error)
@@ -544,6 +575,7 @@ class ChannelScheduler:
                        } if limited or status == 503 else {}
             state.update(throttle)
             if success:
+                state.pop('server_failures', None)
                 state['failures'] = 0
                 if state.get('cooldown_until', 0) <= stamp:
                     state.pop('cooldown_until', None)

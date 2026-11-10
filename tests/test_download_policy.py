@@ -1,5 +1,7 @@
 import unittest
+import errno
 from http.client import IncompleteRead
+import socket
 
 from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline
 from webapp.downloads import YouTubeAccountLimited
@@ -8,6 +10,56 @@ from webapp.youtube_auth import YouTubeAuthRequired
 
 
 class FailureEvidenceTests(unittest.TestCase):
+    def test_connectivity_failures_retry_without_account_or_channel_backoff(self):
+        from webapp.downloads import DownloadFailure
+        from yt_dlp.networking.exceptions import TransportError
+
+        network = ("HTTP 分块下载失败：连接传输中断（TransportError）："
+                   "HTTPSConnection(host='rr5.googlevideo.com', port=443): "
+                   "Failed to establish a new connection: [Errno 101] Network is unreachable")
+        dns = ("[youtube] fixture: Unable to download API page: "
+               "HTTPSConnection(host='www.youtube.com', port=443): Failed to resolve "
+               "'www.youtube.com' ([Errno -3] Temporary failure in name resolution) "
+               '(caused by TransportError("Temporary failure in name resolution"))')
+        for original, reason in ((RuntimeError(network), 'network_unreachable'),
+                                 (TransportError(network), 'network_unreachable'),
+                                 (OSError(errno.ENETUNREACH, 'fixture'), 'network_unreachable'),
+                                 (OSError(errno.EHOSTUNREACH, 'fixture'), 'network_unreachable'),
+                                 (RuntimeError(dns), 'dns_resolution'),
+                                 (socket.gaierror(socket.EAI_AGAIN, 'fixture'), 'dns_resolution')):
+            wrapped = RuntimeError('download failed')
+            wrapped.__cause__ = original
+            for error in (original, wrapped):
+                with self.subTest(error=str(error), reason=reason):
+                    value = failure_evidence(error, source='youtube', profile_id='one')
+                    self.assertEqual((value.kind, value.reason, value.retryable),
+                                     ('transient_failure', reason, True))
+                    self.assertIsNone(value.http_status)
+                    for config in ({}, {'youtube_cookie_pool': ['one']}):
+                        policy = recovery_policy(value, config)
+                        self.assertEqual((policy.action, policy.delay, policy.targets), ('none', 0, ()))
+        for message, reason in ((network, 'network_unreachable'), (dns, 'dns_resolution')):
+            logger = DownloadFailure()
+            logger.error(message)
+            self.assertEqual(failure_evidence(logger.as_error()).reason, reason)
+
+    def test_connectivity_text_does_not_override_http_or_account_evidence(self):
+        detail = 'Failed to resolve host; Network is unreachable'
+        for status, kind, action in ((403, 'access_denied', 'none'),
+                                     (429, 'request_rate_limit', 'cooldown'),
+                                     (503, 'transient_failure', 'retry')):
+            error = RuntimeError(detail)
+            error.http_status = status
+            value = failure_evidence(error)
+            self.assertEqual(value.kind, kind)
+            self.assertIsNone(value.reason)
+            self.assertEqual(recovery_policy(value, {}).action, action)
+        value = failure_evidence(YouTubeAccountLimited(detail))
+        self.assertEqual(value.kind, 'account_rate_limit')
+        self.assertEqual(recovery_policy(value, {}).action, 'halt')
+        self.assertEqual(failure_evidence(RuntimeError('failure https://example.test/failed-to-resolve')).kind,
+                         'unknown')
+
     def test_only_attributed_pool_limits_are_isolated(self):
         config = {'youtube_cookie_pool': ['one'], 'youtube_throttle_cooldown': 300}
         unknown = failure_evidence(YouTubeAccountLimited('Your account has been rate-limited'))
@@ -93,7 +145,7 @@ class FailureEvidenceTests(unittest.TestCase):
                 self.assertTrue(value.retryable)
                 self.assertIsNone(value.http_status)
                 policy = recovery_policy(value, {})
-                self.assertEqual((policy.action, policy.delay, policy.manual), ('cooldown', 60, False))
+                self.assertEqual((policy.action, policy.delay, policy.manual), ('none', 0, False))
 
     def test_partial_response_does_not_override_restrictions_or_local_failures(self):
         detail = '215403 bytes read, 9758503 more expected'

@@ -178,22 +178,36 @@ class YouTubeAuth:
             return {**result, 'state': 'unchecked', 'message': '登录验证已到期，下次下载前将重新检测。'}
         return result
 
-    def check_profile(self, identity, config, base, **options):
+    def check_profile(self, identity, config, base, *, recover=False, **options):
         from webapp.cookie_profiles import CookieProfiles
         profiles = CookieProfiles(base, self.store)
         target = profiles.require(identity)
         profile = next((item for item in profiles.items() if item['id'] == identity), None)
         fingerprint = hashlib.sha256(target.read_bytes()).hexdigest()
+        pool, session = None, None
+        if config.get('youtube_cookie_pool'):
+            from webapp.cookie_pool import CookiePool
+            pool = CookiePool(self.store, config, base, None, strict=False)
+            canonical = pool.aliases.get(identity, identity)
+            session = next((s for s in pool.status()['session_states'] if s['id'] == canonical), None)
+            if recover and session and session['state'] == 'manual':
+                options['force'] = True
         result = self.check({**config, 'youtube_cookie': str(target), '_cookie_pool_selected': identity}, base,
-                            publish_latest=False, **options)
+                            publish_latest=False, allow_manual=True, **options)
         from webapp.youtube_cookie_history import record as record_cookie_event
         record_cookie_event(self.store, profile_id=identity,
             profile_name=profile.get('name') if profile else identity, event_type='auth_check', phase='auth',
             kind=result.get('state'), message=result.get('message', ''),
             http_status=result.get('http_status'), retry_after=result.get('retry_after'),
             metadata={'connection': result.get('connection', '')})
-        if result.get('http_status') == 429:
+        if result.get('http_status') == 429 or result['state'] in ('not_logged_in', 'invalid', 'verification_required'):
             self._limit_error({**config, '_cookie_pool_selected': identity}, base, result)
+        if (pool and session and session['state'] == 'manual' and options.get('force')
+                and result['state'] == 'valid'
+                and hashlib.sha256(profiles.export(identity)[1]).hexdigest() == fingerprint):
+            if pool.clear_account_after_check(identity, session.get('halt_incident_id'), result.get('checked_at', 0)):
+                result = {**result, 'account_resumed': True,
+                          'message': result['message'] + ' 该账号已恢复调度，原有限流冷却和启动设置仍生效。'}
         self._write('youtube_profile:' + identity, {'fingerprint': fingerprint, 'auth': result})
         return result
 
@@ -216,12 +230,15 @@ class YouTubeAuth:
         from webapp.cookie_pool import CookiePool
         from webapp.throughput import PipelineBusy
 
-        pool = CookiePool(self.store, config, base, None)
+        pool = CookiePool(self.store, config, base, None, strict=False)
 
         def waiting(status):
             if status['halted']:
                 return {'state': 'blocked', 'message': status['reason'], 'source': 'cookie_pool_halted'}
             sessions = status['session_states']
+            if sessions and all(s['state'] in ('manual', 'cooldown') for s in sessions) and any(
+                    s['state'] == 'manual' for s in sessions):
+                return {'state': 'waiting', 'message': status['capacity_summary']['reason']}
             if status['cooldown_until'] > time.time() or (
                     sessions and all(s['state'] == 'cooldown' for s in sessions)):
                 until = max(status['cooldown_until'], min((s['cooldown_until'] for s in sessions), default=0))
@@ -235,7 +252,7 @@ class YouTubeAuth:
             return blocked
         result = {'state': 'missing', 'message': '账号池没有可用会话，请检查 Cookie 配置。'}
         for session in status['session_states']:
-            if session['state'] == 'cooldown':
+            if session['state'] in ('cooldown', 'manual'):
                 continue
             try:
                 result = self.check_profile(session['id'], config, base, **options)
@@ -246,7 +263,7 @@ class YouTubeAuth:
                 return {**result, 'profile_id': session['id']}
         return waiting(pool.status()) or result
 
-    def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True):
+    def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True, allow_manual=False):
         if config.get('youtube_cookie_pool'):
             from webapp.cookie_pool import CookiePool
             from webapp.throughput import PipelineBusy
@@ -261,7 +278,11 @@ class YouTubeAuth:
                 identity = target.stem
             identity = pool.aliases.get(identity, identity)
             session = next((s for s in pool.status()['session_states'] if s['id'] == identity), None)
-            if session and session['state'] == 'cooldown':
+            if session and session['state'] == 'manual' and not allow_manual:
+                error = PipelineBusy('该账号需人工处理登录或验证，请在账号管理重新检测；其他健康账号继续。')
+                error.retry_after = 60
+                raise error
+            if session and session.get('cooldown_until', 0) > time.time():
                 error = PipelineBusy(f'账号「{session["name"]}」正在冷却，暂不发送登录检测请求；到期自动低频恢复。')
                 error.retry_after = max(1, session['cooldown_until'] - time.time())
                 raise error
@@ -350,7 +371,7 @@ class YouTubeAuth:
         if result.get('http_status'):
             from webapp.download_policy import failure_evidence
             failure_evidence(error, source='youtube', phase='auth')
-        if result.get('http_status') == 429 and config.get('youtube_cookie_pool'):
+        if config.get('youtube_cookie_pool'):
             from webapp.cookie_pool import CookiePool
             pool = CookiePool(self.store, config, base, None, strict=False)
             identity = config.get('_cookie_pool_selected')
@@ -371,12 +392,14 @@ class YouTubeAuth:
             raise self._limit_error(config, base, result)
         return result
 
-    def reject(self, message, *, request_mode='authenticated', node=''):
-        self.invalidate()
+    def reject(self, message, *, request_mode='authenticated', node='', profile_id=None):
+        if not profile_id:
+            self.invalidate()
         if request_mode == 'anonymous_fallback':
             message = ('带 Cookie 的请求返回 Video unavailable；同一出口的匿名重试要求机器人验证。'
-                       '这不能证明上传的 Cookie 已失效。实例已暂停，请在同一出口重新检测登录和视频播放。')
+                       '这不能证明上传的 Cookie 已失效。请在同一出口重新检测登录和视频播放。')
         result = {'state': 'verification_required', 'message': message, 'checked_at': time.time(),
                   'source': 'download', 'request_mode': request_mode, 'node': node}
-        self._write('youtube_auth_latest', result)
+        if not profile_id:
+            self._write('youtube_auth_latest', result)
         return result

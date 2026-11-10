@@ -1,0 +1,397 @@
+<style>
+#ff-account-design{--ff-bg:light-dark(#f4f6fa,#121923);--ff-paper:light-dark(#ffffff,#1a2432);--ff-ink:light-dark(#1e293b,#e5edf8);--ff-muted:light-dark(#60738a,#a6b5c8);--ff-line:light-dark(#e1e7f0,#334257);--ff-accent:light-dark(#2563eb,#91b7ff);--ff-on-accent:light-dark(#ffffff,#102956);--ff-soft:light-dark(#edf3ff,#203759);--ff-side:light-dark(#172336,#101925);--ff-side-ink:#dce6f5;--ff-warn:light-dark(#9d6414,#e8bc6a);--ff-success:light-dark(#187352,#79cbaa);--ff-danger:light-dark(#b33e3e,#ffaaaa);--ff-cell:13px;color:var(--ff-ink);font:14px/1.55 'Segoe UI','Microsoft YaHei',sans-serif;position:relative;isolation:isolate}
+#ff-account-design *{box-sizing:border-box}
+#ff-account-design [hidden]{display:none!important}
+#ff-account-design .ff-shell{display:grid;grid-template-columns:160px minmax(0,1fr);min-height:680px;background:var(--ff-bg);border:1px solid var(--ff-line);border-radius:10px;overflow:hidden}
+#ff-account-design .ff-side{background:var(--ff-side);color:var(--ff-side-ink);padding:24px 12px;display:flex;flex-direction:column;gap:24px}
+#ff-account-design .ff-brand{font-size:23px;font-weight:600;padding:0 10px;letter-spacing:1px}
+#ff-account-design .ff-brand small{display:block;font-size:10px;font-weight:400;letter-spacing:2px;color:#9caec8}
+#ff-account-design .ff-nav{display:grid;gap:5px}
+#ff-account-design .ff-nav-label{font-size:11px;color:#9caec8;margin:14px 10px 4px}
+#ff-account-design button,#ff-account-design input,#ff-account-design select,#ff-account-design textarea{font:inherit}
+#ff-account-design button{cursor:pointer}
+#ff-account-design button:disabled{cursor:default;opacity:.5}
+#ff-account-design .ff-nav button{border:0;background:transparent;color:inherit;text-align:left;padding:10px 12px;border-radius:6px;display:flex;gap:9px;align-items:center}
+#ff-account-design .ff-nav button[aria-current=page]{background:#2563eb;color:#fff}
+#ff-account-design .ff-nav button:hover{background:#29405f}
+#ff-account-design .ff-nav button[aria-current=page]:hover{background:#2563eb}
+#ff-account-design .ff-side-note{margin-top:auto;padding:12px 8px;border-top:1px solid #33445e;font-size:11px;color:#9caec8}
+#ff-account-design .ff-window{min-width:0}
+#ff-account-design .ff-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 16px;padding:14px 104px 14px 22px;min-height:57px;background:var(--ff-paper);border-bottom:1px solid var(--ff-line);font-size:12px}
+#ff-account-design .ff-top strong{font-weight:600}
+#ff-account-design .ff-content{padding:23px 22px 24px;min-width:0}
+#ff-account-design h1{font-size:23px;margin:0;font-weight:600;letter-spacing:-.4px}
+#ff-account-design h2{font-size:16px;margin:0;font-weight:600}
+#ff-account-design h3{font-size:14px;margin:0;font-weight:600}
+#ff-account-design p{margin:0}
+#ff-account-design .ff-muted{color:var(--ff-muted);font-size:12px}
+#ff-account-design .ff-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;flex-wrap:wrap;margin-bottom:17px}
+#ff-account-design .ff-heading p{margin-top:5px}
+#ff-account-design .ff-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+#ff-account-design .ff-button{display:inline-flex;justify-content:center;align-items:center;gap:6px;background:var(--ff-paper);border:1px solid var(--ff-line);color:var(--ff-ink);padding:7px 11px;border-radius:6px;font-size:12px;text-decoration:none;white-space:nowrap;min-height:34px}
+#ff-account-design .ff-button:hover{background:var(--ff-soft)}
+#ff-account-design .ff-button.ff-primary{background:var(--ff-accent);border-color:var(--ff-accent);color:var(--ff-on-accent)}
+#ff-account-design .ff-button.ff-danger{color:var(--ff-danger)}
+#ff-account-design .ff-link{background:transparent;border:0;color:var(--ff-accent);padding:0;font-size:12px;text-align:left;text-decoration:none}
+#ff-account-design .ff-link:hover{text-decoration:underline}
+#ff-account-design .ff-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--ff-line);margin-bottom:17px}
+#ff-account-design .ff-tab{background:transparent;border:0;color:var(--ff-muted);padding:10px 15px;border-bottom:2px solid transparent;font-size:13px}
+#ff-account-design .ff-tab[aria-selected=true]{border-bottom-color:var(--ff-accent);color:var(--ff-accent);font-weight:600}
+#ff-account-design .ff-toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:end;margin-bottom:14px}
+#ff-account-design .ff-field{display:flex;flex-direction:column;gap:5px;font-size:12px;min-width:0}
+#ff-account-design .ff-field.ff-grow{flex:1 1 170px}
+#ff-account-design input:not([type=checkbox]),#ff-account-design select,#ff-account-design textarea{background:var(--ff-paper);color:var(--ff-ink);border:1px solid var(--ff-line);border-radius:6px;padding:8px 10px;min-width:0;width:100%;font-size:13px}
+#ff-account-design input[type=checkbox]{accent-color:var(--ff-accent)}
+#ff-account-design textarea{resize:vertical;min-height:120px}
+#ff-account-design .ff-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+#ff-account-design .ff-chip{border:1px solid var(--ff-line);background:var(--ff-paper);color:var(--ff-muted);padding:5px 9px;border-radius:5px;font-size:12px}
+#ff-account-design .ff-chip[aria-pressed=true]{background:var(--ff-soft);color:var(--ff-accent);border-color:var(--ff-accent)}
+#ff-account-design .ff-table-wrap{overflow-x:auto;background:var(--ff-paper);border:1px solid var(--ff-line);border-radius:8px}
+#ff-account-design table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}
+#ff-account-design th{padding:10px 11px;font-weight:400;color:var(--ff-muted);background:var(--ff-bg);white-space:nowrap}
+#ff-account-design td{padding:var(--ff-cell) 11px;border-top:1px solid var(--ff-line);vertical-align:top}
+#ff-account-design td:first-child{overflow-wrap:anywhere}
+#ff-account-design td small{display:block;font-size:11px;color:var(--ff-muted);margin-top:4px}
+#ff-account-design .ff-email{font-weight:500;font-size:12px;color:var(--ff-ink)}
+#ff-account-design .ff-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap}
+#ff-account-design .ff-status::before{content:'';width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--ff-muted)}
+#ff-account-design .ff-status.ff-ok::before{background:var(--ff-success)}
+#ff-account-design .ff-status.ff-warn::before{background:var(--ff-warn)}
+#ff-account-design .ff-status.ff-error::before{background:var(--ff-danger)}
+#ff-account-design .ff-status.ff-active::before{background:var(--ff-accent)}
+#ff-account-design .ff-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:13px}
+#ff-account-design .ff-note{background:var(--ff-soft);border-radius:6px;padding:10px 12px;color:var(--ff-muted);font-size:12px;margin:13px 0}
+#ff-account-design .ff-panel{background:var(--ff-paper);border:1px solid var(--ff-line);border-radius:8px;padding:16px;margin-bottom:14px;min-width:0}
+#ff-account-design .ff-panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+#ff-account-design .ff-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+#ff-account-design .ff-label-row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--ff-line);font-size:12px}
+#ff-account-design .ff-label-row span:first-child{color:var(--ff-muted)}
+#ff-account-design .ff-scope{display:flex;align-items:center;gap:10px;background:var(--ff-paper);padding:12px 14px;border:1px solid var(--ff-line);border-radius:7px;margin-bottom:16px;font-size:12px;flex-wrap:wrap}
+#ff-account-design .ff-scope select{width:auto;min-width:145px}
+#ff-account-design .ff-selection{display:flex;gap:10px;align-items:center;font-size:12px;padding:9px 0;border-bottom:1px solid var(--ff-line)}
+#ff-account-design .ff-selection span{flex:1;overflow-wrap:anywhere}
+#ff-account-design .ff-selection small{color:var(--ff-muted)}
+#ff-account-design .ff-savebar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;background:var(--ff-paper);border:1px solid var(--ff-line);border-radius:7px;padding:12px 14px;margin-top:15px}
+#ff-account-design .ff-cookie-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+#ff-account-design .ff-cookie{background:var(--ff-paper);border:1px solid var(--ff-line);border-radius:8px;padding:14px;min-width:0;display:grid;gap:9px;align-content:start}
+#ff-account-design .ff-cookie.ff-cooling{background:light-dark(#fffaf0,#302b21)}
+#ff-account-design .ff-cookie strong{font-size:12px;font-weight:500;overflow-wrap:anywhere}
+#ff-account-design .ff-cookie-phase{font-size:17px;font-weight:500}
+#ff-account-design .ff-cookie-cause{font-size:12px;min-height:38px;color:var(--ff-muted)}
+#ff-account-design .ff-metrics{display:flex;flex-wrap:wrap;gap:28px;margin-bottom:17px}
+#ff-account-design .ff-metric span{display:block;color:var(--ff-muted);font-size:12px}
+#ff-account-design .ff-metric strong{font-size:24px;font-weight:500}
+#ff-account-design .ff-capacity{margin-left:auto}
+#ff-account-design .ff-badge{display:inline-block;padding:2px 7px;font-size:11px;border-radius:4px;background:var(--ff-soft);color:var(--ff-accent)}
+#ff-account-design .ff-progress{height:6px;background:var(--ff-bg);border-radius:5px;overflow:hidden;margin:7px 0 12px}
+#ff-account-design .ff-progress span{display:block;height:100%;background:var(--ff-accent)}
+#ff-account-design details{font-size:12px;margin-top:13px}
+#ff-account-design summary{cursor:pointer;color:var(--ff-muted);padding:5px 0}
+#ff-account-design dialog{background:var(--ff-paper);color:var(--ff-ink);border:1px solid var(--ff-line);border-radius:12px;width:min(590px,calc(100% - 28px));padding:21px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 80px #0004}
+#ff-account-design dialog::backdrop{background:#101b2d66}
+#ff-account-design .ff-modal-heading{display:flex;justify-content:space-between;gap:15px;align-items:start;margin-bottom:15px}
+#ff-account-design .ff-modal-heading h2{font-size:18px;overflow-wrap:anywhere}
+#ff-account-design .ff-modal-footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:18px}
+#ff-account-design .ff-secret{display:flex;align-items:end;gap:8px}
+#ff-account-design .ff-secret .ff-field{flex:1}
+#ff-account-design .ff-form{display:grid;gap:12px}
+#ff-account-design .ff-error-message{color:var(--ff-danger);font-size:12px;min-height:18px}
+#ff-account-design .ff-announcement{font-size:12px;color:var(--ff-accent);margin-top:13px;min-height:19px}
+#ff-account-design .ff-empty{text-align:center;padding:30px;color:var(--ff-muted)}
+#ff-account-design .ff-mobile-only{display:none}
+@media(max-width:820px){#ff-account-design .ff-shell{grid-template-columns:135px minmax(0,1fr)}#ff-account-design .ff-side{padding:22px 8px}#ff-account-design .ff-content{padding:18px 14px}#ff-account-design .ff-top{padding-left:14px}#ff-account-design .ff-cookie-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#ff-account-design .ff-table-wrap table{min-width:610px}}
+@media(max-width:560px){#ff-account-design .ff-shell{display:block}#ff-account-design .ff-side{padding:13px;gap:10px}#ff-account-design .ff-brand{font-size:18px}#ff-account-design .ff-brand small,#ff-account-design .ff-nav-label,#ff-account-design .ff-side-note{display:none}#ff-account-design .ff-nav{display:flex;flex-wrap:wrap;gap:4px}#ff-account-design .ff-nav button{padding:7px 9px;font-size:12px}#ff-account-design .ff-top{padding:12px 14px}#ff-account-design .ff-grid{grid-template-columns:1fr}#ff-account-design .ff-cookie-grid{grid-template-columns:1fr}#ff-account-design .ff-heading{gap:11px}#ff-account-design .ff-capacity{margin-left:0}#ff-account-design .ff-metrics{gap:18px}#ff-account-design .ff-toolbar>.ff-field{flex:1 1 130px}#ff-account-design .ff-tab{padding:9px 10px}#ff-account-design .ff-secret{align-items:stretch;flex-wrap:wrap}}
+</style>
+<div id="ff-account-design" aria-label="帧流账号管理与下载工作区设计">
+  <div class="ff-shell">
+    <aside class="ff-side">
+      <div class="ff-brand">帧流<small>FRAMEFLOW</small></div>
+      <nav class="ff-nav" aria-label="工作区导航">
+        <span class="ff-nav-label">日常工作</span>
+        <button type="button" data-page="jobs"><i data-lucide="list" aria-hidden="true"></i>任务中心</button>
+        <button type="button" data-page="workbench"><i data-lucide="download" aria-hidden="true"></i>下载工作台</button>
+        <button type="button" data-page="accounts" aria-current="page"><i data-lucide="users" aria-hidden="true"></i>账号管理</button>
+        <span class="ff-nav-label">运行与维护</span>
+        <button type="button" data-page="instances"><i data-lucide="server" aria-hidden="true"></i>下载实例</button>
+        <button type="button" data-page="network"><i data-lucide="network" aria-hidden="true"></i>网络与代理</button>
+        <button type="button" data-page="settings"><i data-lucide="settings" aria-hidden="true"></i>系统设置</button>
+      </nav>
+      <div class="ff-side-note">交互设计 · 虚构账号<br>演示操作仅在本页生效</div>
+    </aside>
+    <div class="ff-window">
+      <header class="ff-top"><span>工作区 / <strong id="ff-breadcrumb">账号管理</strong></span><span class="ff-muted">访问入口：洛杉矶</span></header>
+      <main class="ff-content"><div id="ff-page"></div><p id="ff-announcement" class="ff-announcement" role="status" aria-live="polite"></p></main>
+    </div>
+  </div>
+  <dialog id="ff-modal" aria-labelledby="ff-modal-title"></dialog>
+  <dialog id="ff-confirm" aria-labelledby="ff-confirm-title"><h2 id="ff-confirm-title">确认操作</h2><p id="ff-confirm-text" style="margin-top:12px"></p><div class="ff-modal-footer"><button type="button" class="ff-button" data-confirm-decision="cancel">取消</button><button type="button" class="ff-button ff-primary" data-confirm-decision="confirm">确认</button></div></dialog>
+</div>
+<script>
+(() => {
+  'use strict';
+  const root = document.getElementById('ff-account-design');
+  const q = selector => root.querySelector(selector);
+  const modal = q('#ff-modal');
+  const confirmation = q('#ff-confirm');
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const instances = [{id:'lax',name:'洛杉矶',online:true}, {id:'fra',name:'法兰克福 · 示例',online:true}, {id:'sin',name:'新加坡 · 示例',online:false}];
+  const accounts = [
+    {id:'a1',email:'alpha@example.com',instance:'lax',note:'主下载账号',run:'transferring'},
+    {id:'a2',email:'bravo@example.com',instance:'lax',note:'等待账号恢复',run:'cooldown'},
+    {id:'a3',email:'charlie@example.com',instance:'lax',note:'按账号节奏启动',run:'waiting'},
+    {id:'a4',email:'delta@example.com',instance:'lax',note:'已分配，等待登录',run:'idle'},
+    {id:'a5',email:'echo@example.com',instance:'lax',note:'需要更新 Cookie',run:'unavailable'},
+    {id:'a6',email:'foxtrot@example.com',instance:'fra',note:'低频恢复中',run:'recovery'},
+    {id:'a7',email:'golf@example.com',instance:'',note:'新购账号，待分配',run:'idle'},
+    {id:'a8',email:'hotel@example.com',instance:'',note:'备用',run:'idle'}
+  ];
+  const cookies = [
+    {id:'c1',account:'a1',instance:'lax',name:'主会话',auth:'valid',when:'2 分钟前',pooled:true},
+    {id:'c2',account:'a1',instance:'lax',name:'旧会话备份',auth:'unchecked',when:'尚未检测',pooled:false},
+    {id:'c3',account:'a2',instance:'lax',name:'浏览器登录',auth:'expired',when:'35 分钟前曾通过',pooled:true},
+    {id:'c4',account:'a3',instance:'lax',name:'下载专用',auth:'valid',when:'1 分钟前',pooled:true},
+    {id:'c5',account:'a5',instance:'lax',name:'原有 Cookie',auth:'not_logged_in',when:'3 分钟前',pooled:true},
+    {id:'c6',account:'a6',instance:'fra',name:'主会话',auth:'valid',when:'1 分钟前',pooled:true},
+    {id:'c7',account:'',instance:'lax',name:'历史 Cookie · 未关联资料',auth:'unchecked',when:'尚未检测',pooled:true}
+  ];
+  const policies = {lax:{start:50,rest:25,shared:5,limit:1,enabled:true},fra:{start:120,rest:25,shared:5,limit:1,enabled:true},sin:{start:120,rest:25,shared:5,limit:1,enabled:false}};
+  const state = {page:'accounts',tab:'records',instance:'lax',filterInstance:'all',search:'',filter:'all',cookieFilter:'all',workFilter:'all'};
+  const design = {density:'紧凑',cookieNames:true};
+  let dirty = false, editAccount = null, poolDirty = false;
+  const nameOf = id => instances.find(i => i.id === id)?.name || '未绑定';
+  const accountOf = id => accounts.find(a => a.id === id);
+  const cookieOf = id => cookies.find(c => c.id === id);
+  const cookiesFor = id => cookies.filter(c => c.account === id);
+  const authLabels = {valid:'最近验证通过',expired:'检测已过期',unchecked:'待检测',not_logged_in:'需要重新登录'};
+  const runLabels = {transferring:'正在传输',cooldown:'账号冷却中',waiting:'等待启动',recovery:'低频恢复',unavailable:'Cookie 不可用',idle:'未参与下载'};
+  const status = (text, kind='') => `<span class="ff-status ${kind}">${esc(text)}</span>`;
+  const options = (selected, all=false) => `${all?`<option value="all"${selected==='all'?' selected':''}>全部实例</option>`:'<option value="">暂不绑定</option>'}${instances.map(i=>`<option value="${i.id}"${selected===i.id?' selected':''}>${esc(i.name)}${i.online?'':'（离线）'}</option>`).join('')}`;
+  const announce = message => {q('#ff-announcement').textContent = message;};
+  function remember() {
+    const snapshot = {page:state.page,tab:state.tab,instance:state.instance,filterInstance:state.filterInstance,filter:state.filter};
+    window.openai?.setWidgetState?.({modelContent:{page:state.page,tab:state.tab,instance:nameOf(state.instance)},privateContent:snapshot})?.catch(()=>{});
+  }
+  function restore(saved) {
+    if (!saved || typeof saved !== 'object') return;
+    if (['accounts','workbench','instances','settings','jobs','network'].includes(saved.page)) state.page=saved.page;
+    if (['records','cookies','pool'].includes(saved.tab)) state.tab=saved.tab;
+    if (instances.some(i=>i.id===saved.instance)) state.instance=saved.instance;
+    if (saved.filterInstance==='all' || instances.some(i=>i.id===saved.filterInstance)) state.filterInstance=saved.filterInstance;
+    if (['all','unbound','login','cooldown'].includes(saved.filter)) state.filter=saved.filter;
+  }
+  function heading(title, subtitle, actions='') {
+    return `<div class="ff-heading"><div><h1>${title}</h1><p class="ff-muted">${subtitle}</p></div><div class="ff-actions">${actions}</div></div>`;
+  }
+  function instanceScope() {
+    const instance=instances.find(i=>i.id===state.instance);
+    return `<div class="ff-scope"><span>当前管理实例</span><select id="ff-manage-instance" aria-label="当前管理实例">${instances.map(i=>`<option value="${i.id}"${i.id===state.instance?' selected':''}>${esc(i.name)}</option>`).join('')}</select>${status(instance.online?'在线':'离线',instance.online?'ff-ok':'')}<span class="ff-muted">操作仅影响此实例</span></div>`;
+  }
+  function accountAuth(a) {
+    const linked=cookiesFor(a.id);
+    if (!linked.length) return {text:'未关联 Cookie',kind:'',extra:'保存资料不等于登录'};
+    const valid=linked.filter(c=>c.auth==='valid').length;
+    if(valid) return {text:linked.length>1?`${valid}/${linked.length} 份验证通过`:'最近验证通过',kind:'ff-ok',extra:linked.find(c=>c.auth==='valid').when};
+    const first=linked.find(c=>c.auth==='not_logged_in')||linked.find(c=>c.auth==='expired')||linked[0];
+    return {text:authLabels[first.auth],kind:first.auth==='not_logged_in'?'ff-error':first.auth==='expired'?'ff-warn':'',extra:first.when};
+  }
+  function recordsHTML() {
+    const selected=accounts.filter(a=>(state.filterInstance==='all'||a.instance===state.filterInstance) && `${a.email} ${a.note}`.toLowerCase().includes(state.search.toLowerCase()) && (state.filter==='all'||state.filter==='unbound'&&!a.instance||state.filter==='login'&&cookiesFor(a.id).every(c=>c.auth!=='valid')||state.filter==='cooldown'&&a.run==='cooldown'));
+    return `<div class="ff-toolbar"><label class="ff-field ff-grow">搜索账号 / 备注<input id="ff-search" type="search" value="${esc(state.search)}" placeholder="输入邮箱或备注"></label><label class="ff-field">绑定实例<select id="ff-filter-instance">${options(state.filterInstance,true)}</select></label></div>
+      <div class="ff-chips" aria-label="筛选账号">${[['all','全部账号'],['unbound','未绑定实例'],['login','待登录 / 待检测'],['cooldown','账号冷却中']].map(([key,label])=>`<button type="button" class="ff-chip" data-account-filter="${key}" aria-pressed="${state.filter===key}">${label}</button>`).join('')}</div>
+      <div class="ff-table-wrap"><table><thead><tr><th>账号</th><th>绑定实例</th><th>Cookie</th><th>登录检测</th><th>下载状态</th><th>操作</th></tr></thead><tbody>${selected.map(a=>{const auth=accountAuth(a),linked=cookiesFor(a.id);return `<tr><td><button type="button" class="ff-link ff-email" data-detail="${a.id}">${esc(a.email)}</button><small>${esc(a.note)}</small></td><td>${esc(nameOf(a.instance))}${a.instance?'<small>独占使用</small>':'<small>可先保存资料</small>'}</td><td>${linked.length?`${linked.length} 份`:'未关联'}<small>${linked.filter(c=>c.pooled).length?`${linked.filter(c=>c.pooled).length} 份已启用`:'未加入账号池'}</small></td><td>${status(auth.text,auth.kind)}<small>${esc(auth.extra)}</small></td><td>${status(runLabels[a.run],a.run==='cooldown'?'ff-warn':a.run==='transferring'?'ff-active':a.run==='unavailable'?'ff-error':'')}</td><td><button type="button" class="ff-link" data-detail="${a.id}">详情 / 编辑</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="ff-empty">没有符合条件的账号</td></tr>'}</tbody></table></div>
+      <div class="ff-foot"><span class="ff-muted">当前 ${selected.length} / ${accounts.length} 个账号 · 全局共享资料</span><span class="ff-muted">每页 50 条 · 示例仅一页</span></div>`;
+  }
+  function cookiesHTML() {
+    const selected=cookies.filter(c=>(state.filterInstance==='all'||c.instance===state.filterInstance)&&(state.cookieFilter!=='unlinked'||!c.account));
+    return `<div class="ff-toolbar"><label class="ff-field">所属实例<select id="ff-filter-instance">${options(state.filterInstance,true)}</select></label><label class="ff-field">资料关联<select id="ff-cookie-filter"><option value="all">全部 Cookie</option><option value="unlinked"${state.cookieFilter==='unlinked'?' selected':''}>尚未关联账号</option></select></label><span class="ff-muted">共 ${selected.length} 份 Cookie</span></div>
+      <div class="ff-table-wrap"><table><thead><tr><th>账号 / Cookie</th><th>归属实例</th><th>登录检测</th><th>下载用途</th><th>操作</th></tr></thead><tbody>${selected.map(c=>`<tr><td>${esc(accountOf(c.account)?.email||'尚未关联账号')}<small>${esc(c.name)}</small></td><td>${esc(nameOf(c.instance))}</td><td>${status(authLabels[c.auth],c.auth==='valid'?'ff-ok':c.auth==='not_logged_in'?'ff-error':'ff-warn')}<small>${esc(c.when)}</small></td><td>${c.pooled?'已加入账号池':'仅保存，未启用'}</td><td>${c.account?`<button type="button" class="ff-link" data-detail="${c.account}" data-detail-tab="cookies">管理登录</button>`:`<button type="button" class="ff-link" data-link-cookie="${c.id}">关联账号</button>`}</td></tr>`).join('')}</tbody></table></div>
+      <p class="ff-note">登录验证和冷却分别记录。检测使用 Cookie 归属实例的出口；打开本页不会批量请求 YouTube。</p>`;
+  }
+  function poolHTML() {
+    const policy=policies[state.instance], selected=cookies.filter(c=>c.instance===state.instance);
+    return `${instanceScope()}<form id="ff-pool-form"><section class="ff-panel"><div class="ff-panel-head"><h2>本实例 Cookie 账号池</h2><label class="ff-muted"><input type="checkbox" name="enabled"${policy.enabled?' checked':''}> 启用账号池</label></div>${selected.map(c=>`<label class="ff-selection"><input type="checkbox" name="member" value="${c.id}"${c.pooled?' checked':''}><span>${esc(accountOf(c.account)?.email||'历史 Cookie · 未关联资料')}<small> · ${esc(c.name)}</small></span><small>${esc(c.pooled?'已启用':'未启用')}</small></label>`).join('')||'<p class="ff-muted">当前实例尚无 Cookie，先进入“Cookie 与登录”上传。</p>'}</section>
+      <section class="ff-panel"><div class="ff-panel-head"><h2>启动与休息节奏</h2><span class="ff-muted">按每个账号独立计算</span></div><div class="ff-grid">${[['start','两次任务启动最小间隔',600],['rest','任务结束后休息时间',3600],['shared','账号池共用启动间隔',600],['limit','每账号任务上限',64]].map(([key,label,max])=>`<label class="ff-field">${label}${key==='limit'?'':'（秒）'}<input type="number" name="${key}" value="${policy[key]}" min="${key==='limit'?1:0}" max="${max}" required></label>`).join('')}</div><p class="ff-note">启动间隔和结束后休息取更晚的可启动时间。账号冷却、恢复观察和滚动预算仍然生效。</p><details><summary>高级：滚动预算与非池模式策略</summary><div class="ff-grid" style="margin-top:12px"><label class="ff-field">每账号滚动小时预算<input type="number" value="50" disabled></label><label class="ff-field">每账号滚动 24 小时预算<input type="number" value="720" disabled></label></div></details></section>
+      <div class="ff-savebar"><span class="ff-muted" id="ff-pool-save-state">已保存 · 所属实例：${esc(nameOf(state.instance))}</span><button type="submit" class="ff-button ff-primary">保存账号池与节奏</button></div></form><p class="ff-muted" style="margin-top:12px">本机下载进程与渠道额度在“系统设置 → 并发与渠道”管理，此处只保存账号池与账号节奏。</p>`;
+  }
+  function accountsHTML() {
+    const actions=`<button type="button" class="ff-button" data-action="import">批量导入</button><button type="button" class="ff-button ff-primary" data-action="${state.tab==='cookies'?'login':'add'}">${state.tab==='cookies'?'登录 / 上传 Cookie':'新增账号'}</button>`;
+    return `${heading('账号管理',state.tab==='pool'?'为所选实例配置账号池与节奏':'全部实例 · 账号资料、登录凭据和实例归属统一管理',actions)}<div class="ff-tabs" role="tablist" aria-label="账号管理分类">${[['records','账号资料'],['cookies','Cookie 与登录'],['pool','账号池与节奏']].map(([key,label])=>`<button type="button" id="ff-tab-${key}" role="tab" aria-controls="ff-account-panel" class="ff-tab" data-tab="${key}" aria-selected="${state.tab===key}">${label}</button>`).join('')}</div><section id="ff-account-panel" role="tabpanel" aria-labelledby="ff-tab-${state.tab}">${state.tab==='records'?recordsHTML():state.tab==='cookies'?cookiesHTML():poolHTML()}</section>`;
+  }
+  function workbenchHTML() {
+    const selected=cookies.filter(c=>c.instance===state.instance&&c.pooled), offline=!instances.find(i=>i.id===state.instance).online;
+    const filtered=selected.filter(c=>state.workFilter==='all'||(state.workFilter==='idle'&&!c.account)||accountOf(c.account)?.run===state.workFilter);
+    const transmitting=selected.filter(c=>accountOf(c.account)?.run==='transferring').length;
+    return `${heading('下载工作台','按 Cookie 查看任务、等待与恢复状态',`<button type="button" class="ff-button" data-action="open-pool">调整账号池与节奏</button>`)}${instanceScope()}<div class="ff-panel"><div class="ff-panel-head"><h2>示例下载任务</h2><span class="ff-badge">${offline?'实例离线':'正在执行'}</span></div><div class="ff-actions"><select aria-label="选择下载任务" style="width:auto"><option>示例客户 / YouTube 视频归档</option></select><button type="button" class="ff-button" data-action="simulation">完成当前后停止</button></div></div>
+      <div class="ff-metrics"><div class="ff-metric"><span>当前传输速度</span><strong>${transmitting&&!offline?'38.6':'—'} <small style="font-size:12px">MB/s</small></strong></div><div class="ff-metric"><span>正在传输的 Cookie</span><strong>${offline?'—':transmitting} <small style="font-size:12px">份</small></strong></div><div class="ff-metric ff-capacity"><span>传输名额占用 / 设置上限</span><strong>${offline?'—':transmitting} <small style="font-size:12px">/ 12 路</small></strong></div></div>
+      <div class="ff-chips" aria-label="Cookie 状态筛选">${[['all','全部'],['transferring','正在传输'],['waiting','等待启动'],['cooldown','账号冷却中'],['recovery','低频恢复'],['idle','无任务']].map(([key,label])=>`<button type="button" class="ff-chip" data-work-filter="${key}" aria-pressed="${state.workFilter===key}">${label}</button>`).join('')}</div><div class="ff-cookie-grid">${filtered.map(c=>{const a=accountOf(c.account),run=offline?'unknown':a?.run||'idle',cause=run==='transferring'?'示例视频正在接收数据 · 38.6 MB/s':run==='cooldown'?'冷却至 14:30，暂停分配新任务':run==='waiting'?'两次任务启动间隔还剩 34 秒':run==='recovery'?'单路低频恢复 · 至少 300 秒':run==='unavailable'?'需要重新登录，暂不分配任务':run==='unknown'?'实例离线，当前任务状态待确认':'当前未观测到启动限制，等待任务分配';return `<article class="ff-cookie ${run==='cooldown'?'ff-cooling':''}"><strong>${esc(a?.email||c.name)}</strong>${design.cookieNames?`<span class="ff-muted">Cookie：${esc(c.name)}</span>`:''}<div class="ff-cookie-phase">${esc(run==='idle'?'无任务':run==='unknown'?'状态待更新':runLabels[run])}</div><p class="ff-cookie-cause">${cause}</p>${a?`<button type="button" class="ff-link" data-detail="${a.id}" data-detail-tab="runtime">${run==='cooldown'||run==='recovery'?'查看冷却与恢复条件':'查看账号与调度详情'}</button>`:`<button type="button" class="ff-link" data-link-cookie="${c.id}">补充账号关联</button>`}</article>`;}).join('')||'<p class="ff-muted">当前没有符合条件的 Cookie。</p>'}</div><p class="ff-muted" style="margin-top:14px">每格一份已启用 Cookie；同账号重复 Cookie 共用额度。冷却单独展示，不计入“无任务”。</p>`;
+  }
+  function instancesHTML() {
+    return `${heading('下载实例','查看负载和账号容量，进入对应实例处理', '<span class="ff-badge">全局</span>')}<div class="ff-table-wrap"><table><thead><tr><th>实例</th><th>运行</th><th>启用 Cookie</th><th>需关注</th><th>管理入口</th></tr></thead><tbody>${instances.map(i=>{const selected=cookies.filter(c=>c.instance===i.id&&c.pooled),linked=accounts.filter(a=>a.instance===i.id);return `<tr><td>${esc(i.name)}<small>${i.id==='lax'?'当前访问入口':'示例实例'}</small></td><td>${status(i.online?'在线':'离线',i.online?'ff-ok':'')}<small>${i.online?i.id==='lax'?'1 路正在传输':'低频恢复任务':'运行状态待确认'}</small></td><td>${selected.length} 份<small>${linked.length} 个资料账号</small></td><td>${linked.filter(a=>a.run==='cooldown').length?status('1 个账号冷却','ff-warn'):linked.some(a=>a.run==='recovery')?status('1 个低频恢复','ff-warn'):status(i.online?'暂无':'实例离线')}</td><td><div class="ff-actions"><button type="button" class="ff-link" data-instance-go="${i.id}" data-destination="workbench">工作台</button><button type="button" class="ff-link" data-instance-go="${i.id}" data-destination="accounts">管理账号</button><button type="button" class="ff-link" data-instance-go="${i.id}" data-destination="settings">设置</button></div></td></tr>`;}).join('')}</tbody></table></div><p class="ff-note">账号池和节奏统一在“账号管理”修改。实例页面保留运行控制和关键容量，地址、版本及资源详情按需展开。</p>`;
+  }
+  function settingsHTML() {
+    return `${heading('系统设置','当前实例的下载策略、并发与渠道、存储及运行诊断')}${instanceScope()}<div class="ff-tabs" aria-label="设置分类"><button type="button" class="ff-tab" aria-selected="true">下载策略</button><button type="button" class="ff-tab" data-action="capacity-settings">并发与渠道</button><button type="button" class="ff-tab" data-action="simulation">存储与清理</button><button type="button" class="ff-tab" data-action="simulation">运行诊断</button></div><section class="ff-panel"><h2>下载策略</h2><div class="ff-grid" style="margin-top:15px"><label class="ff-field">下载渠道<select><option>yt-dlp</option></select></label><label class="ff-field">画质<select><option>最高画质</option></select></label></div></section><section class="ff-panel"><div class="ff-panel-head"><div><h2>账号与 Cookie 已集中管理</h2><p class="ff-muted" style="margin-top:5px">资料、登录、账号池和节奏在一个入口完成。</p></div><button type="button" class="ff-button" data-action="open-pool">管理本实例账号池 ↗</button></div><p class="ff-muted">此页不再放第二套 Cookie 表单或重复的节奏输入。</p></section><div class="ff-savebar"><span class="ff-muted">仅保存系统设置中的修改</span><button type="button" class="ff-button ff-primary" data-action="simulation">保存系统设置</button></div>`;
+  }
+  function auxiliaryHTML() {
+    const network=state.page==='network';
+    return `${heading(network?'网络与代理':'任务中心',network?'代理、节点与 IPv6 出口按实例配置':'沿用已有任务与视频清单管理')}${network?instanceScope():''}<div class="ff-panel"><h2>${network?'下载出口':'账号功能不改变现有任务流程'}</h2><p class="ff-muted" style="margin:10px 0">${network?'登录检测与媒体下载使用相同的实例出口。切换出口后重新确认登录。':'选择任务 → 启动实例下载 → 按账号或 Cookie 查看异常。'}</p><button type="button" class="ff-button" data-page="workbench">进入下载工作台</button></div>`;
+  }
+  function render() {
+    root.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+    const titles={accounts:'账号管理',workbench:'下载工作台',instances:'下载实例',settings:'系统设置',jobs:'任务中心',network:'网络与代理'};
+    q('#ff-breadcrumb').textContent=titles[state.page];
+    q('#ff-page').innerHTML=state.page==='accounts'?accountsHTML():state.page==='workbench'?workbenchHTML():state.page==='instances'?instancesHTML():state.page==='settings'?settingsHTML():auxiliaryHTML();
+    if(globalThis.lucide) lucide.createIcons({attrs:{width:15,height:15}});
+  }
+  function showModal(title, content) {
+    dirty=false;
+    modal.innerHTML=`<div class="ff-modal-heading"><h2 id="ff-modal-title">${esc(title)}</h2><button type="button" class="ff-button" data-action="close" aria-label="关闭弹框">关闭</button></div>${content}`;
+    if(!modal.open) modal.showModal();
+  }
+  function confirmAction(message) {
+    if(confirmation.open)return Promise.resolve(false);
+    q('#ff-confirm-text').textContent=message;
+    confirmation.returnValue='cancel';
+    return new Promise(resolve=>{confirmation.addEventListener('close',()=>resolve(confirmation.returnValue==='confirm'),{once:true});confirmation.showModal();});
+  }
+  async function closeModal() {
+    if(dirty && !await confirmAction('有未保存的修改，确定关闭并丢弃吗？')) return;
+    dirty=false;modal.close();modal.innerHTML='';
+  }
+  function detail(id, tab='profile') {
+    const a=accountOf(id);if(!a)return;
+    editAccount=id;
+    const linked=cookiesFor(id),auth=accountAuth(a);
+    const tabs=`<div class="ff-tabs">${[['profile','账号资料'],['cookies','Cookie 与登录'],['runtime','调度与记录']].map(([key,label])=>`<button type="button" class="ff-tab" data-detail="${id}" data-detail-tab="${key}" aria-selected="${tab===key}">${label}</button>`).join('')}</div>`;
+    let body='';
+    if(tab==='profile') body=`<form id="ff-account-form" class="ff-form" data-edit="${a.id}"><label class="ff-field">邮箱账号<input type="email" name="email" required value="${esc(a.email)}"></label><label class="ff-field">备注<input name="note" value="${esc(a.note)}"></label><label class="ff-field">绑定实例<select name="instance"${linked.length?' disabled':''}>${options(a.instance)}</select></label>${linked.length?'<span class="ff-muted">已关联 Cookie，归属实例不能直接修改。</span>':''}<div class="ff-secret"><label class="ff-field">密码<input type="password" name="password" autocomplete="new-password" placeholder="已保存；留空不修改"></label><button type="button" class="ff-button" data-action="show-secret">显示示例</button></div><label class="ff-field">附加信息<input type="password" name="extra" autocomplete="off" placeholder="已保存；按需查看或修改"></label><label class="ff-field">接码网址<input name="codeUrl" type="url" placeholder="https://example.com/"></label><p class="ff-error-message" role="alert" id="ff-form-error"></p><div class="ff-modal-footer"><button type="button" class="ff-button ff-danger" data-delete-account="${a.id}">删除账号</button><button type="submit" class="ff-button ff-primary">保存账号</button></div></form>`;
+    if(tab==='cookies') body=`<div class="ff-label-row"><span>执行实例</span><span>${esc(nameOf(a.instance))}</span></div>${linked.map(c=>`<section style="padding:13px 0;border-bottom:1px solid var(--ff-line)"><div class="ff-panel-head"><h3>${esc(c.name)}</h3>${status(authLabels[c.auth],c.auth==='valid'?'ff-ok':'ff-warn')}</div><p class="ff-muted">${esc(c.when)} · ${c.pooled?'已加入账号池':'未加入账号池'} · 关联由用户确认</p><div class="ff-actions" style="margin-top:9px"><button type="button" class="ff-button" data-check-cookie="${c.id}"${a.run==='cooldown'?' disabled':''}>${a.run==='cooldown'?'冷却中，暂不检测':'检测此 Cookie'}</button></div></section>`).join('')||'<p class="ff-note">只有账号资料，尚未关联 Cookie。</p>'}<div class="ff-modal-footer"><button type="button" class="ff-button" data-login-account="${id}">去绑定实例登录 / 上传</button><button type="button" class="ff-button ff-primary" data-pool-instance="${a.instance||state.instance}">配置账号池</button></div>`;
+    if(tab==='runtime') {
+      const cooling=a.run==='cooldown',recovery=a.run==='recovery';
+      body=`<div class="ff-label-row"><span>绑定实例</span><span>${esc(nameOf(a.instance))}</span></div><div class="ff-label-row"><span>登录检测</span><span>${esc(auth.text)} · ${esc(auth.extra)}</span></div><div class="ff-label-row"><span>下载状态</span><span>${esc(runLabels[a.run])}</span></div><div class="ff-label-row"><span>当前实际启动间隔</span><span>至少 ${recovery?300:cooling?120:105} 秒</span></div><div class="ff-label-row"><span>页面配置的最小间隔</span><span>${policies[a.instance]?.start||50} 秒</span></div>${cooling?'<p class="ff-note">冷却至 14:30。期间不新增下载、字幕或登录检测请求；已有任务可结束。</p>':`<p class="ff-note">${recovery?'低频恢复：有效成功至少 10 次，且观察满 1 小时。':'逐档提速观察：本档至少 15 分钟，且有效成功至少 5 次。'}</p>`}<h3 style="margin-top:15px">下一次调整条件</h3><div class="ff-label-row"><span>本档有效成功</span><span>${recovery?'3 / 10':'3 / 5'} 次</span></div><div class="ff-progress"><span style="width:${recovery?30:60}%"></span></div><div class="ff-label-row"><span>本档观察时间</span><span>${recovery?'20 / 60':'9 / 15'} 分钟</span></div><div class="ff-progress"><span style="width:${recovery?33:60}%"></span></div><p class="ff-muted">${cooling?'冷却完成后先低频恢复，不会直接从 120 秒跳到 50 秒。':'两项条件满足后，在下一次有效成功结算时调整；时间到不会单独触发。'}</p><details><summary>最近异常与间隔调整记录</summary><p class="ff-muted" style="margin-top:8px">10:20 · 进入观察档位<br>10:28 · 本档有效成功累计 3 次</p></details>`;
+    }
+    showModal(a.email,tabs+body);
+  }
+  function addAccount() {
+    editAccount=null;
+    showModal('新增 YouTube 账号',`<form id="ff-account-form" class="ff-form"><label class="ff-field">邮箱账号<input name="email" type="email" required placeholder="name@example.com"></label><label class="ff-field">密码<input name="password" type="password" required autocomplete="new-password"></label><label class="ff-field">附加信息<input name="extra" type="password" autocomplete="off"></label><label class="ff-field">接码网址<input name="codeUrl" type="url" placeholder="https://example.com/"></label><label class="ff-field">绑定实例<select name="instance">${options('')}</select></label><label class="ff-field">备注<input name="note"></label><p class="ff-error-message" id="ff-form-error" role="alert"></p><div class="ff-modal-footer"><button type="submit" class="ff-button ff-primary">保存账号</button></div></form>`);
+  }
+  function importDialog() {
+    showModal('批量导入账号',`<form id="ff-import-form" class="ff-form"><label class="ff-field">账号文本<textarea name="source" required placeholder="邮箱----密码----附加信息----接码网址：https://example.com/"></textarea></label><div class="ff-actions"><label class="ff-field">UTF-8 TXT 文件<input id="ff-import-file" type="file" accept=".txt,text/plain"></label><button type="button" class="ff-button" data-action="sample-import">填入虚构示例</button></div><div class="ff-grid"><label class="ff-field">新增账号默认绑定<select name="instance">${options('')}</select></label><label class="ff-field">已存在账号<select name="duplicates"><option value="skip">跳过，不改动</option><option value="update">仅更新资料，保留绑定</option></select></label></div><p class="ff-error-message" id="ff-import-error" role="alert"></p><div id="ff-import-preview"></div><div class="ff-modal-footer"><button type="button" class="ff-button" data-action="preview-import">预览导入</button><button type="submit" class="ff-button ff-primary" id="ff-import-confirm" disabled>确认导入</button></div></form>`);
+  }
+  function parseImport(text) {
+    const seen=new Set();
+    return String(text).replace(/^\uFEFF/,'').split(/\r?\n/).map((line,index)=>({line,index:index+1})).filter(row=>row.line.trim()).map(row=>{
+      const fields=row.line.split('----'),email=(fields[0]||'').trim().toLowerCase();
+      let error='';
+      if(fields.length<2||fields.length>4)error='应包含 2～4 段';
+      else if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))error='邮箱格式错误';
+      else if(!fields[1])error='密码不能为空';
+      else if(seen.has(email))error='批次内重复账号';
+      seen.add(email);
+      const url=(fields[3]||'').trim().replace(/^接码网址\s*[:：]\s*/,'');
+      if(!error&&url){try{const parsed=new URL(url);if(!['http:','https:'].includes(parsed.protocol))error='网址仅支持 HTTP/HTTPS';}catch{error='接码网址格式错误';}}
+      return {line:row.index,email,password:fields[1]||'',extra:fields[2],url:fields.length>3?url:undefined,error,exists:accounts.some(a=>a.email.toLowerCase()===email)};
+    });
+  }
+  function previewImport() {
+    const form=q('#ff-import-form'),text=form.elements.source.value;
+    const rows=parseImport(text),invalid=rows.filter(r=>r.error).length;
+    q('#ff-import-error').textContent=!rows.length?'请先输入账号文本。':invalid?`有 ${invalid} 行错误，请修改后再确认。`:'';
+    q('#ff-import-preview').innerHTML=rows.length?`<div class="ff-table-wrap"><table><thead><tr><th>行号</th><th>账号</th><th>密码</th><th>预览结果</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${r.line}</td><td>${esc(r.email)}</td><td>••••••••</td><td>${esc(r.error||r.exists?(r.error||'已存在'):'新增')}</td></tr>`).join('')}</tbody></table></div>`:'';
+    q('#ff-import-confirm').disabled=!rows.length||invalid>0;
+  }
+  function loginDialog(accountId='') {
+    const a=accountOf(accountId),instance=a?.instance||state.instance;
+    showModal('登录或上传 Cookie',`<form id="ff-login-form" class="ff-form"><label class="ff-field">目标账号<select name="account"><option value="">先选择账号</option>${accounts.map(a=>`<option value="${a.id}"${a.id===accountId?' selected':''}>${esc(a.email)} · ${esc(nameOf(a.instance))}</option>`).join('')}</select></label><div class="ff-note" id="ff-login-target">${a?`目标实例：${esc(nameOf(a.instance))}`:'先选择账号，再确认其绑定实例；不会默认使用访问入口。'}</div><div class="ff-actions"><button type="button" class="ff-button" data-action="browser-login">在绑定实例打开登录窗口</button></div><label class="ff-field">或上传 Netscape Cookie<input type="file" name="file" accept=".txt,text/plain"></label><p class="ff-muted">保存后关联账号，但不会自动加入账号池或启动下载。</p><p class="ff-error-message" id="ff-login-error" role="alert"></p><div class="ff-modal-footer"><button type="submit" class="ff-button ff-primary">保存并关联 Cookie</button></div></form>`);
+    if(a&&!a.instance)q('#ff-login-error').textContent='此账号尚未绑定实例，请先编辑账号资料。';
+  }
+  function linkDialog(cookieId) {
+    const c=cookieOf(cookieId);if(!c)return;
+    showModal('关联已有 Cookie',`<form id="ff-link-form" data-cookie="${c.id}" class="ff-form"><div class="ff-note">${esc(c.name)} · 归属实例：${esc(nameOf(c.instance))}</div><label class="ff-field">确认属于哪个账号<select name="account" required><option value="">请选择账号</option>${accounts.filter(a=>!a.instance||a.instance===c.instance).map(a=>`<option value="${a.id}">${esc(a.email)}</option>`).join('')}</select></label><p class="ff-muted">仅可关联此实例的账号或尚未绑定的账号。关联尚未绑定的账号会同时绑定到此实例。</p><p class="ff-muted">登录检测只能确认会话有效，不能证明邮箱身份，请确认 Cookie 来源。</p><div class="ff-modal-footer"><button type="submit" class="ff-button ff-primary">确认关联</button></div></form>`);
+  }
+  async function navigate(page) {
+    if(poolDirty&&!await confirmAction('账号池有未保存修改，切换后丢弃这些修改？'))return;
+    poolDirty=false;state.page=page;announce('');render();remember();
+  }
+  root.addEventListener('click',async event=>{
+    const b=event.target.closest('button');if(!b)return;
+    if(b.dataset.confirmDecision){confirmation.close(b.dataset.confirmDecision);return;}
+    if(b.type==='submit'&&b.form){event.preventDefault();if(b.form.reportValidity())submitForm(b.form);return;}
+    if(b.dataset.page){navigate(b.dataset.page);return;}
+    if(b.dataset.tab){if(poolDirty&&!await confirmAction('放弃未保存的账号池修改？'))return;poolDirty=false;state.tab=b.dataset.tab;render();remember();return;}
+    if(b.dataset.accountFilter){state.filter=b.dataset.accountFilter;render();remember();return;}
+    if(b.dataset.workFilter){state.workFilter=b.dataset.workFilter;render();return;}
+    if(b.dataset.detail){if(dirty&&!await confirmAction('丢弃未保存修改并切换详情？'))return;detail(b.dataset.detail,b.dataset.detailTab||'profile');return;}
+    if(b.dataset.instanceGo){state.instance=b.dataset.instanceGo;if(b.dataset.destination==='accounts'){state.filterInstance=state.instance;state.tab='records';state.filter='all';}navigate(b.dataset.destination);return;}
+    if(b.dataset.linkCookie){linkDialog(b.dataset.linkCookie);return;}
+    if(b.dataset.loginAccount){loginDialog(b.dataset.loginAccount);return;}
+    if(b.dataset.poolInstance){state.instance=b.dataset.poolInstance;state.tab='pool';closeModal();navigate('accounts');return;}
+    if(b.dataset.checkCookie){const c=cookieOf(b.dataset.checkCookie),a=accountOf(c.account);if(a?.run==='cooldown')return;c.auth='valid';c.when='刚刚 · 演示结果';detail(a.id,'cookies');render();announce('演示：已更新检测展示，未向 YouTube 发送请求。');return;}
+    if(b.dataset.deleteAccount){const a=accountOf(b.dataset.deleteAccount);if(cookiesFor(a.id).some(c=>c.pooled)){showModal('暂不能删除',`<p class="ff-note">${esc(a.email)} 的 Cookie 仍在账号池中。请先移出账号池并等待当前任务完成。</p><div class="ff-modal-footer"><button type="button" class="ff-button ff-primary" data-pool-instance="${a.instance}">管理此实例账号池</button></div>`);return;}if(await confirmAction(`删除 ${a.email} 的资料？不会解除已有 Cookie 的实例归属。`)){accounts.splice(accounts.indexOf(a),1);cookies.filter(c=>c.account===a.id).forEach(c=>c.account='');dirty=false;closeModal();render();announce('已删除虚构账号资料；未改变 Cookie 的实例归属。');}return;}
+    const action=b.dataset.action;
+    if(action==='add')addAccount();
+    if(action==='import')importDialog();
+    if(action==='login')loginDialog();
+    if(action==='close')closeModal();
+    if(action==='open-pool'){state.tab='pool';navigate('accounts');}
+    if(action==='show-secret'){const input=q('#ff-account-form [name=password]');input.value='DemoOnly!2026';input.type='text';b.textContent='虚构演示密码';}
+    if(action==='sample-import'){q('#ff-import-form').elements.source.value='new-account@example.com----Demo!Pass&1----附加信息示例----接码网址：https://example.com/\nnew-backup@example.com----Demo#Pass2----附加信息示例';q('#ff-import-confirm').disabled=true;dirty=true;}
+    if(action==='preview-import')previewImport();
+    if(action==='browser-login'){const form=q('#ff-login-form'),a=accountOf(form.elements.account.value);q('#ff-login-error').textContent=!a?'请选择目标账号。':!a.instance?'此账号尚未绑定实例。':`演示：应连接 ${nameOf(a.instance)} 的浏览器窗口，未实际启动登录。`;}
+    if(action==='capacity-settings'){showModal('本实例并发与渠道',`<div class="ff-label-row"><span>当前实例</span><span>${esc(nameOf(state.instance))}</span></div><div class="ff-label-row"><span>传输上限</span><span>12 路</span></div><div class="ff-label-row"><span>下载进程上限</span><span>20 个</span></div><p class="ff-note">这里配置本机容量。账号启动、休息、滚动预算在“账号管理 → 账号池与节奏”配置。</p>`);}
+    if(action==='simulation')announce('此入口沿用现有功能，本次仅演示账号相关页面的调整。');
+  });
+  root.addEventListener('input',event=>{
+    if(event.target.id==='ff-search'){const value=event.target.value,position=event.target.selectionStart;state.search=value;render();const input=q('#ff-search');input.focus();try{input.setSelectionRange(position,position);}catch{}return;}
+    if(event.target.closest('#ff-pool-form')){poolDirty=true;q('#ff-pool-save-state').textContent=`有未保存修改 · ${nameOf(state.instance)}`;}
+    if(event.target.closest('dialog'))dirty=true;
+    if(event.target.closest('#ff-import-form')){q('#ff-import-confirm').disabled=true;}
+  });
+  root.addEventListener('change',async event=>{
+    if(event.target.id==='ff-filter-instance'){state.filterInstance=event.target.value;render();remember();}
+    if(event.target.id==='ff-cookie-filter'){state.cookieFilter=event.target.value;render();}
+    if(event.target.id==='ff-manage-instance'){if(poolDirty&&!await confirmAction('切换实例会丢弃未保存的账号池修改，继续吗？')){event.target.value=state.instance;return;}poolDirty=false;state.instance=event.target.value;render();remember();}
+    if(event.target.closest('#ff-login-form')&&event.target.name==='account'){const a=accountOf(event.target.value);q('#ff-login-target').textContent=a?.instance?`目标实例：${nameOf(a.instance)}；此操作不使用访问入口的实例。`:'此账号尚未绑定实例，请先编辑资料。';}
+    if(event.target.id==='ff-import-file'){
+      const file=event.target.files[0];if(!file)return;
+      if(file.size>1024*1024){q('#ff-import-error').textContent='文件超过 1 MB。';return;}
+      try{const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());if(!q('#ff-import-form'))return;q('#ff-import-form').elements.source.value=text;q('#ff-import-confirm').disabled=true;dirty=true;}catch{if(q('#ff-import-error'))q('#ff-import-error').textContent='无法按 UTF-8 读取文件。';}
+    }
+  });
+  function submitForm(form) {
+    if(form.id==='ff-account-form'){
+      const fields=new FormData(form),email=String(fields.get('email')).trim().toLowerCase(),current=accountOf(form.dataset.edit);
+      if(accounts.some(a=>a.email===email&&a.id!==current?.id)){q('#ff-form-error').textContent='此账号已经存在。';return;}
+      if(current){current.email=email;current.note=String(fields.get('note')||'');if(!cookiesFor(current.id).length)current.instance=String(fields.get('instance')||'');}
+      else accounts.push({id:'demo-'+Date.now(),email,instance:String(fields.get('instance')||''),note:String(fields.get('note')||''),run:'idle'});
+      dirty=false;closeModal();render();announce('已保存示例账号资料，未自动登录或加入账号池。');
+    }
+    if(form.id==='ff-import-form'){
+      const rows=parseImport(form.elements.source.value);if(!rows.length||rows.some(r=>r.error)){previewImport();return;}
+      if(rows.length>1000){q('#ff-import-error').textContent='每批最多 1,000 行。';return;}
+      let added=0,skipped=0,updated=0;
+      for(const row of rows){const existing=accounts.find(a=>a.email===row.email);if(existing){if(form.elements.duplicates.value==='skip'){skipped++;continue;}updated++;}else{accounts.push({id:'import-'+Date.now()+'-'+added,email:row.email,instance:form.elements.instance.value,note:'批量导入',run:'idle'});added++;}}
+      dirty=false;closeModal();state.tab='records';state.search='';state.filter='all';state.filterInstance='all';render();announce(`演示导入：新增 ${added}、更新 ${updated}、跳过 ${skipped}。密码等字段未持久化，未执行登录。`);
+    }
+    if(form.id==='ff-link-form'){
+      const c=cookieOf(form.dataset.cookie),a=accountOf(form.elements.account.value);if(!a||a.instance&&a.instance!==c.instance)return;
+      a.instance=c.instance;c.account=a.id;dirty=false;closeModal();render();announce(`已演示关联 ${a.email}，归属实例仍为 ${nameOf(c.instance)}。`);
+    }
+    if(form.id==='ff-pool-form'){
+      const fields=new FormData(form),selected=new Set(fields.getAll('member')),policy=policies[state.instance];
+      if(fields.has('enabled')&&selected.size<2){announce('账号池至少选择 2 份 Cookie 后才能启用。');return;}
+      for(const key of ['start','rest','shared','limit'])policy[key]=Number(fields.get(key));policy.enabled=fields.has('enabled');
+      cookies.filter(c=>c.instance===state.instance).forEach(c=>c.pooled=selected.has(c.id));poolDirty=false;render();announce(`已在演示中保存 ${nameOf(state.instance)} 的账号池与节奏；不需要再点系统设置保存。`);
+    }
+    if(form.id==='ff-login-form'){const a=accountOf(form.elements.account.value);q('#ff-login-error').textContent=!a?'请选择账号。':!a.instance?'请先绑定实例。':'这是页面流程演示，不会读取或上传实际 Cookie 文件。';}
+  }
+  root.addEventListener('submit',event=>{event.preventDefault();if(event.target.reportValidity())submitForm(event.target);});
+  root.addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('form input:not([type=file]):not([type=checkbox])')){event.preventDefault();const form=event.target.form;if(form?.reportValidity())submitForm(form);}});
+  modal.addEventListener('cancel',event=>{event.preventDefault();closeModal();});
+  modal.addEventListener('click',event=>{if(event.target===modal){const rect=modal.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeModal();}});
+  restore(window.openai?.widgetState?.privateContent);
+  window.addEventListener('openai:set_globals',event=>{const saved=event.detail?.globals?.widgetState?.privateContent;if(saved){restore(saved);render();}});
+  render();
+  if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:()=>{root.style.setProperty('--ff-cell',design.density==='紧凑'?'13px':'19px');render();}});tweak.addSelect(design,'density',{label:'列表密度',options:['紧凑','舒展']});tweak.addToggle(design,'cookieNames',{label:'工作台显示 Cookie 备注'});}
+})();
+</script>

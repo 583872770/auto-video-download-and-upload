@@ -1308,7 +1308,8 @@ function updateCookiePoolLive(data) {
     const policy = row.querySelector('[data-cookie-session-status]');
     if (policy && account) {
       policy.textContent = account.unavailable ? 'Cookie 文件不可用，请更新。' :
-        `${session?.state === 'cooldown' ? '冷却中 · 暂停新请求' : session?.state === 'recovery' ? '低频恢复中' : '可参与调度'}：设置上限 ${account.configured_limit || pool.session_limit}，当前最多 ${session?.limit ?? account.limit ?? 1} 个任务，启动间隔至少 ${session?.interval || account.interval || 60} 秒。` +
+        `${session?.state === 'manual' ? '需人工处理 · 暂停新请求' : session?.state === 'cooldown' ? '冷却中 · 暂停新请求' : session?.state === 'recovery' ? '低频恢复中' : '可参与调度'}：设置上限 ${account.configured_limit || pool.session_limit}，当前最多 ${session?.limit ?? account.limit ?? 1} 个任务，启动间隔至少 ${session?.interval || account.interval || 60} 秒。` +
+        (session?.state === 'manual' ? `原因：${failureKindNames[session.halt_kind] || '登录或验证未通过'}；处理后点击“检测登录”，通过后恢复该账号，其他账号继续。` : '') +
         (session?.state === 'cooldown' ? `原因：${failureKindNames[session.cooldown_kind] || '临时故障'}；恢复检查时间 ${new Date(session.cooldown_until * 1000).toLocaleString()}；其他健康账号继续。` : '') +
         (session?.state === 'recovery' ? `启动间隔延长原因：${failureKindNames[session.cooldown_kind] || '此前故障'}；本轮有效成功 ${session.recovery_successes} 次，达标后自动恢复设置并发。` : '') +
         (session?.last_failure_at ? ` 最近异常 ${new Date(session.last_failure_at * 1000).toLocaleString()}。` : '') +
@@ -1316,7 +1317,8 @@ function updateCookiePoolLive(data) {
     }
     const check = row.querySelector('[data-cookie-login-check]');
     if (check && check.textContent === '检测登录') {
-      check.disabled = session?.state === 'cooldown';
+      check.disabled = session?.state === 'cooldown' ||
+        session?.state === 'manual' && session?.cooldown_until > Date.now() / 1000;
       check.title = check.disabled ? pool.halted
         ? '池仍有人工拦截；冷却结束后须按提示检查并解除，不会自动恢复。'
         : '该账号冷却中，暂不发送登录检测请求；到期自动低频恢复。' : '';

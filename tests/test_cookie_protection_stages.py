@@ -209,18 +209,17 @@ class ProtectionStageIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(view['interval'], 300)
         self.assertEqual(view['pacing']['success_count'], 0)
 
-    def test_other_source_failure_resets_stage_and_skipped_assignment_does_not_count(self):
+    def test_transport_failure_preserves_stage_and_skipped_assignment_does_not_count(self):
         pool = self.prepare()
         pool.outcome(self.scope, None)
         self.advance(pool)
         with pool.assignment(profile_id=self.identity, count_success=False):
             pass  # No source permit or successful file: no stage evidence.
         self.assertEqual(self.view(pool)['pacing']['success_count'], 0)
+        before = deepcopy(self.view(pool)['pacing'])
         pool.outcome(self.scope, RuntimeError('Read timed out'))
         view = self.view(pool)
-        self.assertEqual(view['pacing']['protection_minimum'], 120)
-        self.assertGreaterEqual(view['interval'], 120)
-        self.assertEqual(view['pacing']['observed_since'], 0)
+        self.assertEqual(view['pacing'], before)
 
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js required for UI rendering check')

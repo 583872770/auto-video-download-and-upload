@@ -390,14 +390,13 @@ class AutoSchedulerTests(unittest.TestCase):
             scheduler.outcome(scheduler.channels[0], success=False, error=error)
             self.assertEqual(self.state(scheduler, scheduler.channels[0]), before)
 
-    def test_wrapped_transient_failure_cools_only_its_route(self):
+    def test_wrapped_transport_failure_preserves_route_health(self):
         scheduler = self.scheduler()
+        before = self.state(scheduler, scheduler.channels[0])
         error = RuntimeError('downloader wrapper')
         error.__cause__ = BergungError('upstream unavailable', retryable=True)
         scheduler.outcome(scheduler.channels[0], success=False, error=error)
-        with scheduler.assignment(scheduler.channels) as chosen:
-            self.assertEqual(chosen.id, 'alias')
-        self.assertGreater(self.state(scheduler, scheduler.channels[0])['cooldown_until'], time.time())
+        self.assertEqual(self.state(scheduler, scheduler.channels[0]), before)
 
     def test_reference_file_scoring_does_not_prefer_short_clips(self):
         scheduler = self.scheduler()

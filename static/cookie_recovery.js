@@ -16,6 +16,7 @@ function cookieRecoveryDuration(seconds) {
 function cookieRecoveryProgressHTML(session, data, current) {
   const p = session?.pacing;
   const stale = current ? '' : '<p class="cookie-recovery-warning">实例离线或采样已过期，以下为上次记录，不能确认当前进度。</p>';
+  if (session?.state === 'manual') return `${stale}<p class="cookie-recovery-phase">需人工处理登录或验证</p><p>仅暂停该账号的新请求，其他可用账号继续。处理后在账号管理点击“检测登录”，新检测通过后恢复该账号；原有的限流冷却和启动设置继续生效。</p>`;
   if (!p) return `${stale}<p>尚未取得该账号的恢复进度，请等待实例更新采样。</p>`;
   const cooling = p.cooling_until > data.time;
   const staged = p.phase === 'protection_stage';
@@ -52,7 +53,7 @@ function cookieRecoveryProgressHTML(session, data, current) {
     <div class="cookie-recovery-gate"><label>有效成功 ${Number(p.success_count)} / 至少 ${Number(p.success_target)} 次${p.successes_remaining ? ` · 还差 ${Number(p.successes_remaining)} 次` : ' · 次数门槛已满足'}</label><progress value="${Math.min(p.success_count, p.success_target)}" max="${p.success_target}" aria-label="有效成功进度"></progress></div>
     <div class="cookie-recovery-gate"><label>${observation}</label><progress value="${Math.min(p.observed_seconds, p.observation_seconds)}" max="${p.observation_seconds}" aria-label="观察时间进度"></progress></div>`}
     <p class="cookie-recovery-next">${next}</p>
-    <p class="micro-copy">${failures}单个视频不可用等内容错误不会重置账号恢复进度；上传失败和本地资源等待也不作为账号故障。跳过已有视频不计有效成功。时间到不会独立触发调整，任务仍受启动间隔、预算和队列限制。</p>`;
+    <p class="micro-copy">${failures}普通超时、断流、DNS 或网络不可达、无数据块及 HTTP 5xx 不会拉长账号间隔或重置恢复进度。单个视频不可用等内容错误不会重置账号恢复进度；上传失败和本地资源等待也不作为账号故障。跳过已有视频不计有效成功。时间到不会独立触发调整，任务仍受启动间隔、预算和队列限制。</p>`;
 }
 
 function renderCookieRecovery(data = cookieRecoveryData) {
@@ -69,7 +70,7 @@ function renderCookieRecovery(data = cookieRecoveryData) {
   const signature = JSON.stringify(sessions.map(s => [s.id, s.name, s.state]));
   if (selector.dataset.signature !== signature) {
     const selected = selector.value;
-    selector.replaceChildren(...sessions.map(s => new Option(`${s.name} · ${s.state === 'recovery' ? '低频恢复' : s.state === 'cooldown' ? '冷却中' : '稳定观察'}`, s.id)));
+    selector.replaceChildren(...sessions.map(s => new Option(`${s.name} · ${s.state === 'manual' ? '需人工处理' : s.state === 'recovery' ? '低频恢复' : s.state === 'cooldown' ? '冷却中' : '稳定观察'}`, s.id)));
     if (sessions.some(s => s.id === selected)) selector.value = selected;
     selector.dataset.signature = signature;
     if (selected && selected !== selector.value) {

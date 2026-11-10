@@ -5,9 +5,11 @@ sanitized and carry one incident ID across exception wrappers and scheduler laye
 """
 from dataclasses import asdict, dataclass, replace
 from email.utils import parsedate_to_datetime
+import errno
 from http.client import IncompleteRead
 import math
 import re
+import socket
 import time
 import uuid
 
@@ -109,6 +111,19 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         r'\[download\]\s+got error:\s*\d+ bytes read\.\s*'
         r'(?:giving up after \d+ retries|retrying\s*\(\d+/\d+\))', lower))
     no_data = 'did not get any data blocks' in lower
+    # These failures occur before an HTTP response and say nothing about the
+    # selected account. yt-dlp can preserve the exception or flatten its text.
+    network_reason = None
+    if status is None:
+        if any(isinstance(c, socket.gaierror) for c in chain) or any(term in lower for term in (
+                'temporary failure in name resolution', 'name or service not known',
+                'failed to resolve', 'getaddrinfo failed', 'nodename nor servname provided')):
+            network_reason = 'dns_resolution'
+        elif any(isinstance(c, OSError) and (c.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN)
+                 or getattr(c, 'winerror', None) in (10050, 10051, 10065)) for c in chain) or any(
+                term in lower for term in ('network is unreachable', 'network is down',
+                                          'no route to host', 'host is unreachable')):
+            network_reason = 'network_unreachable'
     if any(type(c).__name__ == 'OSSUploadError' for c in chain):
         kind, source, phase = 'storage_failure', 'oss', 'upload'
     elif result.get('source') == 'cookie_pool_halted':
@@ -132,7 +147,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         kind = 'verification_required'
     elif status in (401, 403):
         kind = 'access_denied'
-    elif status in (408, 500, 502, 503, 504) or transient or incomplete_read or no_data or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
+    elif status in (408, 500, 502, 503, 504) or network_reason or transient or incomplete_read or no_data or any(getattr(c, 'connection_failure', False) for c in chain) or any(term in lower for term in (
             'timed out', 'timeout', 'connection reset', 'connection refused', 'name resolution',
             'connection aborted', 'temporary failure', 'sslerror', 'ssleoferror', 'network is unreachable',
             'remote end closed connection', 'err_connection_', 'err_proxy_connection_', 'err_tunnel_connection_')):
@@ -148,7 +163,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
                   'drm_only' if 'drm protected' in lower and 'only images' in lower else
                   'format_unavailable' if 'requested format is not available' in lower else None)
     if kind == 'transient_failure' and not reason:
-        reason = 'no_data' if no_data else 'incomplete_response' if incomplete_read else None
+        reason = network_reason or ('no_data' if no_data else 'incomplete_response' if incomplete_read else None)
     value = FailureEvidence(uuid.uuid4().hex, time.time(), source or 'unknown', phase or 'unknown', kind,
                             status, evidence, delay, retryable, safe_text(str(error))[:1000],
                             task_id, profile_id, safe_text(profile_name)[:80] if profile_name else None, reason)
@@ -178,6 +193,9 @@ def recovery_policy(failure, config, *, youtube=True):
         delay = max(3600 if failure.kind == 'account_rate_limit' else
                     int(config.get('youtube_throttle_cooldown', 300)), failure.retry_after or 0)
         return RecoveryPolicy('cooldown', delay, False, ('session',))
+    if (youtube and config.get('youtube_cookie_pool') and failure.profile_id
+            and failure.kind in ('authentication_required', 'verification_required')):
+        return RecoveryPolicy('halt', manual=True, targets=('session',))
     if failure.kind in ('account_rate_limit', 'authentication_required', 'verification_required'):
         targets = ('pool', 'session', 'execution')
         if failure.kind == 'account_rate_limit':
@@ -187,8 +205,13 @@ def recovery_policy(failure, config, *, youtube=True):
         return RecoveryPolicy('cooldown', max(int(config.get('youtube_throttle_cooldown', 300)) if youtube else 30,
                                                failure.retry_after or 0), targets=('pool', 'session', 'shared', 'pacing'))
     if failure.kind == 'transient_failure':
-        return RecoveryPolicy('cooldown', max(60, failure.retry_after or 0),
-                              targets=('session', 'pacing', 'shared') if failure.http_status == 503 else ('session', 'pacing'))
+        # Transport faults never change account pacing or recovery observations.
+        # Server responses get a task delay; repeated 5xx may briefly pause the
+        # affected channel. Retry-After is still honored by task settlement.
+        if failure.http_status in (408, 500, 502, 503, 504):
+            return RecoveryPolicy('retry', max(15, failure.retry_after or 0),
+                                  targets=('task', 'channel') if failure.http_status >= 500 else ('task',))
+        return RecoveryPolicy()
     return RecoveryPolicy()
 
 

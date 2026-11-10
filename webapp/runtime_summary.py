@@ -9,7 +9,8 @@ from webapp.database import runtime_hours
 
 RETENTION_DAYS = 30
 REASONS = {'drm_only', 'format_unavailable', 'private', 'deleted', 'geo_blocked', 'no_data',
-           'incomplete_response', 'content_restriction', 'access_denied', 'request_rate_limit',
+           'incomplete_response', 'dns_resolution', 'network_unreachable',
+           'content_restriction', 'access_denied', 'request_rate_limit',
            'account_rate_limit', 'authentication_required', 'verification_required',
            'transient_failure', 'storage_failure', 'local_resource', 'unknown'}
 

@@ -154,7 +154,9 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             elif shared:
                 add('shared', '与其他 Cookie 共用账号额度，重复导出不会增加并发')
             else:
-                if sample.get('cooldown_until', 0) > stamp:
+                if sample.get('state') == 'manual':
+                    add('account_halted', '该账号需人工处理登录或验证，处理后在账号管理检测登录')
+                elif sample.get('cooldown_until', 0) > stamp:
                     add('account_cooldown', '账号冷却中', sample['cooldown_until'])
                 elif sample.get('state') == 'cooldown':
                     add('account_refresh', '冷却时间已到，等待账号状态更新')

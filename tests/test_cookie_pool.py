@@ -291,7 +291,7 @@ class CookiePoolTests(unittest.TestCase):
     def test_cooling_session_lowers_pool_capacity_without_inflating_healthy_sessions(self):
         config = {**self.config, 'worker_count': 6, 'youtube_cookie_session_limit': 1}
         pool = self.pool(config)
-        pool.outcome(pool.accounts[0][2], RuntimeError('Read timed out'))
+        pool.outcome(pool.accounts[0][2], YouTubeAccountLimited('Account limited'))
         status = pool.status()
         self.assertFalse(status['halted'])
         self.assertEqual(status['capacity_summary']['capacity'], 2)
@@ -313,9 +313,9 @@ class CookiePoolTests(unittest.TestCase):
         error = RuntimeError('timeout'); error.retryable = True
         pool.outcome(scope, error)
         result = pool.status()['accounts'][0]
-        self.assertTrue(result['warming'])
-        self.assertEqual(result['limit'], 1)
-        self.assertEqual(result['interval'], 120)
+        self.assertFalse(result['warming'])
+        self.assertEqual(result['limit'], 2)
+        self.assertEqual(result['interval'], 60)
 
     def test_account_limit_cools_only_selected_account(self):
         pool = self.pool()
@@ -553,13 +553,14 @@ class CookiePoolTests(unittest.TestCase):
         now += 3601
         pool.outcome(scope, None, admitted_at=now - 4000)
         self.assertEqual(pool.status()['accounts'][0], original)
+        first = now
         with pool.assignment(identity):
             pass
         self.assertEqual(pool.status()['accounts'][0]['recovery_successes'], 1)
         now += 200
         pool.outcome(scope, RuntimeError('Read timed out'))
         state = pool.status()['accounts'][0]
-        self.assertEqual((state['recovery_successes'], state['recovery_started_at']), (0, 0))
+        self.assertEqual((state['recovery_successes'], state['recovery_started_at']), (1, first))
         now += 3601
         pool.outcome(scope, YouTubeAccountLimited('limited again'))
         state = pool.status()['accounts'][0]
@@ -617,26 +618,33 @@ class CookiePoolTests(unittest.TestCase):
                 'urls': ['https://youtu.be/00000000001']}, store=self.store, task_id=pool.router.task_id)
         self.assertTrue(all(a['recovery_successes'] == 4 for a in pool.status()['accounts']))
 
-    def test_invalid_login_halts_pool_instead_of_trying_another_account(self):
+    def test_invalid_login_halts_only_selected_account(self):
         pool = self.pool()
         with self.assertRaises(YouTubeAuthRequired):
-            with pool.assignment():
+            with pool.assignment() as selected:
+                identity = selected['_cookie_pool_selected']
                 raise YouTubeAuthRequired({'state':'not_logged_in', 'message':'Login rejected'})
-        self.assertTrue(pool.status()['halted'])
-        self.assertEqual(pool.status()['halt_kind'], 'authentication_required')
-        self.assertNotIn('account_rate_limit', classify(pool.status()['reason']))
-        with self.assertRaises(YouTubeAuthRequired):
-            with self.pool().assignment():
-                self.fail('Pool selected another account after invalid login')
+        status = pool.status()
+        self.assertFalse(status['halted'])
+        session = next(s for s in status['session_states'] if s['id'] == identity)
+        self.assertEqual((session['state'], session['limit']), ('manual', 0))
+        self.assertEqual(status['capacity_summary']['capacity'], 2)
+        self.ungate(pool)
+        with self.pool().assignment() as other:
+            self.assertNotEqual(other['_cookie_pool_selected'], identity)
+        self.ungate(pool)
+        with self.assertRaises(PipelineBusy):
+            with self.pool().assignment(identity):
+                self.fail('Manually halted account was admitted')
 
-    def test_plain_transfer_timeout_resets_warmup_and_cools_session(self):
+    def test_plain_transfer_timeout_preserves_session_health(self):
         pool = self.pool()
         scope = pool.accounts[0][2]
         pool.outcome(scope, RuntimeError('Read timed out'))
         account = pool.status()['accounts'][0]
         self.assertTrue(account['warming'])
-        self.assertGreater(account['cooldown_until'], time.time())
-        self.assertEqual(account['interval'], 120)
+        self.assertFalse(account.get('cooldown_until'))
+        self.assertEqual(account['interval'], 60)
 
     def test_recovery_preserves_cooldown_then_restarts_warmup(self):
         pool = self.pool()

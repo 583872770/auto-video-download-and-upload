@@ -1,7 +1,7 @@
 """Persistent start budgets, independent of media transfer throughput."""
 from pathlib import Path
 import math
-from webapp.download_policy import cooldown_deadline, remember_decision
+from webapp.download_policy import cooldown_deadline, recovery_policy, remember_decision
 from webapp.config_schema import PACING_FIELDS, DEFAULTS
 from webapp.concurrency_policy import cookie_pool_start_interval
 
@@ -149,6 +149,8 @@ class YouTubePacing:
         return max(0, next_at - stamp), reason
 
     def outcome(self, db, stamp, channel, *, success, size, failure, delay, error=None):
+        if failure and 'pacing' not in recovery_policy(failure, self.config).targets:
+            return delay
         rows = self._states(db, stamp, channel)
         from webapp.youtube_cookie_history import record as record_cookie_event
         account_limit = bool(failure and failure.kind == 'account_rate_limit')
@@ -188,10 +190,10 @@ class YouTubePacing:
                         previous_interval=previous_interval, new_interval=int(state['interval']),
                         previous_state='ready', new_state='cooldown', cooldown_until=state.get('cooldown_until'),
                         task_id=failure.task_id, scope='youtube-pacing:' + self.session_scope)
-            elif request_limit or failure and failure.kind == 'transient_failure':
+            elif request_limit:
                 previous_interval = int(state.get('interval', 60))
                 state.update(interval=min(600, max(90, math.ceil(state['interval'] * 1.5))),
-                             interval_reason_code='request_limit' if request_limit else 'transient_error',
+                             interval_reason_code='request_limit',
                              cooldown_until=max(state.get('cooldown_until', 0), cooldown_deadline(error, stamp, delay)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
                 if self.history_profile_id:
@@ -219,7 +221,7 @@ class YouTubePacing:
                             kind='stable_success', message='连续稳定完成任务，逐步缩短启动间隔。',
                             previous_interval=previous_interval, new_interval=int(state['interval']),
                             previous_state='ready', new_state='ready', scope='youtube-pacing:' + self.session_scope)
-            if failure and (account_limit or request_limit or failure.kind == 'transient_failure'):
+            if failure and (account_limit or request_limit):
                 remember_decision(state, failure, layer='pacing', scope='实例与登录会话启动节奏',
                     action='cooldown', until=state.get('cooldown_until', 0), stamp=stamp)
             self.router._save(db, scope, state)
