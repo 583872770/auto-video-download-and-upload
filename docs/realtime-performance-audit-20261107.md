@@ -64,4 +64,4 @@
 
 总请求减少 60%，同时实例及 Cookie 状态比原来的约 6 秒轮询更及时。所有观测请求均为 HTTP 200，没有 JavaScript 页面异常。相同状态下，连续 10 次并发面板渲染的中位耗时从约 2.85 毫秒降到 0.30 毫秒；这是本地浏览器测量。
 
-测试数据与截图位于被 Git 忽略的 `.cache/perf-audit-current/`、`.cache/cookie-runtime-preview/` 和 `.cache/transfer-slots-preview/`。本地浏览器的请求数量和渲染耗时不能直接换算成线上 CPU 或下载吞吐的提升；线上实际效果需要部署后再采样。
+测试数据与截图位于被 Git 忽略的 `.runtime/cache-archive-20261111/perf-audit-current/`、`.runtime/cache-archive-20261111/cookie-runtime-preview/` 和 `.runtime/cache-archive-20261111/transfer-slots-preview/`。本地浏览器的请求数量和渲染耗时不能直接换算成线上 CPU 或下载吞吐的提升；线上实际效果需要部署后再采样。

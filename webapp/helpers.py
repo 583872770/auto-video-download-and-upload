@@ -1,7 +1,15 @@
 """Common helper functions for routes."""
-from flask import current_app, request
+from flask import current_app, jsonify, request
 
 from webapp.settings import DEFAULTS
+
+
+def json_result(value):
+    """Serialize service data while preserving existing status/Response results."""
+    if isinstance(value, tuple):
+        payload, *options = value
+        return (json_result(payload), *options)
+    return jsonify(value) if isinstance(value, (dict, list)) else value
 
 
 def get_body():

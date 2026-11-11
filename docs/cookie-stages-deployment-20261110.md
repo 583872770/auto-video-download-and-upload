@@ -15,4 +15,4 @@
 
 保留用户配置：两次启动最小间隔 50 秒、结束后休息 25 秒、账号池共用间隔 5 秒、传输上限 12、每账号并发 1、18 份 Cookie。当前 MySQL 行锁等待 0，`Threads_running=2`。启动后首分钟未见 Traceback、数据库连接错误、死锁、锁等待超时或内存不足记录，容器重启次数 0。此检查不代表长期或上游请求完全无异常。
 
-健康 MySQL、Redis 容器未替换，异常 MySQL 容器继续保持停止。旧应用保留在 `youtube-downloader-local-app-1-before-cookie-stages-20261110-r1`，旧镜像另有 `youtube-downloader-app:before-cookie-stages-20261110-r1` 标签用于回退。部署脚本和核验结果位于本地 `.cache/cookie-stages-deploy/`。
+健康 MySQL、Redis 容器未替换，异常 MySQL 容器继续保持停止。旧应用保留在 `youtube-downloader-local-app-1-before-cookie-stages-20261110-r1`，旧镜像另有 `youtube-downloader-app:before-cookie-stages-20261110-r1` 标签用于回退。部署脚本和核验结果位于本地 `.runtime/cache-archive-20261111/cookie-stages-deploy/`。

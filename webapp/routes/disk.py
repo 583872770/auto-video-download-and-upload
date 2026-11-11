@@ -15,7 +15,7 @@ def disk_status():
     if settings:
         config, _ = settings()
     else:
-        from webapp.settings import DEFAULTS
+        from webapp.config.settings import DEFAULTS
         config = DEFAULTS
 
     return jsonify(DiskBudget(store.directory, config).snapshot())
@@ -63,7 +63,7 @@ def disk_cleanup():
     if settings:
         config, _ = settings()
     else:
-        from webapp.settings import DEFAULTS
+        from webapp.config.settings import DEFAULTS
         config = DEFAULTS
 
     result = DiskBudget(store.directory, config).cleanup(store)

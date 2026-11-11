@@ -1,9 +1,11 @@
-"""Readiness checks shared by browser fixtures that deliberately delay requests."""
+"""Compatibility entry point; implementation lives in scripts/verify/."""
+from pathlib import Path
+import runpy
+import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-def wait_for_workbench_ready(page):
-    # The job list loads after the initial selection is restored. Waiting for
-    # visible controls alone can return during the earlier instance-config load.
-    page.wait_for_function('''() => jobsSearchEpoch > 0 && !state.instanceLoading &&
-        !state.polling && !startupPolling && !executionPolling &&
-        !document.querySelector('#download-jobs-more').disabled''')
+if __name__ == "__main__":
+    runpy.run_path(str(Path(__file__).with_name("verify") / "browser_checks.py"), run_name="__main__")
+else:
+    from scripts.verify.browser_checks import *  # noqa: F401,F403

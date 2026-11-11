@@ -261,6 +261,14 @@ class YouTubeAuth:
                 continue
             if result['state'] == 'valid':
                 return {**result, 'profile_id': session['id']}
+        # A failed login probe is authoritative for the account we just
+        # checked.  ``check_profile`` records that failure in the pool, which
+        # can make the aggregate status look like a generic wait (for example
+        # when every member has been marked manual).  Preserve the actual
+        # authentication result so callers can return the correct 409 error;
+        # aggregate waiting remains appropriate for rate limits/cooldowns.
+        if result.get('state') in ('not_logged_in', 'invalid', 'verification_required'):
+            return result
         return waiting(pool.status()) or result
 
     def check(self, config, base, *, proxy=None, node='', force=False, publish_latest=True, allow_manual=False):

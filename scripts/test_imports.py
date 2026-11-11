@@ -1,5 +1,7 @@
 """Test all module imports to catch circular dependencies."""
 import sys
+import importlib
+import pkgutil
 from pathlib import Path
 
 # Add project root to path
@@ -20,6 +22,7 @@ if __name__ == '__main__':
         # Core
         'app',
         'web_worker',
+        'webapp.application',
 
         # Extensions
         'webapp.extensions',
@@ -55,6 +58,12 @@ if __name__ == '__main__':
         'webapp.diagnostics',
         'webapp.proxy_health',
     ]
+
+    for package_name in ('webapp.routes', 'webapp.services', 'webapp.repositories',
+                         'webapp.worker', 'webapp.adapters', 'webapp.config', 'webapp.runtime'):
+        package = importlib.import_module(package_name)
+        modules.extend(item.name for item in pkgutil.walk_packages(package.__path__, package_name + '.'))
+    modules = list(dict.fromkeys(modules))
 
     print("Testing module imports...")
     print("=" * 60)

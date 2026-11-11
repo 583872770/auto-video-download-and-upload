@@ -113,7 +113,7 @@ Redis 的标签仅有项目、服务和实例号，缺少正常 Compose 容器�
 
 **6. 证据与剩余边界**
 
-本地原始记录保存在 Git 忽略目录 `.cache/perf-audit-current/`：`investigate_app-results.jsonl`、`investigate_host-results.jsonl`、`followup-results.jsonl`。第三份的 cohort 为完整 423 条样本的汇总来源；早期脚本输出的列表有 50 项展示上限，不用于该完整统计。
+本地原始记录保存在 Git 忽略目录 `.runtime/cache-archive-20261111/perf-audit-current/`：`investigate_app-results.jsonl`、`investigate_host-results.jsonl`、`followup-results.jsonl`。第三份的 cohort 为完整 423 条样本的汇总来源；早期脚本输出的列表有 50 项展示上限，不用于该完整统计。
 
 服务器的 `webapp/downloader.py`、`webapp/parallel_http.py`、`web_worker.py` 与本地抽查哈希一致；`download_policy.py` 在本地修复后与生产不同，符合未部署的状态。
 

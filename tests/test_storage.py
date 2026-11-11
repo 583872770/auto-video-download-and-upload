@@ -145,8 +145,12 @@ class StorageContract:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        self.assertEqual(self.set_mode('test').status_code, 200)
-        self.store.set_runtime({'storage_mode': 'test', 'worker_count': 2, 'min_free_gb': 0})
+        # Persist the fixture's limits: submitting downloads synchronizes the
+        # runtime from the saved configuration before the subprocesses start.
+        response = self.client.put('/api/config', json={'storage_mode': 'test',
+            'worker_count': 2, 'min_free_gb': 0, 'disk_min_free_gb': 0,
+            'disk_resume_free_gb': 0}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
         urls = [f'http://127.0.0.1:{server.server_port}/{name}.mp4' for name in ('one', 'two')]
         response = self.client.post('/api/downloads', json={'urls': urls}, headers=self.headers)
         self.assertEqual(response.status_code, 202, response.json)

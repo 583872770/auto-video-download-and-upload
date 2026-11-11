@@ -94,4 +94,4 @@ Cookie 池快照容量 23，使监督进程启动相应数量的 worker；真实
 - 配置 fragment_concurrency=8 并不代表每任务实际 8 条连接：当前连接预算 32、运行传输容量 23，经 `fragment_connection_budget()` 计算上限为 1。仅把界面的 8 调为 2 未必改变实际请求数量。
 - 当前 Cookie 池路径并未应用配置的每小时 80/每天 1200 启动额度；manual 模式不创建 YouTubePacing。后续应明确按会话、实例、出口的预算口径和生效状态，补齐持久化计数，遵循平台限制。配置额度本身也不是免风控保证。
 
-原始诊断脚本和脱敏聚合保存在 `.cache/validation/smoothness-20261106/`。历史文件尾中出现的旧死锁/崩溃文本未计入当前事件结论；本次按事件时间过滤未见新的 worker_crash、heartbeat_error 或 lease_abandoned。
+原始诊断脚本和脱敏聚合保存在 `.runtime/cache-archive-20261111/validation/smoothness-20261106/`。历史文件尾中出现的旧死锁/崩溃文本未计入当前事件结论；本次按事件时间过滤未见新的 worker_crash、heartbeat_error 或 lease_abandoned。

@@ -35,7 +35,7 @@ MySQL 当前行锁等待为 0。启动日志未发现 Traceback、OperationalErr
 
 旧应用保留为停止状态的 `youtube-downloader-local-app-1-before-account-login-20261110-r1`，原镜像回退标记为 `youtube-downloader-app:before-account-login-20261110-r1`。回退前应排空任务并保留当前数据和原密钥。
 
-本地发布与脱敏核验结果位于 `.cache/account-login-deploy/`。使用方式见 [统一账号管理](youtube-account-management.md)。
+本地发布与脱敏核验结果位于 `.runtime/cache-archive-20261111/account-login-deploy/`。使用方式见 [统一账号管理](youtube-account-management.md)。
 
 ## 自动填写兼容性修复（21:30:29）
 
@@ -47,6 +47,6 @@ MySQL 当前行锁等待为 0。启动日志未发现 Traceback、OperationalErr
 
 修复镜像为 `youtube-downloader-app:account-login-autofill-20261110-r1`，ID 为 `sha256:8e77d1a166379ca9dd1d452d3f00bcc218c3df6c8f693005063eabb39983c077`；应用容器为 `3cf9eeffe39fde0eb4fa4cb1920d0645125bf6d9040df8a4a41a2f5e4f39f147`。北京时间 2026-11-10 21:30:29 完成切换，恢复原未暂停状态，唯一运行文件变更为 `scripts/login_youtube.py`，部署哈希核验一致。
 
-等待原 14 个任务自然结束，排空约 490 秒；最后一个大视频持续下载并完成后才切换。账号资料、Cookie、关联、加密密钥、实例身份、下载配置、端口与挂载保持一致。再次备份完整表结构和上述十张元数据表，未全量备份任务与媒体数据。发布与核验记录位于 `.cache/account-login-autofill-deploy/` 和服务器 `/opt/youtube-downloader/releases/account-login-autofill-20261110-r1`。旧应用以 `youtube-downloader-local-app-1-before-account-login-autofill-20261110-r1` 保留，原镜像回退标记为 `youtube-downloader-app:before-account-login-autofill-20261110-r1`。
+等待原 14 个任务自然结束，排空约 490 秒；最后一个大视频持续下载并完成后才切换。账号资料、Cookie、关联、加密密钥、实例身份、下载配置、端口与挂载保持一致。再次备份完整表结构和上述十张元数据表，未全量备份任务与媒体数据。发布与核验记录位于 `.runtime/cache-archive-20261111/account-login-autofill-deploy/` 和服务器 `/opt/youtube-downloader/releases/account-login-autofill-20261110-r1`。旧应用以 `youtube-downloader-local-app-1-before-account-login-autofill-20261110-r1` 保留，原镜像回退标记为 `youtube-downloader-app:before-account-login-autofill-20261110-r1`。
 
 上线核验通过：健康检查正常、重启为 0、账号 21 条、Cookie 20 份及 18 个关联保留；正在执行 13 项任务，其中传输 4 项。MySQL 当前行锁等待为 0，启动日志未发现上述程序异常。另用全新无凭据浏览器只读打开真实 Google 登录页，确认新选择器能匹配当前可见的文本类型邮箱框；该检查未填写或提交真实账号，未验证 Google 对真实账号的后续登录放行。

@@ -1,10 +1,10 @@
 """Manager UI endpoints and authenticated streaming access to worker-local resources."""
 import re
-from concurrent.futures import ThreadPoolExecutor
 
 from flask import Response, current_app, g, jsonify, request, stream_with_context
 import requests
 
+from webapp.adapters.fleet import UploadBody, instance_auth_error, rpc
 from webapp.database import settings
 from webapp.fleet import DOWNLOAD_ROLES, LOCAL_FIELDS, POLICY_FIELDS
 from webapp.settings import DEFAULTS, validate_settings, download_methods
@@ -16,49 +16,10 @@ def selected_id():
             or fleet.id)
 
 
-class UploadBody:
-    """Supply a known length so requests doesn't add chunked beside Content-Length."""
-    def __init__(self, stream, length):
-        self.stream, self.length = stream, length
-
-    def __len__(self):
-        return self.length
-
-    def __iter__(self):
-        while chunk := self.stream.read(128 * 1024):
-            yield chunk
 
 
-def instance_auth_error(row):
-    return (f'下载实例“{row["name"]}”拒绝了实例认证。请检查实例地址是否指向正确的下载服务、各实例版本是否一致，'
-            '以及反向代理是否保留 Authorization 请求头；这不是管理账户登录失效。')
 
 
-def rpc(fleet, target, path, *, method='GET', data=None, timeout=45):
-    row = fleet.resolve_target(target)
-    if row['id'] == fleet.id and path == '/api/fleet/preflight':
-        value, status = fleet.check_local(data or {})
-        if status >= 400:
-            raise ValueError(value['error'])
-        return value
-    session = requests.Session()
-    session.trust_env = False
-    try:
-        response = session.request(method, row['url'] + path, headers={'Authorization': 'Bearer ' + row['token']},
-                                   json=data, timeout=(5, timeout), allow_redirects=False)
-        if response.status_code in (401, 403):
-            raise ValueError(instance_auth_error(row))
-        try:
-            value = response.json()
-        except ValueError:
-            raise ValueError('下载实例返回了无效响应，请检查实例地址。') from None
-        if not response.ok:
-            raise ValueError(value.get('error', '下载实例请求失败。'))
-        return value
-    except requests.RequestException:
-        raise ValueError('无法连接下载实例，请检查实例地址、网络及运行状态。') from None
-    finally:
-        session.close()
 
 
 def selected_configuration(fleet, config):
@@ -72,37 +33,13 @@ def selected_configuration(fleet, config):
 
 
 def update_configuration(fleet, data):
-    if set(data) - set(DEFAULTS):
-        raise ValueError('包含不支持在页面修改的配置项。')
-    # Validation and persistence belong to the selected node, using its own config.
-    rpc(fleet, selected_id(), '/api/config', method='PUT', data=data)
-    return jsonify(message='所选实例配置已保存；后续领取的视频使用新策略，正在执行的视频保持本次配置。')
+    from webapp.services.instances import update_configuration as save
+    return jsonify(save(fleet, data, target=selected_id(), rpc=rpc))
 
 
 def preflight_instances(fleet, stage, cancelled):
-    nodes = [node for node in fleet.list()['items'] if node['role'] in DOWNLOAD_ROLES and node['online'] and not node['paused']]
-    if not nodes:
-        raise ValueError('没有在线且启用的下载实例，请先启动或恢复一个实例。')
-    def check(node):
-        try:
-            rpc(fleet, node['id'], '/api/fleet/preflight', method='POST', data={})
-            return node, None
-        except ValueError as error:
-            return node, str(error)
-    ready = 0
-    with ThreadPoolExecutor(max_workers=min(8, len(nodes))) as pool:
-        for node, error in pool.map(check, nodes):
-            if cancelled.is_set():
-                raise InterruptedError('启动已取消。')
-            if error:
-                fleet.quarantine(node['id'], error, boot_id=node['boot_id'])
-                stage('instance_unavailable:' + node['name'])
-            else:
-                ready += 1
-                stage('instance_ready:' + node['name'])
-    if not ready:
-        raise ValueError('没有通过检查的下载实例，请在实例与环境中修复并恢复。')
-    return None
+    from webapp.services.instances import preflight_instances as check
+    return check(fleet, stage, cancelled, rpc=rpc)
 
 
 def register_fleet(app, fleet):

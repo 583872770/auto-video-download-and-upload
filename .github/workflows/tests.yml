@@ -41,16 +41,16 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: node tests/test_polling.cjs
       - run: python -m unittest discover -s tests -v
-      - run: python scripts/verify_jobs.py
-      - run: python scripts/verify_workspace.py
-      - run: python scripts/verify_selected_execution.py
-      - run: python scripts/verify_settings_save.py
-      - run: python scripts/verify_settings_save.py --hybrid
-      - run: python scripts/verify_quality.py
-      - run: python scripts/verify_hot_policy.py
-      - run: python scripts/verify_hot_policy.py --hybrid
-      - run: python scripts/verify_resume.py
-      - run: python scripts/verify_disk_budget.py
-      - run: python scripts/verify_instance_management_ui.py
-      - run: python scripts/verify_cookie_runtime_ui.py
-      - run: python scripts/verify_concurrency_filters_ui.py
+      - run: python scripts/verify/verify_jobs.py
+      - run: python scripts/verify/verify_workspace.py
+      - run: python scripts/verify/verify_selected_execution.py
+      - run: python scripts/verify/verify_settings_save.py
+      - run: python scripts/verify/verify_settings_save.py --hybrid
+      - run: python scripts/verify/verify_quality.py
+      - run: python scripts/verify/verify_hot_policy.py
+      - run: python scripts/verify/verify_hot_policy.py --hybrid
+      - run: python scripts/verify/verify_resume.py
+      - run: python scripts/verify/verify_disk_budget.py
+      - run: python scripts/verify/verify_instance_management_ui.py
+      - run: python scripts/verify/verify_cookie_runtime_ui.py
+      - run: python scripts/verify/verify_concurrency_filters_ui.py

@@ -15,7 +15,7 @@
 - 检查临时文件、日志目录、磁盘预算租约、容器 cgroup 和代码调用路径。未对两百万任务执行全表精确计数或压力测试。
 - 当前实际存储模式是 **test**，下载后合并、校验、登记并删除。OSS 上传、素材库持续写入、大批量导入、浏览器渠道和字幕补下载没有活跃业务样本，只有代码审查，不能把这些路径称为已完成生产性能验证。
 
-忽略目录中的原始证据：`.cache/validation/full-audit-20261106/`。主要文件为 `host-results.jsonl`、`app-results.jsonl`、`http-results.jsonl`、`process-results.jsonl`、`detail-results.jsonl`、`http-extra-results.jsonl`、`extra-results.jsonl`、`digest-delta.json`、`stale-permits-final.json`。
+忽略目录中的原始证据：`.runtime/cache-archive-20261111/validation/full-audit-20261106/`。主要文件为 `host-results.jsonl`、`app-results.jsonl`、`http-results.jsonl`、`process-results.jsonl`、`detail-results.jsonl`、`http-extra-results.jsonl`、`extra-results.jsonl`、`digest-delta.json`、`stale-permits-final.json`。
 
 ## 线上现状
 

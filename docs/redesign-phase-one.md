@@ -46,12 +46,12 @@ CI 修正了缺失的验证脚本入口，提供 MySQL 8.4 测试服务，运行
 
 - 完整回归：338 项，314 项通过，24 项跳过，无失败。本机未配置独立 MySQL 测试连接，真实 MySQL 集成仍需在 CI 或专用测试库运行。
 - 登录会话按实例隔离后的补充回归：管理账户与一体实例共 13 项通过，避免同一主机不同端口的 Cookie 相互覆盖。
-- Chromium/Edge 浏览器验证：任务创建、追加、开始、独立费用、清空、归档恢复、删除、编辑冲突保留与核对、管理员初始化、只读登录及退出、桌面和手机布局通过。截图在 `.cache/validation/jobs/`。
+- Chromium/Edge 浏览器验证：任务创建、追加、开始、独立费用、清空、归档恢复、删除、编辑冲突保留与核对、管理员初始化、只读登录及退出、桌面和手机布局通过。截图在 `.runtime/cache-archive-20261111/validation/jobs/`。
 - 管理下载一体模式与部署向导的浏览器验证通过；Python 依赖、JavaScript 语法和 Git 空白检查通过。
 - 临时 SQLite 实测：任务列表一页 20 条共 8 次 SQL，审查时为 141 次。这是查询次数对比，未测量生产 MySQL 延迟或吞吐。
 - 完整回归的 FFmpeg/ffprobe 来自校验 SHA-256 后解压的临时验证目录；仅加入测试进程 PATH，不修改系统安装和运行服务。
 
-回归日志：`.cache/validation/redesign-regression.log`、`.cache/validation/redesign-auth.log`。所有验证均使用临时数据与服务。
+回归日志：`.runtime/cache-archive-20261111/validation/redesign-regression.log`、`.runtime/cache-archive-20261111/validation/redesign-auth.log`。所有验证均使用临时数据与服务。
 
 ## 恢复系统领取的反馈修复
 
@@ -61,6 +61,6 @@ CI 修正了缺失的验证脚本入口，提供 MySQL 8.4 测试服务，运行
 
 新增只读 `/api/jobs/system/status`，系统状态接口和恢复响应也返回相同的执行条件说明。判断使用队列计数与实例心跳，不扫描待处理视频。
 
-验证：相关回归 53 项，无失败，1 项跳过；任务中心完整浏览器验证通过；`scripts/verify_resume.py` 验证首页和任务中心的等待提示、恢复成功后实例仍暂停的说明及请求超时反馈。截图在 `.cache/validation/resume/`，回归日志为 `.cache/validation/resume-regression.log`。真实运行状态仅做只读查询，未替用户开启领取或恢复下载实例。
+验证：相关回归 53 项，无失败，1 项跳过；任务中心完整浏览器验证通过；`scripts/verify_resume.py` 验证首页和任务中心的等待提示、恢复成功后实例仍暂停的说明及请求超时反馈。截图在 `.runtime/cache-archive-20261111/validation/resume/`，回归日志为 `.runtime/cache-archive-20261111/validation/resume-regression.log`。真实运行状态仅做只读查询，未替用户开启领取或恢复下载实例。
 
 后续修复：“恢复下载实例”使用 `/#instances` 跳转，首页此前只处理导航按钮，缺少 `hashchange` 监听，导致首页内点击时仅改变地址而未切换内容。现已处理地址片段变化及浏览器前进、后退；实例恢复按钮增加检查中提示、超时反馈，并防止定时刷新替换等待中的按钮。恢复完成后重新读取实例和系统条件。浏览器验证已覆盖两个恢复入口的实际点击、实例检查失败后重试以及实例成功恢复后的状态更新。

@@ -3,6 +3,7 @@ Cookies/
 .venv/
 .tools/
 .cache/
+.runtime/
 videos/
 *.parts/
 videos.txt

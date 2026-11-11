@@ -68,7 +68,7 @@
 
 其他检查：24/24 模块导入；打包应用启动检查；9 个静态 JavaScript 文件语法；`pip check`；`git diff --check`，均通过。Pyflakes 对入口、`webapp/`、`Utils/`、`docker/`、`scripts/` 检查没有未定义名称，余下 13 项是未使用导入/变量或无插值 f-string；`tasks.TaskStore` 包含有意保留的兼容导出，未为消除提示而删除。
 
-本地证据：`.cache/full-audit-tests.log`、`.cache/full-audit-tests-after.log`、`.cache/audit-final-focused.log`、`.cache/audit-pyflakes-after.log`，以及 `.cache/validation/` 中的浏览器产物。完整复测启动后又完成了订阅边界、自动回执恢复和重试预检细节修正，最后的 25 项补充回归专门覆盖这些最终变更，不能把完整复测数字当成含新增测试的一次最终快照。
+本地证据：`.cache/full-audit-tests.log`、`.cache/full-audit-tests-after.log`、`.cache/audit-final-focused.log`、`.cache/audit-pyflakes-after.log`，以及 `.runtime/cache-archive-20261111/validation/` 中的浏览器产物。完整复测启动后又完成了订阅边界、自动回执恢复和重试预检细节修正，最后的 25 项补充回归专门覆盖这些最终变更，不能把完整复测数字当成含新增测试的一次最终快照。
 
 ## 尚需保留的限制与维护项
 

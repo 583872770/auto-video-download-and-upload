@@ -20,4 +20,4 @@
 
 本轮同时修正 YouTube 检测的错误分类：原来 HTTP 拒绝、限流、超时和证书错误均显示“当前节点无法连通 YouTube”。现在分别显示 HTTP 状态、超时、TLS / 证书或服务端链路异常。该检测从运行服务的实例经过项目代理访问测试地址，与其他设备的浏览器使用的路径可能不同；检测通过也不保证视频下载通过站点验证。本轮未连接用户生产代理，不能据此确定线上那次失败的具体原因。
 
-本地验证：代理、轮换、订阅边界及多订阅共 18 项后端回归通过；新增验证与检测分类共 9 项定向测试通过（其中包含重复执行的多订阅测试，不累加为独立用例数）。最终真实 Mihomo 浏览器验证报告：`.cache/validation/clash-ec6baf2743/report.json`；暂停队列编辑回归：`.cache/validation/rotation-unlock-c4438ee1f8/report.json`。JavaScript / Python 语法及 Git 空白检查通过。
+本地验证：代理、轮换、订阅边界及多订阅共 18 项后端回归通过；新增验证与检测分类共 9 项定向测试通过（其中包含重复执行的多订阅测试，不累加为独立用例数）。最终真实 Mihomo 浏览器验证报告：`.runtime/cache-archive-20261111/validation/clash-ec6baf2743/report.json`；暂停队列编辑回归：`.runtime/cache-archive-20261111/validation/rotation-unlock-c4438ee1f8/report.json`。JavaScript / Python 语法及 Git 空白检查通过。

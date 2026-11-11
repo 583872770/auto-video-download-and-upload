@@ -77,4 +77,4 @@
 - `scripts/verify_instance_cards_ui.py`：池模式、手动/自动并发、保存回读、实例隔离、草稿保护、离线状态和桌面/移动端。
 - JavaScript 语法、Python 编译及 `git diff --check` 检查通过。
 
-复核产物在本地 `.cache/instance-management-ui/` 和 `.cache/instance-binding-deploy/management-*.txt`。测试不调用外部下载站、不使用真实 Cookie，不验证 20 实例负载容量或生产 MySQL 锁竞争。
+复核产物在本地 `.runtime/cache-archive-20261111/instance-management-ui/` 和 `.runtime/cache-archive-20261111/instance-binding-deploy/management-*.txt`。测试不调用外部下载站、不使用真实 Cookie，不验证 20 实例负载容量或生产 MySQL 锁竞争。

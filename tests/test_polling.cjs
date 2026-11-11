@@ -53,7 +53,9 @@ async function polling() {
   const pending = deferred(), calls = [], applied = [];
   const context = vm.createContext({ AbortController, Date, Promise, Map, queueMicrotask, performance,
     state: { instanceId: 'a', selectedTask: null }, fleetEnabled: true,
-    location: { hash: '#overview' }, $: () => ({ value: '', open: false }),
+    // Task history requests both endpoints; the workbench now uses its own
+    // compact endpoint and deliberately no longer requests /api/overview.
+    location: { hash: '#tasks' }, $: () => ({ value: '', open: false }),
     listQuery: () => '', refreshExecution: async () => {}, updateTaskDetail: async () => {},
     applyRefreshData: data => applied.push(data),
     api: (path, options) => {
@@ -109,7 +111,7 @@ async function fleetUpdates() {
   };
   let cards = 0, calls = 0, blocked;
   const item = { id: 'a', role: 'worker', online: true, name: 'fixture', worker_count: 2 };
-  const context = vm.createContext({ Date, Promise, Set, performance, state: { instanceId: 'a', config: null }, fleetEnabled: true,
+  const context = vm.createContext({ Date, Promise, Set, URLSearchParams, performance, state: { instanceId: 'a', config: null }, fleetEnabled: true,
     location: { hash: '#instances' }, document: { activeElement: null }, $, $$: () => [],
     lastStartedJobId: null, settingsDirty: false,
     api: async () => { calls++; if (blocked) await blocked.promise; return { items: [item], instance_id: 'a', global_limit: 4 }; },

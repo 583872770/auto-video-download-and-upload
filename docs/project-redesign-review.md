@@ -8,7 +8,7 @@
 
 检查了页面模板、前端状态更新、任务接口、旧清单与会话接口、调度、交付登记、素材索引、数据库声明、初始化升级和 CI 配置。用临时 SQLite 数据库构造客户任务、登记模拟交付，并核对跨接口行为。
 
-复现结果位于 `.cache/validation/architecture-review-evidence.json`，复现脚本为 `.cache/validation/review_architecture.py`。这些结果可以证明业务行为及 SQL 次数；MySQL 实际吞吐、慢查询、执行计划、锁等待和生产数据质量仍需要在独立的目标版本测试库验证。
+复现结果位于 `.runtime/cache-archive-20261111/validation/architecture-review-evidence.json`，复现脚本为 `.runtime/cache-archive-20261111/validation/review_architecture.py`。这些结果可以证明业务行为及 SQL 次数；MySQL 实际吞吐、慢查询、执行计划、锁等待和生产数据质量仍需要在独立的目标版本测试库验证。
 
 现有值得保留的基础：数据库事务领取、租约和失效执行隔离、交付幂等、分块导入、游标分页、字节使用 BIGINT、金额通过 Python Decimal 计算、清单删除保留交付账本。重新设计时应把这些能力转化为明确的不变量与验收条件。
 

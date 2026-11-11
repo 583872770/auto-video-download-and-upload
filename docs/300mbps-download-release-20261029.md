@@ -76,6 +76,6 @@
 
 ## 证据位置
 
-本地忽略目录 `.cache/validation/cobalt/` 保存 `r2-observation-steady.jsonl`、`r2-observation-steady-summary.json`、`r2-performance-summary.json`、`r2-final-health-summary.json` 和 `r2-linux-checks.json`。原始观测中可能包含运行标识，不作为公开附件。
+本地忽略目录 `.runtime/cache-archive-20261111/validation/cobalt/` 保存 `r2-observation-steady.jsonl`、`r2-observation-steady-summary.json`、`r2-performance-summary.json`、`r2-final-health-summary.json` 和 `r2-linux-checks.json`。原始观测中可能包含运行标识，不作为公开附件。
 
 服务器发布目录 `/opt/youtube-downloader/releases/cobalt-20261029-r2/` 保存对应观测、配置备份、文件清单和部署检查记录。文件清单 SHA-256 为 `bb502fa519600ae94138cfab44f73243d1a344b25bc328bec6e603c5286cc1f3`。本次保持测试模式，因此上述完成字节表示校验完成工作量，并非已上传、长期留存的交付量。

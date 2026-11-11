@@ -34,4 +34,4 @@ MySQL 当前行锁等待为 0。新容器重启次数为 0，启动日志未发�
 
 旧应用保留为 `youtube-downloader-local-app-1-before-account-library-20261110-r1`，处于停止状态；原镜像标记为 `youtube-downloader-app:before-account-library-20261110-r1`。回退应用时保留新表与原密钥，不清空已新增资料。MySQL、Redis 健康容器未替换，异常 MySQL 容器继续保持停止。
 
-本地发布脚本与脱敏结果位于 `.cache/account-library-deploy/`。服务使用说明见 [统一账号管理](youtube-account-management.md)。
+本地发布脚本与脱敏结果位于 `.runtime/cache-archive-20261111/account-library-deploy/`。服务使用说明见 [统一账号管理](youtube-account-management.md)。

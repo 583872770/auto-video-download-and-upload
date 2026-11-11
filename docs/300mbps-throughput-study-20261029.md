@@ -115,4 +115,4 @@ Cloudflare 测试入口没有得到有效测试载荷，已排除。公共源的
 
 若经过以上优化仍有充足就绪任务、健康上游/出口可提供目标速率，但 J4125 长期 CPU 饱和，再考虑更强 CPU 的服务器或独立解析计算资源。链接出口绑定和任务租约必须保持正确；在同一台机器多开下载容器不会增加物理 CPU 或公网带宽。
 
-本地原始测量：`.cache/validation/cobalt/diagnose-300-live.jsonl`、`probe-300-network.jsonl`、`probe-300-fallback.jsonl`、`probe-300-multiorigin.jsonl`。它们包含具体请求窗口及失败样本，未将短时测速写成持续性能承诺。
+本地原始测量：`.runtime/cache-archive-20261111/validation/cobalt/diagnose-300-live.jsonl`、`probe-300-network.jsonl`、`probe-300-fallback.jsonl`、`probe-300-multiorigin.jsonl`。它们包含具体请求窗口及失败样本，未将短时测速写成持续性能承诺。

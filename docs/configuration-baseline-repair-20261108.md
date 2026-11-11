@@ -133,7 +133,7 @@ MySQL 用例需要测试管理员连接 `VIDEO_TEST_MYSQL_URL`，每个测试创
 共享缓存复测额外将 `REDIS_URL` 指向同一个测试 Redis，只运行指定的隔离测试。
 这些变量均不得指向业务服务。CI 中对应的隔离服务定义见 `.github/workflows/tests.yml`。
 
-日志位于忽略的 `.cache/baseline-repair/`。本地临时服务的退出脚本同时处理 Windows MySQL
+日志位于忽略的 `.runtime/cache-archive-20261111/baseline-repair/`。本地临时服务的退出脚本同时处理 Windows MySQL
 监控进程及其实际子进程，使用 SQL `SHUTDOWN` 并清理本轮拥有的进程。
 最终运行器已退出，MySQL 日志记录正常关闭；按最终隔离目录核对，没有遗留对应的 MySQL 或 Redis 进程。
 已结束的临时 MySQL 数据目录自动删除被执行安全检查拒绝，返回信息仅为 `blocked by policy`。

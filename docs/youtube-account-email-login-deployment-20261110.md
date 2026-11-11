@@ -35,7 +35,7 @@ Google 登录开始前刷新收件箱，记录旧码。需要邮件验证时每 
 
 旧应用保留为停止状态的 `youtube-downloader-local-app-1-before-account-email-login-20261110-r1`，原镜像回退标记为 `youtube-downloader-app:before-account-email-login-20261110-r1`。回退应先排空任务，保留当前账号数据与原密钥。
 
-本地发布与脱敏核验结果位于 `.cache/account-email-login-deploy/`，服务器发布目录保存切换记录、备份和最终核验结果。使用方式见 [统一账号管理](youtube-account-management.md)。
+本地发布与脱敏核验结果位于 `.runtime/cache-archive-20261111/account-email-login-deploy/`，服务器发布目录保存切换记录、备份和最终核验结果。使用方式见 [统一账号管理](youtube-account-management.md)。
 
 ## 验证方式选择与输入页兼容修复（22:37:48）
 
@@ -53,7 +53,7 @@ Google 登录开始前刷新收件箱，记录旧码。需要邮件验证时每 
 
 MySQL 和 Redis 容器保持健康且 ID 不变，异常 MySQL 仍停止。当前行锁等待为 0，上线窗口日志未发现前述程序异常。再次备份完整表结构及上述十张元数据表，复用并备份原加密密钥；未全量备份任务和媒体数据，本地 `.env` 未修改。
 
-发布与核验位于 `.cache/account-email-choice-deploy/` 及服务器 `/opt/youtube-downloader/releases/account-email-choice-20261110-r1`。旧应用以 `youtube-downloader-local-app-1-before-account-email-choice-20261110-r1` 保留停止，回退镜像标记为 `youtube-downloader-app:before-account-email-choice-20261110-r1`。
+发布与核验位于 `.runtime/cache-archive-20261111/account-email-choice-deploy/` 及服务器 `/opt/youtube-downloader/releases/account-email-choice-20261110-r1`。旧应用以 `youtube-downloader-local-app-1-before-account-email-choice-20261110-r1` 保留停止，回退镜像标记为 `youtube-downloader-app:before-account-email-choice-20261110-r1`。
 
 ## 实际验证码输入框修复（22:59:34）
 

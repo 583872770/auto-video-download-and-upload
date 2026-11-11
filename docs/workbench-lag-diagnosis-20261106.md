@@ -82,4 +82,4 @@ Docker stdout/stderr近15分钟未提供有效业务日志，不能据此判断�
 
 此时直接增加下载并发可能增加共享行锁等待，不应作为主要解决方案。
 
-原始记录位于 `.cache/validation/workbench-lag-20261106/`，包括数据库汇总、锁链、执行计划及HTTP逐轮采样；不包含访问密钥或诊断会话凭据。
+原始记录位于 `.runtime/cache-archive-20261111/validation/workbench-lag-20261106/`，包括数据库汇总、锁链、执行计划及HTTP逐轮采样；不包含访问密钥或诊断会话凭据。

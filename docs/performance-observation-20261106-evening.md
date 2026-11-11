@@ -41,7 +41,7 @@ docker compose -f compose.local-mysql.yaml -p youtube-downloader-local up -d --b
 
 生产应用于 21:05:25 启动。30 分钟完成任务统计包含此前的任务，不能全部归功于当前版本。采样的 8 个生产源文件与本地文件 SHA-256 一致，包括页面、调度、统计、进度缓存及磁盘预算代码。
 
-原始记录和汇总位于本地 `.cache/perf-audit-current/`，该目录被 Git 忽略。主要文件为 `host-results.jsonl`、`app-results.jsonl`、`dbroot-results.jsonl`、`details-results.jsonl`、`browser-results.json`、`stop_duplicate-results.jsonl`、`summary.json`。原始接口结果可能含账号显示名等运行信息，未复制到本文。
+原始记录和汇总位于本地 `.runtime/cache-archive-20261111/perf-audit-current/`，该目录被 Git 忽略。主要文件为 `host-results.jsonl`、`app-results.jsonl`、`dbroot-results.jsonl`、`details-results.jsonl`、`browser-results.json`、`stop_duplicate-results.jsonl`、`summary.json`。原始接口结果可能含账号显示名等运行信息，未复制到本文。
 
 除用户授权停止异常 MySQL 外，生产操作均为有界读取；没有压测、故障注入或额外向视频源站发起检测请求。浏览器仅允许 GET / HEAD，未发生被拦截的写请求。
 

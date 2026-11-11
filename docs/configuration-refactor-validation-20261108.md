@@ -36,7 +36,7 @@ python -m unittest tests.test_settings_save tests.test_current_settings tests.te
 ```
 
 13 条浏览器检查均在最终应用代码上重新运行，不以旧运行结果替代。
-测试使用临时配置与独立数据，日志保存在忽略的 `.cache/config-refactor/` 中。
+测试使用临时配置与独立数据，日志保存在忽略的 `.runtime/cache-archive-20261111/config-refactor/` 中。
 
 ## 全量测试尚未通过
 
