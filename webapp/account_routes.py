@@ -98,6 +98,65 @@ def register_accounts(app):
         library().associate(identity, body(), actor)
         return jsonify(message='Cookie 关联已保存（用户确认），不会自动加入账号池。')
 
+    def login_target(identity, data=None):
+        lib = library()
+        item = lib.list({}, identity=identity)
+        target = item['instance_id'] or (data or {}).get('instance_id')
+        with store.connect() as db:
+            lib.validate_instance(db, target)
+        if not target:
+            raise ValueError('请先选择绑定实例。')
+        return lib, item, target
+
+    def login_rpc(lib, target, path, *, method='GET', data=None):
+        fleet = app.extensions['fleet']
+        if not fleet:
+            raise ValueError('绑定实例不可用，不能在当前入口登录。')
+        from webapp.fleet_routes import rpc
+        return rpc(fleet, target, path, method=method, data=data)
+
+    @app.post(PREFIX + '/<identity>/login')
+    def youtube_account_login_start(identity):
+        actor, data = admin(), body()
+        lib, item, target = login_target(identity, data)
+        if data.get('version') != item['version']:
+            raise Conflict('账号资料已变化，请重新读取后登录。')
+        if target == lib.local_id:
+            result = app.extensions['start_account_browser_login'](identity, data, actor)
+        else:
+            result = login_rpc(lib, target, '/api/youtube/account-login', method='POST', data={
+                'account_id': identity, 'version': data.get('version'), 'instance_id': target,
+                'automatic': data.get('automatic', False), 'actor': actor})
+        from webapp.account_login import status_for
+        return jsonify(status_for(result, identity)), 202
+
+    @app.get(PREFIX + '/<identity>/login')
+    def youtube_account_login_status(identity):
+        admin()
+        lib, item, target = login_target(identity)
+        result = (app.extensions['youtube_login'].status() if target == lib.local_id else
+                  login_rpc(lib, target, '/api/youtube/account-login'))
+        from webapp.account_login import status_for
+        return jsonify(status_for(result, identity))
+
+    @app.post(PREFIX + '/<identity>/login/cancel')
+    def youtube_account_login_cancel(identity):
+        admin()
+        data = body()
+        lib, item, target = login_target(identity)
+        payload = {'account_id': identity, 'session_id': data.get('session_id')}
+        if target == lib.local_id:
+            manager = app.extensions['youtube_login']
+            with manager.lock:
+                status = manager.status()
+                if (status.get('account') or {}).get('account_id') != identity or status.get('id') != payload['session_id']:
+                    raise Conflict('登录窗口已变化，未取消其他登录。')
+                result = manager.cancel()
+        else:
+            result = login_rpc(lib, target, '/api/youtube/account-login/cancel', method='POST', data=payload)
+        from webapp.account_login import status_for
+        return jsonify(status_for(result, identity))
+
     @app.post(PREFIX + '/import/preview')
     def youtube_account_import_preview():
         actor, data = admin(), body()

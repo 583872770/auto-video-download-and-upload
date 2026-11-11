@@ -174,6 +174,17 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertLess(reduced['transfers'],9)
             self.assertEqual(runtime_limits(config,self.directory)['transfers'],reduced['transfers'])
 
+    def test_unlimited_builtin_uses_instance_capacity_for_group_control(self):
+        config = dict(download_method='yt_dlp', worker_count=40,
+                      builtin_transfer_limit=0, builtin_resolver_limit=0)
+        controller = ThroughputController(self.directory)
+        sample = dict(cpu_cores=4, memory_total=8192*MIB, memory_available=4096*MIB,
+                      cpu_percent=30, io_pressure=0, rx=0)
+        with patch.object(controller, 'sample', return_value=sample):
+            state = controller.update(config)
+        self.assertEqual(state['transfers'], 40)
+        self.assertEqual(state['groups']['youtube-origin']['limit'], 40)
+
     def test_stale_or_changed_policy_never_reuses_large_old_pool(self):
         config={'throughput_mode':'auto','worker_count':64,'yt5s_browser_count':2}
         _atomic(self.directory/'throughput.json',{'time':time.time()-21,'policy':policy_key(config),

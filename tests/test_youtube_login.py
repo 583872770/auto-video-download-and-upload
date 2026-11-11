@@ -46,6 +46,68 @@ class YoutubeCookieTests(unittest.TestCase):
 
 
 class YoutubeBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_automatic_fields_submit_once_only_on_google_and_challenges_hand_off(self):
+        from scripts.login_youtube import GoogleSignIn
+        elements = {}
+        def locator(selector):
+            if selector not in elements:
+                item = MagicMock()
+                item.first = item
+                item.is_visible = AsyncMock(return_value=False)
+                item.fill, item.click = AsyncMock(), AsyncMock()
+                elements[selector] = item
+            return elements[selector]
+        page=MagicMock()
+        page.locator.side_effect=locator
+        email=locator(GoogleSignIn.IDENTIFIER)
+        password=locator(GoogleSignIn.PASSWORD)
+        email.is_visible.return_value=True
+        report=MagicMock()
+        assistant=GoogleSignIn({'email':'test@example.com','password':'private-fixture'},report)
+        for address in ('http://accounts.google.com/', 'https://accounts.google.com.example/signin',
+                        'https://example.com/', 'https://accounts.google.com:8443/'):
+            page.url=address
+            await assistant.advance(page)
+        email.fill.assert_not_awaited()
+        page.url='https://accounts.google.com/v3/signin/identifier'
+        await assistant.advance(page)
+        await assistant.advance(page)
+        email.fill.assert_awaited_once_with('test@example.com',timeout=3000)
+        password.is_visible.return_value=True
+        await assistant.advance(page)
+        await assistant.advance(page)
+        password.fill.assert_awaited_once_with('private-fixture',timeout=3000)
+        self.assertIsNone(assistant.password)
+        self.assertNotIn('private-fixture',str(report.call_args_list))
+        challenge=GoogleSignIn({'email':'test@example.com','password':'other-fixture'},report)
+        locator(GoogleSignIn.CHALLENGE).is_visible.return_value=True
+        await challenge.advance(page)
+        self.assertTrue(challenge.stopped)
+        self.assertIsNone(challenge.password)
+        self.assertEqual(password.fill.await_count,1)
+
+    async def test_account_browser_rejects_wrong_email_before_export(self):
+        from scripts.login_youtube import login
+        page, avatar, refusal = AsyncMock(), MagicMock(), MagicMock()
+        page.url='https://www.youtube.com/'
+        avatar.first,refusal.first=avatar,refusal
+        avatar.wait_for=AsyncMock()
+        refusal.is_visible=AsyncMock(return_value=False)
+        page.locator=MagicMock(return_value=avatar)
+        page.get_by_text=MagicMock(return_value=refusal)
+        context=AsyncMock();context.new_page.return_value=page
+        session=AsyncMock();session.__aenter__.return_value=context
+        with patch('scripts.login_youtube.async_playwright') as driver, \
+                patch('scripts.login_youtube.browser_session',return_value=session), \
+                patch('scripts.login_youtube.current_account_name',AsyncMock(return_value='other@example.com')), \
+                patch('scripts.login_youtube.save_youtube_cookies') as save:
+            driver.return_value.__aenter__=AsyncMock(return_value=MagicMock())
+            driver.return_value.__aexit__=AsyncMock(return_value=False)
+            with self.assertRaisesRegex(RuntimeError,'邮箱'):
+                await login({},Path('unused.txt'),expected_email='expected@example.com')
+            save.assert_not_called()
+            context.cookies.assert_not_awaited()
+
     async def test_account_label_comes_only_from_active_account_header(self):
         from scripts.login_youtube import current_account_name
         from playwright.async_api import TimeoutError as BrowserTimeoutError

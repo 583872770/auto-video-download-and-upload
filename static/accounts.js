@@ -10,6 +10,7 @@ let accountPoolBaseline = {}, accountPoolInstance = '', accountPreview = null;
 let accountDetailDirty = false, accountImportDirty = false, accountDetailBusy = false;
 let accountDialogEpoch = 0, accountSecretEpoch = 0;
 let accountPreviewEpoch = 0, accountImportBusy = false, accountUploadBusy = false;
+let accountLoginItem = null, accountLoginStatus = null, accountLoginEpoch = 0, accountLoginBusy = false, accountLoginPolling = false;
 const accountAdmin = () => document.body.dataset.consoleRole === 'admin';
 function accountHasDraft() { return accountDetailDirty || accountImportDirty || uploadDirty || accountDetailBusy || accountImportBusy || accountUploadBusy; }
 const accountTime = stamp => stamp ? new Date(stamp * 1000).toLocaleString('zh-CN', {hour12:false}) : '尚无记录';
@@ -61,7 +62,7 @@ async function loadAccounts() {
   const action = (id, label='详情 / 编辑') => `<button type="button" class="text-button" data-account-open="${escapeHTML(id)}">${label}</button>`;
   document.getElementById(prefix+'-rows').innerHTML = data.items.map(item => cookies
     ? `<tr><td><strong>${escapeHTML(item.email || '未关联账号资料')}</strong><small>${escapeHTML(item.name)}${item.pooled ? ' · 账号池成员' : ''}</small></td><td>${escapeHTML(item.instance_name)}<small>${item.online ? '在线' : '离线'}</small></td><td>${authLabel(item.auth.state)}<small>${accountTime(item.auth.checked_at)}</small></td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td><button type="button" class="text-button" data-credential-open="${escapeHTML(item.instance_id)}:${escapeHTML(item.id)}">详情 / 关联</button>${accountAdmin() ? `<button type="button" class="text-button" data-credential-check="${escapeHTML(item.instance_id)}:${escapeHTML(item.id)}"${!item.online || ['cooldown'].includes(item.download_state) ? ' disabled' : ''}>检测登录</button>` : ''}</td></tr>`
-    : `<tr><td><strong>${escapeHTML(item.email)}</strong><small>${escapeHTML(item.note)}</small></td><td>${escapeHTML(item.instance_name || '未绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${item.cookie_count} 份${item.cookie_count ? `<small>${item.valid_count} / ${item.cookie_count} 份近期验证通过</small>` : ''}</td><td>${authLabel(item.auth_state)}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${action(item.id,accountAdmin() ? '详情 / 编辑' : '查看详情')}</td></tr>`).join('');
+    : `<tr><td><strong>${escapeHTML(item.email)}</strong><small>${escapeHTML(item.note)}</small></td><td>${escapeHTML(item.instance_name || '未绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${item.cookie_count} 份${item.cookie_count ? `<small>${item.valid_count} / ${item.cookie_count} 份近期验证通过</small>` : ''}</td><td>${authLabel(item.auth_state)}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${accountAdmin() ? `<button type="button" class="text-button" data-account-login="${escapeHTML(item.id)}"${item.instance_id && !item.online ? ' disabled title="绑定实例离线，恢复后可登录"' : ''}>登录</button>` : ''}${action(item.id,accountAdmin() ? '详情 / 编辑' : '查看详情')}</td></tr>`).join('');
   document.getElementById(prefix+'-empty').hidden = !!data.items.length;
   document.getElementById(prefix+'-page-info').textContent = `共 ${data.total} ${cookies ? '份 Cookie' : '个账号'} · 第 ${data.page} / ${Math.max(1,Math.ceil(data.total/data.size))} 页`;
   for (const node of document.querySelectorAll(cookies ? '[data-credential-page]' : '[data-account-page]')) node.disabled = Number(node.dataset[cookies?'credentialPage':'accountPage']) < 0 ? data.page <= 1 : data.page * data.size >= data.total;
@@ -238,6 +239,7 @@ document.addEventListener('click', event => {
   if (button.dataset.accountDetailTab) selectAccountDetailTab(button.dataset.accountDetailTab);
   if (button.hasAttribute('data-account-refresh')) loadAccounts().catch(error => toast(error.message,true));
   if (button.dataset.accountOpen) openAccountDetails(button.dataset.accountOpen).catch(error => toast(error.message,true));
+  if (button.dataset.accountLogin) runButton(button,() => openAccountLogin(button.dataset.accountLogin));
   if (button.dataset.credentialOpen) { const [scope,id] = button.dataset.credentialOpen.split(':'); openAccountCookie(scope,id).catch(error => toast(error.message,true)); }
   if (button.dataset.credentialCheck) runButton(button,async () => {
     const [scope,id] = button.dataset.credentialCheck.split(':');
@@ -342,12 +344,90 @@ document.getElementById('account-detail-dialog').addEventListener('close',() => 
 });
 guardAccountDialog(document.getElementById('account-detail-dialog'),() => accountDetailDirty,() => { accountDetailDirty = false; });
 document.getElementById('account-browser-login').addEventListener('click',event => runButton(event.currentTarget,async () => {
-  const target = accountDetail.instance_id;
-  await manageAccountInstance(target,'pool');
+  if (accountDetailDirty || accountDetailBusy) throw new Error('请先保存账号修改后登录。');
+  const identity = accountDetail.id;
   document.getElementById('account-detail-dialog').close();
-  document.getElementById('youtube-login-dialog').showModal();
-  toast(`登录窗口属于「${instanceName(target)}」。保存 Cookie 后，在账号详情中确认关联。`);
+  await openAccountLogin(identity);
 }));
+
+function renderAccountLogin() {
+  const status = accountLoginStatus;
+  const target = document.getElementById('account-login-instance');
+  target.disabled = accountLoginBusy || !!accountLoginItem?.instance_id || !!status?.active;
+  document.getElementById('account-login-automatic').disabled = accountLoginBusy || !!status?.active;
+  document.getElementById('account-login-start').disabled = accountLoginBusy || !status || !!status.active || !target.value;
+  document.getElementById('account-login-start').textContent = status?.active ? '登录进行中…' : status?.state === 'succeeded' ? '重新登录' : '开始登录';
+  document.getElementById('account-login-cancel').hidden = !status?.can_cancel;
+  document.getElementById('account-login-cancel').disabled = accountLoginBusy;
+  document.getElementById('account-login-status').textContent = status?.message || '正在读取此账号的登录状态…';
+  document.getElementById('account-login-target').textContent = `浏览器位置：${accountName(target.value) || '请选择实例'}${status?.connection ? ' · '+status.connection : ''}`;
+}
+async function openAccountLogin(identity) {
+  if (!accountAdmin()) return;
+  if (accountLoginBusy) throw new Error('正在提交登录操作，请稍后再打开其他账号。');
+  const epoch = ++accountLoginEpoch;
+  const item = (await api(accountApi+'/'+identity)).item;
+  if (epoch !== accountLoginEpoch) return;
+  if (!accountNodes.length) updateAccountNodes((await api(accountApi+'?size=1')).instances);
+  accountLoginItem = item; accountLoginStatus = null;
+  document.getElementById('account-login-title').textContent = '登录：'+item.email;
+  const target = document.getElementById('account-login-instance');
+  target.innerHTML = '<option value="">请选择绑定实例</option>'+accountNodes.map(node => `<option value="${escapeHTML(node.id)}"${node.id === item.instance_id ? ' selected' : ''}${!node.online ? ' disabled' : ''}>${escapeHTML(node.name)} · ${node.online ? '在线' : '离线'}</option>`).join('');
+  document.getElementById('account-login-automatic').checked = true;
+  accountError('account-login-error','');
+  document.getElementById('account-login-dialog').showModal();
+  renderAccountLogin();
+  if (item.instance_id) await refreshAccountLogin();
+  else { accountLoginStatus = {state:'idle',active:false,message:'选择绑定实例后开始登录；后续 Cookie 只在此实例保存。'}; renderAccountLogin(); }
+}
+async function refreshAccountLogin() {
+  const dialog = document.getElementById('account-login-dialog');
+  if (!dialog.open || !accountLoginItem?.instance_id || accountLoginPolling || accountLoginBusy) return;
+  const epoch = accountLoginEpoch, identity = accountLoginItem.id;
+  accountLoginPolling = true;
+  try {
+    const result = await api(accountApi+'/'+identity+'/login');
+    if (epoch !== accountLoginEpoch || !dialog.open) return;
+    const changed = result.state === 'succeeded' && (accountLoginStatus?.id !== result.id || accountLoginStatus?.state !== 'succeeded');
+    accountLoginStatus = result; accountError('account-login-error',''); renderAccountLogin();
+    if (changed) {
+      const latest = (await api(accountApi+'/'+identity)).item;
+      if (epoch !== accountLoginEpoch || !dialog.open) return;
+      accountLoginItem = latest; await loadAccounts();
+    }
+  } catch(error) { if (epoch === accountLoginEpoch && dialog.open) accountError('account-login-error',error); }
+  finally { accountLoginPolling = false; }
+}
+document.getElementById('account-login-instance').addEventListener('change',renderAccountLogin);
+async function accountBrowserLoginAction(cancel) {
+  if (accountLoginBusy || !accountLoginItem) return;
+  const item = accountLoginItem, epoch = accountLoginEpoch;
+  accountLoginBusy = true; accountError('account-login-error',''); renderAccountLogin();
+  try {
+    const data = cancel ? {session_id:accountLoginStatus.id} : {version:item.version,
+      instance_id:document.getElementById('account-login-instance').value,
+      automatic:document.getElementById('account-login-automatic').checked};
+    const result = await api(accountApi+'/'+item.id+'/login'+(cancel?'/cancel':''),{method:'POST',body:data});
+    if (epoch !== accountLoginEpoch) return;
+    accountLoginStatus = result;
+    if (result.account) accountLoginItem = {...item,instance_id:result.account.instance_id,version:result.account.version};
+    await loadAccounts();
+  } catch(error) {
+    if (epoch === accountLoginEpoch) {
+      accountError('account-login-error',error);
+      // Reconcile a response timeout before offering another start.
+      try {
+        const latest = (await api(accountApi+'/'+item.id)).item;
+        const status = latest.instance_id ? await api(accountApi+'/'+item.id+'/login') : {state:'idle',active:false,message:'请选择绑定实例后开始登录。'};
+        if (epoch === accountLoginEpoch) { accountLoginItem = latest; accountLoginStatus = status; }
+      } catch { if (epoch === accountLoginEpoch) accountLoginStatus = null; }
+    }
+  } finally { accountLoginBusy = false; if (epoch === accountLoginEpoch) renderAccountLogin(); }
+}
+document.getElementById('account-login-start').addEventListener('click',() => accountBrowserLoginAction(false));
+document.getElementById('account-login-cancel').addEventListener('click',() => accountBrowserLoginAction(true));
+document.getElementById('account-login-dialog').addEventListener('close',() => { accountLoginEpoch++; accountLoginItem = accountLoginStatus = null; });
+setInterval(() => { if (!document.hidden) refreshAccountLogin(); },2000);
 document.getElementById('youtube-source-form').addEventListener('input',() => { state.accountSourceDirty = true; });
 document.getElementById('youtube-source-form').addEventListener('submit',event => {
   event.preventDefault(); runButton(event.submitter,async () => {

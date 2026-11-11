@@ -22,13 +22,13 @@ class Channel:
     upstream_group: str
     resolver_group: str
     quota_group: str
-    transfer_limit: int = 8
-    resolver_limit: int = 4
+    transfer_limit: int | None = 8
+    resolver_limit: int | None = 4
     connection_limit: int | None = 16
     weight: int = 1
     site_url: str = ''
     api_url: str = ''
-    task_limit: int = 8
+    task_limit: int | None = 8
     verification: str = 'required'
 
 
@@ -90,6 +90,11 @@ def validate_channels(config):
     return normalized
 
 
+def minimum_limit(*limits):
+    """None removes a ceiling; zero remains a real closed runtime gate."""
+    return min((limit for limit in limits if limit is not None), default=None)
+
+
 def registry(config):
     from webapp.settings import PROVIDERS, download_methods
     extra = [Channel(**item) for item in validate_channels(dict(config))]
@@ -97,10 +102,10 @@ def registry(config):
     for adapter in download_methods(config):
         upstream = 'youtube-origin' if adapter == 'yt_dlp' else 'unverified-media'
         default = Channel(adapter, adapter, PROVIDERS[adapter], upstream, adapter, adapter,
-                                transfer_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']) or (32 if config.get('scheduler_mode') == 'auto' else 8)),
-                                resolver_limit=int(config.get('builtin_resolver_limit', 4)),
+                                transfer_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit'])) or None,
+                                resolver_limit=int(config.get('builtin_resolver_limit', DEFAULTS['builtin_resolver_limit'])) or None,
                                 connection_limit=None,
-                                task_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']) or (32 if config.get('scheduler_mode') == 'auto' else 8)),
+                                task_limit=int(config.get('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit'])) or None,
                                 site_url=SITE if adapter == 'bergung' else '',
                                 api_url=API if adapter == 'bergung' else '')
         channels.append(next((channel for channel in extra if channel.id == adapter), default))
@@ -120,10 +125,10 @@ def group_caps(channels):
                                     ('resolver', channel.resolver_group, channel.resolver_limit),
                                     ('quota', channel.quota_group, channel.transfer_limit),
                                     ('connections', channel.upstream_group, channel.connection_limit)):
-            if limit is None:
+            if kind == 'connections' and limit is None:
                 continue
             key = kind + ':' + group
-            caps[key] = min(caps.get(key, limit), limit)
+            caps[key] = minimum_limit(caps.get(key), limit)
     return caps
 
 

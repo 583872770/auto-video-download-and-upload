@@ -3,6 +3,9 @@
 // Countdown text changes locally each second; absolute deadlines and all other
 // markup still participate in the comparison so real state changes render.
 const capacityMarkup = new WeakMap();
+function concurrencyLimit(value, suffix = '') {
+  return value == null ? '不限制' : `${value}${suffix}`;
+}
 function capacityMarkupChanged(target, html) {
   const key = html.replace(/(<span data-capacity-deadline="[^"]+">)[^<]*(<\/span>)/g, '$1$2');
   if (capacityMarkup.get(target) === key) return false;
@@ -57,7 +60,23 @@ function workerControlHTML(data, {compact = false} = {}) {
   const recoveryText = protectedState ? `<div class="worker-recovery"><p><strong>恢复条件：</strong>CPU &lt; ${Number(recovery.cpu_below)}%、${ioRequirement}、可用内存 ≥ ${Number(recovery.memory_at_least_mb)} MB。</p><p>${blockers.length ? escapeHTML(blockers.join('；')) + '。' : readyText}${deadline}；满足条件后每 ${Number(recovery.interval_seconds)} 秒最多增加 ${Number(recovery.step)} 个，恢复至常规上限。倒计时结束后仍需新采样确认。</p></div>` : '';
   const ioNote = source === 'cgroup' ? `整机 ${percent(measurements.io_pressure_host)}，仅供参考`
     : source === 'host' ? '本实例 I/O 指标不可用，当前使用整机指标' : '当前未取得 I/O 指标，CPU 和内存保护继续生效';
-  return `<section class="worker-control${protectedState ? ' protected' : ''}" aria-label="本机任务进程与资源保护"><div class="worker-control-heading"><strong>任务进程占用 <b>${Number(worker.used)} / ${Number(worker.dynamic_limit)}</b></strong><span>${heading}</span></div><p>当前占用 / 动态上限 · 常规上限 ${Number(worker.normal_limit)} · 配置上限 ${Number(worker.configured_limit)}</p>${compact ? '' : `<p>实际传输 ${Number(stages.transferring || 0)} · 等待 / 解析 ${Number(stages.preparing || 0)} · 后处理 ${Number(stages.processing || 0)}；这些阶段均占用任务进程。</p>`}${Number(worker.used) > Number(worker.dynamic_limit) ? '<p>已有任务超出新上限，完成后释放名额；当前暂停新增。</p>' : ''}${reductionText}<p>${escapeHTML(ioName)} ${percent(measurements.io_pressure)} · ${escapeHTML(ioNote)}</p>${recoveryText}${compact ? '' : '<p class="worker-control-note">常规上限综合账号、传输、内存和数据库预算计算；进程名额与视频传输名额分别控制。</p>'}</section>`;
+  const boundNames = {accounts: '账号会话容量', configured: '配置的进程上限', channel_connections: '渠道与连接容量（含准备余量）', memory: '内存估算', database: '数据库连接预算'};
+  const limits = (worker.limit_reasons || []).map(key => boundNames[key] || key).join('、');
+  const limitText = limits ? `<p><strong>常规上限依据：</strong>${escapeHTML(limits)}。${protectedState ? '资源保护进一步降低了当前上限。' : ''}</p>` : '';
+  const bounds = !compact && worker.bounds ? `<details class="capacity-details" data-capacity-details="worker-bounds"><summary>查看进程容量计算</summary><p>${Object.entries(worker.bounds).map(([key, value]) => `${escapeHTML(boundNames[key] || key)} ${Number(value)} 个`).join('；')}。取各项最小值。</p></details>` : '';
+  return `<section class="worker-control${protectedState ? ' protected' : ''}" aria-label="本机任务进程与资源保护"><div class="worker-control-heading"><strong>任务进程占用 <b>${Number(worker.used)} / ${Number(worker.dynamic_limit)}</b></strong><span>${heading}</span></div><p>当前占用 / 动态上限 · 常规上限 ${Number(worker.normal_limit)} · 配置目标 ${Number(worker.configured_limit)}</p>${limitText}${databaseBudgetHTML(data, {compact})}${bounds}${compact ? '' : `<p>实际传输 ${Number(stages.transferring || 0)} · 等待 / 解析 ${Number(stages.preparing || 0)} · 后处理 ${Number(stages.processing || 0)}；这些阶段均占用任务进程。</p>`}${Number(worker.used) > Number(worker.dynamic_limit) ? '<p>已有任务超出新上限，完成后释放名额；当前暂停新增。</p>' : ''}${reductionText}<p>${escapeHTML(ioName)} ${percent(measurements.io_pressure)} · ${escapeHTML(ioNote)}</p>${recoveryText}${compact ? '' : '<p class="worker-control-note">进程名额与视频传输名额分别控制；受限名额不对应固定的几个 Cookie。</p>'}</section>`;
+}
+function databaseBudgetHTML(data, {compact = false} = {}) {
+  const budget = data.database_budget;
+  if (!budget) return '';
+  const mode = {auto: '自动核算', manual: '手动指定', deployment: '部署配置'}[budget.mode] || '已保存';
+  const warning = !budget.target_supported;
+  const fixed = budget.main.reduce((sum, value) => sum + value, 0) + budget.auxiliary;
+  const deployment = [
+    budget.deployment_cap != null ? `部署总连接硬上限 ${Number(budget.deployment_cap)}` : '',
+    budget.deployment_worker_cap != null ? `部署下载连接硬上限 ${Number(budget.deployment_worker_cap)}` : ''
+  ].filter(Boolean).join('；');
+  return `<div class="worker-database-budget"><p><strong>数据库连接预算：</strong>${mode} ${Number(budget.total)} 个，最多支持 ${Number(budget.workers)} 个下载进程${warning ? '，低于进程目标' : ''}。</p>${compact ? '' : `<p>目标 ${Number(budget.target_workers)} 个进程 × 每进程 ${Number(budget.per_worker)} 个连接 + 固定预留 ${fixed} = 需要 ${Number(budget.required_total)} 个。${deployment ? escapeHTML(deployment) + '；修改部署硬上限需重建应用容器。' : ''} <a href="/#settings" data-settings-target="performance">调整进程与连接预算</a></p>`}</div>`;
 }
 function decisionExplanationHTML(data, key) {
   const value = data.decisions;
@@ -326,8 +345,8 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   if (recovering.length) notices.push(['warning', '渠道正在恢复', `部分资源处于恢复观察，相关共享资源暂按 1 路放行；同一时间其他资源仍可能冷却。${concurrencyCountdown(Math.max(...recovering.map(row => row.recovery_seconds)), data.time)}`, '#settings', '查看渠道']);
   if (resolverCooled.length) notices.push(['warning', '解析 / 准备资源冷却', `${resolverCooled.map(row => `${escapeHTML(row.label)}：${concurrencyCountdown(row.resolver_cooldown_seconds, data.time)}`).join('；')}。新解析受限，已解析视频的传输仍需单独检查传输额度。`, '#settings', '查看资源明细']);
   if (data.disk_blocked || data.disk_message) notices.push(['warning', '临时空间等待', `${escapeHTML(data.disk_message || '临时文件预算已用满，暂停领取新任务。')} 磁盘剩余空间与临时文件预算分别计算。`, '#settings', '查看磁盘预算']);
-  const restricted = channels.filter(row => Math.min(row.transfer_limit, row.shared_limit) < data.requested);
-  if (restricted.length) notices.push(['info', '渠道额度低于设置并发', `设置 ${data.requested} 路，${restricted.map(row => `${escapeHTML(row.label)} 单渠道上限 ${row.transfer_limit} 路、共享上游上限 ${row.shared_limit} 路`).join('；')}。提高工作进程数不会同步提高这些额度。`, '#settings', '查看渠道上限']);
+  const restricted = channels.filter(row => Math.min(...[row.transfer_limit, row.shared_limit].filter(value => value != null)) < data.requested);
+  if (restricted.length) notices.push(['info', '渠道额度低于设置并发', `设置 ${data.requested} 路，${restricted.map(row => `${escapeHTML(row.label)} 单渠道上限 ${concurrencyLimit(row.transfer_limit, ' 路')}、共享上游上限 ${concurrencyLimit(row.shared_limit, ' 路')}`).join('；')}。提高工作进程数不会同步提高这些额度。`, '#settings', '查看渠道上限']);
   const connections = channels.filter(row => row.connection_units && Math.floor(Math.min(row.connection_limit ?? data.connection_budget, data.connection_budget) / row.connection_units) < data.requested);
   if (connections.length) notices.push(['info', '连接预算限制可用并发', `${connections.map(row => `${escapeHTML(row.label)} 每任务预留 ${row.connection_units} 个连接，本机预算 ${data.connection_budget}${row.connection_limit != null ? `、共享预算 ${row.connection_limit}` : ''}，理论最多约 ${Math.floor(Math.min(row.connection_limit ?? data.connection_budget, data.connection_budget) / row.connection_units)} 路`).join('；')}。文件及分片共用预算。`, '#settings', '查看连接预算']);
   const resolverWaiting = Number(data.stages?.waiting_resolver || 0);
@@ -344,10 +363,11 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const tone = !data.online || stale ? 'unavailable' : warning ? 'warning' : 'normal';
   const label = !data.online || stale ? '状态待确认' : cooled.length || resolverCooled.length ? '渠道冷却' : recovering.length ? '逐步恢复' : data.disk_blocked ? '空间等待' : data.paused ? '已停止领取' : poolCooling ? data.cookie_pool.available_sessions ? '部分账号冷却' : '账号池等待' : poolRecovering ? '账号低频恢复' : warning ? '有待处理提示' : '调度中';
   const sharedConnections = channels.some(row => row.connection_limit != null);
-  const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th>${sharedConnections ? '<th>共享连接占用</th>' : ''}<th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${row.transfer_limit} 路<small>${row.resolver_separate ? `解析上限 ${row.resolver_limit} 路` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${row.shared_limit}<small>含其他实例</small></td>${sharedConnections ? `<td>${row.connection_limit != null ? `${row.connection_used} / ${row.connection_limit}` : '—'}</td>` : ''}<td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
+  const details = `<details class="capacity-details" data-capacity-details="${escapeHTML(key)}"><summary>渠道上限与实时占用 <span>${channels.length} 个入口 · 同组共享额度</span></summary><div class="capacity-table-wrap"><table class="capacity-table"><thead><tr><th>下载渠道 / 共享上游</th><th>渠道上限</th><th>当前额度估算</th><th>共享上游占用</th>${sharedConnections ? '<th>共享连接占用</th>' : ''}<th>状态</th></tr></thead><tbody>${channels.map(row => `<tr><td><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.group)}</small></td><td>${concurrencyLimit(row.transfer_limit, ' 路')}<small>${row.resolver_separate ? `解析上限 ${concurrencyLimit(row.resolver_limit, ' 路')}` : '解析与传输共用名额'}</small></td><td><strong>${row.effective_limit} 路</strong>${row.connection_units ? `<small>每任务预留 ${row.connection_units} 个连接</small>` : ''}</td><td>${row.occupied} / ${concurrencyLimit(row.shared_limit)}<small>含其他实例</small></td>${sharedConnections ? `<td>${row.connection_limit != null ? `${row.connection_used} / ${row.connection_limit}` : '—'}</td>` : ''}<td><span class="capacity-channel-state ${row.status}">${row.status === 'cooldown' ? '冷却 · '+concurrencyCountdown(row.cooldown_seconds, data.time) : row.status === 'recovering' ? '恢复观察 · '+concurrencyCountdown(row.recovery_seconds, data.time) : '可参与调度'}</span></td></tr>`).join('')}</tbody></table></div><p class="capacity-footnote">当前额度是新任务准入上界估算，综合实例、渠道、连接及共享资源限制；多个入口的额度不能直接相加。上限降低后，已有任务可能暂时超出新额度。</p></details>`;
   return `<div class="capacity-body" data-tone="${tone}">
     <div class="capacity-heading"><div><span class="capacity-eyebrow">当前实例 · 实时调度</span><h2>传输并发</h2></div>${poolRecovering ? `<button type="button" class="capacity-status ${tone}" data-cookie-recovery="" aria-haspopup="dialog" title="查看各账号的恢复条件和启动间隔调整">${label} · 查看进度</button>` : `<span class="capacity-status ${tone}" role="status">${label}</span>`}</div>
     ${transferSlotsHTML(data, {compact})}
+    ${data.mode === 'cookie_pool' ? '' : databaseBudgetHTML(data, {compact})}
     ${key === 'overview' ? `<details class="capacity-details capacity-explanations" data-capacity-details="${escapeHTML(key)}-explanations"><summary>调度与异常说明${warning ? ' · 有需要关注的状态' : ''}</summary>` : ''}
     ${concurrencyAdmissionHTML(data)}${decisionExplanationHTML(data, key)}
     ${waitText ? `<p class="capacity-waits">等待原因：${waitText}</p>` : ''}

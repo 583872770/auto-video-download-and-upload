@@ -122,6 +122,10 @@ async function api(path, options = {}) {
   }
   if (response.status === 401) { location.assign('/login'); throw new Error('请先登录管理账户。'); }
   if (!response.ok) { const error = new Error(data.error || `请求失败（${response.status}）`); error.status = response.status; throw error; }
+  if (path === '/api/config' && reading) {
+    state.databaseBudget = data.database_budget || null;
+    state.databaseBudgetInstance = instance;
+  }
   return data;
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason?.name === 'TimeoutError') {
@@ -677,6 +681,7 @@ function fillConfig(config) {
 }
 function renderConcurrencyDraft() {
   renderYouTubePacingRuntime();
+  renderDatabaseBudgetDraft();
   const form = $('#settings-form');
   const number = name => Number(form.elements[name]?.value ?? document.querySelector('#account-pool-form')?.elements[name]?.value ?? 0);
   if (state.config?.youtube_cookie_pool?.length) {
@@ -684,16 +689,52 @@ function renderConcurrencyDraft() {
     $('#concurrency-config-note').classList.remove('capacity-draft-warning');
     return;
   }
-  const auto = form.elements.scheduler_mode?.value === 'auto';
-  const requested = number('worker_count'), channel = number('builtin_transfer_limit') || (auto ? 32 : 8);
+  const requested = number('worker_count'), channel = number('builtin_transfer_limit');
   const connection = number('download_connection_limit');
   const fragments = Math.min(number('fragment_concurrency') || 4, Math.max(1, Math.floor(connection / Math.max(1, requested))));
   const methods = providerDraft || selectedProviders();
   const native = methods.includes('yt_dlp');
-  const cap = Math.min(requested, channel, native ? Math.floor(connection / fragments) : connection);
+  const cap = Math.min(requested, channel || Infinity, native ? Math.floor(connection / fragments) : connection);
   const warning = requested > cap;
-  $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel}，本机连接预算 ${connection}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
+  $('#concurrency-config-note').textContent = `待保存配置：实例上限 ${requested}，内置渠道上限 ${channel || '不限制'}，本机连接预算 ${connection}。${warning ? `受这些设置限制，单个内置渠道最多约 ${cap} 路。` : '内置渠道配置与实例上限一致或更高。'}共享上游、其他实例、临时预算与限流仍可能降低实际额度。`;
   $('#concurrency-config-note').classList.toggle('capacity-draft-warning', warning);
+}
+function renderDatabaseBudgetDraft() {
+  const target = $('#database-budget-preview');
+  if (!target) return;
+  const form = $('#settings-form');
+  const number = (name, fallback) => Number(form.elements[name]?.value || fallback);
+  const mode = form.elements.db_budget_mode?.value || 'auto';
+  const manual = form.elements.db_connection_budget;
+  if (manual) {
+    manual.readOnly = mode === 'auto';
+    manual.disabled = mode === 'auto';
+  }
+  const manualLabel = form.querySelector('[data-db-manual]');
+  if (manualLabel) manualLabel.hidden = mode === 'auto';
+  const budget = state.databaseBudgetInstance === state.instanceId ? state.databaseBudget : null;
+  if (!budget) {
+    target.textContent = '所选实例尚未返回数据库预算信息；请重新读取，或升级该实例。';
+    return;
+  }
+  const pooled = !!state.config?.youtube_cookie_pool?.length;
+  const methods = providerDraft || selectedProviders();
+  const browsers = number('yt5s_browser_count', 2);
+  const extra = methods.some(method => ['yt5s', 'yt1d', 'bergung'].includes(method)) ? browsers + Math.min(2, browsers) : 2;
+  const workers = pooled ? number('youtube_cookie_pool_worker_limit', 20)
+    : Math.min(96, number('worker_count', 1) + (form.elements.throughput_mode.value === 'auto' ? extra : 0));
+  const fixed = budget.main.reduce((sum, value) => sum + value, 0) + budget.auxiliary;
+  const required = workers * budget.per_worker + fixed;
+  const requested = mode === 'auto' ? required : number('db_connection_budget', 64);
+  const total = Math.min(requested, budget.deployment_cap ?? Infinity);
+  const supported = Math.max(0, Math.min(Math.floor((total - fixed) / budget.per_worker),
+    Math.floor((budget.deployment_worker_cap ?? Infinity) / budget.per_worker)));
+  const deployment = [
+    budget.deployment_cap != null ? `实例总预算硬上限 ${budget.deployment_cap}` : '',
+    budget.deployment_worker_cap != null ? `下载进程连接硬上限 ${budget.deployment_worker_cap}` : ''
+  ].filter(Boolean).join('；');
+  target.textContent = `按当前表单估算，保存后生效：目标 ${workers} 个任务进程 × 每进程 ${budget.per_worker} 个连接 + 固定预留 ${fixed} = 需要 ${required} 个。预算 ${total}，最多支持 ${supported} 个下载进程。${supported < workers ? '数据库预算低于目标，会限制进程数量。' : '数据库预算能够覆盖目标；仍受账号、渠道、内存和资源保护限制。'}${deployment ? ' 部署限制：' + deployment + '。' : ''}`;
+  target.classList.toggle('capacity-draft-warning', supported < workers);
 }
 $('#settings-form').addEventListener('input', renderConcurrencyDraft);
 $('#settings-form').addEventListener('change', renderConcurrencyDraft);

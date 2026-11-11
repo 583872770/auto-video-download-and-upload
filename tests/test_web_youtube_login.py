@@ -105,7 +105,10 @@ class LoginContract:
         queued = self.store.create('download', {'config': {'youtube_cookie': ''}, 'base': str(self.root)})
         self.store.set_downloads_paused(True)
         self.start()
-        self.assertEqual(self.finish()['state'], 'succeeded')
+        status = self.finish()
+        self.assertEqual(status['state'], 'succeeded')
+        self.assertIn('Fixture login waiting', [event['message'] for event in status['events']])
+        self.assertEqual(status['events'][-1]['state'], 'succeeded')
         cookie_path = yaml.safe_load(self.config.read_text())['youtube_cookie']
         target = self.root / cookie_path
         self.assertTrue(target.is_file())

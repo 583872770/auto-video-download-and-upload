@@ -31,6 +31,21 @@ def channel(identity, group='bergung', **kwargs):
 
 
 class RegistryTests(unittest.TestCase):
+    def test_zero_builtin_limits_are_unlimited_in_all_routing_modes(self):
+        for mode in ('ordered_fallback', 'balanced', 'auto'):
+            config = dict(scheduler_mode=mode, builtin_transfer_limit=0, builtin_resolver_limit=0)
+            validate_settings(config)
+            built = registry(config)[0]
+            self.assertIsNone(built.transfer_limit)
+            self.assertIsNone(built.task_limit)
+            self.assertIsNone(built.resolver_limit)
+            self.assertIsNone(group_caps([built])['upstream:' + built.upstream_group])
+        channels = registry(dict(download_method='bergung', builtin_transfer_limit=0,
+            builtin_resolver_limit=0, download_channels=[{**channel('alias', 'unverified-media',
+                transfer_limit=3, resolver_limit=2), 'resolver_group': 'bergung', 'quota_group': 'bergung'}]))
+        self.assertEqual(group_caps(channels)['upstream:unverified-media'], 3)
+        self.assertEqual(group_caps(channels)['resolver:bergung'], 2)
+
     def test_mysql_decimal_resource_sum_is_normalized_to_integer(self):
         db = Mock()
         db.execute.return_value.scalar_one.return_value = Decimal(2)
@@ -122,6 +137,67 @@ class AdmissionTests(unittest.TestCase):
                 pass
         with second.permit(alias, 'transfer', timeout=0):
             pass
+
+    def test_zero_builtin_limits_admit_above_old_defaults_and_keep_local_budget(self):
+        for mode in ('ordered_fallback', 'balanced', 'auto'):
+            config = dict(download_method='yt_dlp', worker_count=40, scheduler_mode=mode,
+                builtin_transfer_limit=0, builtin_resolver_limit=0, download_connection_limit=34)
+            routers = [self.scheduler(config=config) for _ in range(35)]
+            with self.subTest(mode=mode), ExitStack() as held:
+                for router in routers[:34]:
+                    held.enter_context(router.permit(router.channels[0], 'transfer', timeout=0))
+                with self.assertRaises(PipelineBusy):
+                    with routers[34].permit(routers[34].channels[0], 'transfer', timeout=0):
+                        self.fail('local connection budget was bypassed')
+                self.assertEqual(routers[34].blocked_resource, 'local-connections')
+            with ExitStack() as held:
+                for router in routers[:5]:
+                    held.enter_context(router.permit(router.channels[0], 'resolve', timeout=0))
+            with self.first.connect() as db:
+                self.assertEqual(db.execute(select(download_permits)).all(), [])
+
+    def test_unlimited_builtin_retains_shared_peer_cooldown_and_recovery(self):
+        config = dict(download_method='yt_dlp', worker_count=16, builtin_transfer_limit=0,
+                      builtin_resolver_limit=0, download_connection_limit=32)
+        first, second = self.scheduler(config=config), self.scheduler(config=config)
+        scope = 'upstream:youtube-origin'
+        first.transaction_call(lambda db, stamp: first._state(db, scope))
+        for state in ({'policies': {'peer': {'limit': 1, 'time': time.time()}}},
+                      {'recover_until': time.time() + 90}):
+            first.transaction_call(lambda db, stamp: first._save(db, scope, state))
+            with first.permit(first.channels[0], 'transfer', timeout=0):
+                with self.assertRaises(PipelineBusy):
+                    with second.permit(second.channels[0], 'transfer', timeout=0):
+                        self.fail('shared peer or recovery limit was bypassed')
+            with self.first.connect() as db:
+                saved = first._state(db, scope)
+                self.assertNotIn(first.instance, saved.get('policies', {}))
+        first.transaction_call(lambda db, stamp: first._save(db, scope, {'cooldown_until': stamp + 60}))
+        with self.assertRaises(PipelineBusy):
+            with first.permit(first.channels[0], 'transfer', timeout=0):
+                self.fail('cooldown was bypassed')
+
+    def test_builtin_limits_can_be_disabled_independently(self):
+        for transfer, resolver, blocked_phase in ((0, 2, 'resolve'), (2, 0, 'transfer')):
+            config = dict(download_method='yt_dlp', worker_count=8,
+                          builtin_transfer_limit=transfer, builtin_resolver_limit=resolver)
+            routers = [self.scheduler(config=config) for _ in range(3)]
+            unlimited_phase = 'transfer' if blocked_phase == 'resolve' else 'resolve'
+            with self.subTest(transfer=transfer, resolver=resolver), ExitStack() as held:
+                for router in routers[:2]:
+                    held.enter_context(router.permit(router.channels[0], blocked_phase, timeout=0))
+                with self.assertRaises(PipelineBusy):
+                    with routers[2].permit(routers[2].channels[0], blocked_phase, timeout=0):
+                        self.fail('disabling one limit disabled the other')
+            with ExitStack() as held:
+                # Resolver concurrency still shares the channel's overall quota.
+                for router in routers[:3 if transfer == 0 else 2]:
+                    held.enter_context(router.permit(router.channels[0], unlimited_phase, timeout=0))
+                if transfer:
+                    with self.assertRaises(PipelineBusy):
+                        with routers[2].permit(routers[2].channels[0], 'resolve', timeout=0):
+                            self.fail('shared channel quota was bypassed')
+                    self.assertEqual(routers[2].blocked_resource, 'quota')
 
     def test_builtin_transfer_skips_legacy_shared_connections_but_keeps_local_cap(self):
         config = dict(download_method='yt_dlp', worker_count=4, builtin_transfer_limit=4,

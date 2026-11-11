@@ -228,7 +228,9 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         editable = public_oss_config(editable)
         for key in OSS_SECRETS:
             editable[key + '_configured'] = bool(config.get(key) or config.get(key + '_configured'))
-        return jsonify(config=editable, config_path=str(config_path), media_directory=str(video_directory(config, base)),
+        from webapp.db_pool_calculator import connection_budget
+        return jsonify(config=editable, database_budget=connection_budget(config),
+                       config_path=str(config_path), media_directory=str(video_directory(config, base)),
                        instance_id=fleet.id if fleet else None)
 
     @app.put('/api/config')
@@ -261,6 +263,8 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
             elif 'download_method' in data:
                 config['download_methods'] = None  # Compatibility with old clients/configuration.
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
+            from webapp.db_pool_calculator import connection_budget
+            connection_budget(config)  # Reject impossible reservations before any persistence.
             if 'youtube_cookie_pool' in data or 'youtube_cookie' in data:
                 from webapp.cookie_profiles import CookieProfiles
                 profiles = CookieProfiles(config_path.parent, store)
@@ -456,8 +460,12 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                         target.unlink(missing_ok=True)
                     raise
 
-    def install_browser_cookie(data, *, account_name=None):
+    def install_browser_cookie(data, *, account_name=None, account=None):
         with media_lock, settings_lock:
+            if account:
+                from webapp.account_login import install
+                config, base = settings()
+                return install(store, base, config, data, account, account_name)
             from webapp.cookie_profiles import CookieProfiles
             config, base = settings()
             profiles = CookieProfiles(base, store)
@@ -484,15 +492,19 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
         if youtube_login.status()['active']:
             raise LoginBusy('请先完成或取消 YouTube 登录，再执行此操作。')
 
+    @app.get('/api/youtube/account-login')
     @app.get('/api/youtube/login')
     def youtube_login_status():
         return jsonify(youtube_login.status())
 
-    @app.post('/api/youtube/login')
-    def start_youtube_login():
+    def start_browser_login(identity=None, data=None, actor=None):
         with media_lock:
             require_login_idle()
             config, base = settings()
+            account, credentials = None, None
+            if identity:
+                from webapp.account_login import prepare
+                account, credentials = prepare(store, base, config, identity, data, actor)
             mode = config.get('proxy_mode', 'manual')
             connection = '直连'
             proxy = ''
@@ -504,12 +516,46 @@ def create_app(config_path=None, state_dir=None, *, start_worker=True, env_file=
                 proxy = config['proxy']
                 connection = '手动代理'
             executable = str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''
-            status = youtube_login.start({'proxy': proxy, 'browser_executable': executable}, connection)
-        return jsonify(status), 202
+            options = {'account': account, 'credentials': credentials} if account else {}
+            return youtube_login.start({'proxy': proxy, 'browser_executable': executable}, connection, **options)
 
+    app.extensions['start_account_browser_login'] = start_browser_login
+
+    @app.post('/api/youtube/account-login')
+    @app.post('/api/youtube/login')
+    def start_youtube_login():
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            raise ValueError('请提交 JSON 对象。')
+        identity = data.get('account_id')
+        if request.path == '/api/youtube/account-login' and not identity:
+            raise ValueError('请选择需要登录的账号。')
+        actor = None
+        if identity:
+            from werkzeug.exceptions import Forbidden
+            user = getattr(g, 'console_user', None)
+            if not getattr(g, 'fleet_rpc', False) and (not user or user['role'] != 'admin'):
+                raise Forbidden('仅管理员可以使用已保存账号登录。')
+            actor = (data.get('actor') or 'instance_rpc') if getattr(g, 'fleet_rpc', False) else user['username']
+            if not isinstance(actor, str) or len(actor) > 64:
+                raise ValueError('登录操作人无效。')
+        return jsonify(start_browser_login(identity, data, actor)), 202
+
+    @app.post('/api/youtube/account-login/cancel')
     @app.post('/api/youtube/login/cancel')
     def cancel_youtube_login():
-        return jsonify(youtube_login.cancel())
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            raise ValueError('请提交 JSON 对象。')
+        if request.path == '/api/youtube/account-login/cancel' and not data.get('account_id'):
+            raise ValueError('请选择需要取消的账号登录。')
+        with youtube_login.lock:
+            if data.get('account_id'):
+                from werkzeug.exceptions import Conflict
+                status = youtube_login.status()
+                if (status.get('account') or {}).get('account_id') != data['account_id'] or status.get('id') != data.get('session_id'):
+                    raise Conflict('登录窗口已变化，请刷新状态；未取消其他登录。')
+            return jsonify(youtube_login.cancel())
 
     @app.post('/api/youtube/cookie')
     def upload_youtube_cookie():

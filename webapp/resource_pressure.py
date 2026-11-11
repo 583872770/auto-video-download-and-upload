@@ -86,6 +86,8 @@ def worker_control(workers, limits, resources, cpu, pressure, last_reduction, el
         blocked.append('memory')
     return {'dynamic_limit': workers, 'normal_limit': limits['workers'],
             'configured_limit': limits['configured_worker_limit'],
+            'bounds': limits.get('worker_bounds', {}),
+            'limit_reasons': limits.get('worker_limit_reasons', []),
             'resource_limited': workers < limits['workers'],
             'pressure': pressure, 'last_reduction': last_reduction,
             'measurements': {'cpu_percent': round(cpu, 1),

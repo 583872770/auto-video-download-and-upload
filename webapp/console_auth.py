@@ -45,6 +45,8 @@ LOCAL_RPC_METHODS = {
     '/api/clash/test': {'POST'},
     '/api/youtube/login': {'GET', 'HEAD', 'POST'},
     '/api/youtube/login/cancel': {'POST'},
+    '/api/youtube/account-login': {'GET', 'HEAD', 'POST'},
+    '/api/youtube/account-login/cancel': {'POST'},
     '/api/youtube/cookie': {'POST'},
     '/api/youtube/cookies': {'GET', 'HEAD', 'POST'},
     '/api/youtube/cookies/export': {'POST'},

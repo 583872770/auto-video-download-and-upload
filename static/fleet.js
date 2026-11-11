@@ -27,6 +27,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
   if (reset) {
     for (const dialog of $$('dialog[open]')) dialog.close();
     state.status = null; state.clash = null; state.media = []; state.config = null; state.configInstance = null;
+    state.databaseBudget = null; state.databaseBudgetInstance = null;
     state.clearMediaDirectory = null;
     resetInstanceDeployment();
     nodeSignature = ''; subscriptionInstance = undefined; subscriptionSelection = null; rotationDraft = null;

@@ -6,7 +6,7 @@ owners; a computed capacity alone never authorizes a download.
 """
 from dataclasses import dataclass
 
-from webapp.channels import backend_key, group_caps, registry
+from webapp.channels import backend_key, group_caps, minimum_limit, registry
 from webapp.config_schema import DEFAULTS
 
 
@@ -48,16 +48,16 @@ def backend_limits(channels):
     for channel in channels:
         key = backend_key(channel)
         current = (channel.task_limit, channel.resolver_limit, channel.transfer_limit)
-        limits[key] = tuple(min(a, b) for a, b in zip(limits.get(key, current), current))
+        limits[key] = tuple(minimum_limit(a, b) for a, b in zip(limits.get(key, current), current))
     return limits
 
 
 def assignment_transfer_limit(channel, local):
     """Preparation demand may later resolve onto the YouTube media upstream."""
     groups = local.get('groups', {})
-    limit = min(channel.transfer_limit, groups.get(channel.upstream_group, {}).get('limit', local['transfers']))
+    limit = minimum_limit(channel.transfer_limit, groups.get(channel.upstream_group, {}).get('limit', local['transfers']))
     if channel.upstream_group == 'unverified-media':
-        limit = min(channel.transfer_limit, max(limit, groups.get('youtube-origin', {}).get('limit', limit)))
+        limit = minimum_limit(channel.transfer_limit, max(limit, groups.get('youtube-origin', {}).get('limit', limit)))
     return limit
 
 
@@ -70,7 +70,8 @@ def transfer_requirements(config, identity, channel, caps, local, streams=1):
     """Ordered overlapping permits; connection units differ from video units."""
     group = channel.upstream_group
     ceiling = caps.get('upstream:' + group, channel.transfer_limit)
-    limit = min(ceiling, local.get('groups', {}).get(group, {}).get('limit', ceiling))
+    limit = minimum_limit(ceiling, local.get('groups', {}).get(group, {}).get(
+        'limit', ceiling if ceiling is not None else local['transfers']))
     requirements = [('upstream:' + group, ceiling, 1),
                     ('local-transfers:' + identity, local['transfers'], 1),
                     ('local-upstream:' + identity + ':' + group, limit, 1),
@@ -89,18 +90,18 @@ def live_policies(state, stamp):
 
 @dataclass(frozen=True)
 class ResourceCapacity:
-    limit: int
-    effective: int
+    limit: int | None
+    effective: int | None
     cooling: float
     recovering: float
 
 
 def resource_capacity(cap, state, stamp):
     """Recent participants share the minimum; cooldown wins over recovery."""
-    limit = min([cap, *(policy['limit'] for policy in live_policies(state, stamp).values())])
+    limit = minimum_limit(cap, *(policy['limit'] for policy in live_policies(state, stamp).values()))
     cooling = max(0, state.get('cooldown_until', 0) - stamp)
     recovering = max(0, state.get('recover_until', 0) - stamp)
-    effective = 0 if cooling else min(1, limit) if recovering else limit
+    effective = 0 if cooling else minimum_limit(1, limit) if recovering else limit
     return ResourceCapacity(limit, effective, cooling, recovering)
 
 
@@ -117,7 +118,7 @@ def pool_process_limits(config, capacity, memory_total, db_budget):
     for channel in channels:
         units = fragment_connection_budget(config, channel.connection_limit, capacity) if channel.adapter == 'yt_dlp' else 1
         group = channel.upstream_group
-        limit = min(capacity, channel.transfer_limit, caps['upstream:' + group],
+        limit = minimum_limit(capacity, channel.transfer_limit, caps['upstream:' + group],
                     int(config.get('download_connection_limit', 32)) // units)
         if 'connections:' + group in caps:
             limit = min(limit, caps['connections:' + group] // units)
@@ -127,7 +128,12 @@ def pool_process_limits(config, capacity, memory_total, db_budget):
     configured = max(1, min(MAX_TRANSFERS, int(config.get('youtube_cookie_pool_worker_limit', 20))))
     memory_cap = max(1, int((memory_total * .65 - 256 * 1024**2) / (160 * 1024**2)))
     workers = max(1, min(capacity, configured, transfer_capacity + preparation, memory_cap, db_budget['workers']))
+    bounds = {'accounts': capacity, 'configured': configured, 'channel_connections': transfer_capacity + preparation,
+              'memory': memory_cap, 'database': db_budget['workers']}
     return {'workers': workers, 'configured_worker_limit': configured,
+            'worker_bounds': bounds,
+            'worker_limit_reasons': [key for key, value in bounds.items() if value == workers
+                                     and not (key == 'database' and db_budget.get('target_supported'))],
             'preparation_workers': preparation, 'worker_transfer_capacity': transfer_capacity,
             'memory_worker_cap': memory_cap, 'db_worker_cap': db_budget['workers'],
             'db_connection_budget': db_budget['total'], 'db_main_connections': sum(db_budget['main']),

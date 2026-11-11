@@ -38,7 +38,7 @@ def pool_worker_limits(config, capacity, resources=None):
     """Size processes from static capacity; live permits still govern execution."""
     from webapp.db_pool_calculator import connection_budget
     resources = resources if resources is not None else resource_limits()
-    return pool_process_limits(config, capacity, resources['memory_total'], connection_budget())
+    return pool_process_limits(config, capacity, resources['memory_total'], connection_budget(config))
 
 
 def worker_should_retire(directory, slot):
@@ -139,15 +139,18 @@ def runtime_limits(config, directory):
                     result.update(saved, transfers=target, mode='cookie_pool')
                     result['workers'] = min(int(saved['workers']),
                         max(1, int(config.get('youtube_cookie_pool_worker_limit', 20))),
-                        connection_budget()['workers'])
+                        connection_budget(config)['workers'])
                     return result
         except (OSError, ValueError, KeyError, TypeError):
             pass
         result.update(pool_worker_limits(config, target))
         return result
     requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
+    from webapp.db_pool_calculator import connection_budget
+    budget = connection_budget(config)
     if not automatic(config):
-        result = {'transfers': requested, 'workers': requested,
+        result = {'transfers': requested, 'workers': min(requested, budget['workers']),
+                  'database_budget': budget,
                   'browsers': int(config.get('yt5s_browser_count', 2)), 'mode': 'manual'}
         try:
             saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
@@ -163,11 +166,11 @@ def runtime_limits(config, directory):
                 and 1 <= saved['transfers'] <= requested
                 and 1 <= saved['workers'] <= MAX_WORKERS
                 and 1 <= saved['browsers'] <= int(config.get('yt5s_browser_count', 2))):
-            return saved
+            return {**saved, 'workers': min(saved['workers'], budget['workers'])}
     except (OSError, ValueError, KeyError, TypeError):
         pass
     fallback = 2
-    return {'transfers': min(requested, fallback), 'workers': min(requested, fallback),
+    return {'transfers': min(requested, fallback), 'workers': min(requested, fallback, budget['workers']),
             'browsers': 1, 'mode': 'auto', 'reason': '等待资源采样'}
 
 
@@ -237,7 +240,8 @@ class ThroughputController:
         nominal_workers = max(1, int((resources['memory_total'] * .65 - 256 * MIB -
                                      (browsers * 384 * MIB if browser_methods else 0)) / (128 * MIB)))
         from webapp.db_pool_calculator import connection_budget
-        db_worker_cap = connection_budget()['workers']
+        db_budget = connection_budget(config)
+        db_worker_cap = db_budget['workers']
         nominal_workers = min(nominal_workers, db_worker_cap)
         ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
         transfers = (requested if pooled else
@@ -394,9 +398,11 @@ class ThroughputController:
         upstream_caps = {key.split(':', 1)[1]: cap for key, cap in group_caps(channels).items() if key.startswith('upstream:')}
         if 'youtube-origin' in group_active or 'youtube-origin' in group_ready:
             upstream_caps.setdefault('youtube-origin', 32 if config.get('scheduler_mode') == 'auto' else 8)
+        if not automatic(config):
+            transfers = requested
         groups = {}
         for group, cap in upstream_caps.items():
-            cap = min(cap, transfers)
+            cap = min(cap, transfers) if cap is not None else transfers
             initial_limit = min(2, cap)
             control = self.group_control.setdefault(group, {'limit': initial_limit, 'adjusted': tick, 'until': 0})
             limit = min(control['limit'], cap)
@@ -431,7 +437,7 @@ class ThroughputController:
                              'ready': group_ready.get(group, 0),
                              'failed': total['failed'], 'upstream_failed': total['upstream_failed'], 'succeeded': total['succeeded']}
         if not automatic(config):
-            transfers, workers, browsers = requested, requested, 1 if pooled else browser_requested
+            transfers, workers, browsers = requested, min(requested, db_worker_cap), 1 if pooled else browser_requested
             reason = cookie_capacity.get('reason', 'Cookie 池独立调度') if pooled else '使用手动并发'
             if pooled:
                 pool_limits = pool_worker_limits(config, requested, resources)
@@ -484,7 +490,8 @@ class ThroughputController:
                       'target_mbps': 0 if pooled else int(config.get('bandwidth_mbps', 0)),
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
                       'reason': reason, 'control_metric': 'media_received_bytes',
-                      'cookie_pool': cookie_capacity if pooled else None}
+                      'cookie_pool': cookie_capacity if pooled else None,
+                      'database_budget': db_budget}
         if pooled:
             self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
             self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,

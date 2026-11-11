@@ -90,6 +90,8 @@ def validate_settings(config, *, download_only=False):
         validate_oss(config)
     if config.get('throughput_mode', 'manual') not in ('manual', 'auto'):
         raise ValueError('吞吐调节请选择手动或自动。')
+    if config.get('db_budget_mode', 'auto') not in ('auto', 'manual'):
+        raise ValueError('数据库连接预算请选择自动核算或手动指定。')
     if config.get('download_method', 'yt_dlp') not in (*PROVIDERS, 'yt5s_fallback'):
         raise ValueError('请选择有效的下载方式。')
     download_methods(config)

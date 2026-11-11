@@ -12,6 +12,26 @@ from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_database_budget_roundtrip_rejects_impossible_save_atomically(self):
+        import yaml
+        response = self.client.put('/api/config', json={
+            'db_budget_mode': 'manual', 'db_connection_budget': 48,
+            'youtube_cookie_pool_worker_limit': 21}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        saved = self.client.get('/api/config').json
+        self.assertEqual(saved['database_budget']['mode'], 'manual')
+        self.assertEqual(saved['config']['db_connection_budget'], 48)
+        disk = yaml.safe_load(Path(saved['config_path']).read_text(encoding='utf-8'))
+        self.assertEqual(disk['db_budget_mode'], 'manual')
+        for values in ({'db_connection_budget': 8}, {'db_budget_mode': 'invalid'},
+                       {'db_connection_budget': True}, {'db_connection_budget': 10001}):
+            response = self.client.put('/api/config', json=values, headers=self.headers)
+            self.assertEqual(response.status_code, 400, response.json)
+            self.assertEqual(self.client.get('/api/config').json['config']['db_connection_budget'], 48)
+        response = self.client.put('/api/config', json={'db_budget_mode': 'auto'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.client.get('/api/config').json['database_budget']['mode'], 'auto')
+
     def test_task_rest_is_saved_as_local_instance_setting_and_reaches_next_claim(self):
         key = 'youtube_task_rest_interval'
         self.assertEqual(self.client.get('/api/config').json['config'][key], 0)

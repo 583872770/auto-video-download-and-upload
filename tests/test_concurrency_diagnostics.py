@@ -27,6 +27,20 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.show()['channels'][0]['connection_units'], 1)
         self.assertEqual(self.show()['effective_limit'], 8)
 
+    def test_unlimited_builtin_diagnostics_keep_actual_independent_gates(self):
+        self.config.update(builtin_transfer_limit=0, builtin_resolver_limit=0, scheduler_mode='auto')
+        view = self.show()
+        row = view['channels'][0]
+        self.assertIsNone(row['transfer_limit'])
+        self.assertIsNone(row['resolver_limit'])
+        self.assertIsNone(row['shared_limit'])
+        self.assertEqual(view['effective_limit'], 16)
+        self.assertEqual(view['transfer_allocation']['configured'], 16)
+        self.assertEqual(self.show({'upstream:youtube-origin': {'recover_until': self.stamp + 90}})['effective_limit'], 1)
+        self.assertEqual(self.show({'upstream:youtube-origin': {'cooldown_until': self.stamp + 30}})['effective_limit'], 0)
+        self.assertEqual(self.show({'upstream:youtube-origin': {'policies': {
+            'peer': {'limit': 3, 'time': self.stamp}}}})['effective_limit'], 3)
+
     def test_cooldown_and_recovery_and_expiration(self):
         state = {'upstream:youtube-origin': {'cooldown_until': self.stamp + 30,
                  'recover_until': self.stamp + 90, 'cooldown_status': 429,

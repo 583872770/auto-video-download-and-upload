@@ -162,11 +162,16 @@ class ChannelScheduler:
                 return None, state['cooldown_until'] - stamp
             # Take the minimum of live instance policies for this shared group.
             policies = live_policies(state, stamp)
-            policies[self.instance] = {'limit': cap, 'time': stamp}
+            if cap is None:
+                # Unlimited participants publish no numeric ceiling. This also
+                # keeps stored policies readable by older finite-only instances.
+                policies.pop(self.instance, None)
+            else:
+                policies[self.instance] = {'limit': cap, 'time': stamp}
             state['policies'] = policies
             capacity = resource_capacity(cap, state, stamp)
             self._save(db, scope, state)
-            if self._active(db, scope, stamp) + units > capacity.effective:
+            if capacity.effective is not None and self._active(db, scope, stamp) + units > capacity.effective:
                 self.blocked_resource = scope.split(':', 1)[0]
                 return None, 2
         token = uuid.uuid4().hex
@@ -314,7 +319,9 @@ class ChannelScheduler:
                     continue
                 active = load.get('route:' + channel.id, 0)
                 backend_active = load.get('backend-route:' + backend_key(channel), 0)
-                if active >= channel.task_limit or backend_active >= self.backend_caps[backend_key(channel)][0]:
+                backend_limit = self.backend_caps[backend_key(channel)][0]
+                if ((channel.task_limit is not None and active >= channel.task_limit)
+                        or (backend_limit is not None and backend_active >= backend_limit)):
                     continue
                 known = state.get('rate', 0) > 0 or state.get('successes', 0) > 0
                 if not known:

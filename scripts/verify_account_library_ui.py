@@ -1,5 +1,6 @@
 """Exercise the production account workspace against isolated dummy data."""
 import base64
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,20 @@ def main():
         root=Path(temporary);config=root/'config.yaml'
         config.write_text('path: videos\nproxy_mode: direct\n',encoding='utf-8')
         app=create_app(config,root/'state',start_worker=False)
+        login_ready,login_complete=threading.Event(),threading.Event()
+        login_options=[]
+        async def fixture_login(config,output,*,on_status,cancelled,**options):
+            from scripts.login_youtube import LoginCancelled
+            login_options.append(options)
+            on_status('waiting','Fixture: finish verification in browser')
+            login_ready.set()
+            while not login_complete.is_set():
+                if cancelled.is_set():raise LoginCancelled('Fixture cancelled')
+                await asyncio.sleep(0.01)
+            output.write_bytes(b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tlogin-ui-dummy-cookie\n')
+            return {'account_name':options['expected_email']}
+        login_patch=patch('webapp.youtube_login.login',fixture_login)
+        login_patch.start()
         server=make_server('127.0.0.1',0,app,threaded=True)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         errors=[]
@@ -106,6 +121,27 @@ def main():
                 page.locator('#account-detail-dialog [data-close]').click()
                 page.get_by_role('button',name='确认',exact=True).last.click()
                 expect(page.locator('#account-detail-dialog')).not_to_be_visible()
+                # Account login has its own target and keeps saved passwords off the UI.
+                row=page.locator('#account-rows tr').filter(has_text='demo-one@example.com')
+                expect(row.locator('[data-account-login]')).to_be_enabled()
+                row.locator('[data-account-login]').click()
+                expect(page.locator('#account-login-dialog')).to_be_visible()
+                expect(page.locator('#account-login-automatic')).to_be_checked()
+                expect(page.locator('#account-login-instance')).to_be_disabled()
+                expect(page.locator('#account-login-start')).to_be_enabled()
+                page.locator('#account-login-start').click()
+                assert login_ready.wait(5)
+                expect(page.locator('#account-login-cancel')).to_be_visible()
+                assert login_options[0]['credentials']['password']=='dummy-!&#-password'
+                assert 'dummy-!&#-password' not in page.locator('#account-login-dialog').inner_text()
+                login_complete.set()
+                expect(page.locator('#account-login-status')).to_contain_text('已新增 Cookie 并关联此账号',timeout=10000)
+                page.screenshot(path=str(output/'account-login.png'),full_page=True)
+                page.locator('#account-login-dialog [data-close]').click()
+                expect(page.locator('#account-login-dialog')).not_to_be_visible()
+                linked=page.request.get(f'http://127.0.0.1:{server.server_port}/api/account-library/youtube?q=demo-one').json()['items'][0]
+                assert linked['cookie_count']==2
+                assert all(not c['pooled'] for c in linked['cookies'])
                 page.set_viewport_size({'width':390,'height':844})
                 page.screenshot(path=str(output/'accounts-mobile.png'),full_page=True,animations='disabled')
                 assert page.locator('#sidebar').bounding_box()['x'] + page.locator('#sidebar').bounding_box()['width'] <= 1
@@ -115,6 +151,9 @@ def main():
                 assert not errors, errors
                 browser.close()
         finally:
+            app.extensions['youtube_login'].cancel()
+            if app.extensions['youtube_login'].thread:app.extensions['youtube_login'].thread.join(5)
+            login_patch.stop()
             server.shutdown();thread.join(timeout=5)
     print(json.dumps({'passed':True,'screenshots':str(output),'page_errors':errors}))
 

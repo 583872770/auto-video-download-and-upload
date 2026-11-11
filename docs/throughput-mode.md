@@ -29,7 +29,7 @@
 
 工作进程由已完成数据库初始化的调度器签发与当前数据库及数据库源码匹配的启动标记，避免每次启动都竞争结构升级锁。普通 Web 启动仍执行原有迁移检查；标记不匹配时照常检查。
 
-连接池按进程计算。主服务 `VIDEO_DB_POOL_SIZE=5`、`VIDEO_DB_MAX_OVERFLOW=2`，下载子进程 `VIDEO_WORKER_DB_POOL_SIZE=2`、`VIDEO_WORKER_DB_MAX_OVERFLOW=0`。自动模式和 Cookie 池模式使用实例总预算 `VIDEO_DB_CONNECTION_BUDGET=48`：先扣除主服务 7 个及两个辅助进程默认共 4 个连接，再按每下载进程 2 个连接计算，默认最多 18 个下载进程；还同时受 `VIDEO_WORKER_DB_CONNECTION_BUDGET=48` 的下载进程预算限制。显式主服务池配置仍然生效，子进程不会再用自身池配置覆盖主服务预算参数。实例预算不会提高 MySQL 的连接上限；其他实例和应用仍需在集群层面分配预算。手动模式需自行核算总预算，不能把数据库池大小直接当作可同时下载的视频数。
+连接池按进程计算。主服务 `VIDEO_DB_POOL_SIZE=5`、`VIDEO_DB_MAX_OVERFLOW=2`，下载子进程 `VIDEO_WORKER_DB_POOL_SIZE=2`、`VIDEO_WORKER_DB_MAX_OVERFLOW=0`。页面默认自动按目标进程数计算连接预算，也可手动指定：先预留主服务 7 个及辅助进程 4 个，再按每下载进程 2 个连接核算。目标 21 个进程需要 53 个连接；手动预算 48 则仅支持 18 个进程。显式部署的 `VIDEO_DB_CONNECTION_BUDGET` 和 `VIDEO_WORKER_DB_CONNECTION_BUDGET` 仍可施加更低的硬上限，页面会显示。子进程不会覆盖主服务池配置；页面修改预算不改变各进程池的大小。手动、自动和 Cookie 池模式均遵守有效预算，但它不提高 MySQL 上限，也不自动分配集群额度。详见[数据库连接预算](database-connection-budget.md)。
 
 Cookie 池模式额外支持 `youtube_cookie_pool_worker_limit`（默认 20）和 `youtube_cookie_pool_preparation_workers`（默认 4），可在页面为当前实例调整。实际进程同时受会话容量、有效传输容量、内存和数据库预算限制；配置 20 不代表始终启动 20 个进程。资源压力下逐步减少进程，已有任务完成后再退出，健康后每分钟最多恢复一个。池模式的账号启动间隔、冷却、账号归属、任务租约和共享上游准入继续生效。
 

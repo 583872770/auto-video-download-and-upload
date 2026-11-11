@@ -24,6 +24,8 @@
     "fragment_concurrency": 4,
     "throughput_mode": "manual",
     "bandwidth_mbps": 0,
+    "db_budget_mode": "auto",
+    "db_connection_budget": 64,
     "scheduler_mode": "ordered_fallback",
     "download_channels": [],
     "auto_channel_attempts": 3,
@@ -83,6 +85,8 @@
     "bergung_timeout",
     "builtin_resolver_limit",
     "builtin_transfer_limit",
+    "db_budget_mode",
+    "db_connection_budget",
     "dir",
     "disk_browser_budget_mb",
     "disk_budget_gb",
@@ -267,7 +271,7 @@
       64
     ],
     "builtin_resolver_limit": [
-      1,
+      0,
       16
     ],
     "youtube_start_interval": [
@@ -305,6 +309,10 @@
     "youtube_daily_start_limit": [
       1,
       5000
+    ],
+    "db_connection_budget": [
+      8,
+      10000
     ]
   },
   "policy_fields": [
@@ -332,6 +340,8 @@
   "local_fields": [
     "bandwidth_mbps",
     "browser_executable",
+    "db_budget_mode",
+    "db_connection_budget",
     "dir",
     "disk_browser_budget_mb",
     "disk_budget_gb",
@@ -423,6 +433,8 @@
     "bandwidth_mbps",
     "builtin_resolver_limit",
     "builtin_transfer_limit",
+    "db_budget_mode",
+    "db_connection_budget",
     "disk_browser_budget_mb",
     "disk_budget_gb",
     "disk_cache_budget_mb",
@@ -458,6 +470,8 @@
   "policy_hash_fields": [
     "builtin_resolver_limit",
     "builtin_transfer_limit",
+    "db_budget_mode",
+    "db_connection_budget",
     "download_channels",
     "download_connection_limit",
     "download_method",

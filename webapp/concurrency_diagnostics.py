@@ -6,9 +6,9 @@ from collections import Counter
 
 from sqlalchemy import case, func, select
 
-from webapp.channels import backend_key, group_caps, registry
+from webapp.channels import backend_key, group_caps, minimum_limit, registry
 from webapp.database import download_permits, download_resources, settings, tasks
-from webapp.concurrency_policy import (automatic, backend_limits, cookie_pool_start_interval, fragment_connection_budget,
+from webapp.concurrency_policy import (MAX_TRANSFERS, automatic, backend_limits, cookie_pool_start_interval, fragment_connection_budget,
                                       resolver_requirements, resource_capacity, transfer_requirements)
 from webapp.throughput import policy_key
 from webapp.decision_diagnostics import public_failure
@@ -62,7 +62,11 @@ def read_context(db, configurations, stamp):
 def transfer_allocation(config, identity, channels, caps, context, effective, current_tasks):
     """Describe actual permits, independently of the last reported task stage."""
     groups = {channel.upstream_group for channel in channels}
-    configured = sum(caps['upstream:' + group] for group in groups)
+    instance_cap = (min(MAX_TRANSFERS, len(config['youtube_cookie_pool']) * int(config.get(
+                        'youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit'])))
+                    if config.get('youtube_cookie_pool') else int(config.get('worker_count', 1)))
+    configured = (instance_cap if any(caps['upstream:' + group] is None for group in groups)
+                  else sum(caps['upstream:' + group] for group in groups))
     if not config.get('youtube_cookie_pool'):
         configured = min(configured, int(config.get('worker_count', 1)))
     holders = context[3].get('local-transfers:' + identity, {}) if len(context) > 3 else {}
@@ -247,13 +251,13 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                             if channel.adapter == 'yt_dlp' else None)
         requirements = transfer_requirements(config, identity, channel, caps, local, connection_units or 1)
         by_scope = {scope.split(':', 1)[0]: resource(scope,
-                    min(cap, transfers) if scope.startswith('local-upstream:') else cap)
+                    minimum_limit(cap, transfers) if scope.startswith('local-upstream:') else cap)
                     for scope, cap, _ in requirements}
         resources = [resource('channel:' + channel.id, channel.task_limit if config.get('scheduler_mode') == 'auto' else 4096),
                      by_scope['upstream'], by_scope['quota'], by_scope['local-upstream'], by_scope['local-transfers']]
         if config.get('scheduler_mode') == 'auto':
             resources.append(resource('backend-quota:' + backend_key(channel), backend_caps[backend_key(channel)][2]))
-        effective = min(transfers, *(r['effective'] for r in resources))
+        effective = minimum_limit(transfers, *(r['effective'] for r in resources))
         connection = by_scope.get('connections')
         local_connection = by_scope['local-connections']
         if connection_units:
@@ -307,6 +311,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         upper = min(upper, cookie_pool['capacity'])
         if fresh and rate.get('workers'):
             upper = min(upper, int(rate['workers']))
+    elif fresh and rate.get('database_budget'):
+        upper = min(upper, rate['database_budget']['workers'])
     if disk_fresh and disk.get('blocked'):
         upper = 0
     if not online:
@@ -330,7 +336,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                       if worker_status and worker_status['resource_limited'] else
                       f"本机任务进程上限 {int(rate['workers'])} 限制当前额度，仍受配置、内存和数据库预算约束")
     elif upper < transfers:
-        bottleneck = '渠道或连接额度低于实例设置'
+        bottleneck = ('数据库连接预算限制当前进程容量' if fresh and rate.get('database_budget')
+                      and upper == rate['database_budget']['workers'] else '渠道或连接额度低于实例设置')
     elif auto and transfers < requested:
         bottleneck = (rate or {}).get('reason') or '自动调节正在观察下载吞吐与服务器资源'
     else:
@@ -357,6 +364,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'transfer_limit': transfers, 'effective_limit': upper, 'global_limit': global_limit,
             'transfer_allocation': allocation,
             'worker_control': worker_status,
+            'database_budget': rate.get('database_budget') if fresh else None,
             'cookie_allocation': cookie_allocation(config, identity, cookie_pool, allocation, context, stamp,
                 current_tasks, cookie_profiles, paused=paused, online=online,
                 disk_blocked=bool(disk_fresh and disk.get('blocked')),

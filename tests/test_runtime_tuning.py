@@ -98,7 +98,8 @@ class WorkerBudgetTests(unittest.TestCase):
                               cpu_percent=50, io_pressure=0, rx=0)
 
     def test_pool_caps_count_main_auxiliary_and_each_worker_pool(self):
-        state = pool_worker_limits(self.config, 36, self.resources)
+        with patch.dict(os.environ, {'VIDEO_DB_CONNECTION_BUDGET': '48'}):
+            state = pool_worker_limits(self.config, 36, self.resources)
         self.assertEqual(state['worker_transfer_capacity'], 18)
         self.assertEqual(state['configured_worker_limit'], 20)
         self.assertEqual(state['workers'], 18)  # 48 - 7 main - 4 auxiliary, at 2 each.
@@ -130,6 +131,13 @@ class WorkerBudgetTests(unittest.TestCase):
         self.assertEqual((separate['worker_transfer_capacity'], separate['workers']), (5, 8))
         config['youtube_cookie_pool_preparation_workers'] = 0
         self.assertEqual(pool_worker_limits(config, 8, self.resources)['workers'], 5)
+
+    def test_unlimited_builtin_pool_keeps_connection_and_worker_budgets(self):
+        config = dict(self.config, builtin_transfer_limit=0, builtin_resolver_limit=0,
+                      download_connection_limit=34)
+        result = pool_worker_limits(config, 40, self.resources)
+        self.assertEqual(result['worker_transfer_capacity'], 34)
+        self.assertEqual(result['workers'], 20)
 
     def test_low_memory_and_saved_limits_cannot_restore_session_sized_workers(self):
         low = {**self.resources, 'memory_total': 1024*MIB}

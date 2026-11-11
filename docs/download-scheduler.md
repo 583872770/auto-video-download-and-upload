@@ -39,7 +39,7 @@ HTTP 429 与带 Retry-After 的 503 在相应解析组或媒体上游及配额�
 
 主服务连接池使用 `VIDEO_DB_POOL_SIZE`、`VIDEO_DB_MAX_OVERFLOW`，默认 5+2，并保留显式配置。子工作进程使用 `VIDEO_WORKER_DB_POOL_SIZE`、`VIDEO_WORKER_DB_MAX_OVERFLOW`，默认 2+0，分别供业务写入及心跳使用。这些是每进程池容量，不是视频并发上限。
 
-自动模式和 Cookie 池模式同时受实例总连接预算 `VIDEO_DB_CONNECTION_BUDGET`（默认 48）及下载进程连接预算 `VIDEO_WORKER_DB_CONNECTION_BUDGET`（默认 48）约束。计算下载进程额度前，先从实例总预算扣除主服务池和两个辅助进程的连接预留；辅助预留可通过 `VIDEO_DB_AUXILIARY_CONNECTIONS` 调整，不能低于两个子进程池上限。默认额度为 `floor((48-7-4)/2)=18` 个下载进程。手动模式仍保留用户指定进程数，需自行核算总预算。实例预算不会修改 MySQL 的 `max_connections`，也不代表整个集群的预算。
+页面通过 `db_budget_mode`（默认 auto）选择自动核算或手动指定，手动值为 `db_connection_budget`（默认输入 64）。自动按进程目标预留连接，普通自动调节模式包含有界准备进程；手动、自适应和 Cookie 池调度都遵守有效预算。计算进程额度时先扣除主服务池和两个辅助进程的预留，再除以每下载进程的池上限。显式设置的 `VIDEO_DB_CONNECTION_BUDGET` 和 `VIDEO_WORKER_DB_CONNECTION_BUDGET` 继续作为部署硬上限；未设置时不再隐含套用 48。辅助预留仍由 `VIDEO_DB_AUXILIARY_CONNECTIONS` 控制。预算不会修改 MySQL 的 `max_connections`，也不代表整个集群的预算。详见[页面配置及迁移语义](database-connection-budget.md)。
 
 Cookie 池会话容量不再直接等同常驻进程数。池模式还取账号会话容量、渠道/连接允许的传输容量加有限准备名额、配置进程上限、内存与数据库预算的较小值。进程上限默认 20、额外准备名额默认 4，可在当前实例页面修改；实际进程可能少于配置值。下调额度后，已有任务先完成，再退出多余进程。CPU、内存或 I/O 压力持续升高时继续收敛进程，健康后缓慢恢复。
 

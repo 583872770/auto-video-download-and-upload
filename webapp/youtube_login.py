@@ -10,6 +10,7 @@ import unicodedata
 import uuid
 
 from playwright.async_api import Error as BrowserError
+from werkzeug.exceptions import Conflict, NotFound
 
 from scripts.login_youtube import login, LoginCancelled
 from web_worker import worker_lock
@@ -66,6 +67,11 @@ class YouTubeLogin:
         return {'state': 'idle', 'message': '尚未启动独立浏览器登录。'}
 
     def _write(self, state):
+        events = state.setdefault('events', [])
+        event = {'state': state['state'], 'message': state.get('message', '')}
+        if not events or any(events[-1].get(key) != value for key, value in event.items()):
+            events.append({**event, 'at': now()})
+            del events[:-24]
         temporary = self.directory / (uuid.uuid4().hex + '.tmp')
         try:
             temporary.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
@@ -84,7 +90,7 @@ class YouTubeLogin:
                         self._write(state)
             return {**state, 'active': state['state'] in ACTIVE}
 
-    def start(self, config, connection):
+    def start(self, config, connection, *, account=None, credentials=None):
         with self.lock:
             guard = worker_lock(self.directory / 'session.lock')
             if not guard.__enter__():
@@ -93,8 +99,10 @@ class YouTubeLogin:
             try:
                 state = {'id': uuid.uuid4().hex, 'state': 'starting', 'message': '正在启动独立浏览器…',
                          'connection': connection, 'started_at': now(), 'finished_at': None}
+                if account:
+                    state['account'] = account
                 self._write(state)
-                self.thread = threading.Thread(target=self._run, args=(config, state, guard),
+                self.thread = threading.Thread(target=self._run, args=(config, state, guard, credentials),
                                                name='youtube-login', daemon=True)
                 self.thread.start()
             except BaseException:
@@ -112,7 +120,7 @@ class YouTubeLogin:
                 self._write(state)
             return self.status()
 
-    def _run(self, config, state, guard):
+    def _run(self, config, state, guard, credentials=None):
         cancel_file = self.directory / (state['id'] + '.cancel')
 
         class Cancellation:
@@ -128,14 +136,19 @@ class YouTubeLogin:
         try:
             with tempfile.TemporaryDirectory(prefix='cookies-', dir=self.directory) as staging:
                 output = Path(staging) / 'youtube.txt'
-                result = asyncio.run(login(config, output, on_status=report, cancelled=Cancellation()))
+                options = {}
+                if state.get('account'):
+                    options.update(credentials=credentials, expected_email=state['account']['email'])
+                result = asyncio.run(login(config, output, on_status=report, cancelled=Cancellation(), **options))
+                credentials = None
                 with self.lock:
                     if cancel_file.exists():
                         raise LoginCancelled('登录已取消，已有 Cookie 保持不变。')
                     state.update(state='committing', message='正在保存登录结果…')
                     self._write(state)
                 account_name = result.get('account_name') if isinstance(result, dict) else None
-                message = self.install(output.read_bytes(), account_name=account_name)
+                options = {'account': state['account']} if state.get('account') else {}
+                message = self.install(output.read_bytes(), account_name=account_name, **options)
                 state.update(state='succeeded', message=message or 'YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
         except LoginCancelled as error:
             state.update(state='cancelled', message=str(error))
@@ -145,9 +158,12 @@ class YouTubeLogin:
             state.update(state='failed', message=message)
         except (ValueError, RuntimeError) as error:
             state.update(state='failed', message=str(error))
+        except (Conflict, NotFound) as error:
+            state.update(state='failed', message=error.description)
         except Exception:
             state.update(state='failed', message='登录结果保存失败，请检查配置文件、数据库与 Cookie 目录后重试。')
         finally:
+            credentials = None
             with self.lock:
                 state['finished_at'] = now()
                 try:
