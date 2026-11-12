@@ -291,7 +291,7 @@
       600
     ],
     "youtube_cookie_pool_worker_limit": [
-      1,
+      0,
       64
     ],
     "youtube_cookie_pool_preparation_workers": [
@@ -303,11 +303,11 @@
       3600
     ],
     "youtube_hourly_start_limit": [
-      1,
+      0,
       5000
     ],
     "youtube_daily_start_limit": [
-      1,
+      0,
       5000
     ],
     "db_connection_budget": [
@@ -421,7 +421,7 @@
       600
     ],
     "youtube_cookie_pool_worker_limit": [
-      1,
+      0,
       64
     ],
     "youtube_cookie_pool_preparation_workers": [

@@ -1,53 +1,21 @@
-<section id="youtube-cookie-section" class="cookie-library" aria-labelledby="youtube-cookies-title">
-  <div class="cookie-library-head">
-    <div>
-      <span class="section-kicker">YOUTUBE / COOKIES</span>
-      <h3 id="youtube-cookies-title">Cookie 配置库</h3>
-      <p class="panel-subtitle">Cookie 绑定当前实例，同一核心登录凭据不能在其他实例重复上传或使用。删除或实例离线不会解除绑定；Cookie 内容不会在页面回显。</p>
-    </div>
-    <span class="count-pill">按实例隔离</span>
+<section id="youtube-cookie-section" class="panel account-pool-summary" aria-labelledby="youtube-cookies-title">
+  <div class="cookie-card-heading">
+    <div><h3 id="youtube-cookies-title">当前实例的账号池</h3><p id="account-pool-member-target" class="micro-copy"></p></div>
+    <label class="cookie-pool-toggle"><input id="youtube-cookie-pool-enabled" type="checkbox">启用账号池</label>
+    <button id="account-pool-members-save" class="button button-dark" type="button">保存账号池</button>
   </div>
-  <div class="cookie-pool-card">
-    <div class="cookie-card-heading">
-      <div><h4>Cookie 账号池</h4><p class="micro-copy">轮换多个已检测通过的 Cookie，降低单一会话的请求压力。</p></div>
-      <label class="cookie-pool-toggle"><input id="youtube-cookie-pool-enabled" type="checkbox">启用账号池</label>
-    </div>
-    <div class="cookie-pool-actions">
-      <span id="youtube-cookie-pool-status" class="micro-copy" role="status">选择至少 2 份 Cookie，点击页面底部“保存账号池与节奏”后生效。</span>
-    </div>
-    <div class="cookie-pool-explanation"><strong>一个账号限流，只暂停这个账号</strong><p>明确账号限流：休息至少 1 小时，其他健康账号继续；全部账号冷却时队列自动等待，无需手动恢复。HTTP 429 单独按配置冷却，默认 300 秒；源站要求更长则延长。</p><p>冷却结束自动低频恢复：先单任务、至少 300 秒间隔；从首个获准启动的恢复任务开始观察，成功至少 10 次且满 1 小时后，在成功结算时恢复设置的会话并发。当次不缩短间隔，后续稳定成功才逐步下调，仍受配置和保护下限约束。再次发生影响账号节奏的故障会重置观察并按策略退避。可在下载工作台点击“账号低频恢复”查看条件、进度与间隔调整记录。</p><p>同账号重复导出共享限制；冷却中不发下载、字幕或登录检测请求。登录有效不代表没有限流。登录失效、验证码和旧版本人工拦截仍需按提示处理。</p></div>
-    <p class="micro-copy">账号池开关、成员勾选和每会话任务上限，统一点击页面底部“保存账号池与节奏”。可在下载中调整；新配置从后续领取或重试的视频生效，已分配 Cookie 的任务继续使用原会话。</p>
-    <div id="youtube-cookie-pool-live" aria-live="polite"></div>
-  </div>
-  <div class="cookie-list-card">
-    <div class="cookie-list-heading"><h4>已保存的 Cookie</h4><span class="micro-copy">可逐项检测登录、导出、切换当前使用项</span></div>
-    <div id="youtube-cookie-list" role="status" aria-live="polite">正在读取已保存 Cookie…</div>
-    <p class="micro-copy cookie-list-note">检测使用当前实例的代理 / IPv6 出口，不切换账号、不恢复任务。出口变化或出现验证码、限流、Video unavailable 后，请重新检测并降低并发。</p>
-    <details class="cookie-export-guide">
-      <summary>官方推荐的 YouTube Cookie 导出方式</summary>
-      <ol>
-        <li>打开新的无痕 / 私密窗口，只保留一个 YouTube 标签页并完成登录。</li>
-        <li>在同一标签页打开 <code>https://www.youtube.com/robots.txt</code>。</li>
-        <li>导出 <code>youtube.com</code> 的 Netscape Cookie 文件并上传。</li>
-        <li>导出后立即关闭这个无痕窗口，不要再次打开这段会话；关闭窗口不等于退出账号。</li>
-      </ol>
-      <p>不要用 <code>--cookies COOKIEFILE --cookies-from-browser BROWSER</code> 导出这段无痕会话。官方说明该方式会读取普通浏览器 Cookie，拿不到无痕 YouTube 会话。</p>
-    </details>
-  </div>
-  <details><summary>上传未关联资料的历史 Cookie（当前实例）</summary><div id="youtube-cookie-form" class="cookie-upload-card">
-    <div class="cookie-card-heading"><div><h4>新增 Cookie</h4><p class="micro-copy">导出 YouTube 的 Netscape Cookie 文件后上传；名称留空时自动使用文件名。</p></div></div>
-    <div class="cookie-upload-fields">
-      <label>名称 / 账号备注<input data-cookie-name maxlength="80" placeholder="选填，例如：主账号" autocomplete="off"></label>
-      <label class="file-drop"><svg><use href="#i-upload"/></svg><strong>选择 Cookie 文件</strong><span>Netscape 格式 · .txt · 最大 1 MB</span><input data-cookie-file type="file" accept=".txt,text/plain"></label>
-    </div>
-    <p id="youtube-cookie-error" class="task-error" role="alert" hidden></p>
-    <div class="cookie-upload-footer"><span class="micro-copy">上传后首份会自动启用；已有当前 Cookie 时不会覆盖。</span><button id="youtube-cookie-submit" class="button button-dark" type="button"><svg><use href="#i-upload"/></svg>上传并保存</button></div>
-  </div>
+  <p id="youtube-cookie-pool-status" class="micro-copy" role="status"></p>
+  <div id="youtube-cookie-pool-live" aria-live="polite"></div>
+  <button id="youtube-cookie-pool-recover" type="button" class="button button-white" hidden>检查全部账号并解除拦截</button>
+  <details class="account-help">
+    <summary>账号池规则与登录工具</summary>
+    <p class="micro-copy">在下方清单勾选当前实例的 Cookie，再点击“保存账号池”。账号池至少选择 2 份 Cookie。同账号的不同 Cookie 共享并发、间隔和冷却；仅修改成员不会清空历史记录。冷却和低频恢复状态可在账号详情的“调度与记录”中查看。</p>
+    <p class="micro-copy">Cookie 属于绑定实例，不会因删除资料或实例离线而释放归属。限流只暂停受影响的账号，其他健康账号继续调度。登录有效不代表没有限流；冷却中不发登录检测请求。</p>
+    <p id="youtube-auth-status" class="auth-status-message" role="status">正在读取当前实例的登录状态…</p>
+    <span data-youtube-status class="auth-status-chip"></span><p class="micro-copy" data-youtube-login-summary hidden role="status"></p>
+    <button id="youtube-auth-check" type="button" class="button button-white">检测当前 Cookie</button>
+    <button class="button button-white" type="button" data-open="youtube-login-dialog">浏览器登录</button>
+    <p class="micro-copy">这两个登录工具针对当前实例选用的单份 Cookie。逐账号操作请使用下方清单中的“登录”或“检测登录”。</p>
+    <details class="cookie-export-guide"><summary>YouTube Cookie 导出方式</summary><ol><li>打开新的无痕窗口，登录 YouTube。</li><li>在同一标签页打开 <code>https://www.youtube.com/robots.txt</code>。</li><li>导出 youtube.com 的 Netscape Cookie 文件并上传。</li><li>导出后关闭这个无痕窗口。</li></ol></details>
   </details>
-  <dialog id="youtube-cookie-timeline-dialog" class="cookie-timeline-dialog" aria-labelledby="youtube-cookie-timeline-title">
-    <div class="dialog-heading"><div><span class="section-kicker">YOUTUBE / COOKIE HISTORY</span><h2 id="youtube-cookie-timeline-title">Cookie 事件时间线</h2></div><button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
-    <p id="youtube-cookie-timeline-summary" class="micro-copy"></p>
-    <div class="cookie-timeline-filters"><label>时间范围<select id="youtube-cookie-timeline-range"><option value="86400">最近 24 小时</option><option value="604800" selected>最近 7 天</option><option value="2592000">最近 30 天</option><option value="0">全部</option></select></label><label class="timeline-check"><input id="youtube-cookie-timeline-changes" type="checkbox">只看间隔变化</label></div>
-    <div id="youtube-cookie-timeline-list" class="cookie-timeline-list" aria-live="polite">正在读取记录…</div>
-  </dialog>
 </section>

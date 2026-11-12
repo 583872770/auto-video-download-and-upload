@@ -1,18 +1,27 @@
 'use strict';
 
+for (const name of ['youtube_hourly_start_limit', 'youtube_daily_start_limit']) {
+  for (const input of document.querySelectorAll(`input[name="${name}"]`)) {
+    const caption = input.closest('label')?.firstChild;
+    if (caption?.nodeType === Node.TEXT_NODE && !caption.textContent.includes('0 表示不限制')) {
+      caption.textContent = `${caption.textContent.trim()}（0 表示不限制）`;
+    }
+  }
+}
+
 // Global account views never inherit the workbench's selected executor.
 const accountApi = '/api/account-library/youtube';
 const accountLoginLabels = {unlinked:'未关联 Cookie',unchecked:'待检测',valid:'最近验证通过',expired:'检测已过期',not_logged_in:'需要重新登录',invalid:'Cookie 无效 / 过期',verification_required:'需要网页验证',network_error:'暂时无法确认（网络）',rate_limited:'暂时无法确认（限流）',checking:'检测进行中',unconfirmed:'暂时无法确认',missing:'凭据缺失'};
 const accountDownloadLabels = {inactive:'未参与下载',ready:'正常',cooldown:'账号冷却中',recovery:'低频恢复',manual:'需人工处理',unavailable:'Cookie 不可用',unknown:'状态待更新'};
-let accountTab = 'library', accountPage = 1, credentialPage = 1, accountTicket = 0, accountDetailTicket = 0;
-let accountData = null, credentialData = null, accountNodes = [], accountDetail = null, accountDetailCookie = null;
-let accountPoolBaseline = {}, accountPoolInstance = '', accountPreview = null;
+let accountTab = 'library', accountPage = 1, accountTicket = 0, accountDetailTicket = 0;
+let accountData = null, accountNodes = [], accountDetail = null, accountDetailCookie = null;
+let accountPoolBaseline = {}, accountPoolInstance = '', accountPreview = null, accountPoolSaving = false;
 let accountDetailDirty = false, accountImportDirty = false, accountDetailBusy = false;
 let accountDialogEpoch = 0, accountSecretEpoch = 0;
 let accountPreviewEpoch = 0, accountImportBusy = false, accountUploadBusy = false;
 let accountLoginItem = null, accountLoginStatus = null, accountLoginEpoch = 0, accountLoginBusy = false, accountLoginPolling = false;
 const accountAdmin = () => document.body.dataset.consoleRole === 'admin';
-function accountHasDraft() { return accountDetailDirty || accountImportDirty || uploadDirty || accountDetailBusy || accountImportBusy || accountUploadBusy; }
+function accountHasDraft() { return accountDetailDirty || accountImportDirty || uploadDirty || accountDetailBusy || accountImportBusy || accountUploadBusy || accountPoolSaving; }
 const accountTime = stamp => stamp ? new Date(stamp * 1000).toLocaleString('zh-CN', {hour12:false}) : '尚无记录';
 const accountName = id => accountNodes.find(n => n.id === id)?.name || instanceName(id);
 function accountOptions(selected = '', unbound = true) {
@@ -20,7 +29,7 @@ function accountOptions(selected = '', unbound = true) {
 }
 function updateAccountNodes(nodes) {
   accountNodes = nodes;
-  for (const id of ['account-instance','credential-instance']) {
+  for (const id of ['account-instance']) {
     const input = document.getElementById(id), value = input.value;
     input.innerHTML = '<option value="">全部实例</option><option value="unbound">未绑定</option>' + accountOptions('',false);
     input.value = value;
@@ -30,43 +39,65 @@ function accountError(id, error) {
   const target = document.getElementById(id);
   target.hidden = !error; target.textContent = error?.message || error || '';
 }
+function accountListError(error) { document.getElementById('account-list-error').textContent = error?.message || ''; }
+function accountSelectedInstance() { return state.instanceId || accountData?.local_instance_id || (accountNodes.length===1 ? accountNodes[0].id : ''); }
 function renderAccountScope() {
-  const pool = accountTab === 'pool';
-  document.getElementById('account-scope').textContent = pool ? `正在配置：${instanceName(state.instanceId)}` : '全局账号资料 · 全部实例';
-  document.getElementById('account-pool-target').textContent = `正在配置：${instanceName(state.instanceId)}。保存仅影响此实例，其他实例的账号池和节奏独立。`;
+  const name = fleetEnabled ? instanceName(state.instanceId) : '本机实例';
+  document.getElementById('account-scope').textContent = accountTab === 'pool' ? `节奏设置：${name}` : '账号清单 · 全部实例';
+  document.getElementById('account-pool-target').textContent = `正在配置：${name}。保存仅影响此实例。`;
+  document.getElementById('account-pool-member-target').textContent = `正在配置：${name}。其他实例的成员请先切换到所属实例。`;
   document.getElementById('account-pool-form').inert = fleetEnabled && !state.instanceReady;
+  document.getElementById('youtube-cookie-section').inert = fleetEnabled && !state.instanceReady;
+  document.getElementById('youtube-cookie-pool-enabled').disabled = !accountAdmin();
+  document.getElementById('account-pool-members-save').disabled = !accountAdmin();
 }
 function selectAccountTab(tab) {
-  if (!['library','cookies','pool'].includes(tab)) return;
+  if (tab === 'cookies') tab = 'library';
+  if (!['library','pool'].includes(tab)) return;
   accountTab = tab;
-  for (const node of document.querySelectorAll('[data-account-tab]')) { const active = node.dataset.accountTab === tab; node.setAttribute('aria-selected',String(active)); node.tabIndex = active ? 0 : -1; }
+  for (const node of document.querySelectorAll('[data-account-tab]')) {
+    const active = node.dataset.accountTab === tab;
+    node.setAttribute('aria-selected',String(active)); node.tabIndex = active ? 0 : -1;
+  }
   for (const node of document.querySelectorAll('[data-account-pane]')) node.hidden = node.dataset.accountPane !== tab;
   renderAccountScope(); renderInstanceScope();
-  if (tab === 'pool') {
-    if (!fleetEnabled || state.instanceReady) loadCookieProfiles().catch(error => toast(error.message,true));
-    renderYouTubePacingRuntime();
-  } else loadAccounts().catch(error => toast(error.message,true));
+  if (tab === 'pool') renderYouTubePacingRuntime();
+  else {
+    loadAccounts().catch(accountListError);
+    if (!fleetEnabled || state.instanceReady) loadCookieProfiles({refreshAccounts:false}).catch(accountListError);
+  }
+}
+function accountPoolCell(item) {
+  return item.cookies.map(p => {
+    const local = p.instance_id === accountSelectedInstance();
+    const checked = local && cookiePoolDraft ? cookiePoolDraft.ids.includes(p.id) : p.pooled;
+    const name = item.cookies.length > 1 ? p.name : '加入账号池';
+    return local ? `<label class="account-pool-choice"><input type="checkbox" data-cookie-pool-id="${escapeHTML(p.id)}" aria-label="加入账号池：${escapeHTML(p.name)}"${checked ? ' checked' : ''}${!accountAdmin() || fleetEnabled && !state.instanceReady ? ' disabled' : ''}>${escapeHTML(name)}</label>`
+      : `<small>${item.cookies.length > 1 ? escapeHTML(p.name)+' · ' : ''}${p.pooled ? '已加入' : '未加入'}</small>`;
+  }).join('') || '<span class="micro-copy">尚无 Cookie</span>';
 }
 async function loadAccounts() {
   if (accountTab === 'pool') return;
-  const tab = accountTab, ticket = ++accountTicket;
-  const cookies = tab === 'cookies', prefix = cookies ? 'credential' : 'account';
-  const params = new URLSearchParams({page:String(cookies ? credentialPage : accountPage),size:'50',q:document.getElementById(prefix+'-search').value,instance:document.getElementById(prefix+'-instance').value});
-  if (cookies) { params.set('linked', document.getElementById('credential-linked').value); params.set('auth',document.getElementById('credential-auth').value); }
-  else { params.set('auth',document.getElementById('account-auth').value); params.set('download',document.getElementById('account-download').value); }
-  const data = await api(accountApi + (cookies ? '/cookies' : '') + '?' + params);
+  const tab = accountTab, ticket = ++accountTicket, instance = state.instanceId;
+  const params = new URLSearchParams({page:String(accountPage),size:'50',q:document.getElementById('account-search').value,instance:document.getElementById('account-instance').value});
+  for (const key of ['auth','download','linked','pooled']) params.set(key,document.getElementById('account-'+key).value);
+  const data = await api(accountApi + '/overview?' + params);
   if (ticket !== accountTicket || tab !== accountTab) return;
-  updateAccountNodes(data.instances);
-  if (cookies) credentialData = data; else accountData = data;
+  if (instance !== state.instanceId) return loadAccounts();
+  if (!data.items.length && accountPage > 1) { accountPage = Math.max(1,Math.ceil(data.total/data.size)); return loadAccounts(); }
+  accountListError(null); updateAccountNodes(data.instances); accountData = data;
   const authLabel = value => escapeHTML(accountLoginLabels[value] || '待检测');
-  const action = (id, label='详情 / 编辑') => `<button type="button" class="text-button" data-account-open="${escapeHTML(id)}">${label}</button>`;
-  document.getElementById(prefix+'-rows').innerHTML = data.items.map(item => cookies
-    ? `<tr><td><strong>${escapeHTML(item.email || '未关联账号资料')}</strong><small>${escapeHTML(item.name)}${item.pooled ? ' · 账号池成员' : ''}</small></td><td>${escapeHTML(item.instance_name)}<small>${item.online ? '在线' : '离线'}</small></td><td>${authLabel(item.auth.state)}<small>${accountTime(item.auth.checked_at)}</small></td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td><button type="button" class="text-button" data-credential-open="${escapeHTML(item.instance_id)}:${escapeHTML(item.id)}">详情 / 关联</button>${accountAdmin() ? `<button type="button" class="text-button" data-credential-check="${escapeHTML(item.instance_id)}:${escapeHTML(item.id)}"${!item.online || ['cooldown'].includes(item.download_state) ? ' disabled' : ''}>检测登录</button>` : ''}</td></tr>`
-    : `<tr><td><strong>${escapeHTML(item.email)}</strong><small>${escapeHTML(item.note)}</small></td><td>${escapeHTML(item.instance_name || '未绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${item.cookie_count} 份${item.cookie_count ? `<small>${item.valid_count} / ${item.cookie_count} 份近期验证通过</small>` : ''}</td><td>${authLabel(item.auth_state)}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${accountAdmin() ? `<button type="button" class="text-button" data-account-login="${escapeHTML(item.id)}"${item.instance_id && !item.online ? ' disabled title="绑定实例离线，恢复后可登录"' : ''}>登录</button>` : ''}${action(item.id,accountAdmin() ? '详情 / 编辑' : '查看详情')}</td></tr>`).join('');
-  document.getElementById(prefix+'-empty').hidden = !!data.items.length;
-  document.getElementById(prefix+'-page-info').textContent = `共 ${data.total} ${cookies ? '份 Cookie' : '个账号'} · 第 ${data.page} / ${Math.max(1,Math.ceil(data.total/data.size))} 页`;
-  for (const node of document.querySelectorAll(cookies ? '[data-credential-page]' : '[data-account-page]')) node.disabled = Number(node.dataset[cookies?'credentialPage':'accountPage']) < 0 ? data.page <= 1 : data.page * data.size >= data.total;
+  document.getElementById('account-rows').innerHTML = data.items.map(item => {
+    const first = item.cookies[0], orphan = item.kind === 'cookie';
+    const detail = orphan ? `<button type="button" class="text-button" data-credential-open="${escapeHTML(first.instance_id)}:${escapeHTML(first.id)}">详情 / 关联</button>` : `<button type="button" class="text-button" data-account-open="${escapeHTML(item.id)}">${accountAdmin() ? '详情 / 编辑' : '查看详情'}</button>`;
+    const check = first && item.cookies.length === 1 && accountAdmin() ? `<button type="button" class="text-button" data-credential-check="${escapeHTML(first.instance_id)}:${escapeHTML(first.id)}"${!first.online || first.download_state === 'cooldown' ? ' disabled' : ''}>检测登录</button>` : '';
+    return `<tr data-account-row="${escapeHTML(item.id)}"><td><strong>${escapeHTML(orphan ? first.name : item.email)}</strong><small>${orphan ? '未关联账号资料' : escapeHTML(item.note)}</small><small>${orphan ? '1 份 Cookie' : item.cookie_count ? item.cookie_count+' 份 Cookie · '+escapeHTML(item.cookies.map(p=>p.name).join('、')) : '尚无 Cookie'}</small></td><td>${escapeHTML(item.instance_name || '未绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${authLabel(item.auth_state)}${item.cookies.some(p=>p.active) ? '<small>当前选用</small>' : ''}${item.cookie_count ? `<small>${item.valid_count} / ${item.cookie_count} 份近期验证通过</small>` : ''}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${accountPoolCell(item)}</td><td>${!orphan && accountAdmin() ? `<button type="button" class="text-button" data-account-login="${escapeHTML(item.id)}"${item.instance_id && !item.online ? ' disabled' : ''}>登录</button>` : ''}${check}${detail}${item.instance_id && item.instance_id !== accountSelectedInstance() ? `<button type="button" class="text-button" data-cookie-owner="${escapeHTML(item.instance_id)}">管理此实例</button>` : ''}</td></tr>`;
+  }).join('');
+  document.getElementById('account-empty').hidden = !!data.items.length;
+  document.getElementById('account-page-info').textContent = `共 ${data.total} 项 · 第 ${data.page} / ${Math.max(1,Math.ceil(data.total/data.size))} 页`;
+  for (const node of document.querySelectorAll('[data-account-page]')) node.disabled = Number(node.dataset.accountPage) < 0 ? data.page <= 1 : data.page * data.size >= data.total;
 }
+
 async function accountCapabilities() {
   const data = await api(accountApi+'/capabilities');
   const note = document.getElementById('account-encryption-note');
@@ -90,29 +121,33 @@ function fillAccountPoolConfig(config) {
 }
 function accountPoolDirty() {
   state.accountPoolDirty = true;
-  document.getElementById('account-pool-save-state').textContent = `「${instanceName(state.instanceId)}」有未保存修改，请点击“保存账号池与节奏”。`;
+  document.getElementById('account-pool-save-state').textContent = `「${instanceName(state.instanceId)}」有未保存修改，请点击“保存节奏”。`;
   renderYouTubePacingRuntime();
 }
-async function saveAccountPool() {
+async function saveAccountPool({membersOnly=false} = {}) {
+  if (accountPoolSaving) return;
   if (accountPoolInstance !== (state.instanceId || '')) throw new Error('实例已切换，请重新读取。');
   const form = document.getElementById('account-pool-form');
-  const data = Object.fromEntries([...new FormData(form)].filter(([k,v]) => v !== accountPoolBaseline[k]));
-  if (cookiePoolDraft) {
+  const data = membersOnly ? {} : Object.fromEntries([...new FormData(form)].filter(([k,v]) => v !== accountPoolBaseline[k]));
+  if (membersOnly && cookiePoolDraft) {
     if (cookiePoolDraft.instance !== state.instanceId) throw new Error('账号池草稿不属于当前实例。');
     if (cookiePoolDraft.enabled && cookiePoolDraft.ids.length < 2) throw new Error('账号池至少需要选择 2 份 Cookie。');
     if (cookiePoolDraft.enabled && selectedProviders().some(p => p !== 'yt_dlp')) throw new Error('账号池仅支持单独使用 yt-dlp，请先保存下载策略。');
     data.youtube_cookie_pool = cookiePoolDraft.enabled ? cookiePoolDraft.ids : [];
   }
-  form.inert = true;
+  const keepSettingsDraft = membersOnly && state.accountPoolDirty;
+  accountPoolSaving = true;
+  document.getElementById('accounts-view').inert = true;
   try {
     await api('/api/config',{method:'PUT',body:data});
     const saved = (await api('/api/config',{cache:'no-store'})).config;
     if (unconfirmedSettings(data,saved).length) throw new Error('服务器读回值与提交值不同，请重新确认；草稿已保留。');
-    state.accountPoolDirty = false; cookiePoolDraft = null;
+    state.accountPoolDirty = keepSettingsDraft;
+    if (membersOnly) cookiePoolDraft = null;
     fillConfig(saved); await loadCookieProfiles();
-    document.getElementById('account-pool-save-state').textContent = `「${instanceName(state.instanceId)}」账号池与节奏已保存，新任务使用新策略；无需再保存系统设置。`;
-    toast('账号池与节奏已保存。');
-  } finally { form.inert = false; }
+    if (!keepSettingsDraft) document.getElementById('account-pool-save-state').textContent = `「${instanceName(state.instanceId)}」节奏已保存，新任务使用新策略。`;
+    toast(membersOnly ? '账号池已保存。' : '节奏已保存。');
+  } finally { accountPoolSaving = false; document.getElementById('accounts-view').inert = false; renderAccountScope(); }
 }
 function selectAccountDetailTab(tab) {
   const current = document.querySelector('[data-account-detail-tab][aria-selected=true]')?.dataset.accountDetailTab;
@@ -129,7 +164,9 @@ function clearAccountSecret() {
 }
 function accountMemberHTML(p) {
   const session = p.session;
-  return `<article class="account-cookie-row"><strong>${escapeHTML(p.name)}</strong><p>${escapeHTML(p.instance_name)} · ${p.online ? '在线' : '离线'} · ${p.pooled ? '在账号池中' : '未加入账号池'}</p><p>登录：${escapeHTML(accountLoginLabels[p.auth.state] || '待检测')} · ${accountTime(p.auth.checked_at)}${p.auth.connection ? ' · '+escapeHTML(p.auth.connection) : ''}</p>${p.auth.last_valid_at ? `<p class="micro-copy">上次验证通过：${accountTime(p.auth.last_valid_at)}</p>` : ''}<p>${escapeHTML(p.auth.message || '')}</p><p>下载：${escapeHTML(accountDownloadLabels[p.download_state])}${session?.interval ? ` · 启动间隔至少 ${Number(session.interval)} 秒` : ''}${session?.cooldown_until > Date.now()/1000 ? ` · 冷却到 ${accountTime(session.cooldown_until)}` : ''}</p>${accountAdmin() ? `<button type="button" class="button button-white" data-credential-check="${escapeHTML(p.instance_id)}:${escapeHTML(p.id)}"${!p.online || p.download_state === 'cooldown' ? ' disabled' : ''}>检测登录</button>` : ''}<button type="button" class="button button-white" data-pool-owner="${escapeHTML(p.instance_id)}">账号池与节奏 ↗</button></article>`;
+  const local = p.instance_id === accountSelectedInstance();
+  const tools = accountAdmin() && local ? `<button type="button" class="button button-white" data-account-cookie-export="${escapeHTML(p.id)}">导出 Cookie</button><button type="button" class="button button-white" data-account-cookie-select="${escapeHTML(p.id)}">单独使用此 Cookie</button><button type="button" class="button button-white" data-account-cookie-delete="${escapeHTML(p.id)}">删除 Cookie</button>` : '';
+  return `<article class="account-cookie-row"><strong>${escapeHTML(p.name)}</strong><p>${escapeHTML(p.instance_name)} · ${p.online ? '在线' : '离线'} · ${p.pooled ? '在账号池中' : '未加入账号池'}</p><p>登录：${escapeHTML(accountLoginLabels[p.auth.state] || '待检测')} · ${accountTime(p.auth.checked_at)}${p.auth.connection ? ' · '+escapeHTML(p.auth.connection) : ''}</p>${p.auth.last_valid_at ? `<p class="micro-copy">上次验证通过：${accountTime(p.auth.last_valid_at)}</p>` : ''}<p>${escapeHTML(p.auth.message || '')}</p><p>下载：${escapeHTML(accountDownloadLabels[p.download_state])}${session?.interval ? ` · 启动间隔至少 ${Number(session.interval)} 秒` : ''}${session?.cooldown_until > Date.now()/1000 ? ` · 冷却到 ${accountTime(session.cooldown_until)}` : ''}</p>${accountAdmin() ? `<button type="button" class="button button-white" data-credential-check="${escapeHTML(p.instance_id)}:${escapeHTML(p.id)}"${!p.online || p.download_state === 'cooldown' ? ' disabled' : ''}>检测登录</button>` : ''}<button type="button" class="button button-white" data-pool-owner="${escapeHTML(p.instance_id)}">节奏设置 ↗</button>${tools}</article>`;
 }
 async function openAccountDetails(identity, {cookie=null, tab='profile'} = {}) {
   if (accountDetailBusy) return;
@@ -238,6 +275,26 @@ document.addEventListener('click', event => {
   if (button.dataset.accountTab) selectAccountTab(button.dataset.accountTab);
   if (button.dataset.accountDetailTab) selectAccountDetailTab(button.dataset.accountDetailTab);
   if (button.hasAttribute('data-account-refresh')) loadAccounts().catch(error => toast(error.message,true));
+  if (button.dataset.cookieOwner) runButton(button,async () => {
+    if (accountDetailDirty || accountDetailBusy) throw new Error('请先保存账号修改。');
+    await manageAccountInstance(button.dataset.cookieOwner,'library');
+    document.getElementById('account-detail-dialog').close();
+  });
+  const cookieAction = ['export','select','delete'].find(action=>button.hasAttribute('data-account-cookie-'+action));
+  if (cookieAction) runButton(button,async () => {
+    const id = button.getAttribute('data-account-cookie-'+cookieAction);
+    const item = (accountDetail?.cookies || (accountDetailCookie ? [accountDetailCookie] : [])).find(p=>p.id===id);
+    if (!item || item.instance_id !== accountSelectedInstance()) throw new Error('请切换到 Cookie 所属实例后操作。');
+    if (cookieAction==='export') return exportCookieProfile(item);
+    if (cookiePoolDraft || state.accountPoolDirty || accountDetailDirty) throw new Error('请先保存账号池、节奏及账号资料的修改。');
+    const message = cookieAction==='select' ? `单独使用“${item.name}”会关闭此实例的账号池，是否继续？` : `删除“${item.name}”？当前使用项将按剩余 Cookie 自动调整。`;
+    if (!await confirmDialog(message)) return;
+    const value = await api('/api/youtube/cookies/'+cookieAction,{method:'POST',body:{id}});
+    toast(value.message); await loadCookieProfiles();
+    if (cookieAction==='delete') document.getElementById('account-detail-dialog').close();
+    else await openAccountCookie(item.instance_id,id);
+    await refresh();
+  });
   if (button.dataset.accountOpen) openAccountDetails(button.dataset.accountOpen).catch(error => toast(error.message,true));
   if (button.dataset.accountLogin) runButton(button,() => openAccountLogin(button.dataset.accountLogin));
   if (button.dataset.credentialOpen) { const [scope,id] = button.dataset.credentialOpen.split(':'); openAccountCookie(scope,id).catch(error => toast(error.message,true)); }
@@ -248,7 +305,7 @@ document.addEventListener('click', event => {
     if (document.getElementById('account-detail-dialog').open) await openAccountCookie(scope,id);
   });
   if (button.dataset.poolOwner) runButton(button,async () => {
-    if (accountDetailDirty || accountDetailBusy) throw new Error('请先保存账号修改，再进入账号池。');
+    if (accountDetailDirty || accountDetailBusy) throw new Error('请先保存账号修改，再进入节奏设置。');
     await manageAccountInstance(button.dataset.poolOwner);
     document.getElementById('account-detail-dialog').close();
   });
@@ -258,7 +315,6 @@ document.addEventListener('click', event => {
     accountPage = 1; setView('accounts'); selectAccountTab('library');
   });
   if (button.hasAttribute('data-account-page')) { accountPage += Number(button.dataset.accountPage); loadAccounts().catch(error => toast(error.message,true)); }
-  if (button.hasAttribute('data-credential-page')) { credentialPage += Number(button.dataset.credentialPage); loadAccounts().catch(error => toast(error.message,true)); }
   if (button.dataset.accountSecret && accountDetail) runButton(button,async () => {
     const identity = accountDetail.id, ticket = accountDetailTicket;
     const secretEpoch = ++accountSecretEpoch;
@@ -277,11 +333,12 @@ document.addEventListener('click', event => {
     toast('请勾选 Cookie，并确认属于此账号后保存关联。');
   });
 });
-for (const [id,labels] of [['account-auth',accountLoginLabels],['credential-auth',accountLoginLabels],['account-download',accountDownloadLabels]]) document.getElementById(id).innerHTML = `<option value="">${id === 'account-download' ? '全部下载状态' : '全部登录状态'}</option>` + Object.entries(labels).filter(([k]) => id !== 'credential-auth' || k !== 'unlinked').map(([k,v]) => `<option value="${k}">${v}</option>`).join('');
+for (const [id,labels] of [['account-auth',accountLoginLabels],['account-download',accountDownloadLabels]]) document.getElementById(id).innerHTML = `<option value="">${id === 'account-download' ? '全部下载状态' : '全部登录状态'}</option>` + Object.entries(labels).map(([k,v]) => `<option value="${k}">${v}</option>`).join('');
 let accountSearchTimer;
-for (const id of ['account-search','credential-search','account-instance','credential-instance','account-auth','credential-auth','account-download','credential-linked']) document.getElementById(id).addEventListener(id.includes('search') ? 'input' : 'change',() => {
-  accountPage = credentialPage = 1; clearTimeout(accountSearchTimer); accountSearchTimer = setTimeout(() => loadAccounts().catch(error => toast(error.message,true)),250);
+for (const id of ['account-search','account-instance','account-auth','account-download','account-linked','account-pooled']) document.getElementById(id).addEventListener(id.includes('search') ? 'input' : 'change',() => {
+  accountPage = 1; clearTimeout(accountSearchTimer); accountSearchTimer = setTimeout(() => loadAccounts().catch(accountListError),250);
 });
+document.getElementById('account-pool-members-save').addEventListener('click',event=>runButton(event.currentTarget,()=>saveAccountPool({membersOnly:true})));
 document.getElementById('account-new').addEventListener('click',() => openAccountDetails(null).catch(error => toast(error.message,true)));
 document.getElementById('account-pool-form').addEventListener('input',accountPoolDirty);
 document.getElementById('account-pool-form').addEventListener('change',accountPoolDirty);
@@ -490,20 +547,23 @@ const uploadDialog = document.getElementById('account-upload-dialog');
 let uploadAccounts = [], uploadDirty = false;
 document.getElementById('credential-upload').addEventListener('click',event => runButton(event.currentTarget,async () => {
   uploadAccounts = (await api(accountApi+'/choices')).items.filter(a => a.instance_id);
-  if (!uploadAccounts.length) throw new Error('请先新增账号并绑定下载实例，再上传 Cookie。');
   document.getElementById('account-upload-form').reset(); uploadDirty = false;
-  document.getElementById('account-upload-account').innerHTML = uploadAccounts.map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.email)} · ${escapeHTML(accountName(a.instance_id))}</option>`).join('');
+  document.getElementById('account-upload-account').innerHTML = `<option value="">仅保存 Cookie · ${escapeHTML(instanceName(state.instanceId))}</option>` + uploadAccounts.map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.email)} · ${escapeHTML(accountName(a.instance_id))}</option>`).join('');
+  document.getElementById('account-upload-target').textContent = '可选已有账号关联；留空则保存为当前实例的未关联 Cookie。上传后不会自动加入账号池。';
   accountError('account-upload-error',''); uploadDialog.showModal();
 }));
 document.getElementById('account-upload-form').addEventListener('input',() => { uploadDirty = true; });
 document.getElementById('account-upload-form').addEventListener('submit',event => {
   event.preventDefault(); runButton(event.submitter,async () => {
     const item = uploadAccounts.find(a => a.id === document.getElementById('account-upload-account').value);
+    if (!item && fleetEnabled && !state.instanceReady) throw new Error('请先选择可用的下载实例。');
     const data = new FormData(); data.append('cookie',document.getElementById('account-upload-file').files[0]);
-    data.append('version',item.version); data.append('name',document.getElementById('account-upload-name').value || item.email);
+    if (item) data.append('version',item.version);
+    data.append('name',document.getElementById('account-upload-name').value || item?.email || '');
+    data.append('activate','false');
     data.append('confirmed',String(document.getElementById('account-upload-confirmed').checked));
     accountUploadBusy = true; event.target.inert = true;
-    try { const result = await api(accountApi+'/'+item.id+'/upload',{method:'POST',body:data}); uploadDirty = false; uploadDialog.close(); await loadAccounts(); toast(result.message); }
+    try { const result = await api(item ? accountApi+'/'+item.id+'/upload' : '/api/youtube/cookies',{method:'POST',body:data}); uploadDirty = false; uploadDialog.close(); await loadCookieProfiles(); await loadAccounts(); toast(result.message); }
     catch(error) { accountError('account-upload-error',error); throw error; }
     finally { accountUploadBusy = false; event.target.inert = false; }
   });
@@ -511,6 +571,6 @@ document.getElementById('account-upload-form').addEventListener('submit',event =
 guardAccountDialog(uploadDialog,() => uploadDirty,() => { uploadDirty = false; },() => accountUploadBusy);
 uploadDialog.addEventListener('close',() => { document.getElementById('account-upload-form').reset(); uploadAccounts = []; uploadDirty = false; });
 setInterval(() => { if (!document.hidden && location.hash === '#accounts' && accountTab !== 'pool') loadAccounts().catch(() => {}); },30000);
-window.addEventListener('beforeunload',event => { if (accountDetailDirty || accountImportDirty || uploadDirty || state.accountPoolDirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload',event => { if (accountDetailDirty || accountImportDirty || uploadDirty || state.accountPoolDirty || cookiePoolDraft) { event.preventDefault(); event.returnValue = ''; } });
 if (state.config) fillAccountPoolConfig(state.config);
 if (location.hash === '#accounts') { selectAccountTab('library'); accountCapabilities().catch(error => toast(error.message,true)); }

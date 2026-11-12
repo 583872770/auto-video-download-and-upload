@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from webapp.channels import backend_key, group_caps, minimum_limit, registry
 from webapp.config_schema import DEFAULTS
+from webapp.db_pool_calculator import cookie_pool_worker_limit
 
 
 MAX_TRANSFERS = 64
@@ -125,10 +126,10 @@ def pool_process_limits(config, capacity, memory_total, db_budget):
         groups[group] = max(groups.get(group, 0), limit)
     transfer_capacity = min(capacity, sum(groups.values()), int(config.get('download_connection_limit', 32)))
     preparation = max(0, min(16, int(config.get('youtube_cookie_pool_preparation_workers', 4))))
-    configured = max(1, min(MAX_TRANSFERS, int(config.get('youtube_cookie_pool_worker_limit', 20))))
+    configured = cookie_pool_worker_limit(config)
     memory_cap = max(1, int((memory_total * .65 - 256 * 1024**2) / (160 * 1024**2)))
-    workers = max(1, min(capacity, configured, transfer_capacity + preparation, memory_cap, db_budget['workers']))
-    bounds = {'accounts': capacity, 'configured': configured, 'channel_connections': transfer_capacity + preparation,
+    workers = max(1, min(capacity, configured or MAX_TRANSFERS, transfer_capacity + preparation, memory_cap, db_budget['workers']))
+    bounds = {'accounts': capacity, 'configured': configured or None, 'channel_connections': transfer_capacity + preparation,
               'memory': memory_cap, 'database': db_budget['workers']}
     return {'workers': workers, 'configured_worker_limit': configured,
             'worker_bounds': bounds,

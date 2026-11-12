@@ -20,11 +20,11 @@
 </section>
 {% include 'channel_settings.html' %}
 
-<section class="panel settings-panel"><h2>Cookie 池进程容量</h2><div class="scale-fields"><label>Cookie 池下载进程上限<input name="youtube_cookie_pool_worker_limit" type="number" min="1" max="64" required><small>默认 20。控制本实例常驻下载进程，不改变单个 Cookie 的并发和绑定。保存后逐步生效；缩小时，现有任务完成后退出多余进程。</small></label><label>Cookie 池准备进程余量<input name="youtube_cookie_pool_preparation_workers" type="number" min="0" max="16" required><small>默认 4。在渠道与连接预算允许的传输量之外，为解析和请求等待预留的进程额度；与上面的总上限同时生效。</small></label></div><p class="micro-copy">成员和每会话节奏请到账号管理修改。</p></section>
+<section class="panel settings-panel"><h2>Cookie 池进程容量</h2><div class="scale-fields"><label>Cookie 池下载进程上限<input name="youtube_cookie_pool_worker_limit" type="number" min="0" max="64" required><small>默认 20；0 表示不设置此项上限，按账号池容量调度，仍受渠道、内存、数据库预算和资源保护约束。不改变单个 Cookie 的并发和绑定。保存后逐步生效；缩小时，现有任务完成后退出多余进程。</small></label><label>Cookie 池准备进程余量<input name="youtube_cookie_pool_preparation_workers" type="number" min="0" max="16" required><small>默认 4。在渠道与连接预算允许的传输量之外，为解析和请求等待预留的进程额度；与上面的总上限同时生效。</small></label></div><p class="micro-copy">成员和每会话节奏请到账号管理修改。</p></section>
 <section class="panel settings-panel" id="database-budget-settings">
   <div class="panel-heading"><div><h2>数据库连接预算</h2><p class="panel-subtitle">当前实例的连接预留额度；根据进程目标计算，不会立即建立全部连接，也不会修改 MySQL 的连接上限。</p></div><span class="scope-badge">当前实例</span></div>
   <div class="scale-fields">
-    <label>预算方式<select name="db_budget_mode"><option value="auto">自动核算（推荐）</option><option value="manual">手动指定</option></select><small>自动按下载进程目标，加上主服务与辅助进程预留计算。Cookie 池使用上方的下载进程上限。</small></label>
+    <label>预算方式<select name="db_budget_mode"><option value="auto">自动核算（推荐）</option><option value="manual">手动指定</option></select><small>自动按下载进程目标，加上主服务与辅助进程预留计算。Cookie 池下载进程上限设为 0 时，按成员数量与每会话并发核算需求。</small></label>
     <label data-db-manual>手动连接预算<input name="db_connection_budget" type="number" min="8" max="10000" required><small>仅手动方式生效；额度过低会减少可用下载进程。自动方式保留此值供切换使用。</small></label>
   </div>
   <p id="database-budget-preview" class="settings-category-note" role="status">正在读取所选实例的连接预算…</p>

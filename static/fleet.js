@@ -14,9 +14,7 @@ function instanceHasDraft() {
   const subscriptionName = $('#clash-subscription-name').value.trim();
   const savedName = state.clash?.subscriptions?.find(item => item.id === subscriptionSelection)?.name || '';
   return state.deploymentDirty || settingsDirty || providerDraft || cookiePoolDraft || state.accountPoolDirty || state.accountSourceDirty || (typeof accountHasDraft === 'function' && accountHasDraft()) || rotationDirty ||
-    !!$('#clash-subscription-url').value.trim() || subscriptionName !== savedName ||
-    !!$('[data-cookie-file]', $('#youtube-cookie-form')).files.length ||
-    !!$('[data-cookie-name]', $('#youtube-cookie-form')).value.trim();
+    !!$('#clash-subscription-url').value.trim() || subscriptionName !== savedName;
 }
 async function loadSelectedInstance({ reset = true } = {}) {
   const instance = state.instanceId;
@@ -32,7 +30,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
     resetInstanceDeployment();
     nodeSignature = ''; subscriptionInstance = undefined; subscriptionSelection = null; rotationDraft = null;
     $('#clash-subscription-name').value = ''; $('#clash-subscription-url').value = '';
-    $('#youtube-cookie-list').replaceChildren();
+    $('#account-list-error').textContent = '';
     resetPage('media'); renderMedia();
   }
   try {
@@ -51,9 +49,9 @@ async function loadSelectedInstance({ reset = true } = {}) {
     setInstanceReady(true);
     renderDownloadControl();
     await loadFleet();
-    if (location.hash === '#accounts' && typeof accountTab !== 'undefined' && accountTab === 'pool') loadCookieProfiles().catch(error => {
+    if (location.hash === '#accounts' && typeof accountTab !== 'undefined') loadCookieProfiles().catch(error => {
       if (epoch === state.instanceEpoch && instance === state.instanceId && error.name !== 'AbortError') {
-        $('#youtube-cookie-list').textContent = error.message;
+        $('#account-list-error').textContent = error.message;
       }
     });
     if (location.hash === '#deployment') loadInstanceDeployment();
@@ -75,7 +73,7 @@ async function loadSelectedInstance({ reset = true } = {}) {
 }
 
 function renderInstanceScope() {
-  const local = ['overview','media','settings','clash','instances','deployment',''].includes(location.hash.slice(1)) || location.hash === '#accounts' && document.querySelector('[data-account-pane=pool]')?.hidden === false;
+  const local = ['overview','media','settings','clash','instances','deployment','accounts',''].includes(location.hash.slice(1));
   $('#fleet-selection-bar').hidden = !fleetEnabled || !local;
   const target = instanceName(state.instanceId);
   const item = state.fleet?.items.find(item => item.id === state.instanceId);

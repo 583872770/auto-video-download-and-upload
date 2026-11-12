@@ -1,44 +1,5 @@
 <div class="panel settings-panel youtube-settings-panel">
-  <div class="panel-heading youtube-settings-heading">
-    <div>
-      <span class="section-kicker">CONNECTION & COOKIE</span>
-      <h2>当前实例的账号池与节奏</h2>
-      <p class="panel-subtitle">为当前下载实例管理 yt-dlp 的登录凭据。凭据保存到数据库，下载时按当前选择使用。</p>
-    </div>
-    <span class="scope-badge">当前实例</span>
-  </div>
-  <div class="account-intro">
-    <span>代理、节点和出口地址统一在“网络与代理”中配置。</span>
-    <button type="button" class="text-button" data-view="clash">配置网络与代理 ↗</button>
-  </div>
-  <div class="youtube-auth-card" data-cookie-actions>
-    <div class="youtube-auth-card-head">
-      <div>
-        <span class="section-kicker">ACTIVE CREDENTIAL</span>
-        <h3>当前登录状态</h3>
-      </div>
-      <span class="auth-status-chip" data-youtube-status>读取状态中</span>
-    </div>
-    <div class="youtube-auth-card-body">
-      <p id="youtube-auth-status" class="auth-status-message" role="status">正在读取当前实例的登录状态…</p>
-      <p class="micro-copy" data-youtube-login-summary hidden role="status"></p>
-      <div class="youtube-auth-actions">
-        <button id="youtube-auth-check" type="button" class="button button-white">检测登录</button>
-        <button class="button button-dark" type="button" data-open="youtube-login-dialog">浏览器登录</button>
-        <button class="text-button" type="button" data-scroll-cookie>查看 Cookie 配置 ↓</button>
-      </div>
-    </div>
-    <p class="youtube-auth-footnote">检测只确认当前出口能否使用该凭据，不会恢复或暂停下载。浏览器登录完成后会自动保存新的 Cookie；“已保存”只代表文件入库，“登录有效”代表检测出口通过，“下载成功”还要看视频权限与源站响应。</p>
-  </div>
-  {% include 'cookie_profiles.html' %}
-  <div class="settings-callout" data-cookie-actions>
-    <svg>
-      <use href="#i-info"/>
-    </svg>
-    <p>没有可用凭据时，请在正常浏览器登录 YouTube 后导出 Netscape Cookie。Cookie 只供 yt-dlp 使用；视频与音频合并仍需要 FFmpeg，解析需要 Node.js 或 Deno。</p>
-  </div>
-  <details class="settings-policy-details">
-    <summary>账号启动节奏与预算</summary>
-    {% include 'youtube_policy.html' %}
-  </details>
+  <div class="panel-heading"><div><h2>任务节奏与启动预算</h2><p class="panel-subtitle">仅影响当前实例。账号池成员在“账号清单”中管理。</p></div><span class="scope-badge">当前实例</span></div>
+  <div class="account-intro"><span>代理、节点和出口地址在“网络与代理”中配置。</span><button type="button" class="text-button" data-view="clash">配置网络与代理 ↗</button></div>
+  <div class="settings-policy-details">{% include 'youtube_policy.html' %}</div>
 </div>

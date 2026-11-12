@@ -43,6 +43,35 @@ class DatabaseBudgetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             connection_budget(dict(manual, db_connection_budget=8))
 
+    def test_unlimited_pool_reserves_selected_session_demand_and_keeps_deployment_cap(self):
+        config = dict(self.config, youtube_cookie_pool_worker_limit=0,
+                      youtube_cookie_session_limit=2)
+        self.assertEqual(target_workers(config), 42)
+        budget = connection_budget(config)
+        self.assertEqual((budget['target_workers'], budget['total'], budget['workers']), (42, 95, 42))
+        with patch.dict(os.environ, {'VIDEO_WORKER_DB_CONNECTION_BUDGET': '48'}):
+            limited = connection_budget(config)
+            self.assertEqual(limited['workers'], 24)
+            self.assertFalse(limited['target_supported'])
+        self.assertEqual(target_workers(dict(config, youtube_cookie_session_limit=64)), 64)
+
+    def test_zero_worker_limit_survives_live_sizing_and_hot_shrink(self):
+        config = dict(self.config, youtube_cookie_pool_worker_limit=0,
+                      youtube_cookie_pool=['fixture'] * 31, builtin_transfer_limit=0,
+                      download_connection_limit=64)
+        controller = ThroughputController(self.root)
+        capacity = dict(known=True, capacity=31, reason='ready', profiles=[])
+        with patch.object(controller, 'sample', return_value=self.sample):
+            unlimited = controller.update(config, cookie_capacity=capacity, force=True)
+            self.assertEqual(unlimited['workers'], 31)
+            self.assertEqual(unlimited['worker_control']['configured_limit'], 0)
+            self.assertIsNone(unlimited['worker_control']['bounds']['configured'])
+            self.assertNotIn('configured', unlimited['worker_control']['limit_reasons'])
+            self.assertEqual(runtime_limits(config, self.root)['workers'], 31)
+            shrunk = controller.update(dict(config, youtube_cookie_pool_worker_limit=7),
+                                       cookie_capacity=capacity, force=True)
+            self.assertEqual(shrunk['workers'], 7)
+
     def test_custom_pools_change_the_formula_without_resizing_pools(self):
         with patch.dict(os.environ, {'VIDEO_DB_POOL_SIZE': '3', 'VIDEO_DB_MAX_OVERFLOW': '1',
                                     'VIDEO_WORKER_DB_POOL_SIZE': '3', 'VIDEO_WORKER_DB_MAX_OVERFLOW': '1'}):

@@ -149,8 +149,8 @@ def start_budget(config, state, stamp):
     hourly = int(config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit']))
     daily = int(config.get('youtube_daily_start_limit', DEFAULTS['youtube_daily_start_limit']))
     hour = [s for s in starts if s > stamp - 3600]
-    until = max(hour[-hourly] + 3600 if len(hour) >= hourly else 0,
-                starts[-daily] + DAY if len(starts) >= daily else 0)
+    until = max(hour[-hourly] + 3600 if hourly and len(hour) >= hourly else 0,
+                starts[-daily] + DAY if daily and len(starts) >= daily else 0)
     return starts, until
 
 

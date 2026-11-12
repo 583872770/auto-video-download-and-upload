@@ -12,6 +12,7 @@ import tempfile
 import psutil
 
 from webapp.config_schema import PIPELINE_KEY_FIELDS
+from webapp.db_pool_calculator import cookie_pool_worker_limit
 from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, automatic, pool_process_limits
 from webapp.resource_pressure import (CPU_HIGH, CPU_RECOVER, IO_HIGH, WORKER_ADJUST_SECONDS,
                                       WORKER_REDUCTION, memory_thresholds, pressure_state,
@@ -138,7 +139,7 @@ def runtime_limits(config, directory):
                     from webapp.db_pool_calculator import connection_budget
                     result.update(saved, transfers=target, mode='cookie_pool')
                     result['workers'] = min(int(saved['workers']),
-                        max(1, int(config.get('youtube_cookie_pool_worker_limit', 20))),
+                        cookie_pool_worker_limit(config) or MAX_TRANSFERS,
                         connection_budget(config)['workers'])
                     return result
         except (OSError, ValueError, KeyError, TypeError):

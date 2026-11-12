@@ -12,6 +12,17 @@ from webapp.database import instances, job_profiles, settings
 
 
 class SettingsSaveContract:
+    def test_zero_unlimited_settings_save_reload_and_reject_negative_atomically(self):
+        keys = ('youtube_cookie_pool_worker_limit', 'youtube_hourly_start_limit', 'youtube_daily_start_limit')
+        response = self.client.put('/api/config', json=dict.fromkeys(keys, 0), headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        saved = self.client.get('/api/config').json['config']
+        self.assertEqual({k:saved[k] for k in keys}, dict.fromkeys(keys, 0))
+        for key in keys:
+            response = self.client.put('/api/config', json={key: -1}, headers=self.headers)
+            self.assertEqual(response.status_code, 400, response.json)
+            self.assertEqual(self.client.get('/api/config').json['config'][key], 0)
+
     def test_database_budget_roundtrip_rejects_impossible_save_atomically(self):
         import yaml
         response = self.client.put('/api/config', json={

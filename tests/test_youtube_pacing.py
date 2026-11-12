@@ -92,6 +92,22 @@ class YouTubePacingTests(unittest.TestCase):
         self.assertEqual(self.reserve(other)[0], 0)
         self.assertEqual(len(self.state(other)['starts']), 1)
 
+    def test_zero_budgets_are_independent_and_reenabling_uses_retained_starts(self):
+        router = self.scheduler(youtube_hourly_start_limit=0, youtube_daily_start_limit=0)
+        self.assertEqual(self.reserve(router)[0], 0)
+        self.now += 60
+        self.assertEqual(self.reserve(router)[0], 0)
+        self.now += 60
+        # Disabling budgets does not bypass the ordinary spacing gate.
+        router.config['youtube_hourly_start_limit'] = 1
+        self.assertEqual(self.reserve(router)[0], 3540)
+        router.config.update(youtube_hourly_start_limit=0, youtube_daily_start_limit=1)
+        self.assertEqual(self.reserve(router)[0], 86340)
+        router.config['youtube_daily_start_limit'] = 0
+        self.assertEqual(self.reserve(router)[0], 0)
+        self.assertEqual(len(self.state(router, session=True)['starts']), 3)
+        self.assertEqual(self.reserve(router)[0], 60)
+
     def test_expired_lease_cannot_consume_budget(self):
         router = self.scheduler()
         with router.store.connect() as db:
@@ -241,8 +257,9 @@ class YouTubePacingTests(unittest.TestCase):
             self.scheduler(youtube_cookie='missing.txt')
         for field in ('youtube_hourly_start_limit', 'youtube_daily_start_limit'):
             self.assertIn(field, DOWNLOAD_FIELDS)
+            self.assertEqual(validate_settings({field: 0})[field], 0)
             with self.assertRaises(ValueError):
-                validate_settings({field: 0})
+                validate_settings({field: -1})
         self.assertEqual(validate_settings({'youtube_start_interval': 120})['youtube_start_interval'], 120)
         with self.assertRaises(ValueError):
             validate_settings({'youtube_pacing_mode': 'invalid'})

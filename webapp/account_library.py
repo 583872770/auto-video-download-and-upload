@@ -1,5 +1,6 @@
 """Global YouTube account records; no network requests or Cookie cache writes."""
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import time
@@ -232,7 +233,9 @@ class AccountLibrary:
                 session = next((s for s in sessions if s['id'] == alias), None)
             fresh = node.get('online') and 0 <= stamp - rate.get('time', 0) < 20
             pooled = p['id'] in config.get('youtube_cookie_pool', [])
-            download = session.get('state', 'unknown') if fresh and session else 'unknown' if pooled else 'inactive'
+            current = config.get('youtube_cookie', '').replace('\\', '/').rsplit('/', 1)[-1].removesuffix('.txt')
+            active = not config.get('youtube_cookie_pool') and p['id'] == ('legacy' if current == 'youtube' else current)
+            download = session.get('state', 'unknown') if fresh and session else 'unknown' if pooled or active else 'inactive'
             auth = saved_auth.get((p['scope'], p['id']))
             state, details = 'unchecked', {}
             if auth:
@@ -255,9 +258,95 @@ class AccountLibrary:
             result.append(dict(id=p['id'], instance_id=p['scope'], name=p['name'],
                 instance_name=node.get('name', p['scope']), online=bool(node.get('online')),
                 account_id=(associations.get((p['scope'], p['id'])) or {}).get('account_id'),
-                pooled=pooled, auth={**details, 'state': state}, download_state=download,
+                pooled=pooled, active=active, auth={**details, 'state': state}, download_state=download,
                 session=session if fresh else None, created_at=p['created_at']))
         return nodes, result
+
+    @staticmethod
+    def account_item(row, members, nodes):
+        states = {p['auth']['state'] for p in members}
+        auth = ('unlinked' if not members else next((s for s in ('valid', 'verification_required', 'not_logged_in',
+            'invalid', 'network_error', 'rate_limited', 'unconfirmed', 'expired', 'unchecked') if s in states), 'unchecked'))
+        downloads = {p['download_state'] for p in members}
+        download = next((s for s in ('manual', 'cooldown', 'recovery', 'ready', 'unknown') if s in downloads), 'inactive')
+        node = nodes.get(row['instance_id'], {})
+        return {**row, 'kind':'account', 'instance_name':node.get('name', row['instance_id']),
+            'online':bool(node.get('online')), 'cookies':members, 'cookie_count':len(members),
+            'valid_count':sum(p['auth']['state']=='valid' for p in members),
+            'auth_state':auth, 'download_state':download}
+
+    def overview(self, filters):
+        """One account row, or one unassociated credential; paginate after grouping.
+
+        All metadata comes from one database snapshot. No credentials are inferred
+        to belong to an email and opening the workspace never probes YouTube.
+        """
+        try:
+            page = min(100000, max(1, int(filters.get('page', 1))))
+            size = min(100, max(1, int(filters.get('size', 50))))
+        except (ValueError, TypeError):
+            raise ValueError('分页参数无效。') from None
+        search = str(filters.get('q', '')).strip().lower()[:254]
+        target = filters.get('instance', '')
+        fields = (accounts.c.id, accounts.c.email, accounts.c.note, accounts.c.instance_id,
+            accounts.c.version, accounts.c.created_at, accounts.c.updated_at)
+        with self.store.connect() as db:
+            account_query = select(*fields)
+            if target:
+                account_query = account_query.where(accounts.c.instance_id.is_(None)
+                    if target == 'unbound' else accounts.c.instance_id == target)
+            if search:
+                matching = select(links.c.account_id).join(cookie_profiles,
+                    (links.c.instance_id == cookie_profiles.c.scope) & (links.c.profile_id == cookie_profiles.c.id)
+                    ).where(cookie_profiles.c.deleted == 0, func.lower(cookie_profiles.c.name).contains(search, autoescape=True))
+                account_query = account_query.where(or_(accounts.c.id.in_(matching),
+                    func.lower(accounts.c.email).contains(search, autoescape=True),
+                    func.lower(accounts.c.note).contains(search, autoescape=True)))
+            rows = list(db.execute(account_query).mappings())
+            association = (links.c.instance_id == cookie_profiles.c.scope) & (links.c.profile_id == cookie_profiles.c.id)
+            orphan = ~select(links.c.account_id).where(association).exists()
+            if target:
+                orphan = orphan & (cookie_profiles.c.scope == target) if target != 'unbound' else orphan & False
+            if search:
+                orphan = orphan & func.lower(cookie_profiles.c.name).contains(search, autoescape=True)
+            selected_links = select(links.c.profile_id).where(association, links.c.account_id.in_([r['id'] for r in rows])).exists()
+            profiles = list(db.execute(select(cookie_profiles).where(cookie_profiles.c.deleted == 0,
+                or_(selected_links, orphan))).mappings())
+            nodes, inventory = self.inventory(db, profiles)
+        grouped, items = {}, []
+        for profile in inventory:
+            if profile['account_id']:
+                grouped.setdefault(profile['account_id'], []).append(profile)
+            else:
+                items.append(dict(id='cookie:'+profile['instance_id']+':'+profile['id'], kind='cookie',
+                    email=None, note='', instance_id=profile['instance_id'], instance_name=profile['instance_name'],
+                    online=profile['online'], created_at=profile['created_at'], cookies=[profile],
+                    cookie_count=1, valid_count=int(profile['auth']['state']=='valid'),
+                    auth_state=profile['auth']['state'], download_state=profile['download_state']))
+        for row in rows:
+            members = sorted(grouped.get(row['id'], []), key=lambda p:(p['created_at'], p['id']))
+            items.append(self.account_item(dict(row), members, nodes))
+        auth, download, linked, pooled = (filters.get(k, '') for k in ('auth', 'download', 'linked', 'pooled'))
+        items = [r for r in items if (not auth or r['auth_state'] == auth)
+            and (not download or r['download_state'] == download)
+            and (linked != 'account' or r['kind'] == 'account')
+            and (linked != 'orphan' or r['kind'] == 'cookie')
+            and (linked != 'missing' or not r['cookies'])
+            and (pooled not in ('0', '1') or any(p['pooled'] for p in r['cookies']) == (pooled == '1'))]
+        def created_at(row):
+            value = row['created_at']
+            if isinstance(value, (int, float)):
+                return value
+            try:
+                stamp = datetime.fromisoformat(value)
+                return (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).timestamp()
+            except (TypeError, ValueError):
+                return 0
+        items.sort(key=lambda r:(-created_at(r), r['id']))
+        total = len(items)
+        return {'items':items[(page-1)*size:page*size], 'total':total, 'page':page, 'size':size,
+            'local_instance_id':self.local_id,
+            'instances':[{k:r[k] for k in ('id','name','online')} for r in nodes.values()]}
 
     def list(self, filters, *, identity=None, cookies=False):
         def integer(name, default, limit):
@@ -320,15 +409,7 @@ class AccountLibrary:
             items = []
             for row in rows:
                 members = grouped.get(row['id'], [])
-                states = {p['auth']['state'] for p in members}
-                auth = ('unlinked' if not members else next((s for s in ('valid', 'verification_required', 'not_logged_in',
-                    'invalid', 'network_error', 'rate_limited', 'unconfirmed', 'expired', 'unchecked') if s in states), 'unchecked'))
-                downloads = {p['download_state'] for p in members}
-                download = next((s for s in ('manual', 'cooldown', 'recovery', 'ready', 'unknown') if s in downloads), 'inactive')
-                node = nodes.get(row['instance_id'], {})
-                items.append({**row, 'instance_name': node.get('name', row['instance_id']), 'online':bool(node.get('online')),
-                    'cookies': members, 'cookie_count':len(members), 'valid_count':sum(p['auth']['state']=='valid' for p in members),
-                    'auth_state':auth, 'download_state': download})
+                items.append(self.account_item(dict(row), members, nodes))
         if identity:
             item = next((r for r in items if r['id'] == identity), None)
             if not item:

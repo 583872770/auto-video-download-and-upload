@@ -132,9 +132,9 @@ class YouTubePacing:
                           (state.get('next_at', 0), '等待下一次视频启动')]
             starts = state['starts']
             hour_starts = [s for s in starts if s > stamp - 3600]
-            if len(hour_starts) >= hourly:
+            if hourly and len(hour_starts) >= hourly:
                 candidates.append((hour_starts[-hourly] + 3600, '已达到滚动一小时启动预算'))
-            if len(starts) >= daily:
+            if daily and len(starts) >= daily:
                 candidates.append((starts[-daily] + DAY, '已达到滚动二十四小时启动预算'))
             for deadline, explanation in candidates:
                 if deadline > next_at:

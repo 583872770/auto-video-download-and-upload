@@ -78,9 +78,9 @@ def main():
                 expect(page.locator('#account-import-dialog')).not_to_be_visible()
                 expect(page.locator('#account-rows tr')).to_have_count(3)
                 page.screenshot(path=str(output/'accounts-desktop.png'),full_page=True)
-                page.locator('[data-account-tab=cookies]').click()
                 page.locator('#credential-upload').click()
                 expect(page.locator('#account-upload-dialog')).to_be_visible()
+                page.locator('#account-upload-account').select_option(label='demo-one@example.com · 本机实例')
                 page.locator('#account-upload-file').set_input_files({'name':'demo-cookie.txt','mimeType':'text/plain','buffer':b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tui-dummy-cookie\n'})
                 page.locator('#account-upload-confirmed').check()
                 page.locator('#account-upload-form [type=submit]').click()
@@ -89,10 +89,10 @@ def main():
                 except AssertionError:
                     print(json.dumps({'page_errors':errors,'validity':page.locator('#account-upload-form').evaluate('(f)=>[...f.elements].map(n=>({id:n.id,valid:n.checkValidity(),message:n.validationMessage,value:n.type==="file"?n.files.length:n.value}))'),'toasts':page.locator('#toasts').inner_text()},ensure_ascii=False))
                     raise
-                expect(page.locator('#credential-rows tr')).to_have_count(1)
+                expect(page.locator('#account-rows tr')).to_have_count(3)
                 assert not probe.called
-                page.locator('#credential-rows [data-credential-check]').click()
-                expect(page.locator('#credential-rows')).to_contain_text('最近验证通过')
+                page.locator('#account-rows [data-credential-check]').click()
+                expect(page.locator('#account-rows')).to_contain_text('最近验证通过')
                 assert probe.call_count==1
                 # Workbench/detail links also resolve the standalone executor,
                 # whose selected-instance id is empty.
@@ -103,7 +103,6 @@ def main():
                 page.locator('#account-detail-dialog [data-close]').click()
                 page.locator('[data-account-tab=pool]').click()
                 expect(page.locator('#youtube-cookie-list [data-cookie-pool-id]')).to_have_count(1)
-                policy=page.locator('.settings-policy-details');policy.locator('summary').click()
                 page.locator('[name=youtube_start_interval]').fill('90')
                 page.locator('#account-pool-form [type=submit]').click()
                 expect(page.locator('#account-pool-save-state')).to_contain_text('已保存')
@@ -142,6 +141,45 @@ def main():
                 linked=page.request.get(f'http://127.0.0.1:{server.server_port}/api/account-library/youtube?q=demo-one').json()['items'][0]
                 assert linked['cookie_count']==2
                 assert all(not c['pooled'] for c in linked['cookies'])
+                # The same table includes unassociated credentials and preserves
+                # member choices when filtering; saving members keeps pacing drafts.
+                page.locator('#credential-upload').click()
+                page.locator('#account-upload-name').fill('unlinked-fixture')
+                page.locator('#account-upload-file').set_input_files({'name':'unlinked.txt','mimeType':'text/plain','buffer':b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tunlinked-ui-fixture\n'})
+                page.locator('#account-upload-confirmed').check()
+                page.locator('#account-upload-form [type=submit]').click()
+                expect(page.locator('#account-upload-dialog')).not_to_be_visible()
+                expect(page.locator('#account-rows tr')).to_have_count(4)
+                expect(page.locator('#accounts-view table')).to_have_count(1)
+                expect(page.locator('[data-account-tab]')).to_have_count(2)
+                page.locator('#account-search').fill('unlinked-fixture')
+                expect(page.locator('#account-rows tr')).to_have_count(1)
+                page.locator('#youtube-cookie-pool-enabled').check()
+                page.locator('#account-rows [data-cookie-pool-id]').check()
+                page.locator('#account-search').fill('demo-one')
+                expect(page.locator('#account-rows tr')).to_have_count(1)
+                expect(page.locator('#account-rows')).to_contain_text('demo-one@example.com')
+                page.locator('#account-rows [data-cookie-pool-id]').first.check()
+                assert page.evaluate('cookiePoolDraft.ids.length')==2
+                page.locator('[data-account-tab=pool]').click()
+                page.locator('[name=youtube_start_interval]').fill('95')
+                page.locator('[data-account-tab=library]').click()
+                page.locator('#account-pool-members-save').click()
+                expect(page.locator('#youtube-cookie-pool-status')).to_contain_text('共 2 份 Cookie')
+                saved=page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']
+                assert saved['youtube_start_interval']==90
+                assert len(saved['youtube_cookie_pool'])==2
+                page.locator('[data-account-tab=pool]').click()
+                expect(page.locator('[name=youtube_start_interval]')).to_have_value('95')
+                page.locator('#account-pool-form [type=submit]').click()
+                expect(page.locator('#account-pool-save-state')).to_contain_text('已保存')
+                page.wait_for_function('state.config.youtube_start_interval===95 && !state.accountPoolDirty')
+                assert page.evaluate('state.config.youtube_cookie_pool.length')==2
+                page.screenshot(path=str(output/'pacing-desktop.png'),full_page=True)
+                page.locator('[data-account-tab=library]').click()
+                page.locator('#account-search').fill('')
+                expect(page.locator('#account-rows tr')).to_have_count(4)
+                page.screenshot(path=str(output/'accounts-unified-desktop.png'),full_page=True)
                 page.set_viewport_size({'width':390,'height':844})
                 page.screenshot(path=str(output/'accounts-mobile.png'),full_page=True,animations='disabled')
                 assert page.locator('#sidebar').bounding_box()['x'] + page.locator('#sidebar').bounding_box()['width'] <= 1

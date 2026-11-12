@@ -32,11 +32,17 @@ def main():
                 page = browser.new_page(viewport={'width': 1440, 'height': 1000})
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}/#settings')
+                status=page.evaluate("""async key => {
+                    const csrf=document.querySelector('meta[name="csrf-token"]').content;
+                    const r=await fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({bootstrap_key:key,username:'admin',password:'ui-test-only-password'})});return r.status;
+                }""", app.extensions['console_auth'].bootstrap_key)
+                assert status==201, status
+                page.reload()
                 expect(page.locator('.settings-tabs [role=tab]')).to_have_count(4)
                 expect(page.locator('[name="worker_count"]')).to_have_value('1')
                 # Controls and their categories exist before application JS runs.
                 # Hydration must not clone fields or change their constraints.
-                plain = browser.new_page(java_script_enabled=False)
+                plain = browser.new_page(java_script_enabled=False, storage_state=page.context.storage_state())
                 plain.goto(f'http://127.0.0.1:{server.server_port}/')
                 schema = """nodes => nodes.map(node => ({name: node.name, tag: node.tagName,
                     type: node.getAttribute('type'), min: node.getAttribute('min'), max: node.getAttribute('max'),
@@ -59,18 +65,14 @@ def main():
                 page.keyboard.press('Home')
                 expect(page.locator('#settings-pane-download')).to_be_visible()
                 page.evaluate("setView('accounts'); selectAccountTab('pool')")
-                policy = page.locator('.settings-policy-details')
-                policy.locator('summary').click()
                 interval = page.locator('[name="youtube_start_interval"]')
                 interval_value = interval.input_value()
                 interval.fill('')
-                policy.locator('summary').click()
                 page.locator('#account-pool-form button[type="submit"]').click()
                 expect(interval).to_be_visible()
                 interval.fill(interval_value)
                 page.locator('#account-pool-form button[type="submit"]').click()
                 expect(page.locator('#account-pool-save-state')).to_contain_text('已保存')
-                policy.locator('summary').click()
                 page.evaluate("setView('settings')")
                 preview = Path('.runtime/cache-archive-20261111/workspace-layout-preview')
                 preview.mkdir(parents=True, exist_ok=True)
@@ -108,78 +110,81 @@ def main():
                     page.screenshot(path=str(preview / f'{key}-mobile.png'), full_page=True)
                 page.set_viewport_size({'width': 1440, 'height': 1000})
                 page.evaluate("setView('accounts'); selectAccountTab('pool')")
-                section = page.locator('#youtube-cookie-section')
-                expect(section).to_be_visible()
-                expect(section).to_contain_text('当前未选用已保存的 Cookie')
-                form = section.locator('#youtube-cookie-form')
-                section.locator('details summary').last.click()
-                for name in ('Account A', '<b>Account B</b>'):
-                    form.locator('[data-cookie-name]').fill(name)
-                    form.locator('[data-cookie-file]').set_input_files({'name': 'cookies.txt', 'mimeType': 'text/plain',
+                page.locator('[data-account-tab=library]').click()
+                rows = page.locator('#account-rows tr')
+                def upload(name, filename='cookies.txt'):
+                    page.locator('#credential-upload').click()
+                    page.locator('#account-upload-name').fill(name)
+                    page.locator('#account-upload-file').set_input_files({'name': filename, 'mimeType': 'text/plain',
                         'buffer': b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tDUMMY_SECRET\n'})
-                    form.locator('#youtube-cookie-submit').click()
-                    expect(section.locator('.cookie-profile-row').filter(has_text=name)).to_be_visible()
-                rows = section.locator('.cookie-profile-row')
+                    page.locator('#account-upload-confirmed').check()
+                    page.locator('#account-upload-form [type=submit]').click()
+                    expect(page.locator('#account-upload-dialog')).not_to_be_visible()
+                def detail(name):
+                    rows.filter(has_text=name).locator('[data-credential-open]').click()
+                    expect(page.locator('#account-detail-dialog')).to_be_visible()
+                def close_detail():
+                    page.locator('#account-detail-dialog [data-close]').click()
+                def remove(name, cancel=False):
+                    detail(name)
+                    page.locator('[data-account-cookie-delete]').click()
+                    page.get_by_role('button', name='取消' if cancel else '确认', exact=True).last.click()
+                    if cancel: close_detail()
+                    else: expect(page.locator('#account-detail-dialog')).not_to_be_visible()
+                for name in ('Account A', '<b>Account B</b>'):
+                    upload(name)
+                    expect(rows.filter(has_text=name)).to_be_visible()
                 expect(rows).to_have_count(2)
-                rows.filter(has_text='Account A').get_by_role('button', name='检测登录：Account A', exact=True).click()
-                expect(rows.filter(has_text='Account A')).to_contain_text('登录有效')
-                expect(rows.filter(has_text='Account A')).to_contain_text('检测时间：')
-                expect(rows.filter(has_text='Account A')).to_contain_text('检测出口：直连')
-                expect(section.locator('.cookie-profile-row').filter(has_text='Account A')).to_contain_text('当前使用')
+                rows.filter(has_text='Account A').locator('[data-credential-check]').click()
+                expect(rows.filter(has_text='Account A')).to_contain_text('最近验证通过')
                 assert probe.call_count == 1
-                expect(rows.filter(has_text='Account A').get_by_role('button', name='删除')).to_be_enabled()
-                rows.filter(has_text='Account B').get_by_role('button', name='使用此 Cookie').click()
-                expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
-                # Cancelling deletion keeps the selected account and both rows.
-                rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
-                page.get_by_role('button',name='取消',exact=True).last.click()
+                detail('Account A')
+                expect(page.locator('#account-associated-cookies')).to_contain_text('直连')
+                with page.expect_download() as downloaded:
+                    page.locator('[data-account-cookie-export]').click()
+                assert 'DUMMY_SECRET' in Path(downloaded.value.path()).read_text()
+                close_detail()
+                detail('Account B')
+                page.locator('[data-account-cookie-select]').click()
+                page.get_by_role('button', name='确认', exact=True).last.click()
+                expect(rows.filter(has_text='Account B')).to_contain_text('当前选用')
+                close_detail()
+                remove('Account B', cancel=True)
                 expect(rows).to_have_count(2)
-                expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
-                rows.filter(has_text='Account A').get_by_role('button', name='删除').click()
-                page.get_by_role('button',name='确认删除',exact=True).last.click()
+                expect(rows.filter(has_text='Account B')).to_contain_text('当前选用')
+                remove('Account A')
                 expect(rows).to_have_count(1)
-                expect(rows.filter(has_text='Account B')).to_contain_text('当前使用')
-                expect(section.locator('b')).to_have_count(0)
-                form.locator('[data-cookie-name]').fill('')
-                form.locator('[data-cookie-file]').set_input_files({'name': 'filename-default.txt', 'mimeType': 'text/plain',
-                    'buffer': b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tDUMMY_SECRET\n'})
-                form.locator('#youtube-cookie-submit').click()
-                expect(section.locator('.cookie-profile-row').filter(has_text='filename-default.txt')).to_be_visible()
+                expect(rows.filter(has_text='Account B')).to_contain_text('当前选用')
+                expect(page.locator('#account-rows b')).to_have_count(0)
+                upload('', 'filename-default.txt')
+                expect(rows.filter(has_text='filename-default.txt')).to_be_visible()
                 expect(rows).to_have_count(2)
-                expect(section).to_contain_text('Cookie 绑定当前实例')
-                assert 'DUMMY_SECRET' not in section.inner_text()
+                assert 'DUMMY_SECRET' not in page.locator('#account-rows').inner_text()
                 output = Path('.runtime/cache-archive-20261111/cookie-profiles-preview')
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / 'desktop.png'))
                 page.set_viewport_size({'width': 390, 'height': 844})
-                assert section.evaluate('(e) => e.scrollWidth <= e.clientWidth'), 'Mobile Cookie section overflows'
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 page.screenshot(path=str(output / 'mobile.png'))
-                # Deleting the selected profile selects the remaining upload.
-                rows.filter(has_text='Account B').get_by_role('button', name='删除').click()
-                page.get_by_role('button',name='确认删除',exact=True).last.click()
+                remove('Account B')
                 expect(rows).to_have_count(1)
-                expect(rows.filter(has_text='filename-default.txt')).to_contain_text('当前使用')
+                expect(rows.filter(has_text='filename-default.txt')).to_contain_text('当前选用')
                 selected = page.request.get(f'http://127.0.0.1:{server.server_port}/api/youtube/cookies').json()['items'][0]
                 selected_path = f"Cookies/profiles/{selected['id']}.txt"
                 assert page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']['youtube_cookie'] == selected_path
-                # Historical browser-login success cannot overwrite the selection.
                 app.extensions['youtube_login']._write({'state': 'succeeded', 'message': 'Fixture past login'})
                 page.reload()
-                page.evaluate("setView('accounts'); selectAccountTab('pool')")
+                page.evaluate("setView('accounts'); selectAccountTab('library')")
                 expect(rows).to_have_count(1)
-                expect(rows.first).to_contain_text('当前使用')
+                expect(rows.first).to_contain_text('当前选用')
                 assert page.evaluate('state.config.youtube_cookie') == selected_path
-                rows.first.get_by_role('button', name='删除').click()
-                page.get_by_role('button',name='确认删除',exact=True).last.click()
+                remove('filename-default.txt')
                 expect(rows).to_have_count(0)
-                expect(section).to_contain_text('当前未选用已保存的 Cookie')
-                expect(page.locator('[data-youtube-status]').first).to_have_text('尚未登录 YouTube')
                 assert page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']['youtube_cookie'] == ''
                 assert page.evaluate('state.config.youtube_cookie') == ''
                 page.reload()
-                page.evaluate("setView('accounts'); selectAccountTab('pool')")
+                page.evaluate("setView('accounts'); selectAccountTab('library')")
                 expect(rows).to_have_count(0)
-                expect(section).to_contain_text('当前未选用已保存的 Cookie')
                 assert not errors, errors
                 browser.close()
         finally:

@@ -248,6 +248,47 @@ class AccountLibraryTests(unittest.TestCase):
         with self.assertRaises(Conflict): library.delete(identity,self.detail(identity)['version'],'admin')
         self.assertEqual(self.detail(identity)['cookie_count'],1)
 
+    def test_overview_groups_accounts_and_keeps_orphans_before_pagination(self):
+        identity = self.add('grouped@example.com')
+        empty = self.add('empty@example.com')
+        first = self.cookie()
+        second = self.cookie(COOKIE.replace(b'account-library-fixture', b'second-fixture'))
+        orphan = self.cookie(COOKIE.replace(b'account-library-fixture', b'orphan-fixture'))
+        self.assertEqual(self.link(identity, [first, second]).status_code, 200)
+        with patch('webapp.youtube_auth.probe') as probe:
+            data = self.client.get(PREFIX+'/overview').json
+        self.assertFalse(probe.called)
+        self.assertEqual(data['total'], 3)
+        group = next(r for r in data['items'] if r['id'] == identity)
+        self.assertEqual({p['id'] for p in group['cookies']}, {first, second})
+        self.assertEqual(next(r for r in data['items'] if r['id'] == empty)['cookie_count'], 0)
+        self.assertEqual([r['cookies'][0]['id'] for r in data['items'] if r['kind']=='cookie'], [orphan])
+        pages = [self.client.get(PREFIX+'/overview?size=1&page='+str(i)).json for i in (1, 2, 3)]
+        self.assertTrue(all(r['total']==3 for r in pages))
+        self.assertEqual(len({r['items'][0]['id'] for r in pages}), 3)
+        encoded = json.dumps(data)
+        for private in ('secrets_ciphertext', 'opaque-test-data', 'Secret 123', 'account-library-fixture'):
+            self.assertNotIn(private, encoded)
+
+    def test_overview_searches_member_names_and_preserves_full_account(self):
+        identity = self.add('search@example.com')
+        empty = self.add('empty@example.com')
+        first = self.cookie()
+        second = self.cookie(COOKIE.replace(b'account-library-fixture', b'second-search-fixture'))
+        orphan = self.cookie(COOKIE.replace(b'account-library-fixture', b'orphan-search-fixture'))
+        self.assertEqual(self.link(identity,[first,second]).status_code,200)
+        with self.store.connect() as db:
+            db.execute(cookie_profiles.update().where(cookie_profiles.c.id==first).values(name='needle_100%'))
+        found = self.client.get(PREFIX+'/overview?q=needle_100%25').json
+        self.assertEqual(found['total'],1)
+        self.assertEqual(found['items'][0]['cookie_count'],2)
+        self.assertEqual(self.client.get(PREFIX+'/overview?linked=orphan').json['items'][0]['cookies'][0]['id'], orphan)
+        self.assertEqual(self.client.get(PREFIX+'/overview?linked=missing').json['items'][0]['id'],empty)
+        self.assertEqual(self.client.get(PREFIX+'/overview?instance=unbound').json['total'],1)
+        self.assertEqual(self.client.get(PREFIX+'/overview?instance=not-an-instance').json['total'],0)
+        self.assertEqual(self.client.get(PREFIX+'/overview?auth=unlinked').json['items'][0]['id'],empty)
+        self.assertEqual(self.client.get(PREFIX+'/overview?size=bad').status_code,400)
+
     def test_viewer_operator_csrf_and_node_rpc_cannot_read_or_modify_secrets(self):
         identity=self.add()
         for role in ('viewer','operator'):
@@ -258,6 +299,7 @@ class AccountLibraryTests(unittest.TestCase):
             self.assertEqual(response.status_code,200,response.json)
             token=re.search(r'name="csrf-token" content="([^"]+)"',client.get('/').text)[1]
             self.assertEqual(client.get(PREFIX).status_code,200)
+            self.assertEqual(client.get(PREFIX+'/overview').status_code,200)
             self.assertEqual(client.post(PREFIX+'/'+identity+'/secrets',headers={'X-CSRF-Token':token},json={'field':'password'}).status_code,403)
         self.assertEqual(self.client.post(PREFIX+'/'+identity+'/secrets',json={'field':'password'}).status_code,403)
 

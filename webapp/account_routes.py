@@ -42,6 +42,10 @@ def register_accounts(app):
     def youtube_account_cookie_list():
         return jsonify(library().list(request.args, cookies=True))
 
+    @app.get(PREFIX + '/overview')
+    def youtube_account_overview():
+        return jsonify(library().overview(request.args))
+
     @app.get(PREFIX + '/capabilities')
     def youtube_account_capabilities():
         configured, problem = False, ''

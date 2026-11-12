@@ -15,10 +15,22 @@ def worker_pool_size():
             _integer('VIDEO_WORKER_DB_MAX_OVERFLOW', 0))
 
 
+def cookie_pool_worker_limit(config):
+    """Zero removes the configured process cap, not resource/admission limits."""
+    return max(0, min(64, int(config.get('youtube_cookie_pool_worker_limit', 20))))
+
+
 def target_workers(config):
     """Size the reservation from configured demand, never temporary cooldowns."""
     if config.get('youtube_cookie_pool'):
-        return max(1, min(64, int(config.get('youtube_cookie_pool_worker_limit', 20))))
+        configured = cookie_pool_worker_limit(config)
+        if configured:
+            return configured
+        # Reserve for selected files and configured session demand, independent
+        # of temporary cooling/warmup. Live admission still deduplicates accounts.
+        sessions = len(config['youtube_cookie_pool'])
+        per_session = max(1, min(64, int(config.get('youtube_cookie_session_limit', 1))))
+        return max(1, min(64, sessions * per_session))
     requested = max(1, min(64, int(config.get('worker_count', 1))))
     if config.get('throughput_mode', 'manual') == 'auto':
         methods = config.get('download_methods') or [config.get('download_method', 'yt_dlp')]

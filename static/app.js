@@ -152,8 +152,8 @@ function setView(name) {
   history.replaceState(null, '', `${location.search}#${name}`);
   if (typeof renderInstanceScope === 'function') renderInstanceScope();
   document.dispatchEvent(new CustomEvent('viewchange', { detail: name }));
-  if (name === 'accounts' && typeof accountTab !== 'undefined' && accountTab === 'pool' && typeof loadCookieProfiles === 'function' && (!fleetEnabled || state.instanceReady)) loadCookieProfiles().catch(error => {
-    if (error.name !== 'AbortError') $('#youtube-cookie-list').textContent = error.message;
+  if (name === 'accounts' && typeof accountTab !== 'undefined' && typeof loadCookieProfiles === 'function' && (!fleetEnabled || state.instanceReady)) loadCookieProfiles().catch(error => {
+    if (error.name !== 'AbortError') $('#account-list-error').textContent = error.message;
   });
   if (name === 'deployment' && (!fleetEnabled || state.instanceReady)) loadInstanceDeployment();
 }
@@ -685,7 +685,8 @@ function renderConcurrencyDraft() {
   const form = $('#settings-form');
   const number = name => Number(form.elements[name]?.value ?? document.querySelector('#account-pool-form')?.elements[name]?.value ?? 0);
   if (state.config?.youtube_cookie_pool?.length) {
-    $('#concurrency-config-note').textContent = `Cookie 池独立调度：每会话预热前 1 个任务，预热后最多 ${number('youtube_cookie_session_limit')} 个；本机下载进程最多 ${number('youtube_cookie_pool_worker_limit')} 个，准备余量 ${number('youtube_cookie_pool_preparation_workers')} 个。内存和数据库预算可能进一步降低实际进程数；启动间隔、冷却及渠道连接额度仍生效。`;
+    const limit = number('youtube_cookie_pool_worker_limit');
+    $('#concurrency-config-note').textContent = `Cookie 池独立调度：每会话预热前 1 个任务，预热后最多 ${number('youtube_cookie_session_limit')} 个；${limit ? `本机下载进程最多 ${limit} 个` : '不设置下载进程数量上限'}，准备余量 ${number('youtube_cookie_pool_preparation_workers')} 个。内存和数据库预算可能进一步降低实际进程数；启动间隔、冷却及渠道连接额度仍生效。`;
     $('#concurrency-config-note').classList.remove('capacity-draft-warning');
     return;
   }
@@ -721,7 +722,9 @@ function renderDatabaseBudgetDraft() {
   const methods = providerDraft || selectedProviders();
   const browsers = number('yt5s_browser_count', 2);
   const extra = methods.some(method => ['yt5s', 'yt1d', 'bergung'].includes(method)) ? browsers + Math.min(2, browsers) : 2;
-  const workers = pooled ? number('youtube_cookie_pool_worker_limit', 20)
+  const poolLimit = number('youtube_cookie_pool_worker_limit', 20);
+  const poolTarget = Math.min(64, Math.max(1, (state.config?.youtube_cookie_pool?.length || 0) * Number(state.config?.youtube_cookie_session_limit || 1)));
+  const workers = pooled ? poolLimit || poolTarget
     : Math.min(96, number('worker_count', 1) + (form.elements.throughput_mode.value === 'auto' ? extra : 0));
   const fixed = budget.main.reduce((sum, value) => sum + value, 0) + budget.auxiliary;
   const required = workers * budget.per_worker + fixed;
@@ -1316,7 +1319,7 @@ document.addEventListener('click', event => {
   if (open) {
     $(`#${open.dataset.open}`).showModal();
     if (open.dataset.open === 'youtube-cookie-dialog') loadCookieProfiles().catch(error => {
-      $('#youtube-cookie-list').textContent = error.message;
+      $('#account-list-error').textContent = error.message;
     });
   }
   if (event.target.closest('[data-close]')) closeWorkspaceDialog(event.target.closest('dialog'));

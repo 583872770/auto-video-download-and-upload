@@ -741,6 +741,34 @@ class CookiePoolTests(unittest.TestCase):
             with pool.assignment():
                 self.fail('Failed source request was free')
 
+    def test_zero_rolling_budgets_keep_history_for_independent_reenable(self):
+        now = time.time()
+        for index, mode in enumerate(('manual', 'adaptive')):
+            with self.subTest(mode=mode):
+                config = {**self.config, 'youtube_cookie_pool': self.ids[index:index + 1],
+                          'youtube_pacing_mode': mode, 'youtube_hourly_start_limit': 0,
+                          'youtube_daily_start_limit': 0, 'youtube_cookie_pool_start_interval': 0}
+                pool = self.pool(config)
+                pool.router.clock = lambda db: now
+                with pool.assignment(count_success=False) as selected:
+                    self.request_source(pool, selected)
+                now += 131
+                with pool.assignment(count_success=False) as selected:
+                    self.request_source(pool, selected)
+                now += 131
+                for field in ('youtube_hourly_start_limit', 'youtube_daily_start_limit'):
+                    limited = self.pool({**config, field: 1})
+                    limited.router.clock = lambda db: now
+                    with self.assertRaises(PipelineBusy):
+                        with limited.assignment():
+                            self.fail('Re-enabled budget ignored retained starts')
+                restarted = self.pool(config)
+                restarted.router.clock = lambda db: now
+                with restarted.assignment(count_success=False) as selected:
+                    self.request_source(restarted, selected)
+                self.assertGreaterEqual(restarted.status()['session_states'][0]['daily_used'], 3)
+                now += 131
+
     def test_cooling_peers_do_not_accelerate_healthy_account_and_hot_floor_applies(self):
         config = {**self.config, 'youtube_start_interval': 120, 'youtube_cookie_pool_start_interval': 0}
         pool = self.pool(config)

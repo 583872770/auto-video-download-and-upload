@@ -48,6 +48,10 @@ class AccountLibraryFleetTests(unittest.TestCase):
         self.assertEqual(result.status_code,201,result.json)
         item=self.detail(identity)
         self.assertEqual(item['cookies'][0]['instance_id'],'beta')
+        overview=self.client.get(PREFIX+'/overview?instance=beta',headers={'X-Instance-ID':'alpha'}).json
+        self.assertEqual(overview['total'],1)
+        self.assertEqual(overview['items'][0]['cookies'][0]['instance_id'],'beta')
+        self.assertEqual(self.client.get(PREFIX+'/overview?instance=alpha').json['total'],0)
         with self.manager.connect() as db:
             self.assertEqual(set(db.execute(select(cookie_profiles.c.scope)).scalars()),{'beta'})
         with patch('webapp.youtube_auth.probe',return_value=('valid','Fixture valid')) as probe:
