@@ -41,11 +41,22 @@ class AccountLibraryTests(unittest.TestCase):
     def detail(self, identity):
         return self.client.get(PREFIX+'/'+identity).json['item']
 
-    def cookie(self, value=COOKIE):
-        response = self.client.post('/api/youtube/cookies',headers=self.headers,
-            data={'cookie':(io.BytesIO(value),'fixture.txt'),'activate':'false'})
-        self.assertEqual(response.status_code,201,response.json)
-        return response.json['item']['id']
+    def cookie(self, value=COOKIE, identity=None):
+        if identity is None:
+            items = self.client.get(PREFIX).json['items']
+            identity = next((r['id'] for r in items if not r['cookie_count']), None)
+            if identity is None:
+                identity = self.add(f'cookie{len(items)}@example.com')
+        item = self.detail(identity)
+        if not item['instance_id']:
+            result = self.client.patch(PREFIX+'/'+identity, headers=self.headers,
+                json={'version': item['version'], 'instance_id': self.scope})
+            self.assertEqual(result.status_code, 200, result.json)
+            item = self.detail(identity)
+        response = self.client.post(PREFIX+'/'+identity+'/upload', headers=self.headers,
+            data={'cookie': (io.BytesIO(value), 'fixture.txt'), 'version': str(item['version']), 'confirmed': 'true'})
+        self.assertEqual(response.status_code, 201, response.json)
+        return response.json['profile_id']
 
     def link(self, identity, profiles, **extra):
         return self.client.put(PREFIX+'/'+identity+'/cookies',headers=self.headers,json={
@@ -140,16 +151,13 @@ class AccountLibraryTests(unittest.TestCase):
         self.assertEqual(self.detail(identity)['note'],'other editor')
         self.assertEqual(self.client.post(PREFIX+'/'+identity+'/secrets',headers=self.headers,json={'field':'extra'}).json['value'],'opaque-test-data')
 
-    def test_link_requires_confirmation_and_is_exclusive(self):
+    def test_manual_link_is_retired_and_account_cookie_is_exclusive(self):
         first, second = self.add(), self.add('other@example.com')
-        profile = self.cookie()
-        self.assertEqual(self.link(first,[profile],confirmed=False).status_code,400)
-        self.assertEqual(self.link(first,[profile]).status_code,200)
-        self.assertEqual(self.link(second,[profile]).status_code,409)
+        profile = self.cookie(identity=first)
+        self.assertEqual(self.link(first,[profile]).status_code,400)
+        self.assertEqual(self.link(second,[profile]).status_code,400)
         self.assertEqual(self.detail(first)['cookie_count'],1)
         self.assertEqual(self.detail(second)['cookie_count'],0)
-        version=self.detail(first)['version']
-        self.assertEqual(self.client.patch(PREFIX+'/'+first,headers=self.headers,json={'version':version,'instance_id':''}).status_code,409)
 
     def test_upload_does_not_select_or_join_pool_and_preserves_config(self):
         identity=self.add(instance_id=self.scope)
@@ -163,7 +171,6 @@ class AccountLibraryTests(unittest.TestCase):
 
     def test_login_state_records_automatic_checks_and_invalidates_on_cookie_or_exit_change(self):
         identity=self.add(instance_id=self.scope); profile=self.cookie()
-        self.assertEqual(self.link(identity,[profile]).status_code,200)
         from webapp.youtube_auth import YouTubeAuth
         from Utils.config import load_config
         config,base=load_config(self.config)
@@ -198,30 +205,30 @@ class AccountLibraryTests(unittest.TestCase):
         self.assertLess(len(calls),15)
         self.assertEqual(self.client.get(PREFIX+'?q=user100').json['total'],1)
 
-    def test_delete_erases_ciphertext_but_preserves_cookie_and_audit(self):
+    def test_delete_erases_ciphertext_and_cookie_but_preserves_audit(self):
         identity=self.add();profile=self.cookie()
-        self.assertEqual(self.link(identity,[profile]).status_code,200)
         result=self.client.delete(PREFIX+'/'+identity,headers=self.headers,json={'version':self.detail(identity)['version']})
         self.assertEqual(result.status_code,200,result.json)
         with self.store.connect() as db:
             self.assertFalse(db.execute(select(accounts)).first())
-            self.assertIsNotNone(db.execute(select(cookie_profiles)).first())
+            row = db.execute(select(cookie_profiles)).mappings().one()
+            self.assertEqual((row['deleted'],row['content']), (1,''))
             self.assertIn('delete',list(db.execute(select(audit.c.action)).scalars()))
 
-    def test_cookie_pagination_search_and_link_filters(self):
+    def test_cookie_pagination_and_search_exclude_unassociated_credentials(self):
         identity = self.add(instance_id=self.scope)
+        self.cookie(identity=identity)
         with self.store.connect() as db:
             db.execute(cookie_profiles.insert(), [dict(scope=self.scope, id=f'{i:032x}',
                 name=f'profile-{i}', content=COOKIE.decode(), created_at=str(i), deleted=0) for i in range(120)])
-        self.assertEqual(self.link(identity,[f'{0:032x}']).status_code,200)
-        result = self.client.get(PREFIX+'/cookies?page=2&size=50').json
-        self.assertEqual(result['total'],120)
-        self.assertEqual(len(result['items']),50)
+        result = self.client.get(PREFIX+'/cookies?page=1&size=50').json
+        self.assertEqual(result['total'],1)
+        self.assertEqual(len(result['items']),1)
         self.assertEqual(self.client.get(PREFIX+'/cookies?linked=1').json['total'],1)
-        self.assertEqual(self.client.get(PREFIX+'/cookies?linked=0').json['total'],119)
+        self.assertEqual(self.client.get(PREFIX+'/cookies?linked=0').json['total'],0)
         self.assertEqual(self.client.get(PREFIX+'/cookies?q=sample@example.com').json['total'],1)
         self.assertEqual(self.client.get(PREFIX+'/cookies?q=%25').json['total'],0)
-        self.assertEqual(self.client.get(PREFIX+'/cookies?auth=unchecked&size=100').json['total'],120)
+        self.assertEqual(self.client.get(PREFIX+'/cookies?auth=unchecked&size=100').json['total'],1)
         self.assertEqual(self.client.get(PREFIX+'?auth=unchecked').json['total'],1)
 
     def test_late_login_result_cannot_validate_replaced_cookie(self):
@@ -239,7 +246,6 @@ class AccountLibraryTests(unittest.TestCase):
 
     def test_pool_member_blocks_account_deletion(self):
         identity = self.add(); profile = self.cookie()
-        self.assertEqual(self.link(identity,[profile]).status_code,200)
         from webapp.account_library import AccountLibrary
         from Utils.config import load_config
         config,base = load_config(self.config)
@@ -248,41 +254,39 @@ class AccountLibraryTests(unittest.TestCase):
         with self.assertRaises(Conflict): library.delete(identity,self.detail(identity)['version'],'admin')
         self.assertEqual(self.detail(identity)['cookie_count'],1)
 
-    def test_overview_groups_accounts_and_keeps_orphans_before_pagination(self):
+    def test_overview_has_one_row_per_account_and_no_orphan_rows(self):
         identity = self.add('grouped@example.com')
         empty = self.add('empty@example.com')
-        first = self.cookie()
-        second = self.cookie(COOKIE.replace(b'account-library-fixture', b'second-fixture'))
-        orphan = self.cookie(COOKIE.replace(b'account-library-fixture', b'orphan-fixture'))
-        self.assertEqual(self.link(identity, [first, second]).status_code, 200)
+        first = self.cookie(identity=identity)
+        second = self.cookie(COOKIE.replace(b'account-library-fixture', b'second-fixture'), identity=identity)
+        self.assertEqual(first,second)
+        with self.store.connect() as db:
+            db.execute(cookie_profiles.insert().values(scope=self.scope,id='f'*32,name='orphan',
+                content=COOKIE.decode(),created_at='2026-11-01',deleted=0))
         with patch('webapp.youtube_auth.probe') as probe:
             data = self.client.get(PREFIX+'/overview').json
         self.assertFalse(probe.called)
-        self.assertEqual(data['total'], 3)
+        self.assertEqual(data['total'],2)
         group = next(r for r in data['items'] if r['id'] == identity)
-        self.assertEqual({p['id'] for p in group['cookies']}, {first, second})
-        self.assertEqual(next(r for r in data['items'] if r['id'] == empty)['cookie_count'], 0)
-        self.assertEqual([r['cookies'][0]['id'] for r in data['items'] if r['kind']=='cookie'], [orphan])
-        pages = [self.client.get(PREFIX+'/overview?size=1&page='+str(i)).json for i in (1, 2, 3)]
-        self.assertTrue(all(r['total']==3 for r in pages))
-        self.assertEqual(len({r['items'][0]['id'] for r in pages}), 3)
-        encoded = json.dumps(data)
-        for private in ('secrets_ciphertext', 'opaque-test-data', 'Secret 123', 'account-library-fixture'):
-            self.assertNotIn(private, encoded)
+        self.assertEqual([p['id'] for p in group['cookies']], [first])
+        self.assertEqual(next(r for r in data['items'] if r['id'] == empty)['cookie_count'],0)
+        self.assertTrue(all(r['kind']=='account' for r in data['items']))
+        pages = [self.client.get(PREFIX+'/overview?size=1&page='+str(i)).json for i in (1,2)]
+        self.assertEqual(len({r['items'][0]['id'] for r in pages}),2)
+        encoded=json.dumps(data)
+        for private in ('secrets_ciphertext','opaque-test-data','Secret 123','account-library-fixture'):
+            self.assertNotIn(private,encoded)
 
-    def test_overview_searches_member_names_and_preserves_full_account(self):
+    def test_overview_search_and_missing_login_filters(self):
         identity = self.add('search@example.com')
         empty = self.add('empty@example.com')
-        first = self.cookie()
-        second = self.cookie(COOKIE.replace(b'account-library-fixture', b'second-search-fixture'))
-        orphan = self.cookie(COOKIE.replace(b'account-library-fixture', b'orphan-search-fixture'))
-        self.assertEqual(self.link(identity,[first,second]).status_code,200)
+        first = self.cookie(identity=identity)
         with self.store.connect() as db:
             db.execute(cookie_profiles.update().where(cookie_profiles.c.id==first).values(name='needle_100%'))
-        found = self.client.get(PREFIX+'/overview?q=needle_100%25').json
+        found=self.client.get(PREFIX+'/overview?q=needle_100%25').json
         self.assertEqual(found['total'],1)
-        self.assertEqual(found['items'][0]['cookie_count'],2)
-        self.assertEqual(self.client.get(PREFIX+'/overview?linked=orphan').json['items'][0]['cookies'][0]['id'], orphan)
+        self.assertEqual(found['items'][0]['cookie_count'],1)
+        self.assertEqual(self.client.get(PREFIX+'/overview?linked=orphan').json['total'],0)
         self.assertEqual(self.client.get(PREFIX+'/overview?linked=missing').json['items'][0]['id'],empty)
         self.assertEqual(self.client.get(PREFIX+'/overview?instance=unbound').json['total'],1)
         self.assertEqual(self.client.get(PREFIX+'/overview?instance=not-an-instance').json['total'],0)

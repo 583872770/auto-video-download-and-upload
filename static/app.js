@@ -488,21 +488,9 @@ $('#youtube-auth-check').addEventListener('click', async () => {
   } catch (error) { toast(error.message, true); }
   finally { authChecking = false; await refresh(); renderStatus(); }
 });
-let youtubeLoginBusy = false;
 let refreshedLoginCookie = '';
 function renderYouTubeLogin() {
   const login = state.status?.youtube?.login;
-  const busy = youtubeLoginBusy || !!login?.active;
-  $('#youtube-login-start').disabled = !login || busy;
-  $('#youtube-login-start').textContent = login?.active ? '登录进行中…' : login?.state === 'idle' ? '打开登录窗口' : '重新打开登录窗口';
-  $('#youtube-login-cancel').hidden = !login?.active;
-  $('#youtube-login-cancel').disabled = youtubeLoginBusy || ['cancelling', 'committing'].includes(login?.state);
-  const status = $('#youtube-login-status');
-  status.textContent = login?.message || '正在读取登录状态…';
-  status.classList.toggle('error', ['failed', 'interrupted'].includes(login?.state));
-  status.classList.toggle('success', login?.state === 'succeeded');
-  const connection = state.clash?.mode === 'clash' ? `Clash · ${state.clash.selected || '尚未选择节点'}` : state.config?.proxy_mode === 'manual' && state.config?.proxy ? '手动代理' : '直连';
-  $('#youtube-login-connection').textContent = `登录连接：${login?.active ? login.connection : connection}`;
   $$('[data-youtube-login-summary]').forEach(element => {
     element.hidden = !login || login.state === 'idle';
     element.textContent = login?.message || '';
@@ -516,21 +504,6 @@ function renderYouTubeLogin() {
     });
   }
 }
-async function youtubeLoginAction(action) {
-  if (youtubeLoginBusy) return;
-  youtubeLoginBusy = true;
-  renderYouTubeLogin();
-  try {
-    const login = await api(`/api/youtube/login${action === 'cancel' ? '/cancel' : ''}`, { method: 'POST' });
-    if (state.status?.youtube) state.status.youtube.login = login;
-    renderYouTubeLogin();
-    await refresh();
-  } catch (error) { toast(error.message, true); }
-  finally { youtubeLoginBusy = false; renderYouTubeLogin(); }
-}
-$('#youtube-login-start').addEventListener('click', () => youtubeLoginAction('start'));
-$('#youtube-login-cancel').addEventListener('click', () => youtubeLoginAction('cancel'));
-
 function renderClash() {
   const data = state.clash;
   if (!data) return;
@@ -968,7 +941,7 @@ async function refresh({ poll = false, viewChanged = false } = {}) {
     const requests = {
       media: (!fleetEnabled || state.instanceId) && due('media', view === 'media', 10000) ? `/api/media?${listQuery('media', { limit: 24, q: $('#media-search').value })}` : null,
       tasks: due('tasks', view === 'tasks', 4000) ? `/api/tasks?${listQuery('tasks', { scope: 'download', view: 'history', limit: 50, status: $('#task-filter').value === 'all' ? '' : $('#task-filter').value, q: $('#task-search').value })}` : null,
-      status: due('status', view !== 'overview' || !fleetEnabled || !state.status || $('#youtube-login-dialog').open, $('#youtube-login-dialog').open || (!fleetEnabled && view === 'overview') ? 2000 : 10000) ? '/api/status' : null,
+      status: due('status', view !== 'overview' || !fleetEnabled || !state.status || $('#account-login-dialog').open, $('#account-login-dialog').open || (!fleetEnabled && view === 'overview') ? 2000 : 10000) ? '/api/status' : null,
       clash: (!fleetEnabled || state.instanceId) && due('clash', view === 'clash', 15000) ? '/api/clash' : null,
       overview: due('overview', ['tasks', 'media'].includes(view), 10000) ? '/api/overview' : null,
     };

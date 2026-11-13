@@ -8,7 +8,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from webapp.cookie_pool import CookiePool
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import tasks, download_permits, cookie_profiles
 from webapp.downloads import YouTubeAccountLimited, DownloadLeaseLost
 from webapp.risk_diagnostics import classify

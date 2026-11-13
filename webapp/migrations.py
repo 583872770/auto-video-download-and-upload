@@ -144,12 +144,18 @@ def _cookie_ownership(engine):
         cursor = tuple(rows[-1][column.name] for column in order)
 
 
+def _account_credentials(engine):
+    from webapp.account_migration import upgrade_account_credentials
+    upgrade_account_credentials(engine)
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
          ('20261030_optimize_indexes', _optimize_indexes),
          ('20261106_completed_file_times', _completed_file_times),
-         ('20261107_cookie_ownership', _cookie_ownership))
+         ('20261107_cookie_ownership', _cookie_ownership),
+         ('20261113_account_credentials', _account_credentials))
 
 
 def upgrade(engine):

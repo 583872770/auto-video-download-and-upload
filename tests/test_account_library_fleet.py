@@ -79,16 +79,13 @@ class AccountLibraryFleetTests(unittest.TestCase):
             self.assertFalse(db.execute(select(cookie_profiles)).first())
         self.assertEqual(self.detail(identity)['instance_id'],'beta')
 
-    def test_renaming_linked_account_preserves_both_email_ownerships(self):
-        identity = self.add()
+    def test_renaming_linked_account_is_rejected(self):
+        identity=self.add()
         self.assertEqual(self.upload(identity).status_code,201)
-        response = self.client.patch(PREFIX+'/'+identity,headers=self.headers,json={
+        response=self.client.patch(PREFIX+'/'+identity,headers=self.headers,json={
             'version':self.detail(identity)['version'],'email':'renamed@example.com'})
-        self.assertEqual(response.status_code,200,response.json)
-        for name in ('fleet@example.com','renamed@example.com'):
-            response = self.client.post(PREFIX,headers=self.headers,json={
-                'email':name,'password':'test-only','instance_id':'alpha'})
-            self.assertEqual(response.status_code,409,response.json)
+        self.assertEqual(response.status_code,409,response.json)
+        self.assertEqual(self.detail(identity)['email'],'fleet@example.com')
 
     def test_cross_instance_link_and_reimport_do_not_release_ownership(self):
         identity=self.add()
@@ -98,10 +95,10 @@ class AccountLibraryFleetTests(unittest.TestCase):
         self.assertEqual(response.status_code,409)
         response=self.client.put(PREFIX+'/'+identity+'/cookies',headers=self.headers,json={
             'version':item['version'],'instance_id':'alpha','profile_ids':[item['cookies'][0]['id']],'confirmed':True})
-        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.status_code,400)
         response=self.client.put(PREFIX+'/'+identity+'/cookies',headers=self.headers,json={
             'version':item['version'],'instance_id':'beta','profile_ids':[],'confirmed':True})
-        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.status_code,400)
         version=self.detail(identity)['version']
         response=self.client.delete(PREFIX+'/'+identity,headers=self.headers,json={'version':version})
         self.assertEqual(response.status_code,200,response.json)

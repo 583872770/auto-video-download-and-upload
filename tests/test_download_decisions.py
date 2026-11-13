@@ -11,7 +11,7 @@ from sqlalchemy import select
 from webapp.channel_scheduler import ChannelScheduler
 from webapp.concurrency_diagnostics import diagnose, read_context
 from webapp.cookie_pool import CookiePool
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import tasks, download_permits
 from webapp.download_policy import failure_evidence
 from webapp.downloads import YouTubeAccountLimited
@@ -343,32 +343,21 @@ assert(decisionExplanationHTML(data, 'main').includes('摘要已过期'));
 
     def test_node_cookie_status_refresh_preserves_unsaved_pool_selection(self):
         program = r"""
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
-const live = {innerHTML:''}, policy = {textContent:''}, check = {textContent:'检测登录',disabled:false};
-const selection = {checked:false}, classes = new Set();
-const row = {dataset:{cookieProfileRow:'a'},classList:{toggle:(name,on)=>on?classes.add(name):classes.delete(name)},
-  querySelector:selector=>({'[data-cookie-session-status]':policy,'[data-cookie-login-check]':check}[selector])};
-global.$ = ()=>live;
-global.document = {querySelectorAll:selector=>{assert.equal(selector,'[data-cookie-profile-row]'); return [row];}};
-global.cookieAccountNoticesHTML = ()=>'<p>Account A cooling</p>';
-global.failureKindNames = {account_rate_limit:'明确账号限流'};
-const source = fs.readFileSync('static/cookie_profiles.js','utf8');
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const live={innerHTML:''},recover={hidden:true};
+global.$=id=>id==='#youtube-cookie-pool-live'?live:recover;
+global.accountAdmin=()=>true;
+global.cookiePoolDraft={ids:['a','b'],enabled:true};
+global.cookieAccountNoticesHTML=summary=>summary.message;
+const source=fs.readFileSync('static/cookie_profiles.js','utf8');
 vm.runInThisContext(source.slice(source.indexOf('function updateCookiePoolLive('),source.indexOf('let cookiePoolPolling')));
-const session = {id:'a',name:'Account A',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:Date.now()/1000+3600,limit:0,interval:180};
-const data = {pool:{accounts:[{id:'a',configured_limit:3}],session_states:[session],capacity_summary:{}}};
-updateCookiePoolLive(data);
-assert(check.disabled);
-assert(classes.has('cookie-cooling'));
-assert(policy.textContent.includes('明确账号限流'));
-assert(policy.textContent.includes('当前最多 0 个任务'));
-assert.equal(selection.checked,false);
-session.state = 'recovery'; session.limit = 1; session.recovery_successes = 2;
-updateCookiePoolLive(data);
-assert(!check.disabled);
-assert(!classes.has('cookie-cooling'));
-assert(classes.has('cookie-recovery'));
-assert(policy.textContent.includes('本轮有效成功 2 次'));
-assert.equal(selection.checked,false);
+updateCookiePoolLive({pool:{halted:false,capacity_summary:{message:'Account A cooling'}}});
+assert.equal(live.innerHTML,'Account A cooling');
+assert(recover.hidden);
+assert.deepEqual(cookiePoolDraft,{ids:['a','b'],enabled:true});
+updateCookiePoolLive({pool:{halted:true,capacity_summary:{message:'Manual recovery'}}});
+assert(!recover.hidden);
+assert.deepEqual(cookiePoolDraft,{ids:['a','b'],enabled:true});
 """
         result = subprocess.run(['node', '-e', program], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

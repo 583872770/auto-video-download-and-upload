@@ -130,6 +130,8 @@ class AccountLibrary:
             target = self.validate_instance(db, data.get('instance_id', row['instance_id']))
             self.owner(db, fields['normalized_email'], target)
             connected = db.execute(select(links.c.profile_id).where(links.c.account_id == identity).limit(1)).first()
+            if connected and fields['normalized_email'] != row['normalized_email']:
+                raise Conflict('已有登录凭据的账号不能更换邮箱，请新增另一个账号。')
             if connected:
                 self.owner(db, fields['normalized_email'], target, claim=True)
             if target != row['instance_id'] and connected:
@@ -153,38 +155,70 @@ class AccountLibrary:
         return value
 
     def associate(self, identity, data, actor):
-        if type(data.get('version')) is not int or data.get('confirmed') is not True:
-            raise ValueError('请确认 Cookie 属于此邮箱账号后再关联。')
-        ids = data.get('profile_ids')
-        if not isinstance(ids, list) or len(ids) > 50 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
-            raise ValueError('Cookie 关联列表无效。')
+        raise ValueError('不再支持独立 Cookie 关联，请从账号登录或在账号下更新 Cookie。')
+
+    def save_cookie(self, identity, version, data, actor, *, target=None, expected_email=None,
+                    action='cookie_replaced'):
+        """One authoritative credential per account, with a stable pool identity.
+
+        Validate and fence before writing. Never reset download pacing or touch
+        an active downloader's private Cookie snapshot.
+        """
+        from Utils.youtube_login import parse_youtube_cookie_file
+        from webapp.cookie_binding import claim, credential_keys
+        parse_youtube_cookie_file(data)
+        if type(version) is not int:
+            raise Conflict('缺少账号版本，请重新读取账号。')
         with self.transaction() as db:
-            row = self.get_row(db, identity, data['version'])
-            target = self.validate_instance(db, data.get('instance_id', row['instance_id']))
-            if not target:
-                raise ValueError('请先选择绑定实例。')
-            self.owner(db, row['normalized_email'], target, claim=bool(ids))
-            existing = list(db.execute(select(links).where(links.c.account_id == identity)).mappings())
-            if existing and target != row['instance_id']:
-                raise Conflict('已有 Cookie 关联的账号不能直接跨实例改绑。')
-            profiles = list(db.execute(select(cookie_profiles).where(cookie_profiles.c.scope == target,
-                cookie_profiles.c.id.in_(ids), cookie_profiles.c.deleted == 0).with_for_update()).mappings())
-            if len(profiles) != len(ids):
-                raise Conflict('Cookie 不存在、已删除或不属于该实例。')
-            others = db.execute(select(links.c.profile_id).where(links.c.instance_id == target,
-                links.c.profile_id.in_(ids), links.c.account_id != identity)).first()
-            if others:
-                raise Conflict('所选 Cookie 已关联其他账号。')
-            from webapp.cookie_binding import claim, credential_keys
-            for profile in profiles:
-                claim(db, target, credential_keys(profile['content'].encode()))
-            db.execute(links.delete().where(links.c.account_id == identity))
-            if ids:
-                db.execute(links.insert(), [dict(instance_id=target, profile_id=i, account_id=identity,
-                    confirmed_by=actor, created_at=time.time()) for i in ids])
-            db.execute(accounts.update().where(accounts.c.id == identity).values(instance_id=target,
+            row = self.get_row(db, identity, version)
+            scope = row['instance_id']
+            if not scope or target and scope != target:
+                raise Conflict('账号绑定实例已变化或尚未绑定，请重新读取。')
+            if not self.nodes(db).get(scope, {}).get('online'):
+                raise Conflict('账号绑定实例离线，请等待实例恢复后更新 Cookie。')
+            if expected_email and row['normalized_email'] != expected_email.lower():
+                raise Conflict('登录期间账号邮箱已变化，请重新登录。')
+            self.owner(db, row['normalized_email'], scope, claim=True)
+            claim(db, scope, credential_keys(data))
+            linked = db.execute(select(links).where(links.c.account_id == identity).with_for_update()).mappings().first()
+            profile = linked['profile_id'] if linked else uuid.uuid4().hex
+            if linked and linked['instance_id'] != scope:
+                raise Conflict('账号 Cookie 归属不一致，请先检查历史数据。')
+            old = db.execute(select(cookie_profiles).where(cookie_profiles.c.scope == scope,
+                cookie_profiles.c.id == profile).with_for_update()).mappings().first()
+            if old and old['content']:
+                from webapp.cookie_pool import account_group_key, credential_key
+                from webapp.channel_scheduler import _key
+                from webapp.database import download_resources
+                try:
+                    previous = 'credential:' + credential_key(old['content'].encode())
+                    raw = db.execute(select(download_resources.c.state).where(
+                        download_resources.c.key == _key('youtube-account-alias:' + previous))).scalar_one_or_none()
+                    group = json.loads(raw or '{}').get('group') or account_group_key(old['name'], old['content'].encode())
+                except ValueError:
+                    group = None
+                if group:
+                    current = 'credential:' + credential_key(data)
+                    alias = _key('youtube-account-alias:' + current)
+                    db.execute(self.store.db.upsert(download_resources, dict(key=alias,
+                        state=json.dumps({'group': group})), ['key']))
+            # Keep the display/group name as well as the ID: pacing historically
+            # groups accounts by this name. Re-login must not evade a cooldown.
+            values = dict(scope=scope, id=profile, name=old['name'] if old else row['email'],
+                content=data.decode('utf-8-sig'), deleted=0,
+                created_at=datetime.now(timezone.utc).isoformat())
+            db.execute(self.store.db.upsert(cookie_profiles, values, ['scope', 'id']))
+            if not linked:
+                db.execute(links.insert().values(instance_id=scope, profile_id=profile, account_id=identity,
+                    confirmed_by=actor, created_at=time.time()))
+            else:
+                db.execute(links.update().where(links.c.account_id == identity).values(
+                    confirmed_by=actor, created_at=time.time()))
+            db.execute(auth_table.delete().where(auth_table.c.instance_id == scope, auth_table.c.profile_id == profile))
+            db.execute(accounts.update().where(accounts.c.id == identity).values(
                 version=row['version'] + 1, updated_at=time.time()))
-            self.record(db, identity, actor, 'associate')
+            self.record(db, identity, actor, action)
+        return profile
 
     def delete(self, identity, version, actor):
         with self.transaction() as db:
@@ -205,6 +239,11 @@ class AccountLibrary:
                     raise Conflict('绑定实例仍有任务执行，请等待当前任务结束后删除资料。')
             db.execute(links.delete().where(links.c.account_id == identity))
             db.execute(accounts.delete().where(accounts.c.id == identity))
+            for profile in bound:
+                db.execute(cookie_profiles.update().where(cookie_profiles.c.scope == row['instance_id'],
+                    cookie_profiles.c.id == profile).values(deleted=1, content=''))
+                db.execute(auth_table.delete().where(auth_table.c.instance_id == row['instance_id'],
+                    auth_table.c.profile_id == profile))
             self.record(db, identity, actor, 'delete')
 
     def inventory(self, db, profiles=None):
@@ -276,7 +315,7 @@ class AccountLibrary:
             'auth_state':auth, 'download_state':download}
 
     def overview(self, filters):
-        """One account row, or one unassociated credential; paginate after grouping.
+        """One row per imported/created account; credentials are subordinate.
 
         All metadata comes from one database snapshot. No credentials are inferred
         to belong to an email and opening the workspace never probes YouTube.
@@ -304,25 +343,14 @@ class AccountLibrary:
                     func.lower(accounts.c.note).contains(search, autoescape=True)))
             rows = list(db.execute(account_query).mappings())
             association = (links.c.instance_id == cookie_profiles.c.scope) & (links.c.profile_id == cookie_profiles.c.id)
-            orphan = ~select(links.c.account_id).where(association).exists()
-            if target:
-                orphan = orphan & (cookie_profiles.c.scope == target) if target != 'unbound' else orphan & False
-            if search:
-                orphan = orphan & func.lower(cookie_profiles.c.name).contains(search, autoescape=True)
             selected_links = select(links.c.profile_id).where(association, links.c.account_id.in_([r['id'] for r in rows])).exists()
             profiles = list(db.execute(select(cookie_profiles).where(cookie_profiles.c.deleted == 0,
-                or_(selected_links, orphan))).mappings())
+                selected_links)).mappings())
             nodes, inventory = self.inventory(db, profiles)
         grouped, items = {}, []
         for profile in inventory:
             if profile['account_id']:
                 grouped.setdefault(profile['account_id'], []).append(profile)
-            else:
-                items.append(dict(id='cookie:'+profile['instance_id']+':'+profile['id'], kind='cookie',
-                    email=None, note='', instance_id=profile['instance_id'], instance_name=profile['instance_name'],
-                    online=profile['online'], created_at=profile['created_at'], cookies=[profile],
-                    cookie_count=1, valid_count=int(profile['auth']['state']=='valid'),
-                    auth_state=profile['auth']['state'], download_state=profile['download_state']))
         for row in rows:
             members = sorted(grouped.get(row['id'], []), key=lambda p:(p['created_at'], p['id']))
             items.append(self.account_item(dict(row), members, nodes))
@@ -365,9 +393,9 @@ class AccountLibrary:
         with self.store.connect() as db:
             query = select(*fields).order_by(accounts.c.created_at.desc(), accounts.c.id)
             if cookies:
-                query = select(cookie_profiles).outerjoin(links,
+                query = select(cookie_profiles).join(links,
                     (links.c.instance_id == cookie_profiles.c.scope) & (links.c.profile_id == cookie_profiles.c.id)
-                    ).outerjoin(accounts, accounts.c.id == links.c.account_id).where(cookie_profiles.c.deleted == 0
+                    ).join(accounts, accounts.c.id == links.c.account_id).where(cookie_profiles.c.deleted == 0
                     ).order_by(cookie_profiles.c.scope, cookie_profiles.c.created_at, cookie_profiles.c.id)
             if identity:
                 query = query.where(accounts.c.id == identity)

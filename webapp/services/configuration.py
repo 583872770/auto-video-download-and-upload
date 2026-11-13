@@ -68,9 +68,7 @@ class ConfigurationService:
                 for identity in config.get('youtube_cookie_pool', []):
                     profiles.require(identity)
                 if 'youtube_cookie' in data and config.get('youtube_cookie'):
-                    target = resolve_path(self.context.config_path.parent, config['youtube_cookie'])
-                    if target.is_file():
-                        profiles.restore_selected(config['youtube_cookie'])
+                    profiles.restore_selected(config['youtube_cookie'])
             if self.context.fleet and self.context.fleet.can_download:
                 from webapp.fleet import RESOURCE_LIMITS
                 limits = {key: config[key] for key in RESOURCE_LIMITS if key in data}

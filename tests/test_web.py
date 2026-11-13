@@ -201,70 +201,18 @@ class WebTests(unittest.TestCase):
         response.request.environ['wsgi.input'].close()
         return response
 
-    def test_youtube_cookie_upload_configures_downloader_without_exposing_values(self):
-        content = (b'# Netscape HTTP Cookie File\n'
-                   b'#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tDO_NOT_EXPOSE\n'
-                   b'.google.com\tTRUE\t/\tTRUE\t0\tSID\tOTHER_SECRET\n'
-                   b'.youtube.com\tTRUE\t/\tTRUE\t1\told\tEXPIRED_SECRET\n')
-        response = self.upload_cookie(content, '../../custom-name.txt')
-        self.assertEqual(response.status_code, 201, response.json)
-        target = self.root / 'Cookies' / 'youtube.txt'
-        jar = MozillaCookieJar(str(target))
-        jar.load(ignore_discard=True, ignore_expires=True)
-        self.assertEqual([(entry.domain, entry.name, entry.value) for entry in jar],
-                         [('.youtube.com', 'SID', 'DO_NOT_EXPOSE')])
-        self.assertIsNone(next(iter(jar)).expires)
-        self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], 'Cookies/youtube.txt')
-        with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={'state': 'valid'}):
-            task = self.post_task('download', urls='https://www.youtube.com/watch?v=example').json
-        from webapp.downloader import build_ydl_options
-        payload = self.store.get(task['id'], private=True)['payload']
-        payload = self.store.effective_download_payload(task['id'], payload)
-        options = build_ydl_options(payload['config'], Path(payload['base']))
-        self.assertNotIn('cookiefile', options)  # Saving a Cookie does not disable on-demand use.
-        options = build_ydl_options({**payload['config'], 'youtube_cookie_usage': 'always'}, Path(payload['base']))
-        self.assertEqual(options['cookiefile'], str(target))
-        for response in (response, self.client.get('/api/status'), self.client.get('/api/config')):
-            self.assertNotIn('DO_NOT_EXPOSE', response.text)
-        self.assertTrue(self.client.get('/api/status').json['youtube']['saved'])
+    def test_independent_cookie_upload_is_retired_without_exposing_values(self):
+        content=b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tDO_NOT_EXPOSE\n'
+        before=self.config.read_bytes()
+        response=self.upload_cookie(content)
+        self.assertEqual(response.status_code,400,response.json)
+        self.assertNotIn('DO_NOT_EXPOSE',response.text)
+        self.assertEqual(self.config.read_bytes(),before)
+        self.assertFalse((self.root/'Cookies/youtube.txt').exists())
 
-    def test_invalid_youtube_cookie_keeps_existing_file_and_config(self):
-        valid = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprevious\n'
-        self.assertEqual(self.upload_cookie(valid).status_code, 201)
-        target = self.root / 'Cookies' / 'youtube.txt'
-        previous, config_before = target.read_bytes(), self.config.read_bytes()
-        invalids = [b'{"cookies": []}', b'# Netscape HTTP Cookie File\nmalformed SECRET_VALUE\n',
-                    b'# HTTP Cookie File\n.google.com\tTRUE\t/\tTRUE\t0\tSID\tonly-google\n',
-                    b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1\tSID\texpired\n',
-                    b'# HTTP Cookie File\nnotyoutube.com\tFALSE\t/\tTRUE\t0\tSID\tlookalike\n',
-                    b'X' * (1024 * 1024 + 1), b'']
-        for content in invalids:
-            with self.subTest(length=len(content)):
-                response = self.upload_cookie(content)
-                self.assertEqual(response.status_code, 400)
-                self.assertNotIn('SECRET_VALUE', response.text)
-                self.assertEqual(target.read_bytes(), previous)
-                self.assertEqual(self.config.read_bytes(), config_before)
-        self.assertEqual(self.upload_cookie(valid, filename='cookies.json').status_code, 400)
-        self.assertEqual(self.upload_cookie(valid, headers={}).status_code, 403)
-
-    def test_youtube_cookie_update_blocks_while_task_queued(self):
-        self.post_task('check')
-        valid = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n'
-        self.assertEqual(self.upload_cookie(valid).status_code, 409)
-        self.assertFalse((self.root / 'Cookies' / 'youtube.txt').exists())
-
-    def test_youtube_cookie_rolls_back_when_config_save_fails(self):
-        valid = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprevious\n'
-        self.assertEqual(self.upload_cookie(valid).status_code, 201)
-        target = self.root / 'Cookies' / 'youtube.txt'
-        before = target.read_bytes()
-        with patch('app.save_settings', side_effect=OSError('read-only config')):
-            with self.assertLogs(self.app.logger, level='ERROR'):
-                response = self.upload_cookie(valid.replace(b'previous', b'new-secret'))
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(target.read_bytes(), before)
-        self.assertEqual(list(target.parent.glob('.youtube-import-*')), [])
+    def test_independent_upload_still_requires_csrf(self):
+        content=b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture\n'
+        self.assertEqual(self.upload_cookie(content,headers={}).status_code,403)
 
     def test_persistence_recovery_and_utf8_log_cursor(self):
         task = self.post_task('check').json

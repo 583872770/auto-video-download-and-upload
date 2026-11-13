@@ -8,14 +8,13 @@
   <div id="youtube-cookie-pool-live" aria-live="polite"></div>
   <button id="youtube-cookie-pool-recover" type="button" class="button button-white" hidden>检查全部账号并解除拦截</button>
   <details class="account-help">
-    <summary>账号池规则与登录工具</summary>
-    <p class="micro-copy">在下方清单勾选当前实例的 Cookie，再点击“保存账号池”。账号池至少选择 2 份 Cookie。同账号的不同 Cookie 共享并发、间隔和冷却；仅修改成员不会清空历史记录。冷却和低频恢复状态可在账号详情的“调度与记录”中查看。</p>
+    <summary>账号池规则与登录检测</summary>
+    <p class="micro-copy">在下方清单勾选当前实例的 Cookie，再点击“保存账号池”。账号池至少选择 2 份 Cookie。每个账号仅保留一份当前 Cookie；仅修改成员不会清空历史记录。冷却和低频恢复状态可在账号详情的“调度与记录”中查看。</p>
     <p class="micro-copy">Cookie 属于绑定实例，不会因删除资料或实例离线而释放归属。限流只暂停受影响的账号，其他健康账号继续调度。登录有效不代表没有限流；冷却中不发登录检测请求。</p>
     <p id="youtube-auth-status" class="auth-status-message" role="status">正在读取当前实例的登录状态…</p>
     <span data-youtube-status class="auth-status-chip"></span><p class="micro-copy" data-youtube-login-summary hidden role="status"></p>
     <button id="youtube-auth-check" type="button" class="button button-white">检测当前 Cookie</button>
-    <button class="button button-white" type="button" data-open="youtube-login-dialog">浏览器登录</button>
-    <p class="micro-copy">这两个登录工具针对当前实例选用的单份 Cookie。逐账号操作请使用下方清单中的“登录”或“检测登录”。</p>
+    <p class="micro-copy">此检测针对当前实例选用的单份 Cookie。登录与更新凭据请从账号清单选择账号操作。</p>
     <details class="cookie-export-guide"><summary>YouTube Cookie 导出方式</summary><ol><li>打开新的无痕窗口，登录 YouTube。</li><li>在同一标签页打开 <code>https://www.youtube.com/robots.txt</code>。</li><li>导出 youtube.com 的 Netscape Cookie 文件并上传。</li><li>导出后关闭这个无痕窗口。</li></ol></details>
   </details>
 </section>

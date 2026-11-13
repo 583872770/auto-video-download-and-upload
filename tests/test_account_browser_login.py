@@ -100,6 +100,48 @@ class AccountBrowserLoginTests(unittest.TestCase):
         self.assertEqual(self.count(youtube_account_cookies),0)
         self.assertEqual(self.count(youtube_account_owners),0)
 
+    def test_relogin_replaces_existing_cookie_without_accumulating_profiles(self):
+        identity = self.add(instance_id=self.scope)
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        self.assertEqual(self.finish(identity)['state'], 'succeeded')
+        profile = self.detail(identity)['cookies'][0]['id']
+        self.fixture.ready.clear(); self.fixture.complete.clear()
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        self.assertEqual(self.finish(identity)['state'], 'succeeded')
+        self.assertEqual(self.detail(identity)['cookies'][0]['id'], profile)
+        self.assertEqual(self.count(cookie_profiles), 1)
+        self.assertEqual(self.count(youtube_account_cookies), 1)
+
+    def test_failed_relogin_preserves_previously_saved_cookie(self):
+        identity = self.add(instance_id=self.scope)
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        self.assertEqual(self.finish(identity)['state'], 'succeeded')
+        before = self.detail(identity)['cookies']
+        self.fixture.ready.clear(); self.fixture.complete.clear()
+        self.fixture.account_name = 'wrong@example.com'
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        self.assertEqual(self.finish(identity)['state'], 'failed')
+        self.assertEqual(self.detail(identity)['cookies'], before)
+        self.assertEqual(self.count(cookie_profiles), 1)
+
+    def test_deleted_cookie_cannot_be_resurrected_by_pending_login(self):
+        identity = self.add(instance_id=self.scope)
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        self.assertEqual(self.finish(identity)['state'], 'succeeded')
+        profile = self.detail(identity)['cookies'][0]['id']
+        self.fixture.ready.clear(); self.fixture.complete.clear()
+        self.assertEqual(self.start(identity).status_code, 202)
+        self.assertTrue(self.fixture.ready.wait(5))
+        deleted = self.client.post('/api/youtube/cookies/delete', headers=self.headers, json={'id':profile})
+        self.assertEqual(deleted.status_code, 200, deleted.json)
+        self.assertEqual(self.finish(identity)['state'], 'failed')
+        self.assertEqual(self.detail(identity)['cookie_count'], 0)
+
     def test_edit_during_login_fences_commit_and_leaves_no_orphan_cookie(self):
         identity=self.add(instance_id=self.scope)
         self.assertEqual(self.start(identity).status_code,202)

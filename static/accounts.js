@@ -11,7 +11,7 @@ for (const name of ['youtube_hourly_start_limit', 'youtube_daily_start_limit']) 
 
 // Global account views never inherit the workbench's selected executor.
 const accountApi = '/api/account-library/youtube';
-const accountLoginLabels = {unlinked:'未关联 Cookie',unchecked:'待检测',valid:'最近验证通过',expired:'检测已过期',not_logged_in:'需要重新登录',invalid:'Cookie 无效 / 过期',verification_required:'需要网页验证',network_error:'暂时无法确认（网络）',rate_limited:'暂时无法确认（限流）',checking:'检测进行中',unconfirmed:'暂时无法确认',missing:'凭据缺失'};
+const accountLoginLabels = {unlinked:'尚未登录',unchecked:'待检测',valid:'最近验证通过',expired:'检测已过期',not_logged_in:'需要重新登录',invalid:'Cookie 无效 / 过期',verification_required:'需要网页验证',network_error:'暂时无法确认（网络）',rate_limited:'暂时无法确认（限流）',checking:'检测进行中',unconfirmed:'暂时无法确认',missing:'凭据缺失'};
 const accountDownloadLabels = {inactive:'未参与下载',ready:'正常',cooldown:'账号冷却中',recovery:'低频恢复',manual:'需人工处理',unavailable:'Cookie 不可用',unknown:'状态待更新'};
 let accountTab = 'library', accountPage = 1, accountTicket = 0, accountDetailTicket = 0;
 let accountData = null, accountNodes = [], accountDetail = null, accountDetailCookie = null;
@@ -74,7 +74,7 @@ function accountPoolCell(item) {
     const name = item.cookies.length > 1 ? p.name : '加入账号池';
     return local ? `<label class="account-pool-choice"><input type="checkbox" data-cookie-pool-id="${escapeHTML(p.id)}" aria-label="加入账号池：${escapeHTML(p.name)}"${checked ? ' checked' : ''}${!accountAdmin() || fleetEnabled && !state.instanceReady ? ' disabled' : ''}>${escapeHTML(name)}</label>`
       : `<small>${item.cookies.length > 1 ? escapeHTML(p.name)+' · ' : ''}${p.pooled ? '已加入' : '未加入'}</small>`;
-  }).join('') || '<span class="micro-copy">尚无 Cookie</span>';
+  }).join('') || '<span class="micro-copy">尚未登录</span>';
 }
 async function loadAccounts() {
   if (accountTab === 'pool') return;
@@ -88,10 +88,10 @@ async function loadAccounts() {
   accountListError(null); updateAccountNodes(data.instances); accountData = data;
   const authLabel = value => escapeHTML(accountLoginLabels[value] || '待检测');
   document.getElementById('account-rows').innerHTML = data.items.map(item => {
-    const first = item.cookies[0], orphan = item.kind === 'cookie';
-    const detail = orphan ? `<button type="button" class="text-button" data-credential-open="${escapeHTML(first.instance_id)}:${escapeHTML(first.id)}">详情 / 关联</button>` : `<button type="button" class="text-button" data-account-open="${escapeHTML(item.id)}">${accountAdmin() ? '详情 / 编辑' : '查看详情'}</button>`;
-    const check = first && item.cookies.length === 1 && accountAdmin() ? `<button type="button" class="text-button" data-credential-check="${escapeHTML(first.instance_id)}:${escapeHTML(first.id)}"${!first.online || first.download_state === 'cooldown' ? ' disabled' : ''}>检测登录</button>` : '';
-    return `<tr data-account-row="${escapeHTML(item.id)}"><td><strong>${escapeHTML(orphan ? first.name : item.email)}</strong><small>${orphan ? '未关联账号资料' : escapeHTML(item.note)}</small><small>${orphan ? '1 份 Cookie' : item.cookie_count ? item.cookie_count+' 份 Cookie · '+escapeHTML(item.cookies.map(p=>p.name).join('、')) : '尚无 Cookie'}</small></td><td>${escapeHTML(item.instance_name || '未绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${authLabel(item.auth_state)}${item.cookies.some(p=>p.active) ? '<small>当前选用</small>' : ''}${item.cookie_count ? `<small>${item.valid_count} / ${item.cookie_count} 份近期验证通过</small>` : ''}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${accountPoolCell(item)}</td><td>${!orphan && accountAdmin() ? `<button type="button" class="text-button" data-account-login="${escapeHTML(item.id)}"${item.instance_id && !item.online ? ' disabled' : ''}>登录</button>` : ''}${check}${detail}${item.instance_id && item.instance_id !== accountSelectedInstance() ? `<button type="button" class="text-button" data-cookie-owner="${escapeHTML(item.instance_id)}">管理此实例</button>` : ''}</td></tr>`;
+    const first = item.cookies[0];
+    const detail = `<button type="button" class="text-button" data-account-open="${escapeHTML(item.id)}">${accountAdmin() ? '详情 / 编辑' : '查看详情'}</button>`;
+    const check = first && accountAdmin() ? `<button type="button" class="text-button" data-credential-check="${escapeHTML(first.instance_id)}:${escapeHTML(first.id)}"${!first.online || first.download_state === 'cooldown' ? ' disabled' : ''}>检测登录</button>` : '';
+    return `<tr data-account-row="${escapeHTML(item.id)}"><td><strong>${escapeHTML(item.email)}</strong><small>${escapeHTML(item.note)}</small><small>${first ? '凭据更新：'+escapeHTML(new Date(first.created_at).toLocaleString('zh-CN',{hour12:false})) : '点击登录，绑定实例并保存凭据'}</small></td><td>${escapeHTML(item.instance_name || '登录时绑定')}<small>${item.instance_id ? item.online ? '在线' : '离线' : ''}</small></td><td>${authLabel(item.auth_state)}${first?.active ? '<small>当前选用</small>' : ''}</td><td>${escapeHTML(accountDownloadLabels[item.download_state])}</td><td>${accountPoolCell(item)}</td><td>${accountAdmin() ? `<button type="button" class="text-button" data-account-login="${escapeHTML(item.id)}"${item.instance_id && !item.online ? ' disabled' : ''}>${first ? '重新登录' : '登录并绑定'}</button>` : ''}${check}${detail}${item.instance_id && item.instance_id !== accountSelectedInstance() ? `<button type="button" class="text-button" data-cookie-owner="${escapeHTML(item.instance_id)}">管理此实例</button>` : ''}</td></tr>`;
   }).join('');
   document.getElementById('account-empty').hidden = !!data.items.length;
   document.getElementById('account-page-info').textContent = `共 ${data.total} 项 · 第 ${data.page} / ${Math.max(1,Math.ceil(data.total/data.size))} 页`;
@@ -104,7 +104,6 @@ async function accountCapabilities() {
   note.hidden = data.encryption_ready;
   note.textContent = data.message;
   for (const id of ['account-new','account-import']) document.getElementById(id).disabled = !accountAdmin() || !data.encryption_ready;
-  document.getElementById('credential-upload').disabled = !accountAdmin();
 }
 function fillAccountPoolConfig(config) {
   const form = document.getElementById('account-pool-form');
@@ -174,39 +173,30 @@ async function openAccountDetails(identity, {cookie=null, tab='profile'} = {}) {
   const ticket = ++accountDetailTicket;
   const item = identity ? (await api(accountApi+'/'+encodeURIComponent(identity))).item : null;
   if (ticket !== accountDetailTicket) return;
-  const creating = !item && !cookie;
+  const creating = !item;
   accountDetail = item; accountDetailCookie = cookie; accountDetailDirty = false; clearAccountSecret();
   accountError('account-detail-error','');
   const form = document.getElementById('account-edit-form'); form.reset(); form.hidden = !!cookie && !item;
   for (const input of form.querySelectorAll('[name]')) input.disabled = !accountAdmin();
   document.getElementById('account-detail-title').textContent = item?.email || cookie?.name || '新增账号';
   form.elements.email.value = item?.email || '';
+  form.elements.email.disabled = !!item?.cookie_count || !accountAdmin();
   form.elements.note.value = item?.note || '';
   form.elements.password.required = creating;
   form.elements.instance_id.innerHTML = accountOptions(item?.instance_id || '');
   form.elements.instance_id.disabled = !!item?.cookie_count || !accountAdmin();
+  document.getElementById('account-profile-instance-field').hidden = creating;
   document.getElementById('account-secret-actions').hidden = !item || !accountAdmin();
   document.getElementById('account-delete').hidden = !item || !accountAdmin();
   form.querySelector('[type=submit]').disabled = !accountAdmin();
   for (const node of document.querySelectorAll('[data-account-detail-tab]')) node.hidden = creating && node.dataset.accountDetailTab !== 'profile';
   const members = item?.cookies || (cookie ? [cookie] : []);
-  document.getElementById('account-associated-cookies').innerHTML = members.map(accountMemberHTML).join('') || '<p>未关联 Cookie。保存绑定实例后，可上传或关联已有 Cookie。</p>';
-  document.getElementById('account-link-form').hidden = !accountAdmin() || !item?.instance_id;
-  document.getElementById('account-browser-login').disabled = !accountAdmin() || !item?.instance_id || !item?.online;
-  document.getElementById('account-link-choices').replaceChildren();
-  document.getElementById('account-link-confirmed').checked = false;
+  document.getElementById('account-associated-cookies').innerHTML = members.map(accountMemberHTML).join('') || '<p>尚未登录。点击下方按钮选择实例并登录。</p>';
+  document.getElementById('account-browser-login').disabled = !accountAdmin() || !item || !!item.instance_id && !item.online;
+  document.getElementById('account-cookie-upload').disabled = !accountAdmin() || !item?.instance_id;
   const dialog = document.getElementById('account-detail-dialog');
   if (!dialog.open) dialog.showModal();
   selectAccountDetailTab(creating ? 'profile' : tab);
-  if (item?.instance_id) {
-    const values = await api(accountApi+'/cookies?size=100&instance='+encodeURIComponent(item.instance_id));
-    if (ticket !== accountDetailTicket || !dialog.open) return;
-    document.getElementById('account-link-choices').innerHTML = values.items.map(p => `<label><input type="checkbox" value="${escapeHTML(p.id)}"${p.account_id === item.id ? ' checked' : ''}${p.account_id && p.account_id !== item.id ? ' disabled' : ''}>${escapeHTML(p.name)}${p.account_id && p.account_id !== item.id ? '（已关联其他账号）' : ''}</label>`).join('') || '<p>此实例尚无 Cookie，请先上传。</p>';
-  } else if (cookie && accountAdmin()) {
-    const choices = await api(accountApi+'/choices');
-    if (ticket !== accountDetailTicket || !dialog.open) return;
-    document.getElementById('account-associated-cookies').insertAdjacentHTML('beforeend', `<label>选择要关联的账号<select id="account-unlinked-choice"><option value="">请选择账号</option>${choices.items.filter(a => !a.instance_id || a.instance_id === cookie.instance_id).map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.email)}</option>`).join('')}</select></label><button type="button" class="button button-dark" id="account-unlinked-link">选择账号并确认关联</button><p class="micro-copy">没有账号资料时先新增；现有 Cookie 可继续下载。</p>`);
-  }
 }
 async function openAccountCookie(scope, profile, tab='cookies') {
   const data = await api(accountApi+'/cookies?profile='+encodeURIComponent(profile)+'&instance='+encodeURIComponent(scope || ''));
@@ -223,7 +213,7 @@ async function loadAccountEvents() {
     const session = p.session;
     const progress = typeof cookieRecoveryProgressHTML === 'function' && session ? cookieRecoveryProgressHTML(session,{time:Date.now()/1000},p.online) : '';
     return `<h3>${escapeHTML(p.name)}</h3>${progress || accountMemberHTML(p)}`;
-  }).join('') || '<p>尚未关联 Cookie，没有调度记录。</p>';
+  }).join('') || '<p>尚未登录，没有调度记录。</p>';
   events.textContent = members.length ? '正在读取最近记录…' : '';
   const values = await Promise.all(members.map(p => api(`${accountApi}/cookies/${encodeURIComponent(p.instance_id)}/${encodeURIComponent(p.id)}/timeline`)));
   if (epoch !== accountDialogEpoch || !document.getElementById('account-detail-dialog').open) return;
@@ -326,12 +316,7 @@ document.addEventListener('click', event => {
     url.hidden = button.dataset.accountSecret !== 'code_url' || !/^https?:\/\//.test(value.value);
     if (!url.hidden) url.href = value.value;
   });
-  if (button.id === 'account-unlinked-link') runButton(button,async () => {
-    const id = document.getElementById('account-unlinked-choice').value;
-    if (!id) throw new Error('请选择账号。');
-    await openAccountDetails(id,{tab:'cookies'});
-    toast('请勾选 Cookie，并确认属于此账号后保存关联。');
-  });
+
 });
 for (const [id,labels] of [['account-auth',accountLoginLabels],['account-download',accountDownloadLabels]]) document.getElementById(id).innerHTML = `<option value="">${id === 'account-download' ? '全部下载状态' : '全部登录状态'}</option>` + Object.entries(labels).map(([k,v]) => `<option value="${k}">${v}</option>`).join('');
 let accountSearchTimer;
@@ -349,7 +334,7 @@ document.getElementById('account-pool-form').addEventListener('invalid',event =>
   }
 },true);
 document.getElementById('account-edit-form').addEventListener('input',() => { accountDetailDirty = true; });
-document.getElementById('account-link-form').addEventListener('change',() => { accountDetailDirty = true; });
+
 document.getElementById('account-edit-form').addEventListener('submit',event => {
   event.preventDefault(); runButton(event.submitter,async () => {
     if (accountDetailBusy) return;
@@ -366,22 +351,9 @@ document.getElementById('account-edit-form').addEventListener('submit',event => 
     finally { accountDetailBusy = false; }
   });
 });
-document.getElementById('account-link-form').addEventListener('submit',event => {
-  event.preventDefault(); runButton(event.submitter,async () => {
-    if (accountDetailBusy) return;
-    const item = accountDetail;
-    const ids = [...document.querySelectorAll('#account-link-choices input:checked')].map(n => n.value);
-    accountDetailBusy = true;
-    try {
-      await api(accountApi+'/'+item.id+'/cookies',{method:'PUT',body:{version:item.version,instance_id:item.instance_id,confirmed:document.getElementById('account-link-confirmed').checked,profile_ids:ids}});
-      accountDetailDirty = false; accountDetailBusy = false; await openAccountDetails(item.id,{tab:'cookies'}); await loadAccounts(); toast('关联已保存，未改变账号池。');
-    } catch(error) { accountError('account-detail-error',error); throw error; }
-    finally { accountDetailBusy = false; }
-  });
-});
 document.getElementById('account-delete').addEventListener('click',event => runButton(event.currentTarget,async () => {
   const item = accountDetail;
-  if (!await confirmDialog(`删除 ${item.email} 的资料及已保存密钥？关联 ${item.cookie_count} 份 Cookie，Cookie 本身和实例归属会保留；仍在使用时会拒绝删除。`,{title:'删除账号资料',confirmText:'确认删除'})) return;
+  if (!await confirmDialog(`删除 ${item.email} 的资料及已保存密钥？同时删除此账号的 Cookie；历史记录和实例归属保留。仍在使用时会拒绝删除。`,{title:'删除账号资料',confirmText:'确认删除'})) return;
   if (accountDetailBusy || accountDetail?.id !== item.id) return;
   accountDetailBusy = true;
   try {
@@ -500,7 +472,6 @@ document.getElementById('youtube-source-form').addEventListener('submit',event =
 const importDialog = document.getElementById('account-import-dialog');
 document.getElementById('account-import').addEventListener('click',() => {
   document.getElementById('account-import-form').reset();
-  document.getElementById('account-import-instance').innerHTML = accountOptions();
   document.getElementById('account-import-preview').replaceChildren(); accountPreview = null; accountImportDirty = false;
   document.getElementById('account-import-confirm').disabled = true; accountError('account-import-error',''); importDialog.showModal();
 });
@@ -523,7 +494,7 @@ document.getElementById('account-import-form').addEventListener('submit',event =
   event.preventDefault(); runButton(event.submitter,async () => {
     const text = document.getElementById('account-import-text').value;
     const epoch = ++accountPreviewEpoch;
-    const result = await api(accountApi+'/import/preview',{method:'POST',body:{text,mode:document.getElementById('account-import-mode').value,instance_id:document.getElementById('account-import-instance').value}});
+    const result = await api(accountApi+'/import/preview',{method:'POST',body:{text,mode:document.getElementById('account-import-mode').value}});
     if (!importDialog.open || epoch !== accountPreviewEpoch) return;
     accountPreview = {token:result.token,text};
     const labels = {create:'新增',update:'更新资料',skip:'跳过',error:'格式错误'};
@@ -545,25 +516,28 @@ importDialog.addEventListener('close',() => { accountPreviewEpoch++; document.ge
 
 const uploadDialog = document.getElementById('account-upload-dialog');
 let uploadAccounts = [], uploadDirty = false;
-document.getElementById('credential-upload').addEventListener('click',event => runButton(event.currentTarget,async () => {
-  uploadAccounts = (await api(accountApi+'/choices')).items.filter(a => a.instance_id);
+document.getElementById('account-cookie-upload').addEventListener('click', event => runButton(event.currentTarget, async () => {
+  if (accountDetailDirty || accountDetailBusy) throw new Error('请先保存账号资料。');
+  const item = (await api(accountApi+'/'+accountDetail.id)).item;
+  if (!item.instance_id) throw new Error('请先点击登录并选择绑定实例。');
+  uploadAccounts = [item];
   document.getElementById('account-upload-form').reset(); uploadDirty = false;
-  document.getElementById('account-upload-account').innerHTML = `<option value="">仅保存 Cookie · ${escapeHTML(instanceName(state.instanceId))}</option>` + uploadAccounts.map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.email)} · ${escapeHTML(accountName(a.instance_id))}</option>`).join('');
-  document.getElementById('account-upload-target').textContent = '可选已有账号关联；留空则保存为当前实例的未关联 Cookie。上传后不会自动加入账号池。';
+  document.getElementById('account-upload-account').innerHTML = `<option value="${escapeHTML(item.id)}">${escapeHTML(item.email)}</option>`;
+  document.getElementById('account-upload-target').textContent = `绑定实例：${accountName(item.instance_id)}。保存将替换此账号的旧 Cookie，保留账号池选择和冷却。`;
   accountError('account-upload-error',''); uploadDialog.showModal();
 }));
 document.getElementById('account-upload-form').addEventListener('input',() => { uploadDirty = true; });
 document.getElementById('account-upload-form').addEventListener('submit',event => {
   event.preventDefault(); runButton(event.submitter,async () => {
     const item = uploadAccounts.find(a => a.id === document.getElementById('account-upload-account').value);
-    if (!item && fleetEnabled && !state.instanceReady) throw new Error('请先选择可用的下载实例。');
+    if (!item) throw new Error('请从已有账号的详情更新 Cookie。');
     const data = new FormData(); data.append('cookie',document.getElementById('account-upload-file').files[0]);
-    if (item) data.append('version',item.version);
+    data.append('version',item.version);
     data.append('name',document.getElementById('account-upload-name').value || item?.email || '');
     data.append('activate','false');
     data.append('confirmed',String(document.getElementById('account-upload-confirmed').checked));
     accountUploadBusy = true; event.target.inert = true;
-    try { const result = await api(item ? accountApi+'/'+item.id+'/upload' : '/api/youtube/cookies',{method:'POST',body:data}); uploadDirty = false; uploadDialog.close(); await loadCookieProfiles(); await loadAccounts(); toast(result.message); }
+    try { const result = await api(accountApi+'/'+item.id+'/upload',{method:'POST',body:data}); uploadDirty = false; uploadDialog.close(); await openAccountDetails(item.id,{tab:'cookies'}); await loadCookieProfiles(); await loadAccounts(); toast(result.message); }
     catch(error) { accountError('account-upload-error',error); throw error; }
     finally { accountUploadBusy = false; event.target.inert = false; }
   });

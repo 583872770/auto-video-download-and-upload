@@ -30,8 +30,13 @@ def init_extensions(app, store, config_path, service_role, instance_id, instance
     if registered:
         from webapp.fleet import Fleet
         fleet = Fleet(store, service_role, identity=instance_id, url=instance_url, name=instance_name)
+        from webapp.account_migration import reconcile_local
+        reconcile_local(store, config_path)
         initial, initial_base = load_config(Path(config_path or DEFAULT_CONFIG).resolve())
         fleet.initialize({**DEFAULTS, **initial}, initial_base, clash.directory)
+    else:
+        from webapp.account_migration import reconcile_local
+        reconcile_local(store, config_path)
     app.extensions['fleet'] = fleet
 
     youtube_auth = YouTubeAuth(store)

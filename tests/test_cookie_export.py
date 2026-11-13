@@ -6,7 +6,7 @@ from urllib.parse import unquote
 from sqlalchemy import select
 
 from tests import test_cookie_profiles, test_fleet
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import cookie_profiles
 
 COOKIE = test_cookie_profiles.COOKIE

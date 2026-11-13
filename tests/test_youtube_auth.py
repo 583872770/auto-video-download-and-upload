@@ -114,8 +114,10 @@ class AuthContract:
         self.assertEqual(response.status_code, 200, response.json)
 
     def cookie(self, content=COOKIE):
-        result = self.client.post('/api/youtube/cookie', data={'cookie': (BytesIO(content), 'cookies.txt')}, headers=self.headers)
-        self.assertEqual(result.status_code, 201, result.json)
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        AccountCookieProfiles(self.root,self.store).save_legacy(content)
+        result=self.client.post('/api/youtube/cookies/select',json={'id':'legacy'},headers=self.headers)
+        self.assertEqual(result.status_code,200,result.json)
         from Utils.config import load_config
         return load_config(self.config)[0]
 

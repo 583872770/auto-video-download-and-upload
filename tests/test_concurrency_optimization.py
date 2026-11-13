@@ -112,7 +112,7 @@ class SubtitleTests(unittest.TestCase):
     def test_pool_subtitle_limit_cools_only_original_account_and_blocks_new_requests(self):
         import yt_dlp
         from web_worker import execute
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         from webapp.cookie_pool import CookiePool
         from webapp.channel_scheduler import ChannelScheduler
         from webapp.downloads import YouTubeAccountLimited

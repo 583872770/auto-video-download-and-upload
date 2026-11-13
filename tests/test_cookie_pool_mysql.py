@@ -1,7 +1,7 @@
 """Run the Cookie protection contract on isolated, disposable MySQL databases."""
 from tests.test_mysql import MySQLFixture
 from tests import test_cookie_pool as contract
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 
 
 class MySQLCookiePoolTests(MySQLFixture, contract.CookiePoolTests):

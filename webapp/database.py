@@ -104,6 +104,7 @@ youtube_account_cookies = Table('youtube_account_cookies', metadata,
     Column('account_id', String(32), nullable=False), Column('confirmed_by', String(64), nullable=False),
     Column('created_at', Float, nullable=False))
 Index('ix_youtube_account_cookies_account', youtube_account_cookies.c.account_id)
+Index('uq_youtube_account_cookie', youtube_account_cookies.c.account_id, unique=True)
 youtube_account_audit = Table('youtube_account_audit', metadata,
     Column('id', String(32), primary_key=True), Column('account_id', String(32), nullable=False),
     Column('actor', String(64), nullable=False), Column('action', String(32), nullable=False),

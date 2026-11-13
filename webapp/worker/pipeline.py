@@ -69,10 +69,9 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
     if store and 'yt_dlp' in methods and (config.get('youtube_cookie_usage', 'auto') != 'never'
                                           or config.get('_cookie_pool_selected')):
         from webapp.cookie_profiles import CookieProfiles
-        from webapp.cookie_binding import CookieBindingConflict
         try:
             CookieProfiles(base, store).restore_selected(config.get('youtube_cookie'))
-        except CookieBindingConflict as error:
+        except ValueError as error:
             from webapp.youtube_auth import YouTubeAuthRequired
             # Reuse the auth isolation path: preserve the task and stop this
             # instance, rather than charging failures to every queued video.

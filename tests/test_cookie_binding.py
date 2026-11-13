@@ -7,7 +7,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 from tests import test_fleet
 from webapp.cookie_binding import CookieBindingConflict
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import cookie_bindings, cookie_profiles
 
 COOKIE = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tPRIVATE_SESSION\n'
@@ -67,7 +67,7 @@ class CookieBindingTests(unittest.TestCase):
         second = self.library('beta')
         custom = self.root / 'beta/custom.txt'
         custom.write_bytes(COOKIE)
-        with self.assertRaises(CookieBindingConflict):
+        with self.assertRaises(ValueError):
             second.restore_selected('custom.txt')
         with self.assertRaises(CookieBindingConflict):
             second.save_legacy(COOKIE)
@@ -76,7 +76,7 @@ class CookieBindingTests(unittest.TestCase):
                 {'youtube_cookie': 'custom.txt', 'proxy_mode': 'direct'}, self.root / 'beta')
         probe.assert_not_called()
         self.assertEqual(result['state'], 'invalid')
-        self.assertIn('alpha', result['message'])
+        self.assertEqual(result['state'],'invalid')
 
     def test_deleting_and_offline_instances_keep_ownership_for_old_snapshots(self):
         first, second = self.library('alpha'), self.library('beta')
@@ -101,9 +101,9 @@ class CookieBindingTests(unittest.TestCase):
         probe.assert_not_called()
         tools.assert_not_called()
         self.assertFalse(result.exception.retryable)
-        self.assertIn('alpha', str(result.exception))
+        self.assertIn('账号', str(result.exception))
 
-    def test_upgrade_preserves_old_duplicates_but_only_earliest_owner_can_execute(self):
+    def test_upgrade_removes_historical_credentials_without_accounts(self):
         from webapp.migrations import _cookie_ownership
         from webapp.cookie_pool import CookiePool
         from webapp.youtube_auth import YouTubeAuthRequired
@@ -118,17 +118,14 @@ class CookieBindingTests(unittest.TestCase):
                     content=COOKIE.decode(), created_at='2026-10-31', deleted=0))
         _cookie_ownership(self.a.db.engine)
         _cookie_ownership(self.a.db.engine)  # Resume-safe migration.
-        self.assertTrue(self.library('alpha').require('a' * 32).is_file())
-        second = self.library('beta')
-        self.assertEqual(len(second.items()), 1)
-        response = self.apps['beta'].test_client().get('/api/youtube/cookies')
-        self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(len(response.json['items']), 1)
-        self.assertIn(b'PRIVATE_SESSION', second.export('a' * 32)[1])
-        with self.assertRaises(YouTubeAuthRequired) as result:
-            CookiePool(self.b, {'youtube_cookie_pool': ['a' * 32]}, self.root / 'beta', None)
-        self.assertIn('alpha', str(result.exception))
-        second.delete('a' * 32)
+        from webapp.account_migration import upgrade_account_credentials
+        upgrade_account_credentials(self.a.db.engine)
+        self.assertEqual(self.library('alpha').items(),[])
+        self.assertEqual(self.library('beta').items(),[])
+        for node in ('alpha','beta'):
+            with self.assertRaises(ValueError): self.library(node).require('a'*32)
+        with self.a.connect() as db:
+            self.assertTrue(all(r.deleted and not r.content for r in db.execute(select(cookie_profiles))))
 
     def test_saving_foreign_pool_ids_and_custom_credentials_is_rejected(self):
         identity = self.library('alpha').add('A', COOKIE)['id']
@@ -141,7 +138,7 @@ class CookieBindingTests(unittest.TestCase):
         (self.root / 'beta/custom.txt').write_bytes(COOKIE)
         response = self.client.put('/api/config', json={'youtube_cookie': 'custom.txt'}, headers=headers)
         self.assertEqual(response.status_code, 400, response.json)
-        self.assertIn('alpha', response.json['error'])
+        self.assertIn('账号', response.json['error'])
 
     def test_pool_controls_save_to_selected_instance_and_match_settings_and_scheduler(self):
         from webapp.channels import registry

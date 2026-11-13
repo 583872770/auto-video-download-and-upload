@@ -124,7 +124,7 @@ class DownloadStartGateTests(unittest.TestCase):
     def run_scoped_wait(self, *, manual_retry=False):
         from web_worker import drain
         from webapp.cookie_pool import CookiePool
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         from webapp.diagnostics import process_diagnostics
 
         store = TaskStore(self.root)

@@ -100,7 +100,7 @@ class WorkbenchFleetTests(unittest.TestCase):
             self.assertEqual(load.call_count, count + 1)
 
     def test_cookie_labels_use_executor_scope_and_metadata_only(self):
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         from webapp.workbench import Workbench
         content = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture\n'
         profile = CookieProfiles(self.root / 'alpha', self.a).add('Alpha account', content)

@@ -1,11 +1,8 @@
 """CookieService operations independent of route registration."""
-from pathlib import Path
-import shutil
-import tempfile
 import time
 from Utils.config import resolve_path
-from Utils.youtube_login import parse_youtube_cookie_file, save_youtube_cookies
-from webapp.youtube_login import LoginBusy, browser_cookie_name
+from Utils.youtube_login import parse_youtube_cookie_file
+from webapp.youtube_login import LoginBusy
 
 
 class CookieService:
@@ -16,67 +13,23 @@ class CookieService:
         return self.context.store.download_connection_busy()
 
     def install_cookie(self, data):
-        cookies = parse_youtube_cookie_file(data)
-        with self.context.media_lock, self.context.settings_lock:
-            if self.cookie_update_busy():
-                raise LoginBusy('请先停止全部下载并等待当前任务结束，再更新 Cookie。')
-            config, base = self.context.settings()
-            target = base / 'Cookies' / 'youtube.txt'
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists() and not target.is_file():
-                raise ValueError('Cookie 保存位置不是文件，请检查 Cookies/youtube.txt。')
-            with tempfile.TemporaryDirectory(prefix='.youtube-import-', dir=target.parent) as staging:
-                backup = Path(staging) / 'previous.txt'
-                config_backup = Path(staging) / 'config.yaml'
-                shutil.copy2(self.context.config_path, config_backup)
-                if target.is_file():
-                    shutil.copy2(target, backup)
-                save_youtube_cookies(cookies, target)
-                try:
-                    config['youtube_cookie'] = 'Cookies/youtube.txt'
-                    self.context.dependencies.save_settings(self.context.config_path, config)
-                    self.context.sync_runtime(config, base)
-                    from webapp.cookie_profiles import CookieProfiles
-                    CookieProfiles(base, self.context.store).save_legacy(target.read_bytes())
-                    self.context.youtube_auth.invalidate()
-                except Exception:
-                    config_backup.replace(self.context.config_path)
-                    if backup.is_file():
-                        backup.replace(target)
-                    else:
-                        target.unlink(missing_ok=True)
-                    raise
+        raise ValueError('请先新增或导入账号，再在该账号下更新 Cookie。')
 
     def install_browser_cookie(self, data, *, account_name=None, account=None):
+        if not account:
+            raise ValueError('请从账号清单选择账号登录。')
         with self.context.media_lock, self.context.settings_lock:
-            if account:
-                from webapp.account_login import install
-                config, base = self.context.settings()
-                return install(self.context.store, base, config, data, account, account_name)
-            from webapp.cookie_profiles import CookieProfiles
+            from webapp.account_login import install
             config, base = self.context.settings()
-            profiles = CookieProfiles(base, self.context.store)
-            item = profiles.add(browser_cookie_name(account_name), data)
-            name = item['name']
-            if self.cookie_update_busy():
-                return f'YouTube 登录成功，已新增 Cookie「{name}」。当前下载继续使用原 Cookie；停止当前实例后可在列表中选择新 Cookie。'
-            original_config = self.context.config_path.read_bytes()
-            try:
-                config['youtube_cookie'] = profiles.require(item['id']).relative_to(base).as_posix()
-                self.context.dependencies.save_settings(self.context.config_path, config)
-                self.context.sync_runtime(config, base)
-                self.context.youtube_auth.invalidate()
-            except Exception:
-                self.context.config_path.write_bytes(original_config)
-                profiles.delete(item['id'])
-                raise
-        return f'YouTube 登录成功，已新增并启用 Cookie「{name}」，后续下载将自动使用。'
+            return install(self.context.store, base, config, data, account, account_name)
 
     def require_login_idle(self):
         if self.context.app.extensions['youtube_login'].status()['active']:
             raise LoginBusy('请先完成或取消 YouTube 登录，再执行此操作。')
 
     def start_browser_login(self, identity=None, data=None, actor=None):
+        if not identity:
+            raise ValueError('请先新增或导入账号，再从账号清单登录。')
         with self.context.media_lock:
             self.require_login_idle()
             config, base = self.context.settings()
@@ -237,23 +190,4 @@ class CookieService:
                        selection_changed=bool(item['active']))
 
     def add_youtube_cookie(self, data, name, filename, activate=True):
-        context = self.context
-        from webapp.cookie_profiles import CookieProfiles
-        with context.media_lock, context.settings_lock:
-            config, base = context.settings()
-            item = CookieProfiles(base, context.store).add(name, data, filename)
-            # A first upload must be immediately usable. Keep an explicitly
-            # selected Cookie untouched when adding a second profile.
-            activated = activate and not bool(config.get('youtube_cookie'))
-            if activated:
-                config['youtube_cookie'] = f"Cookies/profiles/{item['id']}.txt"
-                config['youtube_cookie_pool'] = []
-                context.dependencies.save_settings(context.config_path, config)
-                context.sync_runtime(config, base)
-                context.youtube_auth.invalidate()
-                item['active'] = True
-        message = ('Cookie 已保存并设为当前使用；请点击“检测登录”确认当前出口可用。'
-                   if activated else 'Cookie 已保存；请在列表中点击“使用此 Cookie”后生效。')
-        return dict(item=item, activated=activated, message=message), 201
-
-
+        raise ValueError('请先新增或导入账号，再在该账号下更新 Cookie。')

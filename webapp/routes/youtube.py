@@ -60,8 +60,12 @@ def register_youtube_routes(context, cookies, preflight):
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
             raise ValueError('请提交 JSON 对象。')
-        if request.path == '/api/youtube/account-login/cancel' and not data.get('account_id'):
+        if not data.get('account_id'):
             raise ValueError('请选择需要取消的账号登录。')
+        from werkzeug.exceptions import Forbidden
+        user = getattr(g, 'console_user', None)
+        if not getattr(g, 'fleet_rpc', False) and (not user or user['role'] != 'admin'):
+            raise Forbidden('仅管理员可以取消账号登录。')
         with youtube_login.lock:
             if data.get('account_id'):
                 from werkzeug.exceptions import Conflict

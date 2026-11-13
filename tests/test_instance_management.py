@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from tests import test_fleet
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 
 
 class InstanceManagementTests(unittest.TestCase):

@@ -16,8 +16,19 @@ class CookieProfileTests(unittest.TestCase):
     setUp = test_web.WebTests.setUp
 
     def add(self, name='Account A', content=COOKIE):
-        return self.client.post('/api/youtube/cookies', data={
-            'name': name, 'cookie': (io.BytesIO(content), 'cookies.txt')}, headers=self.headers)
+        # Scheduler/selection fixtures now start with an account-owned Cookie.
+        # Account creation/upload HTTP contracts live in test_account_credentials.
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        from types import SimpleNamespace
+        import json
+        try:
+            item = AccountCookieProfiles(self.root,self.store).add(name.strip() or 'cookies.txt',content)
+            if not yaml.safe_load(self.config.read_text()).get('youtube_cookie'):
+                result=self.action('select',item['id'])
+                item['active']=result.status_code==200
+            return SimpleNamespace(status_code=201,json={'item':item},text=json.dumps({'item':item}))
+        except ValueError as error:
+            return SimpleNamespace(status_code=400,json={'error':str(error)},text=str(error))
 
     def action(self, action, identity):
         return self.client.post('/api/youtube/cookies/' + action,
@@ -93,7 +104,7 @@ class CookieProfileTests(unittest.TestCase):
             self.assertEqual(response.json['item']['name'], 'cookies.txt')
         response = self.client.post('/api/youtube/cookies', data={
             'cookie': (io.BytesIO(COOKIE), 'account-export.txt')}, headers=self.headers)
-        self.assertEqual(response.json['item']['name'], 'account-export.txt')
+        self.assertEqual(response.status_code,400)
 
     def test_status_uses_session_capacity_in_custom_mode_without_online_probes(self):
         from webapp.cookie_pool import CookiePool
@@ -135,7 +146,7 @@ class CookieProfileTests(unittest.TestCase):
         self.assertIn('name="youtube_cookie_session_limit"', self.client.get('/').text)
 
     def test_database_restores_deleted_cache_and_metadata(self):
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         profiles = CookieProfiles(self.root, self.store)
         identity = self.add().json['item']['id']
         target = profiles.require(identity)
@@ -148,7 +159,7 @@ class CookieProfileTests(unittest.TestCase):
 
     def test_profiles_isolated_by_registered_instance(self):
         from types import SimpleNamespace
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         self.store.fleet = SimpleNamespace(id='instance-a')
         first = CookieProfiles(self.root, self.store)
         identity = first.add('A', COOKIE)['id']
@@ -162,21 +173,17 @@ class CookieProfileTests(unittest.TestCase):
         self.store.fleet = SimpleNamespace(id='instance-a')
         self.assertEqual(CookieProfiles(self.root, self.store).items()[0]['id'], identity)
 
-    def test_existing_profiles_migrate_once_and_deleted_cache_cannot_resurrect(self):
+    def test_old_files_are_not_imported_without_an_account(self):
         import json
         from webapp.cookie_profiles import CookieProfiles
-        identity = 'a' * 32
-        directory = self.root / 'Cookies/profiles'
+        identity='a'*32
+        directory=self.root/'Cookies/profiles'
         directory.mkdir(parents=True)
-        target = directory / (identity + '.txt')
+        target=directory/(identity+'.txt')
         target.write_bytes(COOKIE)
-        target.with_suffix('.json').write_text(json.dumps({
-            'name': 'Historical', 'created_at': '2026-10-31T00:00:00+00:00'}))
-        profiles = CookieProfiles(self.root, self.store)
-        self.assertEqual(profiles.items()[0]['name'], 'Historical')
-        profiles.delete(identity)
-        target.write_bytes(COOKIE)
-        self.assertEqual(CookieProfiles(self.root, self.store).items(), [])
+        target.with_suffix('.json').write_text(json.dumps({'name':'Historical','created_at':'2026-10-31'}))
+        self.assertEqual(CookieProfiles(self.root,self.store).items(),[])
+        with self.assertRaises(ValueError): CookieProfiles(self.root,self.store).require(identity)
 
     def test_save_many_select_and_delete_without_exposing_secrets(self):
         first, second = self.add(), self.add('Account B')
@@ -237,6 +244,8 @@ class CookieProfileTests(unittest.TestCase):
         legacy = self.root / 'Cookies/youtube.txt'
         legacy.parent.mkdir()
         legacy.write_bytes(COOKIE)
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        AccountCookieProfiles(self.root,self.store).save_legacy(COOKIE)
         first = self.add().json['item']['id']
         second = self.add('Account B').json['item']['id']
         self.action('select', first)
@@ -249,23 +258,13 @@ class CookieProfileTests(unittest.TestCase):
         self.assertFalse(legacy.exists())
         self.assertEqual([item['id'] for item in self.client.get('/api/youtube/cookies').json['items']], [second])
 
-    def test_delete_only_legacy_cookie_clears_selection_and_does_not_resurrect(self):
-        legacy = self.root / 'Cookies/youtube.txt'
+    def test_unassociated_legacy_file_is_not_listed_or_selected(self):
+        legacy=self.root/'Cookies/youtube.txt'
         legacy.parent.mkdir()
         legacy.write_bytes(COOKIE)
-        listed = self.client.get('/api/youtube/cookies').json
-        self.assertEqual(listed['cookie_path'], 'Cookies/youtube.txt')
-        self.assertTrue(listed['items'][0]['active'])
-        response = self.action('delete', 'legacy')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json['cookie_path'], '')
-        self.assertFalse(legacy.exists())
-        # A stale cache restored externally cannot re-import tombstoned credentials.
-        legacy.write_bytes(COOKIE)
-        self.assertEqual(self.client.get('/api/youtube/cookies').json['items'], [])
-        self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], '')
-        self.assertEqual(self.store.runtime()['youtube_cookie'], '')
-        self.assertFalse(self.client.get('/api/status').json['youtube']['saved'])
+        listed=self.client.get('/api/youtube/cookies').json
+        self.assertEqual(listed['items'],[])
+        self.assertEqual(self.action('delete','legacy').status_code,400)
 
     def test_delete_current_clears_stale_login_but_preserves_pause_and_block(self):
         first = self.add().json['item']['id']
@@ -348,7 +347,7 @@ class CookieProfileTests(unittest.TestCase):
 
     def test_delete_current_cache_cleanup_failure_keeps_credentials_and_selection(self):
         from pathlib import Path
-        from webapp.cookie_profiles import CookieProfiles
+        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
         first = self.add().json['item']['id']
         self.add('Account B')
         self.action('select', first)
@@ -393,6 +392,8 @@ class CookieProfileTests(unittest.TestCase):
         legacy = self.root / 'Cookies/youtube.txt'
         legacy.parent.mkdir()
         legacy.write_bytes(COOKIE)
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        AccountCookieProfiles(self.root,self.store).save_legacy(COOKIE)
         identity = self.add().json['item']['id']
         self.assertEqual(legacy.read_bytes(), COOKIE)
         self.assertEqual(self.action('select', identity).status_code, 200)

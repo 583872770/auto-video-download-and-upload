@@ -89,7 +89,7 @@ def register_accounts(app):
         if type(data.get('version')) is not int:
             raise Conflict('缺少资料版本，请重新读取。')
         library().delete(identity, data['version'], actor)
-        return jsonify(message='账号资料已删除；Cookie 凭据及实例独占归属保留。')
+        return jsonify(message='账号及其 Cookie 已删除；历史记录与实例独占归属保留。')
 
     @app.post(PREFIX + '/<identity>/secrets')
     def youtube_account_secret(identity):
@@ -265,34 +265,5 @@ def register_accounts(app):
         raw = uploaded.stream.read(1024 * 1024 + 1)
         from Utils.youtube_login import parse_youtube_cookie_file
         parse_youtube_cookie_file(raw)
-        target = item['instance_id']
-        if target == lib.local_id:
-            from webapp.cookie_profiles import CookieProfiles
-            with app.extensions['settings_lock']:
-                _, base = app.extensions['settings_func']()
-                saved = CookieProfiles(base, store).add(request.form.get('name'), raw, uploaded.filename)
-        else:
-            fleet = app.extensions['fleet']
-            if not fleet:
-                raise ValueError('绑定实例不可用，不能在当前入口代存。')
-            import requests
-            node = fleet.resolve_target(target)
-            with requests.Session() as http:
-                http.trust_env = False
-                try:
-                    response = http.post(node['url'] + '/api/youtube/cookies',
-                        headers={'Authorization':'Bearer ' + node['token']},
-                        data={'name':request.form.get('name',''), 'activate':'false'},
-                        files={'cookie':(uploaded.filename, raw, 'text/plain')}, timeout=(5,60), allow_redirects=False)
-                    value = response.json()
-                except (requests.RequestException, ValueError):
-                    raise ValueError('绑定实例未确认保存结果，请刷新 Cookie 列表核实后再操作。') from None
-                if response.status_code not in (200,201):
-                    raise ValueError(value.get('error','绑定实例拒绝保存 Cookie。'))
-                saved = value['item']
-        try:
-            lib.associate(identity, {'version':version, 'instance_id':target, 'confirmed':True,
-                'profile_ids':[p['id'] for p in item['cookies']] + [saved['id']]}, actor)
-        except (ValueError, Conflict):
-            raise Conflict('Cookie 已保存在绑定实例，但关联未完成（资料可能已被修改）。请刷新，在 Cookie 列表手动关联；不要重复上传。') from None
-        return jsonify(message='Cookie 已保存并关联账号；未自动加入账号池。', profile_id=saved['id']), 201
+        profile = lib.save_cookie(identity, version, raw, actor, target=item['instance_id'])
+        return jsonify(message='账号 Cookie 已更新，旧凭据已替换；账号池选择和冷却保留。', profile_id=profile), 201
