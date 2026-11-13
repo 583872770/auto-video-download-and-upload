@@ -55,6 +55,7 @@ def check_settings_roundtrip(page, app, config_path):
             value = config[key]
             text = str(value).lower() if isinstance(value, bool) else str(value)
             expect(element).to_have_value(text)
+        page.locator('#settings-tab-download').click()
         for method in ['yt_dlp', 'yt5s', 'downmp3', 'yt1d', 'bergung']:
             expect(page.locator(f'[data-provider={method}] input')).to_be_checked(
                 checked=method in config['download_methods'])

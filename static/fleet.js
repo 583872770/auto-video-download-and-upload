@@ -85,7 +85,7 @@ function renderInstanceScope() {
   badge.textContent = item ? (item.online ? `在线 · ${instanceState(item)}` : '离线') : state.instanceId ? '未登记' : '待选择';
   badge.dataset.online = String(!!item?.online);
   for (const [selector, label] of [
-    ['#settings-form button[type="submit"]', `保存设置到「${target}」`],
+    ['#settings-form button[type="submit"]', `保存实例设置 · ${target}`],
     ['#instance-deployment-form button[type="submit"]', `保存部署配置到「${target}」`],
     ['#instance-deployment-test', `从「${target}」测试连接`],
     ['#rotation-save', `保存轮换配置到「${target}」`],

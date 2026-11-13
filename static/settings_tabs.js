@@ -5,10 +5,12 @@
   const form = document.querySelector('#settings-form');
   if (!form) return;
   const tabs = [...document.querySelectorAll('.settings-tabs [role="tab"]')];
-  const panes = new Map([...form.querySelectorAll('[data-settings-category]')]
+  const panes = new Map([...document.querySelectorAll('.settings-content [data-settings-category]')]
     .map(pane => [pane.dataset.settingsCategory, pane]));
   const select = (key, focus = false) => {
     if (!panes.has(key)) return;
+    form.hidden = key === 'delivery';
+    form.querySelector('.settings-save').hidden = key === 'diagnostics';
     for (const tab of tabs) {
       const active = tab.dataset.settingsTarget === key;
       tab.setAttribute('aria-selected', String(active));
@@ -26,10 +28,10 @@
   });
   document.querySelector('.settings-tabs').addEventListener('keydown', event => {
     const index = tabs.indexOf(document.activeElement);
-    if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    if (index < 0 || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 :
-      (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      (index + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length;
     select(tabs[next].dataset.settingsTarget, true);
   });
   // Native validation must reveal a required field even in another category.
@@ -44,4 +46,9 @@
       if (node.tagName === 'DETAILS') node.open = true;
     }
   }, true);
+  const compact = matchMedia('(max-width: 1100px)');
+  const orientation = () => document.querySelector('.settings-tabs')
+    .setAttribute('aria-orientation', compact.matches ? 'horizontal' : 'vertical');
+  compact.addEventListener('change', orientation);
+  orientation();
 })();

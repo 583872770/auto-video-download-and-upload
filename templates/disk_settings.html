@@ -3,28 +3,37 @@
     <p class="panel-subtitle">按当前实例限制测试文件、浏览器缓存、上传临时文件和技术日志，保留数据库统计与账本。</p></div></div>
   <p id="disk-summary" role="status" aria-live="polite">正在读取磁盘用量…</p>
   <div id="disk-usage" class="micro-copy"></div>
-  <div class="scale-fields">
-    <label>临时文件总预算（GiB）<input name="disk_budget_gb" type="number" min="1" max="100000" required></label>
-    <label>测试下载预算（GiB）<input name="disk_test_budget_gb" type="number" min="1" max="100000" required><small>包含音视频分片和合并文件；并发数是上限，预算不足时会等待。</small></label>
-    <label>浏览器缓存预算（MiB）<input name="disk_browser_budget_mb" type="number" min="1" max="100000" required></label>
-    <label>全部日志预算（MiB）<input name="disk_log_budget_mb" type="number" min="1" max="100000" required><small>新配置默认 256 MiB；已有配置保留原值。约一半作为写入余量，另一半保留历史日志；历史容量优先保留失败证据。每 30 秒检查，容量优先于保留时间。</small></label>
-    <label>导入及上传临时文件预算（MiB）<input name="disk_import_budget_mb" type="number" min="1" max="100000" required></label>
-    <label>诊断及其他缓存预算（MiB）<input name="disk_cache_budget_mb" type="number" min="1" max="100000" required></label>
+  <div class="settings-subheading"><h3>磁盘保护</h3><p>剩余空间低于暂停水位时停止新增下载，达到恢复水位后才恢复。</p></div>
+  <div class="settings-field-grid">
     <label>磁盘暂停水位（GiB）<input name="disk_min_free_gb" type="number" min="0" max="100000" required><small>低于此剩余空间时停止本机新增下载，并清理可丢弃文件。</small></label>
     <label>磁盘恢复水位（GiB）<input name="disk_resume_free_gb" type="number" min="0" max="100000" required><small>不低于暂停水位；恢复空间不会解除人工暂停。</small></label>
-    <label>单次清单上传上限（MiB）<input name="disk_upload_limit_mb" type="number" min="1" max="100000" required></label>
+    <label>临时文件总预算（GiB）<input name="disk_budget_gb" type="number" min="1" max="100000" required></label>
+    <label>单次清单上传上限（MiB）<input name="disk_upload_limit_mb" type="number" min="1" max="100000" required><small>不能超过下方导入及上传临时文件预算。</small></label>
+  </div>
+  <details class="settings-advanced">
+    <summary>分类空间预算<span>测试下载、浏览器缓存和导入临时文件</span></summary>
+    <div class="settings-field-grid">
+      <label>测试下载预算（GiB）<input name="disk_test_budget_gb" type="number" min="1" max="100000" required><small>包含分片和合并文件；预算不足时任务等待。</small></label>
+      <label>浏览器缓存预算（MiB）<input name="disk_browser_budget_mb" type="number" min="1" max="100000" required></label>
+      <label>导入及上传临时文件预算（MiB）<input name="disk_import_budget_mb" type="number" min="1" max="100000" required></label>
+      <label>诊断及其他缓存预算（MiB）<input name="disk_cache_budget_mb" type="number" min="1" max="100000" required></label>
+      <label>下载器预留空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" required><small>下载器额外检查的剩余空间门槛，与实例暂停水位同时生效；0 表示不设置此门槛。</small></label>
+    </div>
+    <p class="settings-inline-note">这是软件预算，突发写入可能短暂超额；正式素材、数据库和 Docker 镜像需另外规划空间。</p>
+  </details>
+  <div class="settings-subheading"><h3>日志保留</h3><p>空间不足时优先清理过期和成功日志；任务统计与账单继续保留。</p></div>
+  <div class="settings-field-grid">
     <label>成功任务日志保留（小时）<input name="disk_success_log_hours" type="number" min="1" max="100000" required></label>
     <label>失败任务日志保留（天）<input name="disk_failure_log_days" type="number" min="1" max="100000" required><small>总量预算优先；简短错误原因和统计永久保留在数据库。</small></label>
-      <label>磁盘预留空间（GB）<input name="min_free_gb" type="number" min="0" max="10000" required><small>低于此值暂停领取下载任务，释放空间后自动继续；0 表示不预留。</small></label>
+    <label>全部日志预算（MiB）<input name="disk_log_budget_mb" type="number" min="1" max="100000" required><small>容量限制优先于保留时间。</small></label>
     <label>单条日志上限（MB）<input name="max_log_mb" type="number" min="1" max="1000" required><small>写入时自动轮转，实际大小还受全部日志预算限制。</small></label>
     <label>历史日志保留天数<input name="log_retention_days" type="number" min="0" max="3650" required><small>0 表示使用磁盘管理中的分类保留期限；容量预算始终生效。任务记录和视频保留。</small></label>
   </div>
-  <p class="micro-copy">当前为软件容量控制，突发写入可能短暂超额。严格上限需由宿主机配置文件系统配额。正式素材、数据库和 Docker 镜像单独规划容量。</p>
-  <p class="micro-copy">清单导入完成后自动删除原 TXT/CSV；视频 ID 和导入结果保留，CSV 中未入库的额外列请自行备份。</p>
-  <p class="micro-copy">任务日志数量随预算有界增长：256 MiB 时最多 8192 份，数据库不可用时最多 1024 份。新配置成功日志默认 6 小时、失败日志默认 7 天；容量或磁盘不足会提前清理，先清理过期及成功日志。运行汇总独立保留 30 天，任务统计与账本保留。</p>
+  <div class="settings-actions">
   <button type="button" class="button button-white" id="disk-cleanup">清理可丢弃文件</button>
   <button type="button" class="button button-white" id="instance-logs-open">查看实例运行日志</button>
   <button type="button" class="button button-white" id="runtime-summary-open">查看运行汇总</button>
+  </div>
   <p id="disk-cleanup-result" class="micro-copy" role="status"></p>
   <dialog id="instance-logs-dialog"><h2>实例运行日志</h2><p class="micro-copy">显示近期运行记录；日志按容量和时间自动清理，详细下载记录请在视频任务中查看。</p><pre id="instance-logs-content" tabindex="0"></pre><button type="button" id="instance-logs-close">关闭</button></dialog>
   <dialog id="runtime-summary-dialog"><h2>当前管理实例 · 运行汇总</h2><label>统计范围<select id="runtime-summary-days"><option value="1">近 1 天</option><option value="7">近 7 天</option><option value="30">近 30 天</option></select></label><p class="micro-copy">按整点对齐统计完成任务；本版本启用后开始累计，不回填历史数据。测试模式的下载量包含随后删除的文件，不等于当前磁盘占用。</p><pre id="runtime-summary-content" class="terminal" tabindex="0" role="status"></pre><button type="button" id="runtime-summary-close">关闭</button></dialog>

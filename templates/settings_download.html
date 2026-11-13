@@ -1,8 +1,7 @@
 <section class="panel settings-panel task-defaults-panel">
-  <div class="panel-heading"><div><h2>当前实例 · 下载策略</h2><p class="panel-subtitle">只作用于所选实例；不同实例可使用不同的下载顺序、画质和保存方式。</p></div></div>
+  <div class="panel-heading"><div><h2>下载方式与画质</h2><p class="panel-subtitle">设置下载器优先级，以及各下载器支持的画质。</p></div></div>
   <div class="download-method-row"><span class="field-label">下载方式与优先级</span><div id="download-method" class="provider-choices" role="group" aria-label="下载器优先级" aria-describedby="download-method-note"></div><div class="strategy-save"><span id="strategy-save-state">正在读取策略…</span></div><p id="download-method-note" class="micro-copy" role="status">正在读取下载方式…</p></div>
   <div class="scale-fields">
-    <label>保存方式<select id="storage-mode" name="storage_mode"><option value="local">指定目录保存</option><option value="oss">阿里云 OSS（同时保留本地副本）</option><option value="test">测试模式（下载完成后自动删除）</option></select><small id="storage-mode-note">视频及配套文件保存到指定目录，下载完成后可在素材库查看。</small></label>
     <label data-provider-setting="yt5s">yt5s 画质<select name="yt5s_quality"><option value="best">尽可能最高画质（自动选择）</option><option value="360">360p（已验证）</option><option value="720">720p（可能需要网站转换）</option></select><small>yt5s 支持逐行输入视频 ID 或视频链接，暂不支持播放列表和字幕；最高画质会自动选择网站提供的最高分辨率。</small></label>
     <label data-provider-setting="yt1d">yt1d 画质<select name="yt1d_quality"><option value="best">尽可能最高画质（按网站可用档位）</option><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">2160p</option></select><small>仅支持单视频 ID / 链接；实际画质以网站提供为准，可能需要网页验证。与 yt5s 共享浏览器并发上限。</small></label>
     <label data-provider-setting="yt1d">yt1d 验证 / 转换等待上限（每阶段秒）<input name="yt1d_timeout" type="number" min="30" max="1800" required></label>
@@ -22,7 +21,12 @@
     <label data-provider-setting="downmp3">downmp3 画质<select name="downmp3_quality"><option value="best">尽可能最高画质（当前最高 1080p）</option><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option></select><small>无需 YouTube Cookie 或浏览器，转换由第三方服务完成；仅支持单个视频，每行一个。最高画质请求当前接口支持的 1080p；实际画质受源视频和第三方服务限制。</small></label>
     <label data-provider-setting="downmp3">downmp3 转换等待上限（秒）<input name="downmp3_timeout" type="number" min="30" max="1800" required><small>默认 300 秒；这是远端准备时间，实际文件下载另行显示进度和速度。</small></label>
     <label>单个视频最多尝试<input name="download_attempts" type="number" min="1" max="10" required><small>仅临时网络错误自动退避重试；登录失效和视频不存在直接报告。</small></label>
-    <label data-provider-setting="yt_dlp">历史任务 · yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>后台补下载使用独立队列，共享上游同时最多 1 个任务，至少间隔 10 秒；字幕限流不暂停视频传输。测试模式不补下载字幕。</small></label>
-    <label data-provider-setting="yt_dlp">字幕语言代码<input name="subtitle_languages" maxlength="264" required placeholder="en,zh-Hans,zh-Hant"><small>最多 8 个，用逗号分隔；只请求指定语言，避免批量请求自动翻译字幕。必须完整模式要求至少存在一种所选语言，且所选可用字幕均写入成功。</small></label>
   </div>
+  <details class="settings-advanced" data-provider-setting="yt_dlp">
+    <summary>历史任务字幕策略<span>新任务请在交付要求中配置</span></summary>
+    <div class="settings-field-grid">
+      <label>yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>字幕限流不暂停视频传输；测试模式不补下载字幕。</small></label>
+      <label>字幕语言代码<input name="subtitle_languages" maxlength="264" required placeholder="en,zh-Hans,zh-Hant"><small>最多 8 个，以逗号分隔。</small></label>
+    </div>
+  </details>
 </section>

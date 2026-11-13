@@ -1,9 +1,9 @@
-<div class="settings-intro">
-  <div><span class="section-kicker">INSTANCE SETTINGS</span><h2>按用途配置当前实例</h2><p>下载、并发和存储修改在这里保存。账号资料、Cookie 与启动节奏已移到“账号管理”。</p></div>
-  <a class="button button-white" href="#overview" data-view="overview">返回下载工作台 ↗</a>
-<a class="text-button" data-view="accounts" href="#accounts">管理账号、Cookie 与节奏 ↗</a></div>
-<div class="settings-tabs" role="tablist" aria-label="设置分类">
-  {% for key, label, description in [('download','下载策略','下载器 · 画质 · 重试'),('performance','并发与渠道','任务数 · 连接预算'),('storage','存储与清理','目录 · 空间 · 保留'),('diagnostics','运行诊断','限流 · 风控 · 工具')] %}
-  <button type="button" role="tab" id="settings-tab-{{ key }}" aria-controls="settings-pane-{{ key }}" aria-selected="{{ 'true' if key == 'download' else 'false' }}" tabindex="{{ '0' if key == 'download' else '-1' }}" data-settings-target="{{ key }}"><strong>{{ label }}</strong><span>{{ description }}</span></button>
-  {% endfor %}
-</div>
+<nav class="settings-navigation" aria-label="设置导航">
+  <p class="settings-nav-label">实例设置</p>
+  <div class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+    {% for key, label, description in [('storage','文件保存','本地目录 / 阿里云 OSS'),('download','下载策略','下载器 / 画质 / 重试'),('performance','并发与渠道','运行上限 / 连接预算'),('maintenance','空间与日志','磁盘保护 / 清理 / 日志'),('diagnostics','运行诊断','实时状态 / 环境检查'),('delivery','新任务交付默认','全局 · 字幕 / 视频 / 音频')] %}
+    <button type="button" role="tab" id="settings-tab-{{ key }}" aria-controls="settings-pane-{{ key }}" aria-selected="{{ 'true' if key == 'storage' else 'false' }}" tabindex="{{ '0' if key == 'storage' else '-1' }}" data-settings-target="{{ key }}"><strong>{{ label }}</strong><span>{{ description }}</span></button>
+    {% endfor %}
+  </div>
+  <p class="settings-nav-note">切换分类会保留未保存的修改。</p>
+</nav>

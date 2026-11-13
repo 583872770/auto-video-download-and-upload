@@ -1,21 +1,36 @@
-{% include 'settings_navigation.html' %}
-<section class="panel"><h2>新任务默认交付要求</h2><p class="micro-copy">客户交付内容保存在各自任务中；修改默认值仅影响之后新建的任务。</p><div data-delivery-defaults></div></section>
-<form id="settings-form">
-  <section id="settings-pane-download" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-download" data-settings-category="download">
-    <p class="settings-category-note">选择下载方式、画质和重试策略。保存方式为测试模式时，下载完成的文件会自动删除。</p>
-    {% include 'settings_download.html' %}
-  </section>
-  <section id="settings-pane-performance" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-performance" data-settings-category="performance" hidden>
-    <p class="settings-category-note">设置值是上限，实际并发还受 Cookie 会话、启动间隔、渠道和连接预算约束。修改后可在运行诊断查看实际限制。</p>
-    {% include 'settings_performance.html' %}
-  </section>
-  <section id="settings-pane-storage" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-storage" data-settings-category="storage" hidden>
-    <p class="settings-category-note">素材目录决定正式文件位置；临时预算、暂停水位和日志期限决定空间管理方式。</p>
-    {% include 'settings_storage.html' %}
-  </section>
-  <section id="settings-pane-diagnostics" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-diagnostics" data-settings-category="diagnostics" hidden>
-    <p class="settings-category-note">这里显示已保存配置在调度与资源监控中的实际运行结果，按采样周期更新。下载策略从后续领取或重试的视频生效；并发与磁盘保护按后续检查调整。限流、验证码、账号失效和资源等待分别处理。</p>
-    {% include 'settings_diagnostics.html' %}
-  </section>
-  <div class="settings-save"><span id="settings-save-state">当前系统设置统一点击“保存设置”。账号池与节奏在账号管理单独保存。普通设置可在下载中保存，无需重启；新任务使用新策略。修改直连源地址、切换当前 Cookie 或应用网络连接，需先停止当前实例并等待相关任务结束。</span><button class="button button-dark" type="submit"><svg><use href="#i-check"/></svg>保存设置</button></div>
-</form>
+<div class="settings-intro">
+  <p>实例配置只作用于当前所选实例；新任务交付默认为全局设置。</p>
+  <a class="text-button" data-view="accounts" href="#accounts">账号、Cookie 与登录节奏 ↗</a>
+</div>
+<div class="settings-layout">
+  {% include 'settings_navigation.html' %}
+  <div class="settings-content">
+    <section id="settings-pane-delivery" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-delivery" data-settings-category="delivery" hidden>
+      <div class="settings-section-heading"><div><h2>新任务交付默认</h2><p>设置新建任务时预选的交付内容。已有任务保持各自的要求。</p></div><span class="scope-badge">全局设置</span></div>
+      <section class="panel settings-defaults-panel"><div data-delivery-defaults></div></section>
+    </section>
+    <form id="settings-form">
+      <section id="settings-pane-storage" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-storage" data-settings-category="storage">
+        <div class="settings-section-heading"><div><h2>文件保存</h2><p>选择保存位置，并在这里配置本地目录或阿里云 OSS。</p></div><span class="scope-badge">当前实例</span></div>
+        {% include 'settings_storage.html' %}
+      </section>
+      <section id="settings-pane-download" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-download" data-settings-category="download" hidden>
+        <div class="settings-section-heading"><div><h2>下载策略</h2><p>选择下载方式、画质和失败重试策略。</p></div><span class="scope-badge">当前实例</span></div>
+        {% include 'settings_download.html' %}
+      </section>
+      <section id="settings-pane-performance" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-performance" data-settings-category="performance" hidden>
+        <div class="settings-section-heading"><div><h2>并发与渠道</h2><p>设置运行上限；实际并发还受账号容量、渠道和资源保护约束。</p></div><span class="scope-badge">当前实例</span></div>
+        {% include 'settings_performance.html' %}
+      </section>
+      <section id="settings-pane-maintenance" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-maintenance" data-settings-category="maintenance" hidden>
+        <div class="settings-section-heading"><div><h2>空间与日志</h2><p>管理磁盘水位、临时空间和日志保留，查看或清理可丢弃文件。</p></div><span class="scope-badge">当前实例</span></div>
+        {% include 'disk_settings.html' %}
+      </section>
+      <section id="settings-pane-diagnostics" class="settings-category" role="tabpanel" aria-labelledby="settings-tab-diagnostics" data-settings-category="diagnostics" hidden>
+        <div class="settings-section-heading"><div><h2>运行诊断</h2><p>查看已保存策略下的实际运行状态；本页无需保存。</p></div><span class="scope-badge">只读状态</span></div>
+        {% include 'settings_diagnostics.html' %}
+      </section>
+      <div class="settings-save"><span id="settings-save-state" role="status" aria-live="polite">修改后统一保存到当前实例，后续领取或重试的视频使用新配置。</span><button class="button button-dark" type="submit"><svg><use href="#i-check"/></svg>保存实例设置</button></div>
+    </form>
+  </div>
+</div>

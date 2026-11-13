@@ -38,7 +38,7 @@ def main():
                 }""", app.extensions['console_auth'].bootstrap_key)
                 assert status==201, status
                 page.reload()
-                expect(page.locator('.settings-tabs [role=tab]')).to_have_count(4)
+                expect(page.locator('.settings-tabs [role=tab]')).to_have_count(6)
                 expect(page.locator('[name="worker_count"]')).to_have_value('1')
                 # Controls and their categories exist before application JS runs.
                 # Hydration must not clone fields or change their constraints.
@@ -52,7 +52,7 @@ def main():
                 live_fields = page.locator('#settings-form [name]').evaluate_all(schema)
                 assert static_fields and static_fields == live_fields
                 assert len({field['name'] for field in static_fields}) == len(static_fields)
-                expect(plain.locator('#settings-form [role="tabpanel"]')).to_have_count(4)
+                expect(plain.locator('#settings-form [role="tabpanel"]')).to_have_count(5)
                 assert page.evaluate("""() => { const ids = [...document.querySelectorAll('[id]')].map(node => node.id);
                     return ids.length === new Set(ids).size; }"""), 'duplicate DOM ids'
                 plain.close()
@@ -61,9 +61,9 @@ def main():
                 expect(page.locator('#settings-tab-performance')).to_be_focused()
                 expect(page.locator('#settings-pane-performance')).to_be_visible()
                 page.keyboard.press('End')
-                expect(page.locator('#settings-pane-diagnostics')).to_be_visible()
+                expect(page.locator('#settings-pane-delivery')).to_be_visible()
                 page.keyboard.press('Home')
-                expect(page.locator('#settings-pane-download')).to_be_visible()
+                expect(page.locator('#settings-pane-storage')).to_be_visible()
                 page.evaluate("setView('accounts'); selectAccountTab('pool')")
                 interval = page.locator('[name="youtube_start_interval"]')
                 interval_value = interval.input_value()
@@ -76,7 +76,7 @@ def main():
                 page.evaluate("setView('settings')")
                 preview = Path('.runtime/cache-archive-20261111/workspace-layout-preview')
                 preview.mkdir(parents=True, exist_ok=True)
-                for key in ('download', 'performance', 'storage', 'diagnostics'):
+                for key in ('storage', 'download', 'performance', 'maintenance', 'diagnostics', 'delivery'):
                     page.locator(f'#settings-tab-{key}').click()
                     expect(page.locator(f'#settings-pane-{key}')).to_be_visible()
                     expect(page.locator('.settings-category:visible')).to_have_count(1)
@@ -94,7 +94,7 @@ def main():
                 expect(mode).to_have_value('auto')
                 expect(page.locator('#control-mode-note')).to_contain_text('自动调节')
                 mode.select_option('manual')
-                page.get_by_role('tab', name='存储与清理').click()
+                page.get_by_role('tab', name='文件保存').click()
                 page.locator('[name="dir"]').fill('layout-check')
                 page.get_by_role('tab', name='下载策略').click()
                 page.locator('#settings-form button[type="submit"]').click()
@@ -104,7 +104,7 @@ def main():
                 assert saved['worker_count'] == 2 and saved['dir'] == 'layout-check'
                 assert saved['throughput_mode'] == 'manual'
                 page.set_viewport_size({'width': 390, 'height': 844})
-                for key in ('download', 'performance', 'storage', 'diagnostics'):
+                for key in ('storage', 'download', 'performance', 'maintenance', 'diagnostics', 'delivery'):
                     page.locator(f'#settings-tab-{key}').click()
                     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), key
                     page.screenshot(path=str(preview / f'{key}-mobile.png'), full_page=True)

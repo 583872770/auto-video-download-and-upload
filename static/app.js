@@ -639,6 +639,7 @@ function fillConfig(config) {
   const form = $('#settings-form');
   if (typeof fillAccountPoolConfig === 'function') fillAccountPoolConfig(config);
   if (settingsDirty) { renderDownloadMethod(); return; }
+  form.dataset.dirty = 'false';
   settingsBaseline = {};
   for (const element of $$('input[name], select[name], textarea[name]', form)) {
     const value = config[element.name];
@@ -773,8 +774,8 @@ $('#cobalt-catalog-add').addEventListener('click', () => {
   const methods = providerDraft || selectedProviders();
   if (!methods.includes('bergung')) providerDraft = [...methods, 'bergung'];
   renderDownloadMethod(); renderDownloadControl();
-  $('#settings-save-state').textContent = '入口已添加，点击保存设置后生效';
-  toast('入口已添加到当前实例，请保存设置。');
+  $('#settings-save-state').textContent = '入口已添加，点击“保存实例设置”后生效。';
+  toast('入口已添加到当前实例，请保存实例设置。');
 });
 $('#channel-entries').addEventListener('click', event => {
   const button = event.target.closest('[data-channel-remove]');
@@ -805,7 +806,7 @@ function renderDownloadMethod() {
   renderProviderChoices($('#download-method'), methods, downloadMethodBusy || !state.config);
   const tools = state.status?.tools;
   const auto = $('#settings-form [name="scheduler_mode"]').value === 'auto';
-  const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。修改后点击下方“保存设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存设置”生效。`];
+  const notes = [auto ? `自动候选：${methods.map(method => providerNames[method]).join('、')}。各入口按实际吞吐、稳定性及当前负载分配任务，不使用下载器优先级。修改后点击下方“保存实例设置”生效。` : `尝试顺序：${methods.map(method => providerNames[method]).join(' → ')}。勾选启用，上下箭头调整优先级；成功后停止，失败后尝试下一项。修改后统一点击下方“保存实例设置”生效。`];
   const throughput = $('#settings-form [name="throughput_mode"]');
   const pooled = !!state.config?.youtube_cookie_pool?.length;
   throughput.disabled = pooled;
@@ -829,7 +830,7 @@ function renderDownloadMethod() {
 function renderStrategySaveState() {
   const target = state.instanceId ? `实例 ${instanceName(state.instanceId)}` : '本机';
   $('#strategy-save-state').textContent = downloadMethodBusy ? `正在保存并核对 · ${target}`
-    : settingsDirty || providerDraft ? `${target}有未保存修改，请点击下方“保存设置”`
+    : settingsDirty || providerDraft ? `${target}有未保存修改，请点击下方“保存实例设置”`
     : `已保存 · ${target} · 仅作用于当前实例后续领取的视频`;
 }
 $('#settings-form [name="scheduler_mode"]').addEventListener('change', renderDownloadMethod);
@@ -866,19 +867,21 @@ for (const id of ['download-method']) {
 function renderStorageSettings() {
   const test = $('#storage-mode').value === 'test';
   const oss = $('#storage-mode').value === 'oss';
-  $$('[data-oss-storage]').forEach(panel => {
-    panel.hidden = !oss;
-    $$('input', panel).forEach(input => { input.disabled = !oss; });
-  });
+  const firstPanel = oss ? $('.oss-settings-panel') : $('.local-storage-panel');
+  const modePanel = $('.storage-mode-panel');
+  if (modePanel.nextElementSibling !== firstPanel) modePanel.after(firstPanel);
+  // Keep OSS fields discoverable and editable even before switching modes.
+  $$('[data-oss-required]').forEach(input => { input.required = oss; });
+  $('#oss-config-status').textContent = oss ? '当前选择：OSS' : '未选用 · 可预先配置';
+  $('#oss-config-status').dataset.active = String(oss);
   for (const key of ['oss_access_key_secret', 'oss_security_token']) {
     const input = $(`[name="${key}"]`);
     if (input) input.placeholder = state.config?.[key + '_configured'] ? '已保存，留空保持不变' : '未保存，可填写或使用环境变量';
   }
   $$('[data-local-storage]').forEach(label => {
-    label.hidden = test;
     $('input', label).disabled = test;
   });
-  $('#storage-mode-note').textContent = test ? '真实下载后自动删除视频、封面、字幕及元数据，仅保留任务记录和日志，不加入素材库。此模式只作用于当前实例后续领取的视频。' : oss ? '视频与配套文件上传到阿里云 OSS，同时保留本地副本；请在“存储与清理”填写 OSS 参数。上传成功后任务才算完成。' : '视频及配套文件保存到指定目录，下载完成后可在素材库查看。此模式只作用于当前实例后续领取的视频。';
+  $('#storage-mode-note').textContent = test ? '真实下载后自动删除生成的文件，仅保留任务记录和日志，不加入素材库，也不上传 OSS。' : oss ? '文件上传到下方配置的 OSS，同时保留本地副本。上传成功并校验后才完成交付；此方式不会释放本地磁盘。' : '文件保存到下方的本地目录，可在素材库查看。下方 OSS 配置可提前保存，切换为 OSS 后才会使用。';
 }
 $('#storage-mode').addEventListener('change', renderStorageSettings);
 const refreshedAt = {};
@@ -1196,7 +1199,7 @@ setInterval(() => { if (state.startup?.state === 'running') pollStartup(); }, 10
 $('#download-queue-start').addEventListener('click', async () => {
   if (queueControlBusy || document.body.dataset.consoleRole === 'viewer') return;
   if (providerDraft || downloadMethodBusy) {
-    toast('下载方式尚未保存完成，请先在系统设置点击“保存设置”，再启动下载。', true);
+    toast('下载方式尚未保存完成，请先在系统设置点击“保存实例设置”，再启动下载。', true);
     setView('settings');
     return;
   }
@@ -1465,8 +1468,9 @@ $('#copy-logs').addEventListener('click', async () => {
 });
 function markSettingsDirty() {
   settingsDirty = true;
+  $('#settings-form').dataset.dirty = 'true';
   renderYouTubePacingRuntime();
-  $('#settings-save-state').textContent = '有未保存的系统设置，点击“保存设置”后生效。账号池与节奏在账号管理单独保存。新任务使用新策略，正在执行的任务保留原配置。';
+  $('#settings-save-state').textContent = '有未保存的修改。切换分类会保留修改，点击“保存实例设置”统一保存。';
   renderStrategySaveState(); renderDownloadControl();
 }
 $('#settings-form').addEventListener('input', markSettingsDirty);
