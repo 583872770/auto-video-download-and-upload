@@ -280,16 +280,17 @@ class FleetTests(unittest.TestCase):
         self.assertIn('/setup', response.json['error'])
         self.assertEqual(self.client.get('/api/overview').status_code, 200)
 
-    def test_cookie_upload_streams_to_selected_worker_only(self):
+    def test_legacy_cookie_upload_is_rejected_on_selected_worker(self):
         self.serve('beta')
         cookie = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only-secret\n'
         response = self.client.post('/api/youtube/cookie', data={'cookie': (BytesIO(cookie), 'cookies.txt')},
                                     headers={**self.headers, 'X-Instance-ID': 'beta'})
-        self.assertEqual(response.status_code, 201, response.text)
-        self.assertTrue((self.root / 'beta/Cookies/youtube.txt').is_file())
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn('账号', response.json['error'])
+        self.assertFalse((self.root / 'beta/Cookies/youtube.txt').exists())
         self.assertFalse((self.root / 'alpha/Cookies/youtube.txt').exists())
         self.assertFalse((self.root / 'manager/Cookies/youtube.txt').exists())
-        self.assertEqual(self.b.fleet.local_settings()['config']['youtube_cookie'], 'Cookies/youtube.txt')
+        self.assertFalse(self.b.fleet.local_settings()['config'].get('youtube_cookie'))
 
     def test_apply_connection_is_proxied_and_scoped_to_one_worker(self):
         self.serve('beta')

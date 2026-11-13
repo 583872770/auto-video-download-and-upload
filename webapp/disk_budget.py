@@ -592,6 +592,9 @@ class DiskBudget:
             return False
         with store.connect() as db:
             recorded = db.execute(select(test_files).where(test_files.c.task_id == task)).mappings().all()
+            if all(item.get('artifact') for item in receipts):
+                by_id = {r['id']: r['size'] for r in recorded}
+                return all(by_id.get(item['artifact']['id']) == item['size'] for item in receipts)
             by_path = {r['path']: r['size'] for r in recorded}
             if all(by_path.get(item['path']) == item['size'] for item in receipts):
                 return True
@@ -629,6 +632,16 @@ class DiskBudget:
                     continue
                 receipts = json.loads(receipt_path.read_text(encoding='utf-8'))
                 task = store.get(task_id, private=True)
+                if task and receipts and all(item.get('artifact') for item in receipts):
+                    from webapp.delivery.executor import recover_test_outputs
+                    result = recover_test_outputs(store, task_id, receipts, root)
+                    if not result:
+                        continue
+                    shutil.rmtree(root)
+                    with self.connect() as db:
+                        db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
+                    result['files_deleted'] = True
+                    return result
                 # Older/multi-video compatibility work has no unambiguous whole
                 # task completion receipt. Preserve it for inspection.
                 if not task or len(task['payload'].get('urls', [])) != 1 or len(receipts) != 1:

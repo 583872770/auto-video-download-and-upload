@@ -248,6 +248,38 @@ Index('ix_deliveries_session', deliveries.c.session_id, deliveries.c.seq)
 Index('ix_deliveries_task_seq', deliveries.c.task_id, deliveries.c.seq)
 Index('ix_deliveries_time', deliveries.c.session_id, deliveries.c.created_epoch)
 
+# Additive multi-output records. Legacy task queues and ledgers are not rewritten.
+delivery_contracts = Table('job_delivery_contracts', metadata,
+    Column('job_id', String(32), primary_key=True), Column('version', Integer, primary_key=True),
+    Column('spec', Text, nullable=False), Column('created_at', Text, nullable=False))
+delivery_runs = Table('delivery_runs', metadata,
+    Column('task_id', String(32), primary_key=True), Column('job_id', String(32), nullable=False),
+    Column('version', Integer, nullable=False), Column('spec', Text, nullable=False),
+    Column('status', String(24), nullable=False), Column('test_mode', Integer, nullable=False, server_default='0'))
+Index('ix_delivery_runs_job_status', delivery_runs.c.job_id, delivery_runs.c.status, delivery_runs.c.task_id)
+delivery_requirements = Table('delivery_requirements', metadata,
+    Column('task_id', String(32), primary_key=True), Column('key', String(64), primary_key=True),
+    Column('kind', String(24), nullable=False), Column('language', String(32), nullable=False),
+    Column('variant', String(64), nullable=False), Column('status', String(24), nullable=False),
+    Column('error', Text), Column('artifact_id', String(64)), Column('waived_by', String(64)),
+    Column('waived_reason', Text), Column('updated_at', Text, nullable=False))
+delivery_artifacts = Table('delivery_artifacts', metadata,
+    Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
+    Column('job_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
+    Column('video_id', String(256)), Column('title', Text, nullable=False),
+    Column('kind', String(24), nullable=False), Column('language', String(32), nullable=False),
+    Column('variant', String(64), nullable=False), Column('path', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('instance_id', String(64), nullable=False),
+    Column('storage', String(16), nullable=False), Column('object_key', Text),
+    Column('available', Integer, nullable=False), Column('test_mode', Integer, nullable=False),
+    Column('created_at', Text, nullable=False))
+Index('ix_delivery_artifacts_job_seq', delivery_artifacts.c.job_id, delivery_artifacts.c.seq)
+Index('ix_delivery_artifacts_instance_seq', delivery_artifacts.c.instance_id, delivery_artifacts.c.seq)
+delivery_totals = Table('delivery_totals', metadata,
+    Column('job_id', String(32), primary_key=True), Column('kind', String(24), primary_key=True),
+    Column('test_mode', Integer, primary_key=True),
+    Column('file_count', BigInteger, nullable=False), Column('file_bytes', BigInteger, nullable=False))
+
 # Separate ledgers keep deleted test files out of delivery billing and avoid
 # altering existing task/delivery tables during upgrades with large queues.
 test_files = Table('download_test_files', metadata,

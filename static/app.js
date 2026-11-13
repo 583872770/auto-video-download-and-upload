@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1147,7 +1147,9 @@ function renderDownloadControl() {
   const summary = $('#download-job-summary'); summary.hidden = !job;
   if (job) {
     const html = `<div class="selected-job-counts">${[['当前实例处理中',job.running],['任务处理成功',job.succeeded],['任务处理失败',job.failed]].map(([label,count])=>`<div><span>${label}</span><strong>${Number(count)||0}</strong></div>`).join('')}</div><p class="micro-copy">${escapeHTML(downloadPolicyText(job))}${job.importing?` · 正在导入 ${job.importing} 份文件`:''}</p><p class="micro-copy"><a href="#settings">修改当前实例策略 ↗</a></p>`;
-    if (summary.innerHTML !== html) summary.innerHTML = html;
+    const contract = job.delivery?.contract;
+    const delivery = contract ? `<div class="delivery-summary"><strong>交付要求 · 版本 ${contract.version}</strong><div>${DeliveryOptions.badges(job.delivery)}</div><span>全部交付 ${job.delivery.states.complete||0} 条 · 部分交付 ${job.delivery.states.partial||0} 条 · 待确认 ${job.delivery.states.review||0} 条</span> · <a href="/jobs#${job.id}">查看或修改要求 ↗</a></div>` : '';
+    if (summary.innerHTML !== html + delivery) summary.innerHTML = html + delivery;
   }
   const alreadyStarted = !!job?.released && !queue?.paused && queue?.selected_job_id===job.id;
   $('#download-queue-start').textContent = queueResuming ? '正在启动…' : alreadyStarted ? '已启动' : '启动';

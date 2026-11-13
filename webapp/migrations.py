@@ -149,13 +149,21 @@ def _account_credentials(engine):
     upgrade_account_credentials(engine)
 
 
+def _delivery_outputs(engine):
+    from webapp.database import (delivery_contracts, delivery_runs, delivery_requirements,
+                                delivery_artifacts, delivery_totals)
+    for table in (delivery_contracts, delivery_runs, delivery_requirements, delivery_artifacts, delivery_totals):
+        table.create(engine, checkfirst=True)
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
          ('20261030_optimize_indexes', _optimize_indexes),
          ('20261106_completed_file_times', _completed_file_times),
          ('20261107_cookie_ownership', _cookie_ownership),
-         ('20261113_account_credentials', _account_credentials))
+         ('20261113_account_credentials', _account_credentials),
+         ('20261113_delivery_outputs', _delivery_outputs))
 
 
 def upgrade(engine):

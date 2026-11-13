@@ -184,6 +184,8 @@ def build_application(import_name, config_path=None, state_dir=None, *, start_wo
     from webapp.jobs import register_jobs
     from webapp.workbench import register_workbench
     register_jobs(app, context.store, context.settings, preflight.job_preflight)
+    from webapp.delivery.routes import register_delivery
+    register_delivery(app, context.store, context.settings)
     register_workbench(app, context.store, context.settings, preflight.job_preflight)
     from webapp.managed_deployment import register_instance_deployment
     register_instance_deployment(app)

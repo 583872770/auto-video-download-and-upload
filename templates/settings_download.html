@@ -22,7 +22,7 @@
     <label data-provider-setting="downmp3">downmp3 画质<select name="downmp3_quality"><option value="best">尽可能最高画质（当前最高 1080p）</option><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option></select><small>无需 YouTube Cookie 或浏览器，转换由第三方服务完成；仅支持单个视频，每行一个。最高画质请求当前接口支持的 1080p；实际画质受源视频和第三方服务限制。</small></label>
     <label data-provider-setting="downmp3">downmp3 转换等待上限（秒）<input name="downmp3_timeout" type="number" min="30" max="1800" required><small>默认 300 秒；这是远端准备时间，实际文件下载另行显示进度和速度。</small></label>
     <label>单个视频最多尝试<input name="download_attempts" type="number" min="1" max="10" required><small>仅临时网络错误自动退避重试；登录失效和视频不存在直接报告。</small></label>
-    <label data-provider-setting="yt_dlp">yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>后台补下载使用独立队列，共享上游同时最多 1 个任务，至少间隔 10 秒；字幕限流不暂停视频传输。测试模式不补下载字幕。</small></label>
+    <label data-provider-setting="yt_dlp">历史任务 · yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>后台补下载使用独立队列，共享上游同时最多 1 个任务，至少间隔 10 秒；字幕限流不暂停视频传输。测试模式不补下载字幕。</small></label>
     <label data-provider-setting="yt_dlp">字幕语言代码<input name="subtitle_languages" maxlength="264" required placeholder="en,zh-Hans,zh-Hant"><small>最多 8 个，用逗号分隔；只请求指定语言，避免批量请求自动翻译字幕。必须完整模式要求至少存在一种所选语言，且所选可用字幕均写入成功。</small></label>
   </div>
 </section>

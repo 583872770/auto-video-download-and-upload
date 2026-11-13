@@ -110,7 +110,7 @@ class WorkbenchFleetTests(unittest.TestCase):
             queries.append(sql)
         event.listen(self.manager.db.engine, 'before_cursor_execute', capture)
         try:
-            with patch.object(CookieProfiles, '_migrate', side_effect=AssertionError('display must not migrate')):
+            with patch('webapp.cookie_profiles.CookieProfiles.pool_members', side_effect=AssertionError('display must not load credentials')):
                 result = Workbench.decorate_cookie_names([task], None, self.manager, scope='alpha')
                 self.assertEqual(result[0]['progress']['cookie_profile_name'], 'Alpha account')
                 self.assertEqual(len(queries), 1)

@@ -93,6 +93,12 @@ class OSSStorage:
             p.name.startswith(stem + '.') and p.suffix.lower() in
             {'.json', '.jpg', '.jpeg', '.png', '.webp', '.vtt', '.srt', '.ass', '.lrc', '.ttml',
              '.srv1', '.srv2', '.srv3', '.json3', '.sbv', '.dfxp'})
+        return self.upload_files(candidates, root, report)
+
+    def upload_files(self, candidates, root, report=None):
+        """Publish an explicit output list, including subtitle/audio-only delivery."""
+        root = Path(root).resolve()
+        candidates = [Path(path).resolve() for path in candidates]
         uploaded = []
         for path in candidates:
             if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):

@@ -64,6 +64,9 @@ class ProviderExecution:
                     session.transfer_seconds += time.monotonic() - started
 
     def attempt(self, channel, addresses, *, without_cookies=False, cookie_retry=False):
+        if self.session.config.get('_delivery_contract'):
+            from webapp.delivery.executor import attempt
+            return attempt(self, channel, addresses, without_cookies=without_cookies, cookie_retry=cookie_retry)
         from webapp.downloader import build_ydl_options, download_cookie_session, require_download_tools
         from webapp.parallel_http import fragment_connection_budget, transfer_connection_units
         from webapp.throughput import automatic as automatic_throughput, runtime_limits

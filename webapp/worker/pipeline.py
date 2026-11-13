@@ -26,6 +26,12 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
     from webapp.channel_scheduler import ChannelScheduler
     from webapp.download_metrics import meter_for
     channels = registry(config)
+    if config.get('_delivery_contract'):
+        channels = [c for c in channels if c.adapter == 'yt_dlp']
+        methods = ['yt_dlp']
+        if not channels:
+            from webapp.environment import DownloadEnvironmentRequired
+            raise DownloadEnvironmentRequired('当前任务使用多类型交付，请在执行实例启用 yt-dlp 渠道。')
     def route_key(channel):
         return ('cobalt:' + backend_key(channel) if config.get('scheduler_mode') == 'auto'
                 and channel.adapter == 'bergung' else channel.adapter)
@@ -77,7 +83,7 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
             # instance, rather than charging failures to every queued video.
             raise YouTubeAuthRequired({'state': 'invalid', 'message': str(error)}) from None
     urls = payload['urls']
-    if store and not test_mode:
+    if store and not test_mode and not config.get('_delivery_contract'):
         from webapp.store import source_identity
         video_id, _ = source_identity(urls[0])
         if len(urls) == 1 and video_id and store.archive_has(archive_key(config, 'youtube ' + video_id), **({'job_id': payload['_business_job']} if payload.get('_business_job') else {})):
@@ -236,6 +242,12 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
             except PipelineBusy:
                 raise
             except (RuntimeError, yt_dlp.utils.DownloadError) as error:
+                evidence = failure_evidence(error)
+                if evidence.source in ('oss', 'local'):
+                    progress.state['last_failure'] = evidence.public()
+                    progress.save(force=True)
+                    meter.finish(False, upstream_failure=False)
+                    raise
                 previous_error = error
                 phase = session.failure_phase
                 observed_phase = ('resolve' if progress.state.get('stage') in (
@@ -285,5 +297,8 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
                       reason=reason, node_changed=False)
             finally:
                 assignment.close()
+    if config.get('_delivery_contract'):
+        from webapp.delivery.executor import finish
+        return finish(session)
     from webapp.worker.results import finish_delivery
     return finish_delivery(session, oss_storage, skipped_any, used_fallback)

@@ -9,5 +9,6 @@
     {% endfor %}
     <a class="nav-item" href="/#deployment"{% if workspace_page == 'index' %} data-view="deployment"{% endif %}><svg><use href="#i-server"/></svg>部署设置</a>
   </nav>
+  <a class="nav-item{% if workspace_page == 'delivery' %} active{% endif %}" href="/delivery-files">交付文件 ↗</a>
   <div class="sidebar-bottom"><div class="local-avatar"><svg><use href="#i-check"/></svg></div><div>视频交付工作区<small>任务 · 下载 · 交付</small></div></div>
 </aside>

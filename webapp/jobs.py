@@ -46,6 +46,11 @@ def apply_job_scope(store, db, task_id, payload):
     config = dict(payload['config'])
     from Utils.config import video_directory
     config['_job_media_root'] = str(video_directory(config, payload['base']))
+    from webapp.delivery.artifacts import pin
+    delivery = pin(store, db, task_id, value['id'], config.get('storage_mode') == 'test')
+    if delivery:
+        config['_delivery_contract'] = delivery['spec']
+        config['_delivery_version'] = delivery['version']
     # A fresh attempt directory prevents a cancelled, remote executor from
     # modifying a later attempt's file before it notices its revoked lease.
     config['dir'] = str(Path(config.get('dir') or '') / 'jobs' / value['id'] / task_id / uuid.uuid4().hex[:12])
@@ -127,6 +132,11 @@ class Jobs:
             self.store.lists.create(db, identity, {**data, 'list_name': name,
                 **({'price': '0'} if 'price' in data and data['price'] in ('', None) else {})})
             self.ensure(db, identity, config, data)
+            if 'delivery' in data:
+                from webapp.delivery.contracts import compatible
+                compatible(self.store, db)
+                from webapp.delivery.artifacts import save_contract
+                save_contract(db, identity, data['delivery'])
             ids = self.store.insert_downloads(db, [{'base': str(base), 'scope': 'download',
                 'batch_id': identity, 'urls': [url]} for url in urls])
             event(self.store, db, identity, f'创建任务；新增 {len(ids)} 个视频。')
@@ -191,8 +201,12 @@ class Jobs:
             for identity in legacy:
                 import_counts[identity] = import_counts.get(identity, 0) + 1
             paused, execution = self.execution_context(db, details.values())
+            from webapp.delivery.artifacts import describe as delivery_describe
+            delivery_info = delivery_describe(db, ids)
             items = [self.describe(details[key], profiles.get(key), counts.get(key, {}),
                 paused, execution[key], import_counts.get(key, 0)) for key in ids]
+        for item in items:
+            item['delivery'] = delivery_info[item['id']]
         return dict(items=items, next_cursor=str(rows[limit-1].seq) if len(rows)>limit else None)
 
     def execution_context(self, db, rows):
@@ -288,6 +302,8 @@ class Jobs:
             importing = db.execute(select(func.count()).select_from(imports).where(
                 or_(imports.c.id.in_(import_ids),imports.c.id==identity), imports.c.finished == 0)).scalar_one()
             result = self.describe(row, value, counts, paused, execution[identity], importing)
+            from webapp.delivery.artifacts import describe as delivery_describe
+            result['delivery'] = delivery_describe(db, [identity])[identity]
             result.update(policy=None, policy_scope='instance',
                 imports=[dict(record) for record in records], running_videos=running_videos,
                 transfer_speed=sum(float((item.get('progress') or {}).get('speed') or 0)
@@ -318,6 +334,13 @@ class Jobs:
                 values['price_set'] = int(price not in ('', None))
             if 'policy' in data:
                 raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
+            if 'delivery' in data:
+                from webapp.delivery.contracts import compatible
+                compatible(self.store, db)
+                from webapp.delivery.artifacts import save_contract
+                if data.get('delivery_scope', 'pending') != 'pending':
+                    raise ValueError('修改交付要求只影响尚未开始的来源，已有条目请使用补交。')
+                save_contract(db, identity, data['delivery'])
             db.execute(download_lists.update().where(download_lists.c.id == identity).values(customer=customer.strip(), name=name.strip(), **bill))
             db.execute(batches.update().where(batches.c.id == identity).values(name=name.strip()))
             db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(**values))
@@ -540,6 +563,14 @@ def register_jobs(app, store, settings, preflight):
         if state not in (None,'queued','running','succeeded','failed','interrupted','removed'):
             raise ValueError('不支持的视频状态。')
         statement=select(tasks).where(tasks.c.batch_id==identity,tasks.c.action=='download')
+        delivery_status = request.args.get('delivery_status')
+        if delivery_status:
+            if delivery_status not in ('pending', 'partial', 'review', 'complete', 'accepted'):
+                raise ValueError('不支持的交付状态。')
+            from webapp.database import delivery_runs
+            statement = statement.where(select(delivery_runs.c.task_id).where(
+                delivery_runs.c.job_id == identity, delivery_runs.c.task_id == tasks.c.id,
+                delivery_runs.c.status == delivery_status).exists())
         if state:
             statement=statement.where(tasks.c.status==state)
         else:
@@ -551,7 +582,10 @@ def register_jobs(app, store, settings, preflight):
             statement=statement.where(tasks.c.seq>store.statistics.cursor(request.args['cursor']))
         with store.connect() as db:
             rows=db.execute(statement.order_by(tasks.c.seq).limit(51)).mappings().all()
-        return jsonify(items=[store.decode(row) for row in rows[:50]],next_cursor=str(rows[49]['seq']) if len(rows)>50 else None)
+        from webapp.delivery.artifacts import task_details
+        with store.connect() as db:
+            delivery = task_details(db, [r['id'] for r in rows[:50]])
+        return jsonify(items=[{**store.decode(row), 'delivery': delivery[row['id']]} for row in rows[:50]],next_cursor=str(rows[49]['seq']) if len(rows)>50 else None)
 
     @app.post('/api/jobs/<identity>/videos')
     def job_append(identity):

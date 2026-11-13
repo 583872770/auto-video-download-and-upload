@@ -101,6 +101,9 @@ def rpc_allowed():
         return isinstance(data, dict) and data.get('action') == 'check'
 
     # Read-only task logs
+    if re.fullmatch(r'/api/delivery/files/[a-f0-9]{64}', path):
+        return method in ('GET', 'HEAD')
+
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
         return method in ('GET', 'HEAD')
 

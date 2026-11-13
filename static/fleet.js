@@ -131,7 +131,7 @@ function instanceMode(item) {
 function instanceLive(item) {
   const job = item.selected_job;
   const mode = instanceMode(item), pool = item.concurrency?.cookie_pool;
-  const source = mode === 'cookie_pool' ? `本实例 Cookie 池 · ${item.cookie_count || 0} 份${pool?.effective_sessions == null ? '' : ` · ${pool.effective_sessions} 个核心会话`}` : `${mode === 'auto' ? '自动并发' : '手动并发'} · ${item.has_cookie ? '本实例单 Cookie' : '未配置 Cookie'}`;
+  const source = (mode === 'cookie_pool' ? `本实例 Cookie 池 · ${item.cookie_count || 0} 份${pool?.effective_sessions == null ? '' : ` · ${pool.effective_sessions} 个核心会话`}` : `${mode === 'auto' ? '自动并发' : '手动并发'} · ${item.has_cookie ? '本实例单 Cookie' : '未配置 Cookie'}`) + (item.delivery_schema_version >= 1 ? ' · 支持四类交付' : ' · 需要更新以支持四类交付');
   const limit = item.concurrency?.effective_limit;
   const capacity = !item.online || item.paused ? '' : mode === 'cookie_pool' && item.concurrency && !pool?.known ? ' · 会话容量待采样'
     : limit == null ? '' : ` · 有效传输上限 ${escapeHTML(limit)}`;

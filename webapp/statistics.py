@@ -1,4 +1,4 @@
-﻿"""Transactional session totals and a ledger of completed video files."""
+"""Transactional session totals and a ledger of completed video files."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
@@ -327,7 +327,7 @@ class DownloadStatistics:
             (task['id'] + '\0' if test_mode else '') + str(path))
         return hashlib.sha256(logical.encode('utf-8')).hexdigest()
 
-    def record_file(self, task_id, path, video_id='', title='', *, test_mode=False):
+    def record_file(self, task_id, path, video_id='', title='', *, test_mode=False, artifact=None):
         """Called only after successful final-file processing, never from progress bytes."""
         path = Path(path).resolve()
         size = path.stat().st_size
@@ -337,13 +337,13 @@ class DownloadStatistics:
         # Retry only a completely rolled-back ledger transaction. The caller's
         # download, final-file processing and receipt publication run just once.
         recorded = transaction_retry(lambda: self._record_file(
-            task_id, path, size, video_id, title, test_mode=test_mode))
+            task_id, path, size, video_id, title, test_mode=test_mode, artifact=artifact))
         if recorded:
             self._history_cache.clear()
             self._dashboard_cache.clear()
         return recorded
 
-    def _record_file(self, task_id, path, size, video_id, title, *, test_mode):
+    def _record_file(self, task_id, path, size, video_id, title, *, test_mode, artifact=None):
         # A delivered path is registered once across retries and sessions.
         ledger = test_files if test_mode else deliveries
         with self.store.connect() as db:
@@ -353,6 +353,9 @@ class DownloadStatistics:
             if not task or task['status'] != 'running' or task['worker_id'] != self.store.owner:
                 from webapp.downloads import DownloadLeaseLost
                 raise DownloadLeaseLost('任务租约已失效，无法登记下载文件。')
+            if artifact:
+                from webapp.delivery.artifacts import fenced_run
+                fenced_run(self.store, db, task_id)
             if self.store.fleet and (not task['lease_until'] or task['lease_until'] <= self.store.fleet.clock(db)
                     or self.store.fleet.row(db)['boot_id'] != self.store.fleet.boot_id):
                 from webapp.downloads import DownloadLeaseLost
@@ -360,9 +363,12 @@ class DownloadStatistics:
             session_id = self.store.decode(task, private=True, db=db)['payload'].get('download_session_id')
             if not session_id:
                 return False  # Jobs already executing during an upgrade have no reliable session.
-            identity = self.file_identity(task, path, test_mode=test_mode)
+            identity = artifact['id'] if artifact else self.file_identity(task, path, test_mode=test_mode)
             self._active(db, task.get('instance_id'))
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
+                if artifact:
+                    from webapp.delivery.artifacts import receipt
+                    receipt(self.store, db, task, artifact, path, size, fresh=False)
                 return False
             completed_at = stamp()
             db.execute(ledger.insert().values(id=identity, seq=self.db.sequence(db, 'download_test_file' if test_mode else 'download_delivery'),
@@ -376,6 +382,9 @@ class DownloadStatistics:
             else:
                 db.execute(sessions.update().where(sessions.c.id == session_id).values(
                     file_count=sessions.c.file_count + 1, file_bytes=sessions.c.file_bytes + size))
+            if artifact:
+                from webapp.delivery.artifacts import receipt
+                receipt(self.store, db, task, artifact, path, size, fresh=True)
             self.methods.record_file(db, task, session_id, size, test_mode)
             self.store.lists.record_file(db, task, size, test_mode)
             if self.store.fleet:

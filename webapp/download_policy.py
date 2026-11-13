@@ -97,7 +97,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     if result or any(getattr(c, 'account_rate_limited', False) for c in chain):
         source = source or 'youtube'
     local_types = {'PipelineBusy', 'DownloadLeaseLost', 'DiskPressure', 'DiskCoordinationBusy',
-                   'BrowserEnvironmentRequired', 'DownloadEnvironmentRequired'}
+                   'BrowserEnvironmentRequired', 'DownloadEnvironmentRequired', 'LocalDeliveryError'}
     local = any(any(cls.__name__ in local_types for cls in type(c).__mro__) or type(c).__module__.startswith('sqlalchemy') or
                 isinstance(c, OSError) and c.errno in (5, 13, 28, 30, 122) for c in chain)
     transient = any(bool(getattr(c, 'retryable', False)) or isinstance(c, (TimeoutError, ConnectionError))

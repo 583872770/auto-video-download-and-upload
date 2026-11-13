@@ -118,7 +118,7 @@ class Fleet:
 
     def save_local(self, config, base, clash_directory):
         from Utils.config import video_directory
-        self.local = {'config': dict(config), 'base': str(base), 'clash_directory': str(clash_directory),
+        self.local = {'delivery_schema_version': 1, 'config': dict(config), 'base': str(base), 'clash_directory': str(clash_directory),
                       'directory': str(video_directory(config, Path(base)).resolve())}
         with self.store.connect() as db:
             previous = json.loads(self.row(db)['config'])
@@ -269,6 +269,7 @@ class Fleet:
                 config = {**local.get('config', {}), **self.resource_limits(row)}
                 progress = by_instance.get(row['id'], [])
                 result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
+                    'delivery_schema_version': local.get('delivery_schema_version', 0),
                     'online': row['heartbeat'] > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading' and
