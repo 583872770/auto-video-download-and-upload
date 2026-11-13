@@ -14,6 +14,15 @@
 !templates/**
 !static/
 !static/**
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/.npmrc
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/src/
+!frontend/src/**
+static/frontend/
 !scripts/
 !scripts/login_youtube.py
 !scripts/migrate_mysql.py

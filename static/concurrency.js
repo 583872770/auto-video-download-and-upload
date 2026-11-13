@@ -76,7 +76,7 @@ function databaseBudgetHTML(data, {compact = false} = {}) {
     budget.deployment_cap != null ? `部署总连接硬上限 ${Number(budget.deployment_cap)}` : '',
     budget.deployment_worker_cap != null ? `部署下载连接硬上限 ${Number(budget.deployment_worker_cap)}` : ''
   ].filter(Boolean).join('；');
-  return `<div class="worker-database-budget"><p><strong>数据库连接预算：</strong>${mode} ${Number(budget.total)} 个，最多支持 ${Number(budget.workers)} 个下载进程${warning ? '，低于进程目标' : ''}。</p>${compact ? '' : `<p>目标 ${Number(budget.target_workers)} 个进程 × 每进程 ${Number(budget.per_worker)} 个连接 + 固定预留 ${fixed} = 需要 ${Number(budget.required_total)} 个。${deployment ? escapeHTML(deployment) + '；修改部署硬上限需重建应用容器。' : ''} <a href="/#settings" data-settings-target="performance">调整进程与连接预算</a></p>`}</div>`;
+  return `<div class="worker-database-budget"><p><strong>数据库连接预算：</strong>${mode} ${Number(budget.total)} 个，最多支持 ${Number(budget.workers)} 个下载进程${warning ? '，低于进程目标' : ''}。</p>${compact ? '' : `<p>目标 ${Number(budget.target_workers)} 个进程 × 每进程 ${Number(budget.per_worker)} 个连接 + 固定预留 ${fixed} = 需要 ${Number(budget.required_total)} 个。${deployment ? escapeHTML(deployment) + '；修改部署硬上限需重建应用容器。' : ''} <a href="/settings#performance">调整进程与连接预算</a></p>`}</div>`;
 }
 function decisionExplanationHTML(data, key) {
   const value = data.decisions;

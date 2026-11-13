@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1
 FROM node:22-bookworm-slim AS javascript
 
+FROM javascript AS frontend-build
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN npm ci --no-fund
+COPY frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/src/ ./src/
+RUN npm run build
+
 FROM python:3.13-slim-bookworm
 ARG WITH_YT5S_BROWSER=0
 ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
@@ -41,6 +49,7 @@ COPY Utils/ ./Utils/
 COPY webapp/ ./webapp/
 COPY templates/ ./templates/
 COPY static/ ./static/
+COPY --from=frontend-build /build/static/frontend /app/static/frontend
 COPY scripts/login_youtube.py ./scripts/login_youtube.py
 COPY scripts/migrate_mysql.py ./scripts/migrate_mysql.py
 COPY docker/ ./docker/

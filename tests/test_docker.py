@@ -207,8 +207,11 @@ class DockerBootstrapTests(unittest.TestCase):
         """Exercise only the files shipped by Dockerfile COPY instructions."""
         with tempfile.TemporaryDirectory() as temporary:
             staging = Path(temporary)
+            runtime = False
             for line in (ROOT / 'Dockerfile').read_text(encoding='utf-8').splitlines():
-                if not line.startswith('COPY ') or line.startswith('COPY --from='):
+                if line.startswith('FROM '):
+                    runtime = line.startswith('FROM python:')
+                if not runtime or not line.startswith('COPY ') or line.startswith('COPY --from='):
                     continue
                 *sources, destination = shlex.split(line)[1:]
                 # Only application copies relative to WORKDIR enter this check.

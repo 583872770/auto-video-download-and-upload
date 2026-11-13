@@ -11,6 +11,8 @@
 
 需要 Docker Engine 和 Docker Compose V2。镜像包含 FFmpeg / ffprobe、Node.js、Mihomo、Chromium、Xvfb 和 noVNC。以下命令在部署服务器的项目目录执行；Windows PowerShell 将 `cp` 换成 `Copy-Item` 即可。
 
+两套编排共用同一 Dockerfile。构建时自动安装锁定的前端依赖、检查 TypeScript 并打包 Vue 系统设置；运行时由 Flask 在 `/settings` 提供静态资源，无需新增前端容器、端口或 CDN。打包源码必须包含 `frontend/`，宿主机的 `node_modules` 和本地构建产物不会进入镜像上下文。
+
 ## 应用、MySQL、Redis 一起部署
 
 新部署复制模板；已有 `.env` 请直接编辑，避免覆盖原密码、端口和实例设置：

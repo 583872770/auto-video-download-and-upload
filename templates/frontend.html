@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172336">
+  <meta name="csrf-token" content="{{ bootstrap.csrf }}">
+  <title>系统设置 · 帧流 Frameflow</title>
+  {% for path in assets.styles %}<link rel="stylesheet" href="{{ url_for('static', filename=path) }}">{% endfor %}
+  {% for path in assets.preload %}<link rel="modulepreload" href="{{ url_for('static', filename=path) }}">{% endfor %}
+  <script id="frontend-bootstrap" type="application/json">{{ bootstrap | tojson }}</script>
+  <script type="module" src="{{ url_for('static', filename=assets.script) }}"></script>
+</head>
+<body>
+  <div id="frontend-app"></div>
+  <noscript>请启用 JavaScript 后使用系统设置。</noscript>
+</body>
+</html>

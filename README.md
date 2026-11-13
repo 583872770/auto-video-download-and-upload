@@ -28,7 +28,11 @@ docker compose -f compose.local.yaml up -d --build
 
 ## 本地开发
 
-需要 Python 3.13+、FFmpeg、Node.js 或 Deno。安装依赖，在 `.env` 配置数据库和 Redis 后运行：
+需要 Python 3.13+、FFmpeg、Node.js 或 Deno。
+
+系统设置已迁入 Vue 独立页面 `/settings`。本机运行前需用 Node.js 22.12+ 在 `frontend/` 执行 `npm.cmd ci`、`npm.cmd run build`；Docker 会自动打包。开发监听与验证见[前端开发](docs/development/project-layout.md#前端开发)。其他页面暂沿用现有实现。
+
+安装后端依赖，在 `.env` 配置数据库和 Redis 后运行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock.txt

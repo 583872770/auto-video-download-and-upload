@@ -18,12 +18,31 @@
 | `webapp/config/` | 参数定义、默认值、校验和保存 |
 | `webapp/delivery/` | 交付要求、产物执行、校验、存储与 API |
 | `Utils/` | 兼容工具及下载实现 |
-| `templates/`、`static/` | 页面模板与前端资源 |
+| `frontend/` | Vue 3 + TypeScript + Vite + Pinia + Element Plus；系统设置独立入口 |
+| `templates/`、`static/` | Flask 模板、兼容页面与打包后的静态资源 |
 | `docker/` | 镜像启动、浏览器桌面、健康检查与打包验证 |
 | `scripts/verify/` | 可重复执行的验证脚本，`scripts/verify_*.py` 为原路径兼容入口 |
 | `tests/`、`.github/workflows/` | 自动化测试与 CI |
 
 既有独立领域模块继续负责账号池、调度、租约和资源保护等逻辑；不为目录外观再次移动运行模块。`webapp/store.py`、`tasks.py`、`settings.py`、`config_schema.py` 继续保留公开兼容接口。
+
+## 前端开发
+
+系统设置使用 `/settings`。组件按文件保存、下载、并发渠道、空间日志、诊断和交付默认划分；请求层集中处理 CSRF、权限过期、超时及实例切换。系统设置草稿由 Pinia 管理，交付默认是全局独立草稿。账号、任务中心、下载工作台等页面暂沿用现有实现，`/#settings` 保留兼容。
+
+需要 Node.js 22.12+。首次启动前从根目录执行：
+
+```powershell
+python scripts/generate_frontend_contract.py --check
+cd frontend
+npm.cmd ci --cache ../.cache/npm
+npm.cmd run build
+cd ..
+```
+
+然后启动 Flask。开发时在 `frontend/` 运行 `npm.cmd run dev`，监听源码并重新构建，浏览器刷新 `/settings` 查看；不需要额外的 Node 服务或跨域代理。Linux 可使用 `npm`。未构建时 `/settings` 自动回退到兼容页面。
+
+`frontend/src/generated/config.ts` 由后端参数定义生成。修改 `webapp/config/schema.py` 后运行 `python scripts/generate_frontend_contract.py` 并提交生成文件；CI 使用 `--check` 防止前后端字段漂移。运行 `npm.cmd test` 检查请求与保存合同，`npm.cmd run build` 包含严格类型检查；`npm.cmd run format` 统一代码格式，CI 使用 `format:check` 检查。浏览器回归入口为 `python scripts/verify/verify_frontend_settings_ui.py`。生产资源输出到 `static/frontend/`，不提交 Git，由 Docker 构建阶段生成。依赖版本由 `package-lock.json` 固定，`.npmrc` 兼容 npm 10 对 Vitest 可选浏览器依赖的解析问题。
 
 ## 部署与文档目录
 

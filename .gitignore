@@ -4,6 +4,9 @@ Cookies/
 .tools/
 .cache/
 .runtime/
+**/node_modules/
+static/frontend/
+frontend/*.tsbuildinfo
 videos/
 *.parts/
 videos.txt
