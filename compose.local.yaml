@@ -1,0 +1,120 @@
+name: youtube-downloader-local
+
+# 场景一：应用 + MySQL + Redis 一起部署，独立使用此文件，不叠加其他编排。
+services:
+  app:
+    build:
+      context: .
+      args:
+        MIHOMO_DOWNLOAD_BASE_URL: ${MIHOMO_DOWNLOAD_BASE_URL:-}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        WITH_YT5S_BROWSER: "1"
+    init: true
+    shm_size: 512m
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-5000}:5000"
+      - "127.0.0.1:${YT5S_DESKTOP_PORT:-6080}:6080"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      VIDEO_INSTANCE_ID: ${VIDEO_INSTANCE_ID:-}
+      VIDEO_INSTANCE_NAME: ${VIDEO_INSTANCE_NAME:-}
+      VIDEO_INSTANCE_URL: ${VIDEO_INSTANCE_URL:-}
+      VIDEO_WEB_HOSTS: ${VIDEO_WEB_HOSTS:-localhost,127.0.0.1,[::1]}
+      VIDEO_WEB_HTTPS: ${VIDEO_WEB_HTTPS:-0}
+      VIDEO_ACCOUNT_ENCRYPTION_KEY: ${VIDEO_ACCOUNT_ENCRYPTION_KEY:-}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
+      MYSQL_USER: ${MYSQL_USER:-video}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      REDIS_URL: redis://redis:6379/0
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_SECURITY_TOKEN: ${OSS_SECURITY_TOKEN:-}
+      VIDEO_DB_POOL_SIZE: ${VIDEO_DB_POOL_SIZE:-5}
+      VIDEO_DB_MAX_OVERFLOW: ${VIDEO_DB_MAX_OVERFLOW:-2}
+      VIDEO_WORKER_DB_POOL_SIZE: ${VIDEO_WORKER_DB_POOL_SIZE:-2}
+      VIDEO_WORKER_DB_MAX_OVERFLOW: ${VIDEO_WORKER_DB_MAX_OVERFLOW:-0}
+    volumes:
+      - app_config:/data/config
+      - app_state:/app/.cache/web
+      - type: bind
+        # Docker 引擎所在 Linux 服务器的绝对路径，避免 Windows 展开相对路径。
+        source: ${VIDEO_DOWNLOAD_DIR:-/srv/youtube-videos}
+        target: /data/videos
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    # 更新时立即停止下载，不等待当前任务完成；MySQL 租约到期后恢复未完成任务。
+    stop_grace_period: 0s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # MySQL 镜像要求此变量名；配置统一读取 MYSQL_PASSWORD。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
+      MYSQL_USER: ${MYSQL_USER:-video}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --innodb-buffer-pool-size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-2G}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # 使用应用账号验证数据库；保留错误供 docker inspect 查看，不输出密码。
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --connect-timeout=3
+          --host=127.0.0.1 --user="$${MYSQL_USER}"
+          --database="$${MYSQL_DATABASE}" --execute='SELECT 1'
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 384m
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_config:
+  app_state:
+  mysql_data:

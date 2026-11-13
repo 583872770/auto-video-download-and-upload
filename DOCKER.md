@@ -1,177 +1,136 @@
-# Docker Compose 部署
+# Docker 部署
 
-需要 Docker Engine / Docker Desktop（使用 Linux 容器）和 Docker Compose v2+。
-支持 Linux amd64、arm64；构建时 Debian 软件包（包括 FFmpeg 和可选 Chromium）默认使用清华大学 Debian 镜像，Python 依赖默认使用清华 PyPI 镜像。基础镜像仍从 Docker Hub 拉取。Mihomo 固定版本的 GitHub 发布包优先通过 `ghfast.top`、`gh-proxy.com` 下载，失败后尝试 GitHub 原站，最多两轮，每个请求超时 30 秒；每次都验证项目固定的 SHA256，通过后才安装。
+只保留以下两种部署方式，二选一，均使用 MySQL 和 Redis。
 
-主应用支持构建参数 `DEBIAN_MIRROR`（如 `https://mirrors.tuna.tsinghua.edu.cn`，不带 `/debian`）和 `PIP_INDEX_URL`（完整的 `/simple` 地址）。Compose 会把这两个参数从 `.env` 传入；如需临时切换源，也可在构建命令中传入 `--build-arg DEBIAN_MIRROR=... --build-arg PIP_INDEX_URL=...`。
+| 场景 | 编排文件 | 环境模板 | 启动的服务 |
+| --- | --- | --- | --- |
+| 应用、MySQL、Redis 一起部署 | `compose.local.yaml` | `.env.local.example` | app、mysql、redis |
+| 应用连接远程 MySQL、Redis | `compose.remote.yaml` | `.env.remote.example` | app |
 
-国内服务器建议先使用默认清华源。如果服务器到清华源较慢，可在 `.env` 中改为腾讯云或阿里云：
+两份编排独立使用，不再叠加账号或 IPv6 覆盖文件。每个 app 同时提供管理页面和下载执行，账号在页面新增、导入并绑定实例，无需按账号再部署容器。
+
+需要 Docker Engine 和 Docker Compose V2。镜像包含 FFmpeg / ffprobe、Node.js、Mihomo、Chromium、Xvfb 和 noVNC。以下命令在部署服务器的项目目录执行；Windows PowerShell 将 `cp` 换成 `Copy-Item` 即可。
+
+## 应用、MySQL、Redis 一起部署
+
+新部署复制模板；已有 `.env` 请直接编辑，避免覆盖原密码、端口和实例设置：
+
+```bash
+cp .env.local.example .env
+```
+
+在 `.env` 中填写 `MYSQL_PASSWORD`，并设置视频目录和访问地址。应用固定连接 Docker 内网的 `mysql:3306` 和 `redis:6379/0`；本方案忽略环境文件中的 `MYSQL_HOST`、`MYSQL_PORT`、`REDIS_URL`，不发布数据库端口。MySQL 与 Redis 健康后才启动应用。
+
+```bash
+docker compose -f compose.local.yaml config --quiet
+docker compose -f compose.local.yaml up -d --build
+docker compose -f compose.local.yaml ps
+docker compose -f compose.local.yaml logs --tail=100 app mysql redis
+```
+
+MySQL 8.4 数据持久化到 `mysql_data` 卷。首次初始化时 root 和应用账号使用同一个 `MYSQL_PASSWORD`，应用使用专用账号 `video`，不能设为 root。已有数据卷的密码不会随 `.env` 自动更新，改密码需先在数据库中修改账号，再同步环境文件。
+
+`MYSQL_INNODB_BUFFER_POOL_SIZE` 默认 2G，小内存机器请降低，例如 256M。Redis 7.4 仅用于实时进度缓存，限制缓存内存为 256 MB，不持久化；重建不影响 MySQL 中的任务、账号和账单。
+
+## 连接远程 MySQL、Redis
+
+先准备 MySQL 数据库及专用账号，授权应用服务器访问，建库与权限见 [MYSQL.md](MYSQL.md#直接连接已有-mysql)。远程 Redis 同样需要允许应用服务器连接。
+
+```bash
+cp .env.remote.example .env
+```
+
+填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`REDIS_URL`。MySQL 支持 5.7.9+ 和 8.x，不支持 MariaDB。主机字段只填写域名或 IP，不带协议和端口。
 
 ```dotenv
-DEBIAN_MIRROR=https://mirrors.cloud.tencent.com
-PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+MYSQL_HOST=mysql.example.com
+MYSQL_PORT=3306
+MYSQL_DATABASE=video_downloads
+MYSQL_USER=video
+MYSQL_PASSWORD='替换为数据库原始密码'
+REDIS_URL='redis://:经过URL编码的密码@redis.example.com:6379/0'
 ```
 
-镜像地址不要追加 `/debian`；Dockerfile 会根据 Debian 的 sources 文件自动拼接 Debian 和 security 路径。更换后重新执行 `up -d --build app`，不需要删除数据卷，也不要使用 `--no-cache`。
+MySQL 密码使用原始值，单引号保留 `$`、`#` 等字符；Redis URL 中的用户名、密码需要 URL 编码，无密码时使用 `redis://redis.example.com:6379/0`，TLS 使用 `rediss://`。多实例共享同一 MySQL 和 Redis 库，各自使用独立状态卷，详见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。
 
-若 Mihomo 下载仍出现 `RemoteDisconnected` 或超时，可在 `.env` 添加 `MIHOMO_DOWNLOAD_BASE_URL=https://你的下载站/MetaCubeX/mihomo/releases/download`，作为优先来源。脚本会追加 `/v1.19.33/mihomo-linux-<架构>-v1.19.33.gz`；自定义来源也必须提供与固定校验值一致的官方压缩包。修改后重新执行远程 MySQL Compose 的 `up -d --build`，无需删除卷或使用 `--no-cache`。
-
-页面支持切换“方式一：yt-dlp”“方式二：yt5s（实验）”和“方式三：yt5s 优先，失败用 yt-dlp”。两个 Compose 方案均包含 Chromium、虚拟显示和网页远程桌面。部署说明见 [YT5S_LINUX.md](YT5S_LINUX.md)。
-
-## 应用与 MySQL 一起部署
-
-使用 `compose.local-mysql.yaml`，其中应用复用远程方案的构建和运行设置，并通过 Docker 服务名 `mysql:3306` 连接 MySQL 8.4。先复制环境模板：
-
-```powershell
-cp .env.local-mysql.example .env.local-mysql
+```bash
+docker compose -f compose.remote.yaml config --quiet
+docker compose -f compose.remote.yaml up -d --build
+docker compose -f compose.remote.yaml ps
+docker compose -f compose.remote.yaml logs --tail=100 app
 ```
 
-编辑 `.env.local-mysql`，替换 `MYSQL_PASSWORD`，并设置视频目录和网页端口。应用账号和 root 账号在首次初始化时统一使用这个密码，无需单独设置 `MYSQL_ROOT_PASSWORD`。也可直接在现有 `.env` 中填写相同的参数，执行命令时省略 `--env-file .env.local-mysql`。然后执行：
+缺少 MySQL 地址、密码或 Redis URL 时，Compose 会在启动前报错。此方案只启动 app，不创建或管理远程数据库。Redis 故障时进度缓存仍会自动降级到 MySQL，恢复后重试缓存连接。
 
-```powershell
-docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml config --quiet
-docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml up -d --build
-docker compose --env-file .env.local-mysql -f compose.local-mysql.yaml logs -f --tail=100 app mysql
-```
+## 配置文件职责
 
-MySQL 首次启动会自动创建数据库和应用账号；数据库健康检查通过后应用才启动，并自动读取连接信息。网页默认访问 <http://127.0.0.1:5000>，数据库仅供 Compose 网络内访问。后续操作也使用相同的 `--env-file` 和 `-f` 参数。
-
-此方案默认项目名为 `youtube-downloader-local`，配置、状态和 MySQL 数据分别保存到独立命名卷，视频保存在指定的宿主机目录。它与原远程库部署独立，不会自动迁移原任务或配置；两套同时运行时应设置不同的网页和桌面端口。通过 `-p` 复用旧项目及状态卷时，保留原实例设置，旧页面保存的数据库连接会被忽略，始终使用本方案的 `mysql:3306` 和环境文件中的数据库账号密码。
-
-数据库初始化后，修改环境文件中的库名或密码不会修改数据库中已有的库和账号，需在 MySQL 中同步修改。停止或重建容器保留命名卷；`down -v` 会删除其中的数据。
-
-如果启动提示 MySQL `unhealthy`，先在部署所用的 Docker 环境中查看服务日志和健康检查详情（项目名与启动时保持一致）：
-
-```powershell
-docker compose -f compose.local-mysql.yaml -p youtube-downloader-local logs --tail=100 mysql
-docker inspect youtube-downloader-local-mysql-1 --format '{{json .State.Health}}'
-```
-
-健康检查通过应用账号执行 `SELECT 1`，错误输出保留在健康检查详情中。`Access denied` 表示账号认证失败，常见于已有数据卷中的密码与当前环境文件不同；`Unknown database` 表示目标数据库不存在；连接错误需结合 MySQL 服务日志判断初始化进度或启动故障。修改健康检查后执行 `up -d mysql` 重建数据库容器生效，数据卷保留。不要用删除数据卷的方式排除尚未确认的故障。
-
-## 启动
-
-**使用已有远程 MySQL：** 请按 [远程数据库部署步骤](MYSQL.md#linux-docker-连接远程-mysql) 使用 `compose.remote-mysql.yaml` 和 `.env.remote-mysql.example`。此方案只启动应用。
-
-在项目根目录执行：
-
-```powershell
-cp .env.remote-mysql.example .env
-```
-
-启动前在 `.env` 中填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER` 和 `MYSQL_PASSWORD`，服务自动读取并连接。`/setup` 页面只配置实例设置，数据库参数不可在页面修改。
-密码保留两侧单引号，避免 `$`、`#` 被 Compose 解释。旧页面保存的数据库连接不再覆盖启动配置；修改 `.env` 后执行 `up -d` 重建应用容器生效。
-`VIDEO_DOWNLOAD_DIR` 设置宿主机的视频目录，Windows 可写 `D:/youtube-videos`，Linux 可写 `/srv/youtube-videos`。
-含空格的目录用引号包围。默认保存到 Docker 引擎所在 Linux 服务器的 `/srv/youtube-videos`。
-
-这里的“宿主机”是 **Docker 引擎所在的机器**。如果 Windows 上的 PyCharm 连接远程 Linux Docker，`.env` 应填写服务器上的绝对目录，例如 `VIDEO_DOWNLOAD_DIR=/srv/youtube-videos`。不要填写 Windows 路径或保留 `./docker-data/videos`，后者可能被本地 Compose 展开成 `D:\...` 后传给 Linux，报 `invalid volume specification`。目录位于服务器，不会自动映射到 Windows；网页中的保存目录仍填 `/data/videos`。修改后重新运行 Compose 的 `up -d` 即可，无需重新构建镜像。
-
-已有 `.env` 或 PyCharm 运行配置中的 `VIDEO_DOWNLOAD_DIR` 会覆盖默认值。如果仍报 `D:\...` 路径错误，请检查运行配置中的环境变量、指定的 `--env-file`，将其中的视频目录也改为服务器绝对路径。更换挂载目录不会自动搬迁已有视频；已有素材时应填写其实际所在的服务器目录。
-
-```powershell
-docker compose -f compose.remote-mysql.yaml config --quiet
-docker compose -f compose.remote-mysql.yaml up -d --build
-docker compose -f compose.remote-mysql.yaml ps
-docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
-```
-
-访问 <http://127.0.0.1:5000/setup>，输入日志中的“部署设置访问码”，测试 MySQL 连接并保存。服务统一提供管理与下载，单台与多台共用同一套部署流程，协作步骤见 [MULTI_INSTANCE.md](MULTI_INSTANCE.md)。如果本机服务已占用 5000，把 `.env` 中的 `WEB_PORT` 改为 `5001`，访问对应端口。
-首次构建会安装依赖。数据库配置完整时，应用自动连接、检查表结构并启动；缺少数据库配置时设置页提示补齐环境文件。实例设置保存到持久化状态卷的 `deployment.json`，不再保存数据库地址或凭据。页面修改实例设置后需执行 `docker compose -f compose.remote-mysql.yaml restart app` 生效；修改 `.env` 则执行 `up -d` 更新容器环境。
-
-旧 `manager`、`worker`、`all` 角色配置会自动按管理与下载一体启动，保留原实例 ID、任务和账单。原管理端升级后暂停领取，原下载实例保留暂停状态。已完成旧单机转换的实例须使用原状态卷和数据库升级；通过身份与旧进程检查后恢复统一调度，下载保持暂停，原转换记录归档。无需再选择角色或执行单机转换。仅用于管理的机器保持暂停领取即可。
-
-浏览器桌面启动失败时，技术详情会提示查看容器内 `/tmp/xvfb.log`、`/tmp/x11vnc.log`、`/tmp/novnc.log`。
-容器重启会保留 `/tmp`，程序启动前会检查 `:99` 的套接字和锁持有进程，自动清理已失效的 `/tmp/.X99-lock`、`/tmp/.X11-unix/X99`（包括锁中 PID 已被其他进程复用的情况）。仍被使用或无法确认归属的显示服务会保留并报告错误。Xvfb、x11vnc 或 noVNC 启动退出时，技术详情会显示失败组件和退出码。更新此修复需重新构建镜像并创建容器：
-
-```powershell
-docker compose -f compose.remote-mysql.yaml up -d --build app
-```
-
-首次使用在页面上传 YouTube Netscape Cookie 文件，然后检测登录；需要代理时，在“代理与节点”中导入订阅，选择节点并设置自动轮换。
-原有 Cookie 校验、批量进度、停止/继续和并行下载沿用现有功能。保存方式支持指定目录、阿里云 OSS（保留本地副本）和测试模式，OSS 配置见 [OSS.md](OSS.md)。
-
-## 服务与持久化
-
-| 服务 | 内容 |
+| 文件 / 位置 | 用途 |
 | --- | --- |
-| `app` | Flask / Waitress、独立下载和维护子进程、一个共享 Mihomo 内核 |
+| `.env` | 数据库、Redis、端口、目录、实例初始信息及密钥；不提交 Git |
+| 两份 `compose.*.yaml` | 容器、端口映射、健康检查和持久卷 |
+| `Dockerfile`、`.dockerignore` | 构建运行镜像；排除本机配置、Cookie、日志和视频 |
+| `docker/config.yaml` | 首次启动复制到配置卷的下载默认值 |
+| 容器 `/data/config/config.yaml` | 当前实例的下载策略，后续由页面维护；重建不覆盖 |
+| 容器 `/app/.cache/web` | 实例身份、部署设置、管理登录密钥等持久状态 |
+| 根目录 `config.yaml`、`run.ps1` | 本机开发及命令行使用，不挂载进正式 Docker 容器 |
 
-镜像内已安装 FFmpeg / ffprobe、Node.js 22、锁定版本的 Python 依赖和 Mihomo v1.19.33。
-Mihomo 只运行一个内核，各下载槽使用独立的本地监听端口和节点选择组，仍可独立选择、轮换节点。控制端口和全部代理端口仅监听应用容器内部的回环地址，无需增加 Docker 端口映射，所有节点管理继续通过现有页面进行。
+环境模板包含常用设置；OSS 临时凭据可按需在 `.env` 增加 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_SECURITY_TOKEN`，两套编排均支持。
 
-从旧的多内核版本升级时，先在页面“停止全部下载”，等待当前任务退出，再使用原来的项目名、`--env-file` 和 Compose 文件组合执行 `up -d --build`，保留已有卷。首次使用代理时会准备各下载槽的监听端口，并停止经进程身份校验确认属于本项目的旧 worker 内核；保留订阅、Cookie、队列和各槽轮换计数。之后调整下载进程数不会重载 Mihomo。
-每个实例的并行数量在页面设置为 1–16；每台服务器保留一个 `app` 容器，多台服务器通过共享 MySQL 协作。
+账号新增、导入需要 `VIDEO_ACCOUNT_ENCRYPTION_KEY`。新安装用 `openssl rand -base64 32` 生成一次并填入 `.env`；所有共享数据库实例使用同一密钥。已有部署保留原密钥，备份时一起保存；应用不会自动生成或替换此密钥。
 
-| 数据 | 保存位置 |
-| --- | --- |
-| 配置、上传的 Cookie、命令行下载归档 | `app_config` 命名卷，容器内 `/data/config` |
-| 部署配置和访问码、任务日志、会话密钥、订阅、节点和轮换状态、测试下载临时文件 | `app_state` 命名卷，容器内 `/app/.cache/web` |
-| 任务、批次、索引、下载去重和轮换计数 | 远程 MySQL 数据库 |
-| 视频、封面、字幕、元数据 | `VIDEO_DOWNLOAD_DIR` 指定的宿主机目录，映射到 `/data/videos` |
+MySQL 连接池可用模板中的 `VIDEO_DB_*`、`VIDEO_WORKER_DB_*` 调整，多个实例需合计数据库连接预算。实例 ID 留空会自动生成；升级时保留状态卷，新实例不要复制其他实例的状态目录。
 
-默认 Compose 项目名为 `youtube-downloader`，配置和状态使用命名卷；任务数据保存在远程 MySQL。
-配置模板只在第一次启动时复制，之后在网页保存的设置和 Cookie 不会被覆盖。
-页面的指定目录应填写 **容器路径 `/data/videos`**，宿主机路径在 `.env` 中修改；更改目录映射不会搬迁原有文件。
-测试模式下载到状态卷内，完成后清理文件。任务记录仍保存在 MySQL。
-远程 MySQL 5.7.9+ 和 8.x 均可使用，应用会自动选择兼容的建表和加锁方式，详见 [MYSQL.md](MYSQL.md)。
+构建源可修改 `DEBIAN_MIRROR`、`PIP_INDEX_URL`，洛杉矶服务器可分别使用 `https://deb.debian.org`、`https://pypi.org/simple`。Mihomo 下载源可按需设置 `MIHOMO_DOWNLOAD_BASE_URL`。
 
-整个配置目录使用卷挂载，支持页面原子保存配置。需要检查配置时：
+## 访问与首次设置
 
-```powershell
-docker compose -f compose.remote-mysql.yaml cp app:/data/config/config.yaml ./docker-config.yaml
+默认页面只监听宿主机 `127.0.0.1:5000`。需要局域网或公网访问时，将 `WEB_BIND_IP` 改为 `0.0.0.0` 或服务器内网 IP，设置 `WEB_PORT`、`VIDEO_WEB_HOSTS`；域名 / IP 列表不含协议和端口，并保留 `127.0.0.1` 供健康检查使用。HTTPS 反向代理可设置 `VIDEO_WEB_HTTPS=1`。
+
+`VIDEO_DOWNLOAD_DIR` 必须是 Docker 引擎所在机器的绝对路径，例如 Linux `/srv/youtube-videos`，Windows Docker Desktop `D:/youtube-videos`。页面内的下载目录使用容器路径 `/data/videos`。
+
+打开 `/setup`，输入启动日志中的“部署设置访问码”，测试连接并配置实例。MySQL、Redis 连接由启动环境管理；实例设置保存到状态卷的 `deployment.json`，重启后生效。管理账户在 `/login` 初始化，初始设置码位于 `/app/.cache/web/console-bootstrap.key`，可通过 `docker compose -f 所选编排文件 exec app cat /app/.cache/web/console-bootstrap.key` 读取。
+
+noVNC 默认只监听宿主机 `127.0.0.1:6080`，通过 SSH 隧道访问：
+
+```bash
+ssh -L 16080:127.0.0.1:6080 用户@服务器
 ```
 
-配置和状态中可能包含登录信息、订阅及节点凭据，备份时一并妥善保存。
+然后打开 `http://127.0.0.1:16080/vnc.html`；修改 `YT5S_DESKTOP_PORT` 后相应调整隧道目标端口。浏览器运行与排错见 [YT5S_LINUX.md](YT5S_LINUX.md)。
 
-## 浏览器登录
+## 更新、停止与恢复
 
-远程 MySQL 编排内置 Chromium、Xvfb 和 noVNC，方式二、三可以直接使用服务器浏览器完成 yt5s 解析；需要人工验证时通过 SSH 隧道访问 6080 端口。
-YouTube“独立浏览器登录”仍建议在自己的正常浏览器登录后导出 Netscape Cookie 文件，再在页面上传。Cookie 仍可能被 YouTube 撤销或过期，失效后需要重新上传。
+以下以本地方案为例；远程方案将文件名替换为 `compose.remote.yaml`。每次使用相同的环境文件及项目名。保留兼容的默认项目名：本地 `youtube-downloader-local`，远程 `youtube-downloader`；若旧部署用了自定义 `-p`，后续也必须带同一个 `-p`，避免另建空数据卷。
 
-## 局域网或域名访问
+旧 `compose.local-mysql.yaml`、`compose.remote-mysql.yaml` 分别重命名为 `compose.local.yaml`、`compose.remote.yaml`，环境模板对应改为 `.env.local.example`、`.env.remote.example`。旧环境文件可继续通过 `--env-file 原文件` 使用，不必覆盖；PyCharm 或部署脚本中的 Compose 文件路径需同步更新。
 
-默认仅允许宿主机访问。需要从其他设备访问时，修改 `.env`：
+更新代码后先验证并构建，镜像就绪后立即停止应用再替换，不等待当前下载完成：
 
-```dotenv
-WEB_BIND_IP=0.0.0.0
+```bash
+docker compose -f compose.local.yaml config --quiet
+docker compose -f compose.local.yaml build app
+docker compose -f compose.local.yaml stop -t 0 app
+docker compose -f compose.local.yaml up -d --no-build app
+docker compose -f compose.local.yaml ps
+docker compose -f compose.local.yaml logs --tail=100 app
 ```
 
-运行 `docker compose -f compose.remote-mysql.yaml up -d` 应用端口映射修改。进入 `/setup` 后，“允许访问页面的域名 / IP”会自动补入当前主机，也可手动填写实际域名/IP，保留 `127.0.0.1` 供健康检查使用；已经运行的服务保存后重启生效。宿主机端口、监听 IP 和卷映射由 Docker 决定，不能在容器页面内修改。工作台使用独立的管理账户登录；部署设置访问码仅解锁 `/setup`，管理账户在 `/login` 初始化。HTTPS 部署可设置 `VIDEO_WEB_HTTPS=1`。跨容器的下载实例地址需从管理端实际可达，不能填写另一台机器的 `127.0.0.1`。
+本地 MySQL、Redis 不随应用更新重启。两套编排的 app 均设置立即停止；正常停止整个本地栈时，MySQL 仍保留 60 秒退出时间。
 
-## 停止、恢复与更新
+修改 `.env` 后使用 `up -d app` 重建容器环境，单纯 `restart` 不会读取新环境。停止应用使用 `stop -t 0 app`，恢复使用 `up -d app`。未完成任务在旧租约到期后可恢复，已暂停任务保持暂停。健康状态为 `unhealthy` 时需查看日志，Docker 不会仅因健康检查失败自动重启。
 
-```powershell
-# 停止整个容器栈，保留数据
-docker compose -f compose.remote-mysql.yaml stop
+`down` 会删除容器与网络、保留命名卷；`down -v` 会删除数据卷，不用于升级。切换本地 / 远程方案不会自动迁移数据或实例身份；需要先备份、迁移数据库和状态，再切换。
 
-# 继续运行
-docker compose -f compose.remote-mysql.yaml up -d
-
-# 更新代码后重新构建应用
-docker compose -f compose.remote-mysql.yaml up -d --build app
-```
-
-页面“停止全部下载”只暂停任务，Web 和远程数据库继续运行；Compose stop 会结束容器内全部下载和代理进程。
-容器重启后，未完成任务会在旧租约过期后恢复；已暂停的队列保持暂停，部分下载文件保留。
-健康检查失败会显示 `unhealthy`，Docker 不会仅因这一状态自动重启；应用进程退出时由 `unless-stopped` 策略重启。
-`docker compose -f compose.remote-mysql.yaml down` 删除容器和网络但保留命名卷。首次初始化后更改 `.env` 的数据库用户、库名或密码，不会自动修改远程 MySQL 里已有的账号；需同步修改数据库账号。
+旧的按账号多容器编排、固定 IPv6 覆盖文件及创建脚本已移除；这不会删除服务器现有容器、网络或卷。若原实例强制配置 `youtube_source_address: '::'`，重建前确认 Docker 网络具有 IPv6 出口；普通直连使用空的源地址让系统自动选择。
 
 ## 备份
 
-远程 MySQL 使用数据库供应商或 MySQL 客户端完成备份与恢复；Compose 不再启动或管理数据库容器。另行备份 `VIDEO_DOWNLOAD_DIR`、`.env` 以及应用卷中的配置和状态：
+备份 MySQL、`.env`（含账号加密密钥）、视频目录、应用配置卷和状态卷。远程库使用服务商或 MySQL 工具备份；本地库也应使用 MySQL 逻辑备份或停库后的卷快照，不直接复制运行中的数据目录。Redis 是可重建缓存，无需备份。
 
-```powershell
-mkdir backup
-docker compose -f compose.remote-mysql.yaml cp app:/data/config ./backup/config
-docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web ./backup/state
+```bash
+mkdir -p backup
+docker compose -f compose.local.yaml cp app:/data/config ./backup/config
+docker compose -f compose.local.yaml cp app:/app/.cache/web ./backup/state
 ```
 
-数据库备份请使用远程 MySQL 服务商或 MySQL 客户端工具。
-
-## 与当前 Windows 部署的关系
-
-这是独立的新部署，不会自动迁移 Windows 本机旧数据库、现有百万级任务、Cookie 或订阅。
-构建上下文排除了本机配置、`.cache`、`.tools`、Cookie、视频和 `.env`。
-同一主机、相同路径下迁移旧 SQLite 到 MySQL，可用 [MYSQL.md](MYSQL.md) 中的断点迁移工具。迁移到 Linux 容器还需要转换数据库任务中的 Windows 绝对路径，并迁移配置、Cookie、日志和视频；不要直接把旧 `.cache/web` 绑定到新容器。
-旧数据库文件不会自动转换或删除；确认迁移和备份前请保留原数据。
-此编排每台机器启动一个服务，每台均提供管理页面并可下载，共享 MySQL。能否承受具体任务量仍取决于磁盘空间、数据库资源和下载并发。
+这些备份包含账号和登录凭据，应与数据库备份一并保存。跨机器迁移还需迁移视频及数据库中的路径，不能只复制一个空 `.env`；旧 SQLite 的一次性迁移见 [MYSQL.md](MYSQL.md#从旧-sqlite-迁移到-mysql)。

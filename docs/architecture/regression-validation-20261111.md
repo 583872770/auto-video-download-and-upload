@@ -28,7 +28,7 @@
 ## 本地部署
 
 ```powershell
-docker compose -f compose.local-mysql.yaml -p youtube-downloader-local up -d --build app
+docker compose -f compose.local.yaml -p youtube-downloader-local up -d --build app
 ```
 
 - 镜像构建中的 `docker/check_startup.py` 通过。

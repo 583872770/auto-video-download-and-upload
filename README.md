@@ -2,7 +2,7 @@
 
 这是一个 Flask Web 下载工作台，面向批量 YouTube 视频 ID 清单。支持 yt-dlp、yt5s、downmp3 API、yt1d、Bergung / Cobalt 的自定义尝试顺序或自动择优、YouTube Cookie、Clash/Mihomo 节点、并行下载、阶段进度、素材库和交付计费统计。
 
-项目只保留 YouTube 下载流程，正式部署使用远程 MySQL 5.7.9+ 或 MySQL 8.x。
+项目只保留 YouTube 下载流程，正式部署使用 MySQL 和 Redis：可以随应用一起部署，也可以连接远程服务。
 
 使用流程为“任务中心新建任务 → 进入任务添加视频 → 下载工作台选择任务（必选）→ 开始下载”。视频粘贴和 TXT/CSV 导入仅在任务详情的“添加视频”中提供；下载工作台负责开始、暂停、停止和实时进度。任务资料、视频、单价和独立账单在任务内管理；下载策略、目录、登录凭据与资源配置按实例管理，在系统设置中选择实例后修改。页面职责见 [工作区页面说明](docs/workspace-layout.md)，任务操作与兼容说明见 [TASK_CENTER.md](TASK_CENTER.md)。
 
@@ -18,18 +18,25 @@
 
 ## Docker 部署
 
-Compose 内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC。连接已有远程 MySQL 时使用：
+Compose 内置 FFmpeg、Node.js、Mihomo、Chromium、Xvfb 和 noVNC，仅保留两种部署方式：
+
+| 场景 | 编排文件 | 环境模板 |
+| --- | --- | --- |
+| 应用 + MySQL + Redis 一起部署 | `compose.local.yaml` | `.env.local.example` |
+| 应用连接远程 MySQL + Redis | `compose.remote.yaml` | `.env.remote.example` |
+
+例如，全新服务器一起部署三项服务：
 
 ```bash
-cp .env.remote-mysql.example .env
-# 在 .env 填写 MYSQL_* 连接参数，并按需调整宿主机端口和视频目录
-docker compose -f compose.remote-mysql.yaml config --quiet
-docker compose -f compose.remote-mysql.yaml up -d --build
+cp .env.local.example .env
+# 填写 MYSQL_PASSWORD、账号加密密钥，并调整端口和视频目录；已有 .env 请直接编辑
+docker compose -f compose.local.yaml config --quiet
+docker compose -f compose.local.yaml up -d --build
 ```
 
 访问 `http://127.0.0.1:5000/setup`，输入启动日志中的“部署设置访问码”，在页面测试 MySQL 连接并保存。服务器部署时，可在 `.env` 设置 `WEB_BIND_IP`、`WEB_PORT` 和 `VIDEO_DOWNLOAD_DIR`。完整说明见 [DOCKER.md](DOCKER.md)、[MYSQL.md](MYSQL.md) 和 [YT5S_LINUX.md](YT5S_LINUX.md)。
 
-需要一并部署 MySQL 8.4 时，使用 `compose.local-mysql.yaml`，环境模板为 `.env.local-mysql.example`，应用自动连接其中的 MySQL 服务，步骤见 [应用与 MySQL 一起部署](DOCKER.md#应用与-mysql-一起部署)。
+连接远程服务时改用远程环境模板和编排，并填写 `MYSQL_*`、`REDIS_URL`。两份编排二选一，无需叠加文件。配置职责、账号加密密钥、立即停止更新及备份步骤统一见 [DOCKER.md](DOCKER.md)。
 
 ## 本地启动
 
@@ -89,7 +96,7 @@ docker compose -f compose.remote-mysql.yaml up -d --build
 
 实例下载设置支持 `yt1d_quality`：`best`（默认，网站实际提供的最高档）、`360`、`480`、`720`、`1080`、`1440`、`2160`。指定档位必须由网站提供，不会把请求值当成实际成品分辨率。`yt1d_timeout` 默认 180 秒，可设 30–1800 秒，分别限制网站验证/解析和转换等待；网页导航、表单和画质查找另有短超时。保存后后续领取和重试使用新策略，在途视频保持原配置。
 
-运行需要 Chrome/Chromium、Playwright 和 ffprobe，Linux 需要显示环境（如 Xvfb）。使用现有远程 MySQL Compose 构建即可，无需新增 Python 依赖或数据库表。yt1d 与 yt5s **共享** `yt5s_browser_count` 浏览器并发上限和磁盘预算；解析完成后由现有传输模块保存视频、封面与元数据，并用 ffprobe 检查音视频后登记交付。测试模式同样先登记实际字节再清理，不计费。
+运行需要 Chrome/Chromium、Playwright 和 ffprobe，Linux 需要显示环境（如 Xvfb）。使用任一正式 Compose 构建即可，无需新增 Python 依赖或数据库表。yt1d 与 yt5s **共享** `yt5s_browser_count` 浏览器并发上限和磁盘预算；解析完成后由现有传输模块保存视频、封面与元数据，并用 ffprobe 检查音视频后登记交付。测试模式同样先登记实际字节再清理，不计费。
 
 网页、验证、解析及文件传输沿用当前任务代理出口，浏览器支持无账号密码的 HTTP(S) 代理或直连。网站可能要求人工验证，可通过现有远程桌面完成；验证或转换失败会按顺序切换到下一个下载器，临时 HTTP 错误和超时使用现有退避重试。缺少浏览器、磁盘资源不足等实例环境问题保留原有等待/隔离规则。
 

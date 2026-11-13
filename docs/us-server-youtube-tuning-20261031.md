@@ -84,12 +84,7 @@
 - 部署前备份与观察记录在服务器 `/root/video-tuning-20261031`；该目录含私密配置，限制 root 访问，不要公开。
 - 原始镜像保留为 `youtube-downloader-local-app:before-tuning-20261031` 和 `:rollback-original-20261031`；当前镜像为 `:tuned-final-20261031`。本地改动未自动提交 Git。
 
-以后重建必须保留 IPv6 覆盖文件，否则配置 `::` 将无法通过仅 IPv4 的容器网络连接。完整说明见 [固定 IPv6 部署指南](fixed-ipv6-youtube.md)。在指向美国服务器的 Docker context 中执行：
-
-```powershell
-.venv\Scripts\python.exe scripts/setup_ipv6_network.py --source 2a06:f901:c001:100::fdb0:a5a2
-docker compose -f compose.local-mysql.yaml -f compose.ipv6.yaml -p youtube-downloader-local up -d --build
-```
+本记录描述当时的固定 IPv6 出口，旧的 IPv6 覆盖编排和创建脚本现已移除。当前重建步骤统一见 [DOCKER.md](../DOCKER.md)；若仍配置源地址 `::`，重建前必须确认实际容器网络具有 IPv6 出口，普通直连应留空源地址。
 
 恢复旧版本时需同时核对原配置备份、网络与镜像，先停止领取、等待传输结束，再重建应用；不要删除 MySQL 数据卷。回退到仅 IPv4 网络时也要取消 `::` 源地址设置。没有自动改动另一台服务器。
 

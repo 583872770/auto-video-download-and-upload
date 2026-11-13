@@ -39,13 +39,13 @@ ssh -N -L 6080:127.0.0.1:6080 你的SSH用户@服务器地址
 登录流程会优先使用 `browser_executable` 或容器桌面设置的 `YT5S_BROWSER`，也会查找系统 Chromium。若提示缺少浏览器，需在服务器项目目录更新代码，使用原部署的 Compose 文件及项目名称重新构建并创建容器，例如：
 
 ```bash
-docker compose -p 原项目名称 -f compose.remote-mysql.yaml up -d --build app
+docker compose -p 原项目名称 -f compose.remote.yaml up -d --build app
 ```
 
-自带 MySQL 的部署使用 `compose.local-mysql.yaml`。仅重启旧容器不会应用代码或安装 Chromium。可以用同一 Compose 项目检查容器环境：
+自带 MySQL 的部署使用 `compose.local.yaml`。仅重启旧容器不会应用代码或安装 Chromium。可以用同一 Compose 项目检查容器环境：
 
 ```bash
-docker compose -p 原项目名称 -f compose.remote-mysql.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER DISPLAY; pgrep -a Xvfb'
+docker compose -p 原项目名称 -f compose.remote.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER DISPLAY; pgrep -a Xvfb'
 ```
 
 内置浏览器镜像正常应显示 Chromium 路径、`DISPLAY=:99` 和运行中的 Xvfb。若浏览器能打开但提示代理或网络错误，检查当前下载连接和所选节点。

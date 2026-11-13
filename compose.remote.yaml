@@ -1,6 +1,7 @@
 name: youtube-downloader
 
-# 连接已有远程 MySQL，并包含 yt5s 浏览器环境；自带数据库见 compose.local-mysql.yaml。
+# 场景二：只部署应用，连接已有的远程 MySQL 和 Redis。
+# 场景一（应用 + MySQL + Redis）见 compose.local.yaml；二选一，不叠加。
 services:
   app:
     build:
@@ -24,12 +25,12 @@ services:
       VIDEO_WEB_HOSTS: ${VIDEO_WEB_HOSTS:-localhost,127.0.0.1,[::1]}
       VIDEO_WEB_HTTPS: ${VIDEO_WEB_HTTPS:-0}
       VIDEO_ACCOUNT_ENCRYPTION_KEY: ${VIDEO_ACCOUNT_ENCRYPTION_KEY:-}
-      MYSQL_HOST: ${MYSQL_HOST:-}
+      MYSQL_HOST: ${MYSQL_HOST:?请设置远程 MYSQL_HOST}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-video_downloads}
       MYSQL_USER: ${MYSQL_USER:-video}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
-      REDIS_URL: ${REDIS_URL:-}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      REDIS_URL: ${REDIS_URL:?请设置远程 REDIS_URL}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
       OSS_SECURITY_TOKEN: ${OSS_SECURITY_TOKEN:-}
@@ -50,7 +51,8 @@ services:
       timeout: 10s
       start_period: 90s
       retries: 3
-    stop_grace_period: 45s
+    # 更新时立即停止下载，不等待当前任务完成；MySQL 租约到期后恢复未完成任务。
+    stop_grace_period: 0s
     logging:
       driver: json-file
       options:

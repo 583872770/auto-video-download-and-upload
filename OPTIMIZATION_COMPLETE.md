@@ -158,8 +158,8 @@ git pull origin main
 
 4. **重启服务**:
 ```bash
-docker compose -f compose.remote-mysql.yaml down
-docker compose -f compose.remote-mysql.yaml up -d
+docker compose -f compose.remote.yaml down
+docker compose -f compose.remote.yaml up -d
 ```
 
 5. **验证**:

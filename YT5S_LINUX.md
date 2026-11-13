@@ -28,18 +28,18 @@ yt5s 默认自动选择网站提供下载操作的最高分辨率，也可指定
 
 ## 启用正式 Web 服务中的方式二
 
-使用项目唯一的远程 MySQL 编排：
+两套正式编排均包含浏览器环境，按数据库部署方式选择一个，详见 [DOCKER.md](DOCKER.md)。以下以连接远程 MySQL、Redis 为例，本地一起部署时将文件名换为 `compose.local.yaml`：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml up -d --build
+docker compose -f compose.remote.yaml up -d --build
 ```
 
-如果通过 PyCharm 部署，在“运行 → 编辑配置”中将 Compose 文件设为 `compose.remote-mysql.yaml`，保留原 Docker 服务器、项目名称、环境文件及 `--build` 选项，然后重新部署。这个文件已经包含 Chromium、虚拟显示和网页远程桌面；仅重启旧容器不会安装浏览器。使用命令行更新已有 PyCharm 部署时，需用 `-p 原项目名称` 保持项目名一致，避免创建另一套配置和状态卷。
+如果通过 PyCharm 部署，在“运行 → 编辑配置”中将 Compose 文件设为 `compose.remote.yaml`，保留原 Docker 服务器、项目名称、环境文件及 `--build` 选项，然后重新部署。这个文件已经包含 Chromium、虚拟显示和网页远程桌面；仅重启旧容器不会安装浏览器。使用命令行更新已有 PyCharm 部署时，需用 `-p 原项目名称` 保持项目名一致，避免创建另一套配置和状态卷。
 
-出现“没有找到 Chrome/Chromium”通常表示没有使用最新的 `compose.remote-mysql.yaml`，或仍在使用之前的镜像。可在部署服务器检查：
+出现“没有找到 Chrome/Chromium”通常表示没有使用最新的正式编排，或仍在使用之前的镜像。可在部署服务器检查：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER_ENABLED DISPLAY'
+docker compose -f compose.remote.yaml exec app sh -c 'command -v chromium; printenv YT5S_BROWSER_ENABLED DISPLAY'
 ```
 
 浏览器版应输出 Chromium 路径、`1` 和 `:99`。方式二在提交、导入和继续任务前检查浏览器与显示环境；后台执行时若环境缺失，会暂停下载并将当前任务放回队列。修复部署后点击“继续下载”；此前已经失败的记录需重新提交视频 ID。
@@ -63,7 +63,7 @@ docker compose -f compose.remote-mysql.yaml exec app sh -c 'command -v chromium;
 不再生成网页截图。每个下载进程只保留最近一次失败的 `last-failure.json`，内容包括视频 ID、失败阶段、各阶段耗时和接口状态，不保存响应正文或下载签名链接。首个进程位于容器 `/app/.cache/web/yt5s/worker-0/last-failure.json`，其他进程替换 worker 编号。可执行：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.json ./yt5s-worker-0-last-failure.json
+docker compose -f compose.remote.yaml cp app:/app/.cache/web/yt5s/worker-0/last-failure.json ./yt5s-worker-0-last-failure.json
 ```
 
 后续重建和更新服务时继续使用同一个 Compose 文件；它已经包含 Chromium 和虚拟显示环境。Windows 本机需安装 Chrome；Linux 不使用 Docker 时，需自行安装 Chromium 并提供 DISPLAY。

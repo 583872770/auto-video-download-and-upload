@@ -30,7 +30,7 @@
 
 ## 本机部署
 
-使用 `compose.local-mysql.yaml`、项目名 `youtube-downloader-local` 构建并更新应用容器，保留 MySQL、Redis 与全部持久卷。
+使用 `compose.local.yaml`、项目名 `youtube-downloader-local` 构建并更新应用容器，保留 MySQL、Redis 与全部持久卷。
 
 重建后按现有实例身份保护等待旧心跳过期，再自动启动；无需修改实例 ID。
 

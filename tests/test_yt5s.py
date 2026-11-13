@@ -243,7 +243,8 @@ class Yt5sTests(unittest.TestCase):
         with patch('webapp.yt5s.browser_executable', side_effect=RuntimeError('missing')):
             result = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
             self.assertEqual(result.status_code, 409, result.json)
-            self.assertIn('compose.remote-mysql.yaml', result.json['error'])
+            self.assertIn('compose.remote.yaml', result.json['error'])
+            self.assertIn('compose.local.yaml', result.json['error'])
             imported = self.client.post('/api/downloads/import', headers=self.headers,
                                         data={'file': (BytesIO(b'npNnbj46_ik\n'), 'videos.txt')})
             self.assertEqual(imported.status_code, 202, imported.json)

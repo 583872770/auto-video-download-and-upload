@@ -45,13 +45,7 @@ fragment_concurrency: 1
 
 工作台「并发与等待」增加「等待与恢复依据」及最近触发事件。同一次失败跨渠道、请求节奏、会话和池使用同一个事件编号，展示发生阶段、HTTP 证据、错误摘要、影响范围及截止时间；冷却取较晚截止时间，不把各层时长相加。旧任务的成功不会提前清除较新故障的冷却。完整规则见 [下载错误与恢复决策](download-recovery-decisions.md)。
 
-使用 `youtube_source_address: '::'` 时，容器必须连接有 IPv6 出口的网络。Compose 重建请同时指定 IPv6 覆盖文件：
-
-```sh
-docker compose -f compose.local-mysql.yaml -f compose.ipv6.yaml up -d --build
-```
-
-不需要启动 `compose.account-b.yaml`。原第二个实例可以保持停止，保留其卷以便备份。
+部署只需选择 [DOCKER.md](../DOCKER.md) 中的本地或远程方案，不再按账号启动独立实例。原第二个实例可以保持停止，保留其卷以便备份。若配置强制使用 IPv6 源地址，应先确认实际容器网络具备 IPv6 出口；普通直连将源地址留空。
 
 ## Cookie 持久保存
 

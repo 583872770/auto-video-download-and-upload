@@ -48,13 +48,13 @@ Linux 使用 `python app.py` 运行同样的参数。下载机器 B 使用不同
 
 ## Docker
 
-连接共享远程数据库时使用 `compose.remote-mysql.yaml`，每台服务器只启动一个 app 服务：
+连接共享远程 MySQL 和 Redis 时使用 `compose.remote.yaml`，每台服务器只启动一个 app 服务。环境文件填写同一数据库、Redis 库和账号加密密钥；两种部署入口统一见 [DOCKER.md](DOCKER.md)。
 
 ```bash
-cp .env.remote-mysql.example .env
-# 在 .env 中填写共享数据库的 MYSQL_* 连接参数
-docker compose -f compose.remote-mysql.yaml up -d --build
-docker compose -f compose.remote-mysql.yaml logs --tail=100 app
+cp .env.remote.example .env
+# 在 .env 填写共享 MYSQL_*、REDIS_URL 和 VIDEO_ACCOUNT_ENCRYPTION_KEY
+docker compose -f compose.remote.yaml up -d --build
+docker compose -f compose.remote.yaml logs --tail=100 app
 ```
 
 进入各机器的 `/setup` 页面，使用对应日志里的访问码配置实例地址并测试数据库连接。数据库、宿主机端口和视频目录均在 `.env` 中设置；远程访问需将 `WEB_BIND_IP` 改成 `0.0.0.0` 或可达内网 IP。页面会自动补入当前访问主机到允许主机列表，下载实例的地址填写管理端实际能够访问的宿主机地址和端口。
@@ -74,7 +74,7 @@ WEB_PORT=5000
 然后各机器运行：
 
 ```bash
-docker compose -f compose.remote-mysql.yaml up -d --build
+docker compose -f compose.remote.yaml up -d --build
 ```
 
 实例地址填写宿主机公布的地址和端口。管理端需要能通过内网或 VPN 访问它；下载实例会验证管理端携带的独立令牌。令牌自动生成并保存在实例状态目录和 MySQL 中，不会发给管理页面。`VIDEO_WEB_HOSTS` 继续设置管理页面实际使用的域名/IP。每台实例均可启动浏览器环境。

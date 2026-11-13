@@ -30,7 +30,7 @@ OSS_SECURITY_TOKEN=
 本机 Python 依赖已包含 `oss2`；新部署安装 `requirements.txt` 或锁定依赖即可。Docker 旧镜像升级需要重新构建，例如：
 
 ```powershell
-docker compose -f compose.remote-mysql.yaml up -d --build app
+docker compose -f compose.remote.yaml up -d --build app
 ```
 
 ## 文件与完成条件

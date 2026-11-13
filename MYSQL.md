@@ -5,13 +5,13 @@
 
 ## Linux Docker 连接远程 MySQL
 
-使用独立的 `compose.remote-mysql.yaml`，它只启动应用，不创建本地 MySQL，也不需要 `MYSQL_ROOT_PASSWORD`。
-需要随应用一起启动 MySQL 容器时，使用 `compose.local-mysql.yaml`，步骤见 [应用与 MySQL 一起部署](DOCKER.md#应用与-mysql-一起部署)。
+使用独立的 `compose.remote.yaml`，它只启动应用，连接远程 MySQL 和 Redis，也不需要 `MYSQL_ROOT_PASSWORD`。
+需要随应用一起启动 MySQL、Redis 容器时，使用 `compose.local.yaml`。两种部署的完整步骤和配置说明统一见 [DOCKER.md](DOCKER.md)。
 
 全新部署先复制模板（已有 `.env` 时直接编辑，避免覆盖原配置）：
 
 ```bash
-cp .env.remote-mysql.example .env
+cp .env.remote.example .env
 ```
 
 数据库只从 `.env` 或启动环境读取，不能在 `/setup` 页面修改；所有协作实例在各自环境文件中填写同一个数据库。配置完整后自动启动，页面可测试当前连接、查看启动状态和修改实例设置。旧 `deployment.json` 中的数据库参数会被忽略，新保存的文件只含实例设置。
@@ -24,6 +24,7 @@ MYSQL_PORT=3306
 MYSQL_DATABASE=video_downloads
 MYSQL_USER=video
 MYSQL_PASSWORD='你的数据库密码'
+REDIS_URL='redis://:经过URL编码的密码@你的Redis地址:6379/0'
 ```
 
 `MYSQL_HOST` 仅填写主机名或 IP，不带协议、端口或路径；密码填写原始值，不需要 URL 编码，保留两侧单引号。
@@ -31,13 +32,13 @@ MYSQL_PASSWORD='你的数据库密码'
 数据库需允许应用服务器的出口 IP 连接（MySQL 账号来源限制、云数据库白名单和防火墙端口均需匹配）。
 
 ```bash
-docker compose -f compose.remote-mysql.yaml config --quiet
-docker compose -f compose.remote-mysql.yaml up -d --build
-docker compose -f compose.remote-mysql.yaml logs -f --tail=100 app
+docker compose -f compose.remote.yaml config --quiet
+docker compose -f compose.remote.yaml up -d --build
+docker compose -f compose.remote.yaml logs -f --tail=100 app
 ```
 
 后续查看状态、停止或更新时，也带上所用的 `-f` 文件参数。
-默认网页仅监听服务器 `127.0.0.1:5000`；外部访问设置见 [DOCKER.md](DOCKER.md#局域网或域名访问)。
+默认网页仅监听服务器 `127.0.0.1:5000`；外部访问设置见 [DOCKER.md](DOCKER.md#访问与首次设置)。
 远程库的备份使用数据库供应商或 MySQL 客户端工具，不适用 `docker compose exec mysql`。
 
 **切换数据库不会自动迁移已有任务和素材索引。** 如果目标是空库，页面将显示空任务列表；原数据仍在原库。

@@ -63,7 +63,7 @@ other@example.com----password
 python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
 ```
 
-Compose 已透传此变量；本地 MySQL Compose 继承远程 MySQL Compose。开发未修改现有 `.env`。部署时在服务环境配置该变量并重建应用容器即可，数据库和 Redis 地址沿用现有部署设置。
+两套 Compose 均已透传此变量，部署入口见 [DOCKER.md](../DOCKER.md)。开发未修改现有 `.env`。部署时在服务环境配置该变量并重建应用容器即可，数据库和 Redis 地址沿用现有部署设置。
 
 洛杉矶实例的原密钥环境文件位于服务器 `/opt/youtube-downloader/secrets/account-encryption.env`，权限为 `600`，已注入当前应用容器，并在本次受限发布目录备份。以后使用 Compose 重建时，需在现有环境文件之外加载这份文件，或向容器显式传入相同值；只保留文件而没有传入容器不生效。新增实例应安全分发原密钥，不要各自生成新值。
 

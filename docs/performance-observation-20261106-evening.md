@@ -22,7 +22,7 @@
 依赖健康、仅更新应用时，需在部署端的正确项目目录和 Docker 上下文中使用以下命令；后续确认服务器没有可用的 `docker compose` 子命令，部署记录来自 Windows。命令中的 Docker 客户端必须已连接目标服务器；本轮未执行构建或部署：
 
 ```sh
-docker compose -f compose.local-mysql.yaml -p youtube-downloader-local up -d --build --no-deps app
+docker compose -f compose.local.yaml -p youtube-downloader-local up -d --build --no-deps app
 ```
 
 **2. 观察范围与证据**

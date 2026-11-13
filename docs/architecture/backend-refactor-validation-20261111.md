@@ -53,7 +53,7 @@
 
 ## 本机部署
 
-已更新 `compose.local-mysql.yaml` 的 `youtube-downloader-local` 项目，仅重建应用容器。按测试环境约定立即停止旧应用；MySQL、Redis 容器及持久卷保留。旧应用镜像 ID 保存在 `.runtime/refactor-20261111/previous-app-image.txt`。
+已更新 `compose.local.yaml` 的 `youtube-downloader-local` 项目，仅重建应用容器。按测试环境约定立即停止旧应用；MySQL、Redis 容器及持久卷保留。旧应用镜像 ID 保存在 `.runtime/refactor-20261111/previous-app-image.txt`。
 
 验收结果：
 
