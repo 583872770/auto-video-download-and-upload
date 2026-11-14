@@ -141,8 +141,8 @@ def main():
             page.get_by_role('button',name='放弃并继续',exact=True).click()
             page.wait_for_selector('[data-ready=true]')
             page.evaluate('window.__workspaceToken = 42')
-            nav.get_by_role('link',name='交付文件',exact=True).click()
-            expect(page.get_by_role('heading',name='交付文件',exact=True)).to_be_visible()
+            nav.get_by_role('link',name='素材库',exact=True).click()
+            expect(page.get_by_role('heading',name='素材库',exact=True)).to_be_visible()
             assert page.evaluate('window.__workspaceToken') == 42, 'Navigation reloaded the document'
 
             # Real local subtitle objects: cursor paging, job scope, plain-text preview and Range.
@@ -151,29 +151,29 @@ def main():
             with fixture.store.connect() as db:
                 for index in range(51):
                     db.execute(delivery_artifacts.insert().values(id=f'{index:064x}',seq=index+1,job_id=identity,task_id='f'*32,video_id='npNnbj46_ik',title=f'字幕 {index:02d}',kind='subtitle',language='en',variant='0'*64,path=str(subtitle),size=subtitle.stat().st_size,instance_id='local',storage='local',object_key='',available=1,test_mode=0,created_at='2026-11-13T00:00:00'))
-            page.goto(base + '/delivery-files?job_id=' + identity)
-            expect(page.locator('#delivery-files tbody tr')).to_have_count(50)
-            page.locator('#delivery-next').click()
-            expect(page.locator('#delivery-files tbody tr')).to_have_count(1)
-            page.locator('#delivery-prev').click()
-            expect(page.locator('#delivery-files tbody tr')).to_have_count(50)
+            page.goto(base + '/media')
+            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
+            page.locator('#media-next').click()
+            expect(page.locator('#asset-table tbody tr')).to_have_count(1)
+            page.locator('#media-prev').click()
+            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
             page.locator('[data-preview]').first.click()
             expect(page.locator('dialog pre')).to_contain_text('<script>window.__unsafeSubtitle')
             assert page.evaluate('window.__unsafeSubtitle') is None
             page.get_by_role('button',name='关闭对话框',exact=True).click()
             content = page.request.get(base + '/api/delivery/files/' + f'{50:064x}',headers={'Range':'bytes=0-9'})
             assert content.status == 206 and len(content.body()) == 10
-            page.get_by_role('textbox',name='来源 ID 或标题',exact=True).fill('absent')
+            page.get_by_role('textbox',name='搜索素材',exact=True).fill('absent')
             page.get_by_role('button',name='查询',exact=True).click()
-            expect(page.locator('#delivery-files')).to_contain_text('尚无匹配')
-            expect(page.locator('#delivery-next')).to_be_disabled()
-            page.get_by_role('textbox',name='来源 ID 或标题',exact=True).fill('')
+            expect(page.locator('#asset-table')).to_contain_text('暂无符合条件的资产')
+            expect(page.locator('#media-next')).to_be_disabled()
+            page.get_by_role('textbox',name='搜索素材',exact=True).fill('')
             page.get_by_role('button',name='查询',exact=True).click()
-            expect(page.locator('#delivery-files tbody tr')).to_have_count(50)
+            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
             for width in (1440,768,390):
                 page.set_viewport_size({'width':width,'height':1000})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'overflow {width}'
-                page.screenshot(path=str(output/f'delivery-{width}.png'),full_page=True,animations='disabled')
+                page.screenshot(path=str(output/f'media-{width}.png'),full_page=True,animations='disabled')
                 if width == 390:
                     assert page.locator('.sidebar').bounding_box()['x'] <= -220
                     page.get_by_role('button',name='打开导航',exact=True).click()

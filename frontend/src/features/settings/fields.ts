@@ -1,12 +1,6 @@
 import type { ConfigKey } from '../../generated/config';
 
-export type Section =
-  | 'storage'
-  | 'download'
-  | 'performance'
-  | 'maintenance'
-  | 'diagnostics'
-  | 'delivery';
+export type Section = 'storage' | 'download' | 'performance' | 'maintenance' | 'diagnostics';
 export interface Field {
   key: ConfigKey;
   label: string;

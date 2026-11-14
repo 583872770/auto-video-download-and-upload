@@ -30,11 +30,6 @@ const actions: Record<string, string> = {
   observe: '恢复观察',
   record: '记录故障',
 };
-const channelStates: Record<string, string> = {
-  available: '可用',
-  cooldown: '冷却中',
-  recovering: '恢复观察',
-};
 const blockers: Record<string, string> = {
   pressure: '资源压力仍在',
   cpu: 'CPU 未低于恢复阈值',
@@ -155,42 +150,6 @@ const blockers: Record<string, string> = {
         <p v-if="!capacity.decisions.history.length">暂无结构化事件记录。</p>
       </details>
     </template>
-    <h3>渠道与共享资源</h3>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>渠道</th>
-            <th>占用 / 有效额度</th>
-            <th>状态</th>
-            <th>共享资源</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="channel in capacity.channels" :key="channel.id">
-            <td>{{ channel.label }}</td>
-            <td>{{ fresh ? channel.occupied : '—' }} / {{ channel.effective_limit }}</td>
-            <td>
-              {{ channelStates[channel.status] || '状态待确认'
-              }}<small v-if="channel.cooldown_seconds" class="cell-note"
-                >下次检查前等待 {{ channel.cooldown_seconds }} 秒</small
-              >
-            </td>
-            <td>
-              <details>
-                <summary>资源明细</summary>
-                <div v-for="(resource, index) in channel.resources" :key="index">
-                  {{ resource.group }}：{{ fresh ? resource.used : '—' }} / {{ resource.effective
-                  }}<span v-if="resource.cooldown_seconds">
-                    · 冷却 {{ resource.cooldown_seconds }} 秒</span
-                  >
-                </div>
-              </details>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
     <AccountTasks
       v-if="capacity.cookie_allocation || sessions.length"
       :accounts="capacity.cookie_allocation?.accounts || []"

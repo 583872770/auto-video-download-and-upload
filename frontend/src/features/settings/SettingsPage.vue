@@ -15,7 +15,6 @@ import DownloadSettings from './DownloadSettings.vue';
 import PerformanceSettings from './PerformanceSettings.vue';
 import MaintenanceSettings from './MaintenanceSettings.vue';
 import DiagnosticsSettings from './DiagnosticsSettings.vue';
-import DeliveryDefaults from './DeliveryDefaults.vue';
 const instances = useInstances(),
   settings = useSettings();
 const boot = bootstrap(),
@@ -26,17 +25,15 @@ const sections: Array<[Section, string, string]> = [
   ['performance', '并发与渠道', '资源预算与渠道调度'],
   ['maintenance', '空间与日志', '空间水位、清理与日志'],
   ['diagnostics', '运行诊断', '工具状态与风险排查'],
-  ['delivery', '新任务交付默认', '新任务的全局默认要求'],
 ];
 const section = ref<Section>('storage'),
   switching = ref(false);
 const route = useRoute(),
   router = useRouter();
-const delivery = ref<InstanceType<typeof DeliveryDefaults>>();
 const busy = computed(
   () => settings.loading || settings.saving || instances.loading || switching.value,
 );
-const anyDirty = computed(() => settings.dirty || !!delivery.value?.dirty);
+const anyDirty = computed(() => settings.dirty);
 function readHash() {
   const key = route.hash.slice(1);
   section.value = sections.some(([id]) => id === key) ? (key as Section) : 'storage';
@@ -64,10 +61,7 @@ async function changeInstance(event: Event) {
   if (id === instances.selectedId || busy.value) return;
   switching.value = true;
   try {
-    if (
-      settings.dirty &&
-      !(await confirmDiscard('切换实例会放弃当前实例未保存的系统设置。全局交付默认草稿会保留。'))
-    )
+    if (settings.dirty && !(await confirmDiscard('切换实例会放弃当前实例未保存的系统设置。')))
       return;
     settings.reset();
     instances.select(id);
@@ -115,7 +109,7 @@ async function reload() {
     return;
   await settings.load(true);
 }
-useLeaveGuard(() => ({ dirty: anyDirty.value, busy: busy.value || !!delivery.value?.saving }));
+useLeaveGuard(() => ({ dirty: anyDirty.value, busy: busy.value }));
 watch(() => route.hash, readHash);
 onMounted(() => {
   readHash();
@@ -175,10 +169,9 @@ onMounted(() => {
         <p v-if="settings.message" class="notice success" role="status">
           {{ settings.message }}
         </p>
-        <DeliveryDefaults ref="delivery" v-show="section === 'delivery'" />
         <template v-if="settings.loaded && !instances.error">
           <DiagnosticsSettings v-if="section === 'diagnostics'" :key="instances.epoch" />
-          <form v-else-if="section !== 'delivery'" novalidate @submit.prevent="save">
+          <form v-else novalidate @submit.prevent="save">
             <fieldset :disabled="busy || (!admin && section !== 'maintenance')">
               <StorageSettings v-if="section === 'storage'" /><DownloadSettings
                 v-if="section === 'download'"
@@ -192,7 +185,7 @@ onMounted(() => {
       </div>
     </div>
   </main>
-  <footer v-if="section !== 'delivery' && section !== 'diagnostics'" class="savebar">
+  <footer v-if="section !== 'diagnostics'" class="savebar">
     <div>
       <strong>{{
         settings.dirty ? `有 ${settings.changedCount} 项未保存修改` : '修改将在此统一保存'

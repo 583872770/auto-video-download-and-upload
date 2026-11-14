@@ -58,14 +58,15 @@ const allAccounts = computed<RuntimeAccount[]>(() => {
       .map((session) => ({ ...session, tasks: [] })),
   ];
 });
-const searched = computed(() => {
+const matchingQuery = computed(() => {
   const needle = query.value.trim().toLowerCase();
   return allAccounts.value.filter(
-    (account) =>
-      (!needle || `${account.name} ${account.email || ''}`.toLowerCase().includes(needle)) &&
-      (!state.value || accountState(account) === state.value),
+    (account) => !needle || `${account.name} ${account.email || ''}`.toLowerCase().includes(needle),
   );
 });
+const searched = computed(() =>
+  matchingQuery.value.filter((account) => !state.value || accountState(account) === state.value),
+);
 const counts = computed(() => {
   const result: Record<string, number> = { '': 0, other: 0 };
   for (const account of searched.value) {
@@ -96,9 +97,13 @@ const pageNumbers = computed(() => {
   return Array.from({ length: Math.min(5, pages.value) }, (_, index) => start + index);
 });
 const totals = computed(() => {
-  const result = { running: 0, waiting: 0, idle: 0 };
-  for (const account of searched.value) {
+  const result = { running: 0, waiting: 0, cooldown: 0, idle: 0 };
+  for (const account of matchingQuery.value) {
     if (!account.known) continue;
+    if (accountState(account) === 'cooldown') {
+      result.cooldown++;
+      continue;
+    }
     if (
       account.tasks.some(
         (task) => !/^(waiting_|disk_wait$|scheduling_wait$|retrying$)/.test(task.stage),
@@ -138,6 +143,10 @@ watch(
 );
 function tasksFor(account: RuntimeAccount) {
   return account.tasks.filter(matches);
+}
+function filterCooldown() {
+  state.value = state.value === 'cooldown' ? '' : 'cooldown';
+  stage.value = '';
 }
 function stagesFor(account: RuntimeAccount) {
   return [...new Set(tasksFor(account).map((task) => task.stage))];
@@ -229,15 +238,27 @@ const accountLink = computed(
         <option v-for="(label, key) in modes" :key="key" :value="key">{{ label }}</option>
       </select>
       <div class="account-totals" aria-label="账号状态统计">
-        <span
-          >执行中 <b>{{ fresh ? totals.running : '—' }}</b></span
+        <span>
+          执行中 <b>{{ fresh ? totals.running : '—' }}</b>
+        </span>
+        <span>
+          等待中 <b>{{ fresh ? totals.waiting : '—' }}</b>
+        </span>
+        <button
+          type="button"
+          class="cooldown-stat"
+          :class="{ active: state === 'cooldown' }"
+          :aria-pressed="state === 'cooldown'"
+          :disabled="!fresh"
+          aria-label="筛选冷却中的账号"
+          title="点击筛选冷却账号，再次点击显示全部状态"
+          @click="filterCooldown"
         >
-        <span
-          >等待中 <b>{{ fresh ? totals.waiting : '—' }}</b></span
-        >
-        <span
-          >空闲 <b>{{ fresh ? totals.idle : '—' }}</b></span
-        >
+          冷却中 <b>{{ fresh ? totals.cooldown : '—' }}</b>
+        </button>
+        <span>
+          空闲 <b>{{ fresh ? totals.idle : '—' }}</b>
+        </span>
       </div>
     </div>
     <div class="account-stage-filter" role="group" aria-label="筛选执行阶段">
@@ -628,14 +649,34 @@ const accountLink = computed(
 .account-totals {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 14px;
   font-size: 11px;
   color: #64748b;
 }
-.account-totals > span + span {
+.account-totals > * + * {
   border-left: 1px solid var(--line);
   padding-left: 14px;
+}
+.account-tasks .account-totals button.cooldown-stat {
+  min-height: 22px;
+  padding: 1px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+}
+.account-tasks .account-totals button.cooldown-stat.active,
+.account-tasks .account-totals button.cooldown-stat:not(:disabled):hover {
+  color: #a66f20;
+  background: #fff6e8;
+}
+.account-tasks .account-totals button.cooldown-stat {
+  color: #a66f20;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
 }
 .account-totals b {
   color: #334155;
@@ -1081,6 +1122,7 @@ const accountLink = computed(
   }
   .account-totals {
     margin-left: 0;
+    gap: 8px;
   }
   .runtime-details {
     grid-template-columns: minmax(0, 1fr);
@@ -1105,6 +1147,10 @@ const accountLink = computed(
     padding: 0;
     font-size: 10px;
     margin-top: 3px;
+  }
+  .account-totals > * + *,
+  .account-tasks .account-totals button.cooldown-stat {
+    padding-left: 8px;
   }
   .account-sample {
     max-width: 110px;

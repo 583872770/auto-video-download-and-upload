@@ -4,6 +4,7 @@ export interface MediaItem {
   name: string;
   title: string;
   size: number;
+  video_id?: string | null;
   cover: string | null;
   playable: boolean;
   instance_id?: string | null;

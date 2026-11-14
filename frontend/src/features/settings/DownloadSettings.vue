@@ -59,7 +59,7 @@ function move(index: number) {
   <section class="card">
     <details>
       <summary>历史任务字幕兼容</summary>
-      <p>新任务使用“新任务交付默认”或创建任务时指定的要求。这里只影响旧任务。</p>
+      <p>新任务的交付要求请在任务中心创建或编辑任务时指定。这里只影响旧任务。</p>
       <div class="fields">
         <SettingField v-for="field in groups.subtitles" :key="field.key" :field="field" />
       </div>

@@ -80,13 +80,6 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload));
             ></RouterLink>
           </template>
         </div>
-        <RouterLink
-          class="delivery-nav"
-          aria-label="交付文件"
-          to="/delivery-files"
-          @click="menuOpen = false"
-          >交付文件 ↗</RouterLink
-        >
       </nav>
       <div class="sidebar-footer">
         <span class="footer-symbol"><AppIcon name="check" /></span>

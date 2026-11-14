@@ -97,9 +97,7 @@ export const router = createRouter({
     },
     {
       path: '/delivery-files',
-      name: 'delivery',
-      component: () => import('./features/delivery/DeliveryFilesPage.vue'),
-      meta: { title: '交付文件' },
+      redirect: (to) => ({ path: '/media', query: to.query }),
     },
   ],
   scrollBehavior(to, from) {

@@ -60,6 +60,7 @@ export function validateDelivery(spec: DeliverySpec): string {
 }
 export interface DeliveryArtifact {
   id: string;
+  seq?: number;
   job_id: string;
   video_id: string;
   title: string;
@@ -70,6 +71,7 @@ export interface DeliveryArtifact {
   available: boolean;
   content_url: string;
   instance_id: string;
+  created_at?: string;
 }
 export interface DeliveryRequirement {
   key: string;

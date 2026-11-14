@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, toRaw } from 'vue';
+import { computed, ref, toRaw } from 'vue';
 import { api } from '../../api';
 import { ApiError } from '../../api/client';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import DeliverySpecEditor from '../delivery/DeliverySpecEditor.vue';
-import { defaultDelivery, validateDelivery, type DeliverySpec } from '../delivery/model';
+import { defaultDelivery, validateDelivery } from '../delivery/model';
 import { jobEndpoint, type Job } from './contracts';
 const props = defineProps<{ job?: Job; disabled?: boolean }>();
 const emit = defineEmits<{ saved: [id: string]; busy: [value: boolean] }>();
@@ -21,7 +21,6 @@ const draft = ref({
 });
 const baseline = ref(JSON.stringify(draft.value)),
   error = ref(''),
-  warning = ref(''),
   saving = ref(false),
   latest = ref<Job>();
 const version = ref(props.job?.edit_version || 0),
@@ -30,19 +29,6 @@ const version = ref(props.job?.edit_version || 0),
   ).join('');
 const dirty = computed(() => JSON.stringify(draft.value) !== baseline.value);
 useLeaveGuard(() => ({ dirty: dirty.value, busy: saving.value }));
-onMounted(async () => {
-  if (props.job) return;
-  const original = JSON.stringify(draft.value.delivery);
-  try {
-    const response = await api.request<{ spec: DeliverySpec }>('/api/delivery/defaults');
-    if (JSON.stringify(draft.value.delivery) === original) {
-      draft.value.delivery = response.spec;
-      baseline.value = JSON.stringify({ ...JSON.parse(baseline.value), delivery: response.spec });
-    }
-  } catch {
-    warning.value = '默认交付要求读取失败，请核对下面的要求后创建。';
-  }
-});
 async function save() {
   if (saving.value || props.disabled) return;
   error.value = '';
@@ -140,14 +126,17 @@ defineExpose({ dirty, saving });
           name="delivery-enable"
         />为尚未开始的来源启用多类型交付</label
       >
-      <p v-if="warning" role="status">{{ warning }}</p>
-      <DeliverySpecEditor v-if="draft.enableDelivery" v-model="draft.delivery" />
+      <section v-if="draft.enableDelivery" class="delivery-task-section">
+        <div class="section-heading">
+          <div>
+            <h3>本任务交付内容</h3>
+            <p class="muted">在这里指定本任务需要交付的文件类型、画质和字幕要求。</p>
+          </div>
+        </div>
+        <DeliverySpecEditor v-model="draft.delivery" />
+      </section>
       <p v-if="job" class="muted">
-        已开始的来源沿用固定要求版本；补交可以显式采用最新要求。<a
-          class="text-link"
-          href="/settings"
-          >前往实例设置 ↗</a
-        >
+        已开始的来源沿用固定要求版本；补交可以显式采用最新要求。交付要求可随时在此任务中调整。
       </p>
       <p v-if="error" :id="job ? 'settings-error' : 'editor-error'" class="form-error" role="alert">
         {{ error }}
