@@ -9,6 +9,7 @@ from werkzeug.exceptions import Conflict
 from webapp.database import delivery_artifacts as artifacts, delivery_requirements as requirements, delivery_runs as runs, tasks
 from webapp.delivery import artifacts as ledger
 from webapp.delivery.contracts import DEFAULT, normalize, packed
+from webapp.delivery.listing import page as artifact_page
 from webapp.statistics import stamp
 
 
@@ -49,25 +50,11 @@ def register_delivery(app, store, settings):
         return render_template('delivery_files.html', csrf=session.get('csrf', ''), service_role='hybrid')
 
     def listing(job=None):
-        statement = select(artifacts).where(artifacts.c.test_mode == 0, artifacts.c.available == 1)
-        if job:
-            statement = statement.where(artifacts.c.job_id == job)
-        for key in ('kind', 'language', 'instance_id'):
-            if request.args.get(key):
-                statement = statement.where(artifacts.c[key] == request.args[key])
-        if request.args.get('cursor'):
-            statement = statement.where(artifacts.c.seq < store.statistics.cursor(request.args['cursor']))
-        if request.args.get('q'):
-            query = request.args['q'][:200]
-            from sqlalchemy import or_
-            statement = statement.where(or_(artifacts.c.title.contains(query, autoescape=True), artifacts.c.video_id.startswith(query, autoescape=True)))
-        with store.connect() as db:
-            rows = [dict(r) for r in db.execute(statement.order_by(artifacts.c.seq.desc()).limit(51)).mappings()]
-        for row in rows:
-            # Never expose host paths or bucket credentials to browsers.
-            row.pop('path');row.pop('object_key')
-            row['content_url'] = '/api/delivery/files/' + row['id']
-        return jsonify(items=rows[:50], next_cursor=str(rows[49]['seq']) if len(rows) > 50 else None)
+        return jsonify(**artifact_page(store, job=job, kind=request.args.get('kind', ''),
+                                       language=request.args.get('language', ''),
+                                       instance_id=request.args.get('instance_id', ''),
+                                       query=request.args.get('q', ''), cursor=request.args.get('cursor'),
+                                       limit=int(request.args.get('limit', 50))))
 
     @app.get('/api/delivery/artifacts')
     def delivery_files():

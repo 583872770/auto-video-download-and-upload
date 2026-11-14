@@ -1,4 +1,5 @@
 import type { Page } from '../jobs/contracts';
+import type { DeliveryArtifact } from '../delivery/model';
 export interface MediaItem {
   id: string;
   name: string;
@@ -13,6 +14,12 @@ export interface MediaPage extends Page<MediaItem> {
   directory: string;
   total: number;
   indexing: { scanned: number; last_indexed: number | null };
+}
+export interface UnifiedMediaPage {
+  media: MediaPage;
+  artifacts: Page<DeliveryArtifact>;
+  directory: string;
+  indexing: MediaPage['indexing'];
 }
 export function mediaAddress(kind: 'videos' | 'covers', name: string, instance?: string | null) {
   return (

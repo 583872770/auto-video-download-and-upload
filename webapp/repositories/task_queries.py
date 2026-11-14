@@ -6,6 +6,7 @@ import time
 from sqlalchemy import and_, func, or_, select
 
 from webapp.database import batches, counters, download_lists, tasks, job_imports
+from webapp.repositories.task_codec import LIST_FIELDS
 
 
 class TaskQueries:
@@ -20,7 +21,7 @@ class TaskQueries:
     def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False):
         if not 1 <= limit <= 100:
             raise ValueError('每页条数必须在 1 到 100 之间。')
-        statement = select(tasks)
+        statement = select(*LIST_FIELDS)
         if actions:
             statement = statement.where(tasks.c.action.in_(actions))
         if finished_only:

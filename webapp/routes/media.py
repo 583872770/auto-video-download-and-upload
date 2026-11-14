@@ -5,6 +5,7 @@ from Utils.config import video_directory
 from Utils.paths import io_path
 from webapp.media import VIDEO_SUFFIXES
 from webapp.helpers import get_body, json_result
+from webapp.delivery.listing import page as artifact_page
 
 
 def register_media_routes(context, media_library):
@@ -18,9 +19,26 @@ def register_media_routes(context, media_library):
     def media():
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
-        return jsonify(**catalog.page(root, limit=int(request.args.get('limit', 24)),
-                       cursor=request.args.get('cursor'), query=request.args.get('q', '')[:200]), directory=str(root),
-                       indexing=catalog.root_status(root))
+        result = catalog.page(root, limit=int(request.args.get('limit', 24)),
+                              cursor=request.args.get('cursor'), query=request.args.get('q', '')[:200])
+        indexing = result.pop('indexing')
+        return jsonify(**result, directory=str(root), indexing=indexing)
+
+    @app.get('/api/media/assets')
+    def media_assets():
+        """Load local media and verified delivery outputs in one round trip."""
+        config, base = settings()
+        root = Path(io_path(video_directory(config, base))).resolve()
+        media_page = catalog.page(root, limit=int(request.args.get('media_limit', 24)),
+                                  cursor=request.args.get('media_cursor'), query=request.args.get('q', '')[:200])
+        artifacts = artifact_page(store, instance_id=request.args.get('instance_id', ''),
+                                   cursor=request.args.get('artifact_cursor'),
+                                   query=request.args.get('q', ''),
+                                   kind=request.args.get('kind', ''),
+                                   language=request.args.get('language', ''),
+                                   limit=int(request.args.get('artifact_limit', 50)))
+        return jsonify(media=media_page, artifacts=artifacts, directory=str(root),
+                       indexing=media_page['indexing'])
 
     @app.post('/api/media/reindex')
     def reindex_media():

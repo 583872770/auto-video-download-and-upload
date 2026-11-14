@@ -6,9 +6,14 @@ from sqlalchemy import select
 
 from webapp.database import snapshots
 from webapp.store_utils import source_identity
+from webapp.database import tasks
 
 
 _LIVE_UNSET = object()
+
+# List endpoints only need task metadata and live progress. The immutable
+# payload snapshot can be large and is fetched by the detail endpoint instead.
+LIST_FIELDS = tuple(column for column in tasks.c if column.name != 'payload')
 
 
 class TaskCodec:
@@ -16,7 +21,8 @@ class TaskCodec:
         if row is None:
             return None
         task = dict(row)
-        payload = json.loads(task.pop('payload'))
+        raw_payload = task.pop('payload', None)
+        payload = json.loads(raw_payload) if raw_payload else {}
         task['result'] = json.loads(task['result']) if task.get('result') else None
         task['progress'] = json.loads(task['progress']) if task.get('progress') else None
         if live is _LIVE_UNSET:

@@ -124,8 +124,11 @@ class MediaCatalog:
             rows = db.execute(statement.order_by(media.c.modified.desc(), media.c.id.desc()).limit(limit + 1)).mappings().all()
             items = [{**row, 'playable': bool(row['playable']), 'prepared': bool(row['prepared']),
                       'instance_id': self.store.fleet.id if self.store.fleet else None} for row in rows[:limit]]
+            status = db.execute(select(roots).where(roots.c.root == self.root_key(root))).mappings().first()
         cursor = base64.urlsafe_b64encode(json.dumps([items[-1]['modified'], items[-1]['id']]).encode()).decode() if len(rows) > limit else None
-        return {'items': items, 'next_cursor': cursor, 'total': self.root_status(root)['count']}
+        return {'items': items, 'next_cursor': cursor, 'total': int(status['count']) if status else 0,
+                'indexing': {'scanned': int(status['scanned']) if status else 0,
+                             'last_indexed': status['last_indexed'] if status else None}}
 
     def reindex(self, root, report=None):
         root = Path(root).resolve()

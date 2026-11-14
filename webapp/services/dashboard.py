@@ -2,6 +2,7 @@
 import importlib.util
 import shutil
 import sys
+import time
 from flask import g, has_request_context
 from Utils.config import resolve_path, video_directory
 from webapp.config.settings import download_methods
@@ -10,18 +11,30 @@ from webapp.config.settings import download_methods
 class DashboardService:
     def __init__(self, context):
         self.context = context
+        self._capability_cache = None
 
-    def status(self):
-        config, base = self.context.settings()
+    def _capabilities(self, config, base):
+        """Cache static executable checks while keeping config changes visible."""
+        executable = str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''
+        key = (executable, config.get('browser_executable', ''))
+        now = time.monotonic()
+        cached = self._capability_cache
+        if cached and cached[0] > now - 60 and cached[1] == key:
+            return cached[2]
         tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'node', 'deno')}
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
         from webapp.yt5s import browser_executable, display_available
         try:
-            tools['yt5s_browser'] = bool(browser_executable(
-                str(resolve_path(base, config['browser_executable'])) if config.get('browser_executable') else ''))
+            tools['yt5s_browser'] = bool(browser_executable(executable))
         except RuntimeError:
             tools['yt5s_browser'] = False
         tools['yt5s_display'] = display_available()
+        self._capability_cache = (now, key, tools)
+        return tools
+
+    def status(self):
+        config, base = self.context.settings()
+        tools = self._capabilities(config, base)
         youtube_file = resolve_path(base, config['youtube_cookie']) if config.get('youtube_cookie') else None
         youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
                    'path': str(youtube_file) if youtube_file else None, 'login': self.context.app.extensions['youtube_login'].status(),

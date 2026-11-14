@@ -11,8 +11,8 @@ import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import TaskLog from '../../components/TaskLog.vue';
 import ArtifactPreview from '../delivery/ArtifactPreview.vue';
 import MediaPreview from './MediaPreview.vue';
-import { mediaAddress, type MediaItem, type MediaPage } from './contracts';
-import { formatGB, type Page } from '../jobs/contracts';
+import { mediaAddress, type MediaItem, type UnifiedMediaPage } from './contracts';
+import { formatGB } from '../jobs/contracts';
 import { outputLabels, type DeliveryArtifact, type OutputKind } from '../delivery/model';
 
 type AssetFilter = 'all' | 'video' | 'audio' | 'subtitle';
@@ -31,8 +31,7 @@ interface LibraryAsset {
 
 const instances = useInstances(),
   editable = bootstrap().role !== 'viewer';
-const resource = useResource<MediaPage>(),
-  artifactResource = useResource<Page<DeliveryArtifact>>(),
+const resource = useResource<UnifiedMediaPage>(),
   ready = ref(false),
   busy = ref(false),
   query = ref(''),
@@ -58,7 +57,7 @@ const typeLabels: Record<AssetKind, string> = {
 };
 
 const allAssets = computed<LibraryAsset[]>(() => {
-  const local = (resource.data.value?.items || []).map((item) => ({
+  const local = (resource.data.value?.media.items || []).map((item) => ({
     id: 'media:' + item.id,
     title: item.title || item.name,
     size: item.size,
@@ -68,7 +67,7 @@ const allAssets = computed<LibraryAsset[]>(() => {
     sourceId: item.video_id || item.name,
     local: item,
   }));
-  const outputs = (artifactResource.data.value?.items || []).map((item) => ({
+  const outputs = (resource.data.value?.artifacts.items || []).map((item) => ({
     id: 'artifact:' + item.id,
     title: item.title || item.video_id,
     size: item.size,
@@ -100,22 +99,18 @@ function matchesFilter(kind: AssetKind, filter: AssetFilter) {
 async function refresh(signal?: AbortSignal) {
   if (!ready.value || busy.value) return;
   const scope = instances.scope();
-  const mediaParams = new URLSearchParams({ q: query.value, limit: '24' });
-  if (cursor.value) mediaParams.set('cursor', cursor.value);
-  const artifactParams = new URLSearchParams({ q: query.value });
-  if (artifactCursor.value) artifactParams.set('cursor', artifactCursor.value);
-  if (instances.selectedId) artifactParams.set('instance_id', instances.selectedId);
-  await Promise.all([
-    resource.load(
-      (requestSignal) => api.request('/api/media?' + mediaParams, { scope, signal: requestSignal }),
-      signal,
-    ),
-    artifactResource.load(
-      (requestSignal) =>
-        api.request('/api/delivery/artifacts?' + artifactParams, { signal: requestSignal }),
-      signal,
-    ),
-  ]);
+  const params = new URLSearchParams({
+    q: query.value,
+    media_limit: '24',
+    artifact_limit: '50',
+  });
+  if (cursor.value) params.set('media_cursor', cursor.value);
+  if (artifactCursor.value) params.set('artifact_cursor', artifactCursor.value);
+  if (instances.selectedId) params.set('instance_id', instances.selectedId);
+  await resource.load(
+    (requestSignal) => api.request('/api/media/assets?' + params, { scope, signal: requestSignal }),
+    signal,
+  );
 }
 function filter() {
   cursor.value = null;
@@ -124,10 +119,13 @@ function filter() {
   void refresh();
 }
 function page(next: boolean) {
-  if (next && (resource.data.value?.next_cursor || artifactResource.data.value?.next_cursor)) {
+  if (
+    next &&
+    (resource.data.value?.media.next_cursor || resource.data.value?.artifacts.next_cursor)
+  ) {
     history.value.push({ media: cursor.value, artifacts: artifactCursor.value });
-    cursor.value = resource.data.value?.next_cursor || null;
-    artifactCursor.value = artifactResource.data.value?.next_cursor || null;
+    cursor.value = resource.data.value?.media.next_cursor || null;
+    artifactCursor.value = resource.data.value?.artifacts.next_cursor || null;
   } else if (!next) {
     const previous = history.value.pop();
     cursor.value = previous?.media || null;
@@ -137,7 +135,6 @@ function page(next: boolean) {
 }
 function instanceChanged() {
   resource.clear();
-  artifactResource.clear();
   preview.value = undefined;
   artifactPreview.value = undefined;
   task.value = undefined;
@@ -245,7 +242,7 @@ usePolling(
     <p v-if="error && !dialog" class="form-error" role="alert">{{ error }}</p>
     <div class="summary-grid media-summary">
       <div class="card">
-        <small>本地视频</small><strong>{{ resource.data.value?.total ?? '—' }}</strong
+        <small>本地视频</small><strong>{{ resource.data.value?.media.total ?? '—' }}</strong
         ><small>当前实例已索引</small>
       </div>
       <div class="card">
@@ -258,7 +255,7 @@ usePolling(
       </div>
       <div class="card">
         <small>交付产物</small
-        ><strong>{{ artifactResource.data.value?.items.length ?? '—' }}</strong
+        ><strong>{{ resource.data.value?.artifacts.items.length ?? '—' }}</strong
         ><small>已验证可用文件</small>
       </div>
     </div>
@@ -304,9 +301,7 @@ usePolling(
           placeholder="标题、来源 ID 或文件名"
           maxlength="200"
         />
-        <button :disabled="busy || resource.loading.value || artifactResource.loading.value">
-          查询
-        </button>
+        <button :disabled="busy || resource.loading.value">查询</button>
       </form>
       <div class="asset-filters" aria-label="资产类型">
         <button
@@ -324,24 +319,11 @@ usePolling(
           {{ item[1] }} <span>{{ filterCounts[item[0]] }}</span>
         </button>
       </div>
-      <p
-        v-if="resource.error.value || artifactResource.error.value"
-        class="form-error"
-        role="alert"
-      >
-        {{ resource.error.value || artifactResource.error.value }}
+      <p v-if="resource.error.value" class="form-error" role="alert">
+        {{ resource.error.value }}
         <button @click="refresh()">重试</button>
       </p>
-      <p
-        v-if="
-          (resource.loading.value || artifactResource.loading.value) &&
-          !resource.data.value &&
-          !artifactResource.data.value
-        "
-        role="status"
-      >
-        正在读取素材…
-      </p>
+      <p v-if="resource.loading.value && !resource.data.value" role="status">正在读取素材…</p>
       <div class="table-scroll" id="asset-table">
         <table>
           <thead>
@@ -389,7 +371,7 @@ usePolling(
                 </div>
               </td>
             </tr>
-            <tr v-if="resource.data.value && artifactResource.data.value && !assets.length">
+            <tr v-if="resource.data.value && !assets.length">
               <td colspan="5" class="empty">暂无符合条件的资产。</td>
             </tr>
           </tbody>
@@ -398,9 +380,7 @@ usePolling(
       <div class="pager">
         <button
           id="media-prev"
-          :disabled="
-            !history.length || resource.loading.value || artifactResource.loading.value || busy
-          "
+          :disabled="!history.length || resource.loading.value || busy"
           @click="page(false)"
         >
           上一页
@@ -409,9 +389,9 @@ usePolling(
         <button
           id="media-next"
           :disabled="
-            (!resource.data.value?.next_cursor && !artifactResource.data.value?.next_cursor) ||
+            (!resource.data.value?.media.next_cursor &&
+              !resource.data.value?.artifacts.next_cursor) ||
             resource.loading.value ||
-            artifactResource.loading.value ||
             busy
           "
           @click="page(true)"
