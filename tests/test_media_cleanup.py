@@ -9,6 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from app import create_app
+from sqlalchemy import select
+from webapp.database import delivery_artifacts
 from webapp.media_cleanup import clear_media, validate_clear_root
 
 
@@ -50,6 +52,77 @@ class MediaCleanupTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail('Cleanup did not finish')
 
+    def artifact(self, path, *, storage='local', instance='local'):
+        with self.store.connect() as db:
+            seq = self.store.db.sequence(db, 'delivery_artifact')
+            identity = f'{seq:064x}'
+            db.execute(delivery_artifacts.insert().values(
+                id=identity, seq=seq, job_id='j' * 32, task_id='t' * 32,
+                video_id='fixture', title='Fixture', kind='subtitle', language='en',
+                variant='fixture', path=str(path), size=7, instance_id=instance,
+                storage=storage, object_key='fixture' if storage == 'oss' else None,
+                available=1, test_mode=0, created_at='2026-01-01'))
+        return identity
+
+    def test_subtitle_only_clear_reconciles_local_files_and_preserves_other_storage(self):
+        subtitle = self.write('job/opaque-subtitle.srt')
+        local = self.artifact(subtitle)
+        cloud = self.artifact(subtitle, storage='oss')
+        other_instance = self.artifact(subtitle, instance='other-instance')
+        outside = self.base / 'outside.srt'
+        outside.write_bytes(b'outside')
+        outside_record = self.artifact(outside)
+        locked = self.write('other-job/locked.vtt')
+        locked_record = self.artifact(locked)
+        original = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path == locked:
+                raise PermissionError('locked subtitle')
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', autospec=True, side_effect=unlink):
+            response = self.request_clear()
+            self.assertEqual(self.wait(response.json['id'])['status'], 'failed')
+        with self.store.connect() as db:
+            available = dict(db.execute(select(delivery_artifacts.c.id, delivery_artifacts.c.available)).all())
+        self.assertEqual(available[local], 0)
+        for identity in (cloud, other_instance, outside_record, locked_record):
+            self.assertEqual(available[identity], 1)
+        self.assertTrue(outside.is_file())
+        self.assertEqual(self.client.get('/api/delivery/files/' + local).status_code, 404)
+        visible = {item['id'] for item in self.client.get('/api/media/assets').json['artifacts']['items']}
+        self.assertNotIn(local, visible)
+        self.assertIn(cloud, visible)
+        response = self.request_clear()
+        self.assertEqual(self.wait(response.json['id'])['status'], 'succeeded')
+        self.assertFalse(locked.exists())
+
+    def test_matroska_audio_and_its_cover_are_removed_without_a_video(self):
+        audio = self.write('opaque-audio.mka')
+        cover = self.write('opaque-audio.jpg')
+        clear_media(self.catalog, self.root)
+        self.assertFalse(audio.exists())
+        self.assertFalse(cover.exists())
+
+    def test_locked_cover_preserves_audio_for_retry(self):
+        audio = self.write('audio.m4a')
+        cover = self.write('audio.jpg')
+        original = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path == cover:
+                raise PermissionError('locked cover')
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', autospec=True, side_effect=unlink):
+            with self.assertRaises(RuntimeError):
+                clear_media(self.catalog, self.root)
+        self.assertTrue(audio.exists())
+        clear_media(self.catalog, self.root)
+        self.assertFalse(audio.exists())
+        self.assertFalse(cover.exists())
+
     def test_background_clear_removes_nested_media_and_sidecars_but_preserves_history(self):
         video = self.write('np/npNnbj46_ik/video [npNnbj46_ik].mp4')
         for suffix in ('.jpg', '.en.vtt', '.f137.mp4', '.f140.m4a', '.mp4.part'):
@@ -59,6 +132,8 @@ class MediaCleanupTests(unittest.TestCase):
         note = self.write('keep.txt')
         unrelated = self.write('np/npNnbj46_ik/video-other.jpg')
         standalone = self.write('not-indexed.webm')
+        standalone_audio = self.write('delivery-output.m4a')
+        standalone_subtitle = self.write('delivery-output.srt')
         outside = self.base / 'outside.mp4'
         outside.write_bytes(b'outside')
         (self.base / 'videos.txt').write_text('youtube npNnbj46_ik\n', encoding='utf-8')
@@ -69,6 +144,13 @@ class MediaCleanupTests(unittest.TestCase):
         self.store.statistics.record_file(task['id'], video)
         self.store.finish(task['id'], result={}, worker_id=self.store.owner)
         self.store.archive_add('youtube npNnbj46_ik', str(video))
+        with self.store.connect() as db:
+            db.execute(delivery_artifacts.insert().values(
+                id='d' * 64, seq=self.store.db.sequence(db, 'delivery_artifact'), job_id=task['id'],
+                task_id=task['id'], video_id='npNnbj46_ik', title='Test', kind='audio_only', language='',
+                variant='fixture', path=str(standalone_audio), size=standalone_audio.stat().st_size,
+                instance_id='local', storage='local', object_key=None, available=1, test_mode=0,
+                created_at='2026-01-01'))
         before = self.store.statistics.overview()['summary']
         self.store.set_downloads_paused(True)
         response = self.request_clear()
@@ -78,6 +160,8 @@ class MediaCleanupTests(unittest.TestCase):
         self.assertGreater(done['result']['deleted_bytes'], 0)
         self.assertFalse(video.exists())
         self.assertFalse(standalone.exists())
+        self.assertFalse(standalone_audio.exists())
+        self.assertFalse(standalone_subtitle.exists())
         self.assertFalse(chunk.exists())
         self.assertEqual(sorted(p.name for p in video.parent.iterdir()), ['video-other.jpg'])
         self.assertTrue(note.exists())
@@ -89,6 +173,9 @@ class MediaCleanupTests(unittest.TestCase):
         self.assertEqual(self.store.statistics.overview()['summary'], before)
         self.assertTrue(self.store.archive_has('youtube npNnbj46_ik'))
         self.assertEqual((self.base / 'videos.txt').read_text(), 'youtube npNnbj46_ik\n')
+        with self.store.connect() as db:
+            self.assertEqual(db.execute(select(delivery_artifacts.c.available).where(
+                delivery_artifacts.c.id == 'd' * 64)).scalar_one(), 0)
 
     def test_confirmation_csrf_and_directory_must_match(self):
         video = self.write('video.mp4')

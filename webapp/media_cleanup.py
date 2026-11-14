@@ -3,12 +3,16 @@ import os
 from pathlib import Path
 import time
 
+from sqlalchemy import select
+
 from Utils.paths import io_path
+from webapp.database import delivery_artifacts
 from webapp.media import FORMAT_TRACK, IMAGE_SUFFIXES, VIDEO_SUFFIXES
 
-AUDIO_SUFFIXES = {'.m4a', '.mp3', '.opus', '.ogg', '.wav', '.aac'}
-SIDECAR_SUFFIXES = set(IMAGE_SUFFIXES) | AUDIO_SUFFIXES | {
-    '.json', '.vtt', '.srt', '.ass', '.ttml', '.srv1', '.srv2', '.srv3', '.ytdl', '.part', '.temp'}
+AUDIO_SUFFIXES = {'.m4a', '.mp3', '.opus', '.ogg', '.wav', '.aac', '.mka'}
+SUBTITLE_SUFFIXES = {'.vtt', '.srt', '.ass', '.ttml', '.srv1', '.srv2', '.srv3', '.json3'}
+MEDIA_SUFFIXES = VIDEO_SUFFIXES | AUDIO_SUFFIXES | SUBTITLE_SUFFIXES
+SIDECAR_SUFFIXES = set(IMAGE_SUFFIXES) | MEDIA_SUFFIXES | {'.json', '.ytdl', '.part', '.temp'}
 
 
 def validate_clear_root(root, protected=()):
@@ -58,7 +62,7 @@ def clear_media(catalog, root, report=None):
         stems = set()
         for path in files:
             candidate = path.with_suffix('') if path.suffix.lower() == '.part' else path
-            if candidate.suffix.lower() in VIDEO_SUFFIXES or path.name.endswith('.info.json'):
+            if candidate.suffix.lower() in MEDIA_SUFFIXES or path.name.endswith('.info.json'):
                 stem = path.name[:-10] if path.name.endswith('.info.json') else candidate.stem
                 match = FORMAT_TRACK.fullmatch(stem)
                 stems.add(match['stem'] if match else stem)
@@ -67,19 +71,19 @@ def clear_media(catalog, root, report=None):
                 original = Path(directory.name[:-6])
                 match = FORMAT_TRACK.fullmatch(original.stem)
                 stem = match['stem'] if match else original.stem
-                if remove_all or (original.suffix.lower() in VIDEO_SUFFIXES and stem in stems):
+                if remove_all or (original.suffix.lower() in MEDIA_SUFFIXES and stem in stems):
                     walk(directory, remove_all=True)
             else:
                 walk(directory, remove_all)
-        # Keep a video/metadata anchor when a sidecar is locked, so a retry can
+        # Keep a media/metadata anchor when a sidecar is locked, so a retry can
         # still identify and remove the remaining matching files.
         def order(path):
-            return 2 if path.name.endswith('.info.json') else int(path.suffix.lower() in VIDEO_SUFFIXES)
+            return 2 if path.name.endswith('.info.json') else int(path.suffix.lower() in MEDIA_SUFFIXES)
         for path in sorted(files, key=order):
             if not remove_all and order(path) and failures > previous_failures:
                 continue
             related = remove_all
-            if remove_all or path.suffix.lower() in VIDEO_SUFFIXES:
+            if remove_all or path.suffix.lower() in MEDIA_SUFFIXES:
                 related = True
             elif path.suffix.lower() in SIDECAR_SUFFIXES:
                 # Test prefix boundaries, so "video" never removes "video-other".
@@ -112,6 +116,21 @@ def clear_media(catalog, root, report=None):
     finally:
         # Reconcile partial deletion too, retaining files that could not be removed.
         catalog.reindex(root)
+        # Local delivery outputs use opaque names and are not part of the video
+        # index. Mark only successfully removed files unavailable so the unified
+        # media catalog cannot show stale downloads after a local clear.
+        local_id = catalog.store.fleet.id if catalog.store.fleet else 'local'
+        with catalog.store.connect() as db:
+            rows = db.execute(select(delivery_artifacts.c.id, delivery_artifacts.c.path).where(
+                delivery_artifacts.c.instance_id == local_id,
+                delivery_artifacts.c.storage == 'local', delivery_artifacts.c.available == 1)).mappings()
+            missing = []
+            for row in rows:
+                path = Path(row['path']).absolute()
+                if path.is_relative_to(root) and path.resolve().is_relative_to(root) and not path.is_file():
+                    missing.append(row['id'])
+            if missing:
+                db.execute(delivery_artifacts.update().where(delivery_artifacts.c.id.in_(missing)).values(available=0))
     progress(force=True)
     result = {'message': f'素材库清理完成，删除 {deleted} 个文件，释放 {total_bytes} 字节。',
               'deleted_files': deleted, 'deleted_bytes': total_bytes, 'failed_files': failures}
