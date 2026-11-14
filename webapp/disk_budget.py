@@ -270,14 +270,20 @@ class DiskBudget:
                 'browsers': int(self.config['disk_browser_budget_mb']) * MIB,
                 'logs': int(self.config['disk_log_budget_mb']) * MIB,
                 'imports': int(self.config['disk_import_budget_mb']) * MIB,
-                'cache': int(self.config['disk_cache_budget_mb']) * MIB}
+                'cache': int(self.config['disk_cache_budget_mb']) * MIB,
+                # Active downloads can be much larger than diagnostic cache.
+                # They are governed by the global temporary-file budget and
+                # live in their own root so a small cache budget cannot stop a
+                # valid video halfway through transfer.
+                'downloads': int(self.config['disk_budget_gb']) * GIB}
 
     def roots(self):
         return {'test': [self.directory / 'test-downloads'],
                 'browsers': [self.runtime / 'browser-profiles'],
                 'logs': [self.directory / 'logs'],
                 'imports': [self.directory / 'imports', self.runtime / 'uploads'],
-                'cache': [self.runtime / 'cache', self.directory / 'yt5s']}
+                'cache': [self.runtime / 'cache', self.directory / 'yt5s'],
+                'downloads': [self.runtime / 'downloads']}
 
     def _get(self, db, key, default=None):
         row = db.execute('SELECT value FROM state WHERE key=?', (key,)).fetchone()
@@ -290,7 +296,13 @@ class DiskBudget:
     def _refresh_usage(self, force=False):
         with self.connect(write=False) as db:
             cached = self._get(db, 'usage', {})
-        if not force and cached and time.time() - cached['time'] < USAGE_INTERVAL:
+        # A newer release may add a temporary-file category. Do not reuse a
+        # fresh usage sample from an older release until all category keys are
+        # present; otherwise a new lease can be accounted against a missing
+        # bucket during a rolling upgrade.
+        cached_bytes = cached.get('bytes', {}) if cached else {}
+        if (not force and cached and set(self.limits) <= set(cached_bytes)
+                and time.time() - cached['time'] < USAGE_INTERVAL):
             return
         # Serialize scanners, never downloads. No SQLite transaction spans I/O.
         with file_lock(self.directory / 'disk-usage.lock', blocking=force or not cached) as acquired:
@@ -323,10 +335,14 @@ class DiskBudget:
 
     def _usage(self, db):
         cached = self._get(db, 'usage')
-        committed = dict(cached['bytes'])
+        usage = {key: int(cached.get('bytes', {}).get(key, 0)) for key in self.limits}
+        committed = dict(usage)
         for row in db.execute('SELECT * FROM leases'):
-            committed[row['category']] += max(0, row['reserved'] - row['measured'])
-        return cached['bytes'], committed
+            # Keep old/unknown rows visible in the total while avoiding a
+            # KeyError during a rolling upgrade.
+            category = row['category']
+            committed[category] = committed.get(category, 0) + max(0, row['reserved'] - row['measured'])
+        return usage, committed
 
     def _free(self):
         return shutil.disk_usage(self.directory).free
@@ -420,7 +436,8 @@ class DiskBudget:
         identity = uuid.uuid4().hex
         if path is None:
             folder = {'test': 'test-downloads', 'browsers': 'runtime/browser-profiles',
-                      'imports': 'runtime/uploads', 'cache': 'runtime/cache'}[category]
+                      'imports': 'runtime/uploads', 'cache': 'runtime/cache',
+                      'downloads': 'runtime/downloads'}[category]
             path = self.directory / folder / identity
         return DiskLease(self, identity, category, safe_path(path, self.directory), task, reserve)
 

@@ -31,7 +31,10 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         recovered = budget.recover_test_result(store, task_id)
         if recovered:
             return recovered
-    lease = budget.lease('test' if workspace.test_mode else 'cache', task=task_id,
+    # Production downloads are disposable media workspaces, not diagnostic
+    # cache. Keep their reservation on the global temporary-file budget so
+    # large videos can progress even when the small cache budget is full.
+    lease = budget.lease('test' if workspace.test_mode else 'downloads', task=task_id,
                          path=workspace.directory if workspace.test_mode else None)
     from webapp.downloads import initial_progress
     last_progress = initial_progress(config, payload.get('policy_version'))

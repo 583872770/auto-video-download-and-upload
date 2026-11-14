@@ -205,6 +205,15 @@ class DiskBudgetTests(unittest.TestCase):
         self.budget._clean_diagnostics(grace=3600)
         self.assertTrue(leftover.exists())
 
+    def test_download_workspace_uses_global_budget_instead_of_cache_budget(self):
+        budget = DiskBudget(self.root, {'disk_cache_budget_mb': 1, 'disk_budget_gb': 1,
+                                        'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        with budget.lease('downloads', reserve=512 * MIB):
+            self.assertEqual(budget.snapshot()['categories']['downloads']['budget_bytes'], GIB)
+        with self.assertRaisesRegex(DiskPressure, '分类预算不足'):
+            with budget.lease('cache', reserve=2 * MIB):
+                pass
+
     def test_rejected_lock_contender_does_not_inspect_or_initialize_locked_file(self):
         path = self.root / 'first-use.lock'
         original = Path.stat
