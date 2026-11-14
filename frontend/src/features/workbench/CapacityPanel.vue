@@ -1,14 +1,24 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { Capacity } from './contracts';
 import AccountTasks from './AccountTasks.vue';
+import { sampleNow } from './waits';
 const props = defineProps<{ status: Capacity; unavailable?: boolean }>();
-const now = ref(Date.now() / 1000);
+const capacity = computed(() => props.status.concurrency);
+let sampledAt = performance.now();
+const tick = ref(sampledAt);
+const now = computed(() => sampleNow(capacity.value.time, sampledAt, tick.value));
+watch(
+  () => capacity.value.time,
+  () => {
+    sampledAt = performance.now();
+    tick.value = sampledAt;
+  },
+);
 const timer = setInterval(() => {
-  now.value = Date.now() / 1000;
+  tick.value = performance.now();
 }, 1000);
 onUnmounted(() => clearInterval(timer));
-const capacity = computed(() => props.status.concurrency);
 const fresh = computed(
   () => !props.unavailable && capacity.value.online && now.value - capacity.value.time <= 20,
 );
@@ -157,6 +167,7 @@ const blockers: Record<string, string> = {
       :unassigned="capacity.cookie_allocation?.unassigned_tasks || []"
       :fresh="fresh"
       :time="capacity.time"
+      :now="now"
     />
   </section>
 </template>

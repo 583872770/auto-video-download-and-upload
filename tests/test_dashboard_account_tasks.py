@@ -29,9 +29,9 @@ class DashboardAccountTaskTests(unittest.TestCase):
         self.store.fleet.save_local(settings, local['base'], local['clash_directory'])
         self.client = self.app.test_client()
 
-    def task(self, *, account='a', stage='extracting', status='running', instance='node', expired=False):
+    def task(self, *, account='a', stage='extracting', status='running', instance='node', expired=False, details=None):
         task = self.store.create('download', {'urls': ['https://youtu.be/jNQXAC9IVRw']})
-        progress = {'stage': stage, 'title': 'Task title'}
+        progress = {'stage': stage, 'title': 'Task title', **(details or {})}
         if account:
             progress['cookie_profile_id'] = account
         with self.store.connect() as db:
@@ -77,6 +77,71 @@ class DashboardAccountTaskTests(unittest.TestCase):
             result = self.allocation()
         task = result['accounts'][0]['tasks'][0]
         self.assertEqual((task['task_id'], task['stage']), (task_id, 'processing'))
+
+    def test_live_wait_explains_resource_and_disappears_after_transfer_starts(self):
+        task_id = self.task(stage='waiting_request')
+        live = {'stage': 'waiting_transfer', 'cookie_profile_id': 'a',
+                'transfer_wait_resource': 'connections', 'speed': 99999}
+        with patch.object(self.store.progress_cache, 'read_many', return_value={task_id: {'progress': live}}):
+            waiting = self.allocation()['accounts'][0]['tasks'][0]
+        self.assertIn('共享下载连接', waiting['wait']['label'])
+        self.assertIsNone(waiting['speed'])
+        live.update(stage='downloading', _reported_at=time.time(), last_bytes_at=time.time())
+        with patch.object(self.store.progress_cache, 'read_many', return_value={task_id: {'progress': live}}):
+            running = self.allocation()['accounts'][0]['tasks'][0]
+        self.assertIsNone(running['wait'])
+        self.assertEqual(running['speed'], 99999)
+
+    def test_unassigned_wait_keeps_reported_reason_and_retry_time_without_secrets(self):
+        deadline = time.time() + 120
+        self.task(account=None, stage='scheduling_wait', details={
+            'wait_reason': '等待上游恢复 https://media.test/file?signature=PRIVATE',
+            'retry_at': deadline})
+        waiting = self.allocation()['unassigned_tasks'][0]['wait']
+        self.assertIn('等待上游恢复', waiting['detail'])
+        self.assertNotIn('PRIVATE', waiting['detail'])
+        self.assertEqual(waiting['until'], deadline)
+
+    def test_request_interval_only_uses_a_current_applicable_deadline(self):
+        from webapp.wait_diagnostics import task_wait
+        states = {'youtube-start:node': {'next_at': 120}}
+        progress = {'stage': 'waiting_request', 'request_wait_reason': 'video_start'}
+        self.assertEqual(task_wait(progress, states=states, identity='node', stamp=100)['until'], 120)
+        self.assertNotIn('until', task_wait(progress, states=states, identity='node', stamp=130))
+        progress['request_wait_reason'] = 'file_start'
+        waiting = task_wait(progress, states=states, identity='node', stamp=100)
+        self.assertEqual(waiting['code'], 'file_interval')
+        self.assertNotIn('until', waiting)
+        progress['request_wait_until'] = 115
+        self.assertEqual(task_wait(progress, states=states, identity='node', stamp=100)['until'], 115)
+        self.assertNotIn('until', task_wait(progress, states=states, identity='node', stamp=116))
+
+    def test_file_sleep_reports_its_actual_deadline_and_clears_unrecognized_durations(self):
+        from types import SimpleNamespace
+        from webapp.adapters.reporting import build_reporting_downloader
+        from webapp.wait_diagnostics import task_wait
+        progress = SimpleNamespace(state={}, save=lambda **kwargs: None)
+        downloader_type = build_reporting_downloader(SimpleNamespace(
+            config={}, base=Path('.'), payload={}, store=None, progress=progress,
+            test_mode=False, oss_mode=False, current_video={}, output_files=set(),
+            existing_files=set(), deferred_archives={}))
+        with downloader_type({'quiet': True}) as downloader, patch('webapp.adapters.reporting.time.time', return_value=100):
+            downloader.to_screen('[download] Sleeping 12.50 seconds as required by the site...')
+            waiting = task_wait(progress.state, stamp=100)
+            self.assertEqual(waiting['code'], 'file_interval')
+            self.assertEqual(waiting['until'], 112.5)
+            downloader.to_screen('[download] Sleeping unknown duration...')
+            self.assertNotIn('until', task_wait(progress.state, stamp=100))
+
+    def test_channel_health_wait_is_shown_as_cooldown_instead_of_full_capacity(self):
+        from webapp.wait_diagnostics import task_wait
+        waiting = task_wait({'stage': 'waiting_transfer', 'transfer_wait_resource': 'channel:yt_dlp'},
+                            states={'channel:yt_dlp': {'cooldown_until': 120}}, stamp=100)
+        self.assertIn('冷却中', waiting['label'])
+        self.assertEqual(waiting['until'], 120)
+        capacity = task_wait({'stage': 'waiting_transfer', 'transfer_wait_resource': 'channel'}, stamp=100)
+        self.assertNotIn('冷却', capacity['label'])
+        self.assertNotIn('until', capacity)
 
 
 if __name__ == '__main__':

@@ -56,6 +56,8 @@ def main():
         pool = CookiePool(store, config, root, None, strict=False)
 
         def seed(db, stamp):
+            pool.router._state(db, 'youtube-start:preview')
+            pool.router._save(db, 'youtube-start:preview', {'next_at': stamp + 600})
             for identity, _, scope in pool.accounts:
                 state = pool.router._state(db, scope)
                 state.update(limit=3, interval=5)
@@ -84,6 +86,10 @@ def main():
             task_ids.append(task['id'])
             progress = {'stage': stage, 'title': titles[index], 'speed': (8 - index / 10) * 1024**2,
                         '_reported_at': time.time(), 'last_bytes_at': time.time()}
+            if stage == 'waiting_transfer':
+                progress['transfer_wait_resource'] = 'connections'
+            elif stage == 'waiting_request':
+                progress['request_wait_reason'] = 'video_start'
             if account is not None:
                 progress.update(cookie_profile_id=ids[account], cookie_profile_name=f'account{account + 1:02d}@example.test')
             with store.connect() as db:
@@ -135,6 +141,27 @@ def main():
                 for key, count in expected_counts.items():
                     expect(tab(key).locator('.account-stage-count')).to_have_text(str(count))
                 assert panel.get_by_role('combobox').count() == 1, 'Execution stage still uses a dropdown'
+                summary = panel.get_by_label('任务等待原因汇总', exact=True)
+                expect(summary.locator('.account-wait-chip')).to_have_count(2)
+                expect(summary).to_contain_text('共享下载连接暂不可用 1')
+                expect(row(1).locator('.runtime-wait')).to_contain_text('视频启动请求间隔')
+                expect(row(1).locator('.runtime-wait')).to_contain_text('后检查')
+                expect(row(1).locator('.runtime-details')).to_have_count(0)
+                countdown = row(1).locator('[data-wait-kind="task"] .runtime-countdown')
+                first_countdown = countdown.inner_text()
+                page.wait_for_function('(previous) => document.querySelector(\'[data-wait-kind="task"] .runtime-countdown\')?.textContent.trim() !== previous', arg=first_countdown)
+                assert countdown.inner_text() < first_countdown, 'Countdown did not advance between status polls'
+                expect(row(3).locator('.runtime-wait')).to_contain_text('共享下载连接暂不可用')
+                expect(row(3).locator('[data-wait-kind="task"]')).to_contain_text('结束时间未定')
+                expect(row(3).locator('.runtime-account-waits')).to_contain_text('后检查')
+                expect(panel.locator('.account-unassigned')).to_contain_text('等待账号可用')
+                tab('waiting_transfer').click()
+                expect(summary.locator('.account-wait-chip')).to_have_count(1)
+                expect(row(3).locator('.runtime-wait')).to_contain_text('结束时间未定')
+                row(3).get_by_role('button', name='account04@example.test 详情').click()
+                expect(row(3).locator('.runtime-task-wait')).to_contain_text('共享下载连接暂不可用')
+                row(3).get_by_role('button', name='account04@example.test 详情').click()
+                tab('all').click()
                 panel.screenshot(path=str(output / 'accounts-desktop.png'))
 
                 # Multiple tasks in one account count independently; unrelated counts remain visible.
@@ -214,10 +241,36 @@ def main():
                     panel.screenshot(path=str(output / f'accounts-{width}.png'))
                 page.set_viewport_size({'width': 1440, 'height': 1050})
 
+                # One account can wait on multiple resources with independent deadlines.
+                sample = page.request.get(base + '/api/status', headers={'X-Instance-ID': 'preview'}).json()
+                account = next(item for item in sample['concurrency']['cookie_allocation']['accounts'] if item['id'] == ids[1])
+                stamp = sample['concurrency']['time']
+                original = account['tasks'][0]
+                account['tasks'] = [
+                    {**original, 'task_id': 'timer-a', 'wait': {'code': 'request_interval', 'label': '视频启动请求间隔', 'until': stamp + 3}},
+                    {**original, 'task_id': 'timer-b', 'wait': {'code': 'request_interval', 'label': '视频启动请求间隔', 'until': stamp + 90}},
+                    {**original, 'task_id': 'timer-c', 'stage': 'waiting_transfer', 'wait': {'code': 'connections', 'label': '共享下载连接暂不可用'}},
+                ]
+                page.route('**/api/status', lambda route: route.fulfill(json=sample))
+                expect(row(1).locator('[data-wait-kind="task"]')).to_have_count(3, timeout=15000)
+                expect(row(1).locator('.runtime-details')).to_have_count(0)
+                expect(row(1).locator('[data-wait-kind="task"]').nth(0)).to_contain_text('已到期，等待状态更新', timeout=10000)
+                expect(row(1).locator('[data-wait-kind="task"]').nth(1)).to_contain_text('后检查')
+                expect(row(1).locator('[data-wait-kind="task"]').nth(2)).to_contain_text('结束时间未定')
+                panel.screenshot(path=str(output / 'accounts-multiple-waits.png'))
+                for task in account['tasks']:
+                    task['stage'] = 'downloading'  # A stale wait field must disappear once the stage changes.
+                sample['concurrency']['time'] = time.time()
+                expect(row(1).locator('[data-wait-kind="task"]')).to_have_count(0, timeout=15000)
+                page.unroute('**/api/status')
+                expect(row(1).locator('[data-wait-kind="task"]')).to_have_count(1, timeout=15000)
+
                 # A failed capacity request keeps historical counts visibly labelled and suppresses live claims.
                 page.route('**/api/status', lambda route: route.abort())
                 expect(panel.locator('.account-sample')).to_contain_text('上次记录', timeout=15000)
+                expect(summary).to_contain_text('上次等待记录')
                 expect(panel.locator('.runtime-speed')).to_have_count(0)
+                expect(panel.locator('.runtime-countdown')).to_have_count(0)
                 expect(row(0)).to_contain_text('当前状态待确认')
                 expect(panel.locator('.account-totals')).to_have_text('执行中 — 等待中 — 冷却中 — 空闲 —')
                 expect(panel.get_by_role('button', name='筛选冷却中的账号', exact=True)).to_be_disabled()

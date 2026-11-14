@@ -1,5 +1,7 @@
 """yt-dlp reporting adapter for progress, archives and file verification."""
 from pathlib import Path
+import re
+import time
 from Utils.oss_storage import archive_key
 from webapp.diagnostics import event
 from webapp.local_processing import local_processing
@@ -29,8 +31,10 @@ def build_reporting_downloader(session):
 
         def to_screen(self, message, *args, **kwargs):
             if str(message).startswith('[download] Sleeping '):
+                sleeping = re.match(r'\[download\] Sleeping (\d+(?:\.\d+)?) seconds\b', str(message))
                 progress.state.update(stage='waiting_request', speed=None, eta=None,
-                                      request_wait_reason='file_start')
+                                      request_wait_reason='file_start',
+                                      request_wait_until=time.time() + float(sleeping[1]) if sleeping else None)
                 progress.save(force=True)
             return super().to_screen(message, *args, **kwargs)
 

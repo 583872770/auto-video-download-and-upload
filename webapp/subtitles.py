@@ -10,8 +10,7 @@ from webapp.channel_scheduler import ChannelScheduler, throttle_details
 from webapp.disk_budget import DiskBudget, MIB
 from webapp.downloader import build_ydl_options, download_cookie_session
 from webapp.downloads import DownloadLeaseLost
-from webapp.throughput import PipelineBusy
-from webapp.download_policy import failure_evidence, recovery_policy, cooldown_deadline, remember_decision
+from webapp.subtitle_lane import check as check_subtitle_lane, slot as subtitle_slot, failed as subtitle_failed
 
 
 from webapp.read_cache import ReadCache
@@ -47,6 +46,8 @@ def run_subtitles(store, payload, report):
         return {'message': '视频文件已移除，字幕补下载已跳过。', 'skipped': True}
     if config.get('storage_mode') == 'test':
         return {'message': '测试模式不保留字幕。', 'skipped': True}
+    scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=payload['base'])
+    check_subtitle_lane(scheduler)
     if config.get('youtube_cookie_pool') and not payload.get('_subtitle_pool_admitted'):
         from webapp.cookie_pool import CookiePool
         pool = CookiePool(store, config, payload['base'], payload.get('_task_id'))
@@ -55,26 +56,6 @@ def run_subtitles(store, payload, report):
         with pool.assignment(config.get('_cookie_pool_selected'), count_success=False, rest_on_finish=False) as selected:
             return run_subtitles(store, {**payload, 'config': selected,
                 '_subtitle_pool_admitted': True}, report)
-    scheduler = ChannelScheduler(store, config, payload.get('_task_id'), base=payload['base'])
-    scope = 'subtitles:youtube-origin'
-    token = None
-    if scheduler.enabled:
-        def admit(db, stamp):
-            state = scheduler._state(db, scope)
-            delay = max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp
-            if delay > 0:
-                return None, delay
-            token, delay = scheduler._admit(db, stamp, [(scope, 1, 1)])
-            if token:
-                state = scheduler._state(db, scope)
-                state['next_at'] = stamp + 10
-                scheduler._save(db, scope, state)
-            return token, delay
-        token, delay = scheduler.transaction_call(admit)
-        if not token:
-            error = PipelineBusy('字幕请求正在退避，视频下载继续。')
-            error.retry_after = max(2, delay)
-            raise error
     try:
         if scheduler.youtube_pacing:
             scheduler.wait_youtube_start(scheduler.channels[0])
@@ -85,7 +66,7 @@ def run_subtitles(store, payload, report):
             options.update(skip_download=True, download_archive=None, writesubtitles=True, writeautomaticsub=True,
                            writeinfojson=False, writethumbnail=False, ignoreerrors=False,
                            outtmpl=str(video.with_suffix('')).replace('%', '%%') + '.%(ext)s',
-                           retries=1, extractor_retries=1, socket_timeout=15, max_filesize=8 * MIB)
+                           retries=0, fragment_retries=0, extractor_retries=1, socket_timeout=15, max_filesize=8 * MIB)
             def heartbeat(_):
                 report({'stage': 'downloading_subtitles', 'speed': None, 'eta': None})
                 lease.check()
@@ -94,7 +75,13 @@ def run_subtitles(store, payload, report):
             if store and payload.get('_task_id') and not store.heartbeat(payload['_task_id'], store.owner):
                 raise DownloadLeaseLost('字幕任务租约已失效。')
             with download_cookie_session(options) as session:
-                with yt_dlp.YoutubeDL(session) as downloader:
+                class SubtitleDownloader(yt_dlp.YoutubeDL):
+                    def dl(self, name, info, subtitle=False, test=False):
+                        if subtitle:
+                            with subtitle_slot(scheduler):
+                                return super().dl(name, info, subtitle, test)
+                        return super().dl(name, info, subtitle, test)
+                with SubtitleDownloader(session) as downloader:
                     failed = downloader.download(payload['urls'])
                     if failed:
                         raise RuntimeError('字幕补下载失败，视频已保留。')
@@ -118,27 +105,10 @@ def run_subtitles(store, payload, report):
         account_limit = (YouTubeAccountLimited(str(error))
                          if 'your account has been rate-limited' in str(error).lower() else None)
         failure = account_limit or error
-        evidence = failure_evidence(failure, phase='subtitles', source='youtube',
-            profile_id=config.get('_cookie_pool_selected'),
-            profile_name=config.get('_cookie_pool_profile_name'))
-        policy = recovery_policy(evidence, config)
-        status, delay = throttle_details(failure)
+        subtitle_failed(scheduler, failure)
+        status, _ = throttle_details(failure)
         if account_limit or scheduler.youtube_pacing and status in (429, 503):
             scheduler.outcome(scheduler.channels[0], success=False, error=failure, phase='subtitles')
-            delay = max(delay or 0, getattr(failure, 'retry_after', 0))
-        if scheduler.enabled and policy.targets != ('session',) and (account_limit or status in (429, 503)):
-            def cool(db, stamp):
-                state = scheduler._state(db, scope)
-                state.update(cooldown_until=max(state.get('cooldown_until', 0),
-                    cooldown_deadline(failure, stamp, max(policy.delay, delay or 0))),
-                    cooldown_status=status, cooldown_kind='subtitles')
-                remember_decision(state, evidence, layer='subtitles', scope='字幕补下载队列',
-                    action='cooldown', until=state['cooldown_until'], stamp=stamp)
-                scheduler._save(db, scope, state)
-            scheduler.transaction_call(cool)
         if account_limit:
             raise account_limit from error
         raise
-    finally:
-        if token:
-            scheduler._release(token)

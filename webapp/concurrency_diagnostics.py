@@ -14,6 +14,7 @@ from webapp.throughput import policy_key
 from webapp.decision_diagnostics import public_failure
 from webapp.config_schema import DEFAULTS
 from webapp.cookie_policy import task_rest_until
+from webapp.wait_diagnostics import task_wait
 
 
 def scopes_for(config, identity):
@@ -113,7 +114,8 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
                 'speed': progress.get('speed') if progress.get('stage') == 'downloading' and
                 all(not progress.get(key) or stamp - progress[key] <= 10
                     for key in ('_reported_at', 'last_bytes_at')) else None,
-                'transfer_reserved': task['id'] in holders}
+                'transfer_reserved': task['id'] in holders,
+                'wait': task_wait(progress, states=states, identity=identity, stamp=stamp)}
         profile_id = progress.get('cookie_profile_id')
         if profile_id:
             grouped.setdefault(profile_id, []).append(view)

@@ -48,6 +48,13 @@ export interface AccountTask {
   stage: string;
   speed?: number;
   transfer_reserved: boolean;
+  wait?: WaitReason | null;
+}
+export interface WaitReason {
+  code: string;
+  label: string;
+  detail?: string;
+  until?: number;
 }
 export interface Pacing {
   phase: string;
@@ -79,7 +86,7 @@ export type RuntimeAccount = Partial<RuntimeSlot> & {
   name: string;
   email?: string;
   tasks: AccountTask[];
-  reasons?: Array<{ label: string; code: string; until?: number }>;
+  reasons?: WaitReason[];
 };
 export interface WorkerControl {
   used: number;

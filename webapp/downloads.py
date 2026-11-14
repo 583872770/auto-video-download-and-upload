@@ -114,6 +114,12 @@ class DownloadFailure:
         text = message.lower()
         error = (YouTubeAccountLimited(message) if 'your account has been rate-limited' in text
                  else RuntimeError(message))
+        if exception:
+            # Wrapping yt-dlp's message must retain an already scheduled cooldown.
+            for field in ('retry_after', '_download_cooldown_base', '_download_cooldown_until', '_download_recovery_delay'):
+                value = getattr(exception, field, None)
+                if isinstance(value, (int, float)):
+                    setattr(error, field, max(value, getattr(error, field, 0) or 0))
         error.failure_reason = self.reason(self.errors[-1] if self.errors else clean_download_error(exception or ''))
         if error.failure_reason == 'drm_only':
             error.failure_scope = 'video'

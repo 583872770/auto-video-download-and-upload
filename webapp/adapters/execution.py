@@ -183,7 +183,8 @@ class ProviderExecution:
             return True
 
         def wait_request():
-            progress.state.update(stage='waiting_request', speed=None, eta=None)
+            progress.state.update(stage='waiting_request', speed=None, eta=None,
+                                  request_wait_reason='video_start')
             progress.save()
 
         if youtube and (config.get('_cookie_pool_selected') or not (

@@ -34,7 +34,11 @@ class DeliveryTests(unittest.TestCase):
         hits=self.hits
         class Handler(SimpleHTTPRequestHandler):
             def do_GET(self):
-                hits.append(self.path);super().do_GET()
+                hits.append(self.path)
+                if self.path == '/limited.vtt':
+                    self.send_response(429);self.send_header('Retry-After','2400');self.end_headers()
+                    return
+                super().do_GET()
             def log_message(self,*args):pass
         self.server=ThreadingHTTPServer(('127.0.0.1',0),partial(Handler,directory=str(self.media)))
         threading.Thread(target=self.server.serve_forever,daemon=True).start()
@@ -70,6 +74,68 @@ class DeliveryTests(unittest.TestCase):
             result=execute('download',task['payload'],store=self.store,task_id=task['id'])
         self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         return task,result
+
+    def test_subtitle_http_429_is_attributed_to_captions_and_honors_retry_after(self):
+        from web_worker import execute
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.download_policy import failure_evidence
+        from webapp.subtitle_lane import SCOPE
+        self.create(['subtitle'])
+        task=self.store.claim(self.store.owner)
+        info=self.info();info['subtitles']['en'][0]['url']=self.url+'/limited.vtt'
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info):
+            with self.assertRaises(RuntimeError) as caught:
+                execute('download',task['payload'],store=self.store,task_id=task['id'])
+        evidence=failure_evidence(caught.exception)
+        self.assertEqual((evidence.phase,evidence.http_status),('subtitles',429))
+        self.assertGreaterEqual(caught.exception.retry_after,2390)
+        self.assertEqual(self.hits,['/limited.vtt'])
+        router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
+        states,_,stamp=router.snapshot([SCOPE,'upstream:youtube-origin','channel:yt_dlp'])
+        self.assertGreaterEqual(states[SCOPE]['cooldown_until'],stamp+2390)
+        for scope in ('upstream:youtube-origin','channel:yt_dlp'):
+            self.assertFalse(states.get(scope,{}).get('cooldown_until'))
+
+    def test_subtitle_cooldown_blocks_before_metadata_requests(self):
+        from web_worker import execute
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.subtitle_lane import failed
+        from webapp.throughput import PipelineBusy
+        self.create(['subtitle'])
+        task=self.store.claim(self.store.owner)
+        router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
+        failed(router,RuntimeError('HTTP Error 429'))
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
+            with self.assertRaises(PipelineBusy):
+                execute('download',task['payload'],store=self.store,task_id=task['id'])
+        extract.assert_not_called()
+        self.assertEqual(self.hits,[])
+
+    def test_subtitle_spacing_requeues_without_refetching_published_languages(self):
+        import time
+        from web_worker import execute
+        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.subtitle_lane import INTERVAL
+        from webapp.throughput import PipelineBusy
+        job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr']}})
+        info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
+        clock=[time.time()]
+        task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info), \
+             patch.object(ChannelScheduler,'clock',lambda router,db:clock[0]):
+            with self.assertRaises(PipelineBusy):
+                execute('download',task['payload'],store=self.store,task_id=task['id'])
+            self.assertEqual(self.hits,['/en.vtt'])
+            self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
+            self.store.release(task['id'],self.store.owner,'subtitle interval',delay=0)
+            clock[0]+=INTERVAL+1
+            retry=self.store.claim(self.store.owner)
+            self.assertEqual(retry['id'],task['id'])
+            result=execute('download',retry['payload'],store=self.store,task_id=retry['id'])
+            self.store.finish(retry['id'],result=result,worker_id=self.store.owner)
+        self.assertEqual(result['delivery_status'],'complete')
+        self.assertEqual(self.hits,['/en.vtt','/en.vtt'])
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],2)
 
     def test_all_fifteen_combinations_and_track_reuse(self):
         for length in range(1,5):

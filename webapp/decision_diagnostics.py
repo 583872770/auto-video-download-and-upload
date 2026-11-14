@@ -5,7 +5,7 @@ from webapp.diagnostics import safe_text
 SCOPE_NAMES = {
     'channel': '渠道健康', 'resolver': '共享解析', 'upstream': '共享传输',
     'quota': '共享渠道配额', 'backend-quota': '后端共享配额',
-    'backend-resolver': '后端解析', 'subtitles': '字幕补下载',
+    'backend-resolver': '后端解析', 'subtitles': '字幕请求队列',
     'youtube-pacing': '实例启动节奏', 'youtube-cookie-pool': '当前实例 Cookie 池',
     'youtube-start': '实例固定启动间隔',
     'execution': '当前实例停止领取',

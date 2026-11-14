@@ -18,6 +18,7 @@ from webapp.delivery.verify import verify, convert, inspect, LocalDeliveryError
 from webapp.database import delivery_requirements as requirements, delivery_artifacts as artifacts
 from webapp.parallel_http import ParallelYoutubeDL
 from webapp.local_processing import local_processing
+from webapp.subtitle_lane import check as check_subtitle_lane, slot as shared_subtitle_slot
 
 
 def reporting_downloader(session):
@@ -158,30 +159,8 @@ def choose(info, kind, max_height):
 
 @contextmanager
 def subtitle_slot(session):
-    scheduler = session.scheduler
-    if not scheduler.enabled:
+    with shared_subtitle_slot(session.scheduler):
         yield
-        return
-    from webapp.throughput import PipelineBusy
-    scope = 'subtitles:youtube-origin'
-    def admit(db, stamp):
-        state = scheduler._state(db, scope)
-        delay = max(state.get('next_at', 0), state.get('cooldown_until', 0)) - stamp
-        if delay > 0:
-            return None, delay
-        token, delay = scheduler._admit(db, stamp, [(scope, 1, 1)])
-        if token:
-            state['next_at'] = stamp + 10
-            scheduler._save(db, scope, state)
-        return token, delay
-    token, delay = scheduler.transaction_call(admit)
-    if not token:
-        error = PipelineBusy('字幕请求等待上游名额，已完成媒体文件保留。');error.retry_after = max(2, delay)
-        raise error
-    try:
-        yield
-    finally:
-        scheduler._release(token)
 
 
 def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
@@ -213,6 +192,8 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
         sub_done = bool(sub_rows) and all(r['status'] == 'waived' or r['language'] and ready(session, 'subtitle', r['language']) for r in sub_rows)
     if not remaining and sub_done:
         return False
+    if not remaining:
+        check_subtitle_lane(session.scheduler)
     from webapp.channels import execution_config
     from webapp.parallel_http import fragment_connection_budget, transfer_connection_units
     from webapp.throughput import runtime_limits
@@ -341,12 +322,14 @@ def subtitles(session, info, safe, temporary):
         options = {**safe, 'skip_download': True, 'writesubtitles': True, 'writeautomaticsub': True,
                    'subtitleslangs': [language], 'subtitlesformat': 'vtt/best',
                    'outtmpl': str(directory / 'caption.%(ext)s'), 'progress_hooks': [],
-                   'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024}
+                   'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024,
+                   'retries': 0, 'fragment_retries': 0}
         manual, automatic = available[language]
         subtitle_info = {**info, 'subtitles': {language: manual} if manual else {},
                          'automatic_captions': {language: automatic} if not manual and automatic else {}}
         session.progress.state.update(stage='downloading_subtitles', output_kind='subtitle', output_language=language)
         session.progress.save(force=True)
+        session.failure_phase = 'subtitles'
         try:
             with subtitle_slot(session):
                 with reporting_downloader(session)(options) as downloader:

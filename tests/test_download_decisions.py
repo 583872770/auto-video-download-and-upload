@@ -122,7 +122,8 @@ class DownloadDecisionTests(unittest.TestCase):
                     execute.assert_called_once()
                 self.assertEqual(read(self.store)['failure_reasons'][reason], 1)
 
-    def test_attributed_429_does_not_cool_global_resources(self):
+    def test_caption_429_cools_caption_lane_and_original_account_only(self):
+        from webapp.subtitle_lane import COOLDOWN, SCOPE
         error = RuntimeError('HTTP Error 429: Too Many Requests')
         pool, router = self.apply_failure(error, phase='subtitles')
         self.assertIsNone(router.youtube_pacing)  # The pool owns account budgets in both modes.
@@ -130,13 +131,15 @@ class DownloadDecisionTests(unittest.TestCase):
             self.assertFalse(self.state(router, scope).get('cooldown_until'))
         scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
         state = self.state(router, scope)
-        self.assertEqual(state['cooldown_until'], self.now + 300)
+        self.assertEqual(state['cooldown_until'], self.now + COOLDOWN)
+        self.assertEqual(self.state(router, SCOPE)['cooldown_until'], self.now + COOLDOWN)
         self.assertEqual(state['last_decision']['incident_id'], failure_evidence(error).incident_id)
         diagnostic = self.diagnostic(pool)
         self.assertFalse(diagnostic['decisions']['manual_required'])
         self.assertEqual(len(diagnostic['decisions']['history']), 1)
         self.assertEqual(diagnostic['decisions']['history'][0]['failure']['phase'], 'subtitles')
-        self.assertEqual(len(diagnostic['decisions']['history'][0]['effects']), 1)
+        self.assertEqual({effect['layer'] for effect in diagnostic['decisions']['history'][0]['effects']},
+                         {'session', 'subtitles'})
         self.now += 31
         with self.pool().assignment() as selected:
             self.assertNotEqual(selected['_cookie_pool_selected'], failure_evidence(error).profile_id)

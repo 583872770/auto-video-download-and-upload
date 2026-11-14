@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useInstances } from '../../stores/instances';
 import TaskLog from '../../components/TaskLog.vue';
 import { stageLabel, type AccountTask, type RuntimeAccount, type RuntimeSlot } from './contracts';
+import { isWaitingStage, summarizeWaits, taskWait, taskWaitGroups, waitCountdown } from './waits';
 
 const props = defineProps<{
   accounts: RuntimeAccount[];
@@ -10,8 +11,12 @@ const props = defineProps<{
   unassigned: AccountTask[];
   fresh: boolean;
   time: number;
+  now: number;
 }>();
 const instances = useInstances();
+function countdown(until?: number) {
+  return waitCountdown(until, props.now, props.fresh);
+}
 const query = ref('');
 const state = ref('');
 const stage = ref('');
@@ -86,6 +91,9 @@ const tabs = computed(() =>
 const filtered = computed(() =>
   searched.value.filter((account) => !stage.value || account.tasks.some(matches)),
 );
+const waitingSummary = computed(() =>
+  summarizeWaits(searched.value.flatMap((account) => account.tasks.filter(matches))),
+);
 const pages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)));
 const visible = computed(() =>
   filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize),
@@ -104,12 +112,7 @@ const totals = computed(() => {
       result.cooldown++;
       continue;
     }
-    if (
-      account.tasks.some(
-        (task) => !/^(waiting_|disk_wait$|scheduling_wait$|retrying$)/.test(task.stage),
-      )
-    )
-      result.running++;
+    if (account.tasks.some((task) => !isWaitingStage(task.stage))) result.running++;
     else if (
       account.tasks.length ||
       account.reasons?.some((reason) => reason.code !== 'unassigned') ||
@@ -144,6 +147,10 @@ watch(
 function tasksFor(account: RuntimeAccount) {
   return account.tasks.filter(matches);
 }
+const waitsByAccount = computed(
+  () =>
+    new Map(allAccounts.value.map((account) => [account.id, taskWaitGroups(tasksFor(account))])),
+);
 function filterCooldown() {
   state.value = state.value === 'cooldown' ? '' : 'cooldown';
   stage.value = '';
@@ -176,7 +183,7 @@ function stageTone(value: string) {
   if (value === 'downloading') return 'blue';
   if (value === 'extracting') return 'purple';
   if (value === 'processing' || value === 'uploading_oss') return 'teal';
-  return /^(waiting_|disk_wait$|scheduling_wait$|retrying$)/.test(value) ? 'amber' : 'gray';
+  return isWaitingStage(value) ? 'amber' : 'gray';
 }
 function pacing(account: RuntimeAccount) {
   return sessionsById.value.get(account.id)?.pacing || account.pacing;
@@ -189,20 +196,21 @@ function reasons(account: RuntimeAccount): NonNullable<RuntimeAccount['reasons']
     'account_cooldown',
     'pool_cooldown',
   ];
-  const waitingStages = [...new Set(tasksFor(account).map((task) => task.stage))].filter((value) =>
-    /^(waiting_|disk_wait$|scheduling_wait$|retrying$)/.test(value),
-  );
   return [
-    ...waitingStages.map((value) => ({ code: 'task_' + value, label: stageLabel(value) })),
+    ...taskWaitGroups(tasksFor(account)).map((reason) => ({
+      ...reason,
+      code: 'task_' + reason.code,
+    })),
     ...(account.reasons || []),
   ].sort((a, b) => {
     const rank = (code: string) =>
-      priority.includes(code) ? priority.indexOf(code) : priority.length;
+      code.startsWith('task_')
+        ? -1
+        : priority.includes(code)
+          ? priority.indexOf(code)
+          : priority.length;
     return rank(a.code) - rank(b.code);
   });
-}
-function primaryReason(account: RuntimeAccount) {
-  return reasons(account)[0];
 }
 const accountLink = computed(
   () =>
@@ -285,6 +293,13 @@ const accountLink = computed(
       <b>{{ filtered.length }}</b> 个账号。
       <button type="button" class="account-text-button" @click="stage = ''">清除阶段筛选</button>
     </p>
+    <div v-if="waitingSummary.length" class="account-wait-summary" aria-label="任务等待原因汇总">
+      <span>{{ fresh ? '正在等待' : '上次等待记录' }}</span>
+      <span v-for="reason in waitingSummary" :key="reason.code" class="account-wait-chip">
+        {{ reason.label }} <b>{{ reason.count }}</b>
+      </span>
+      <small>按当前筛选的任务统计</small>
+    </div>
     <div class="account-columns" aria-hidden="true">
       <span>账号 / 状态</span><span>执行阶段</span><span>当前任务</span><span>并发 / 间隔</span
       ><span>等待 / 恢复</span><span>操作</span>
@@ -395,24 +410,56 @@ const accountLink = computed(
             <small>间隔 {{ account.interval ?? '—' }} 秒</small>
           </div>
           <div class="runtime-wait" :class="accountState(account)">
-            <template v-if="!fresh || !account.known"
+            <template v-if="!fresh || (!account.known && !waitsByAccount.get(account.id)?.length)"
               ><span>当前状态待确认</span><small>等待新鲜采样</small></template
             >
-            <template v-else-if="primaryReason(account)">
-              <span class="runtime-reason" :title="primaryReason(account)?.label">{{
-                primaryReason(account)?.label
-              }}</span>
-              <small v-if="primaryReason(account)?.until"
-                >下次检查 {{ at(primaryReason(account)?.until) }}</small
+            <template v-else-if="waitsByAccount.get(account.id)?.length || account.reasons?.length">
+              <div
+                v-for="(reason, reasonIndex) in waitsByAccount.get(account.id)"
+                :key="'task-' + reasonIndex"
+                class="runtime-wait-entry"
+                data-wait-kind="task"
               >
-              <button
-                v-if="reasons(account).length > 1"
-                type="button"
-                class="account-text-button"
-                @click="openDetails(account.id)"
-              >
-                另 {{ reasons(account).length - 1 }} 项依据
-              </button>
+                <span class="runtime-reason"
+                  >{{ reason.label }}
+                  <span v-if="account.tasks.length > 1" class="runtime-wait-count"
+                    >{{ reason.count }} 个任务</span
+                  >
+                </span>
+                <small
+                  v-if="
+                    reason.detail &&
+                    ['disk_wait', 'scheduling_wait', 'retrying', 'waiting_verification'].includes(
+                      reason.code,
+                    )
+                  "
+                  class="runtime-wait-detail"
+                  >{{ reason.detail }}</small
+                >
+                <small
+                  class="runtime-countdown"
+                  :class="{ timed: !!reason.until }"
+                  :title="reason.until ? '检查时间 ' + at(reason.until) : undefined"
+                  >{{ countdown(reason.until) }}</small
+                >
+              </div>
+              <div v-if="account.known && account.reasons?.length" class="runtime-account-waits">
+                <small v-if="account.tasks.length" class="runtime-wait-caption">新任务准入</small>
+                <div
+                  v-for="reason in account.reasons"
+                  :key="reason.code"
+                  class="runtime-wait-entry"
+                  data-wait-kind="account"
+                >
+                  <span class="runtime-reason">{{ reason.label }}</span>
+                  <small
+                    class="runtime-countdown"
+                    :class="{ timed: !!reason.until }"
+                    :title="reason.until ? '检查时间 ' + at(reason.until) : undefined"
+                    >{{ countdown(reason.until) }}</small
+                  >
+                </div>
+              </div>
             </template>
             <template v-else-if="pacing(account)?.recovery"
               ><span>低频恢复观察中</span
@@ -464,7 +511,13 @@ const accountLink = computed(
               }}</span>
               <span class="runtime-detail-task-name"
                 >{{ task.title
-                }}<small>{{
+                }}<small v-if="taskWait(task)" class="runtime-task-wait">
+                  {{ fresh ? '等待：' : '上次等待：' }}{{ taskWait(task)?.label }}
+                  <template v-if="taskWait(task)?.detail"> · {{ taskWait(task)?.detail }}</template>
+                  <template v-if="fresh">
+                    · {{ countdown(taskWait(task)?.until) }}</template
+                  > </small
+                ><small>{{
                   fresh
                     ? task.transfer_reserved
                       ? '已占用传输名额'
@@ -491,9 +544,9 @@ const accountLink = computed(
             <h4>等待与恢复依据{{ fresh && account.known ? '' : ' · 上次记录' }}</h4>
             <ul v-if="reasons(account).length" class="runtime-reasons">
               <li v-for="(reason, reasonIndex) in reasons(account)" :key="reasonIndex">
-                {{ reason.label
-                }}<small v-if="reason.until"
-                  >检查时间 {{ at(reason.until) }}；到期后仍需满足其他准入条件。</small
+                {{ reason.label }}<small v-if="reason.detail">{{ reason.detail }}</small
+                ><small v-if="fresh"
+                  >{{ countdown(reason.until) }}；到期后仍需满足其他准入条件。</small
                 >
               </li>
             </ul>
@@ -566,7 +619,14 @@ const accountLink = computed(
         <span class="runtime-stage" :class="fresh ? stageTone(task.stage) : 'gray'">{{
           stageLabel(task.stage)
         }}</span>
-        <span class="runtime-detail-task-name">{{ task.title }}</span>
+        <span class="runtime-detail-task-name"
+          >{{ task.title }}
+          <small v-if="taskWait(task)" class="runtime-task-wait">
+            {{ fresh ? '等待：' : '上次等待：' }}{{ taskWait(task)?.label }}
+            <template v-if="taskWait(task)?.detail"> · {{ taskWait(task)?.detail }}</template>
+            <template v-if="fresh"> · {{ countdown(taskWait(task)?.until) }}</template>
+          </small>
+        </span>
         <button
           type="button"
           class="account-text-button"
@@ -726,6 +786,33 @@ const accountLink = computed(
   background: #2563eb;
   color: #fff;
 }
+.account-wait-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #edf1f6;
+  color: #826225;
+  background: #fffdf8;
+  font-size: 11px;
+}
+.account-wait-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border: 1px solid #f0dfba;
+  border-radius: 4px;
+  background: #fff8e9;
+}
+.account-wait-chip b {
+  font-variant-numeric: tabular-nums;
+}
+.account-wait-summary > small {
+  color: #7d8da2;
+  font-size: 10px;
+}
 .account-filter-note {
   margin: 0;
   padding: 8px 16px;
@@ -744,8 +831,8 @@ const accountLink = computed(
 .account-runtime-row {
   display: grid;
   grid-template-columns:
-    minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.6fr) minmax(85px, 0.8fr)
-    minmax(0, 1.3fr) 72px;
+    minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 1.4fr) minmax(85px, 0.7fr)
+    minmax(0, 1.8fr) 72px;
   gap: 16px;
   padding: 10px 16px;
   align-items: center;
@@ -925,12 +1012,49 @@ const accountLink = computed(
   color: #64748b;
   line-height: 1.55;
 }
+.runtime-wait .runtime-wait-detail {
+  display: block;
+  margin-left: 0;
+  flex-basis: 100%;
+}
 .runtime-reason {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  display: inline;
   overflow-wrap: anywhere;
+}
+.runtime-wait-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px 6px;
+}
+.runtime-wait-entry + .runtime-wait-entry {
+  margin-top: 3px;
+}
+.runtime-account-waits:not(:first-child) {
+  margin-top: 5px;
+  padding-top: 4px;
+  border-top: 1px dashed #e8edf4;
+}
+.runtime-wait-count {
+  color: #8492a6;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.runtime-wait .runtime-countdown {
+  display: inline;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.runtime-wait .runtime-countdown.timed {
+  color: #a66f20;
+  font-weight: 600;
+}
+.runtime-wait .runtime-wait-caption {
+  display: block;
+  margin: 0 0 3px;
+  font-size: 9px;
+  color: #8492a6;
 }
 .runtime-muted {
   color: #8492a6;
@@ -1008,6 +1132,9 @@ const accountLink = computed(
   color: #7d8da2;
   font-size: 10px;
   margin-top: 3px;
+}
+.runtime-detail-task-name .runtime-task-wait {
+  color: #926a29;
 }
 .runtime-detail-task > button {
   flex-shrink: 0;
