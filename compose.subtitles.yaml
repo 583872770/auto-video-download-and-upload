@@ -1,0 +1,22 @@
+# Optional addition: docker compose -f compose.local.yaml -f compose.subtitles.yaml up -d --build
+# For remote MySQL/Redis, use compose.remote.yaml as the first file.
+services:
+  app:
+    build:
+      args:
+        WITH_SUBTITLE_POT: "1"
+    environment:
+      VIDEO_SUBTITLE_POT_URL: http://subtitle-pot:4416
+    depends_on:
+      subtitle-pot:
+        condition: service_started
+  subtitle-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
+    init: true
+    restart: unless-stopped
+    # No published port: only containers on the private Compose network connect.
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

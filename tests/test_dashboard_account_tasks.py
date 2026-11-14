@@ -143,6 +143,16 @@ class DashboardAccountTaskTests(unittest.TestCase):
         self.assertNotIn('冷却', capacity['label'])
         self.assertNotIn('until', capacity)
 
+    def test_translated_subtitle_warmup_is_visible_with_its_own_countdown(self):
+        from webapp.wait_diagnostics import task_wait
+        for reason, label in [('subtitle_session', '翻译字幕会话预热'), ('subtitle_queue', '字幕请求间隔')]:
+            task_id=self.task(stage='waiting_request', details={'request_wait_reason':reason,'request_wait_until':time.time()+75})
+            waiting=next(task for task in self.allocation()['accounts'][0]['tasks'] if task['task_id']==task_id)['wait']
+            self.assertEqual(waiting['label'],label)
+            self.assertIn('until',waiting)
+            self.assertNotIn('until',task_wait({'stage':'waiting_request','request_wait_reason':reason,
+                                               'request_wait_until':90},stamp=100))
+
 
 if __name__ == '__main__':
     unittest.main()

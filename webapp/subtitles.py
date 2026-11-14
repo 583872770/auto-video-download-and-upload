@@ -10,7 +10,8 @@ from webapp.channel_scheduler import ChannelScheduler, throttle_details
 from webapp.disk_budget import DiskBudget, MIB
 from webapp.downloader import build_ydl_options, download_cookie_session
 from webapp.downloads import DownloadLeaseLost
-from webapp.subtitle_lane import check as check_subtitle_lane, slot as subtitle_slot, failed as subtitle_failed
+from webapp.subtitle_lane import check as check_subtitle_lane, failed as subtitle_failed
+from webapp.subtitle_tracks import SubtitleSession, automatic_tracks, request_slot, provider_options
 
 
 from webapp.read_cache import ReadCache
@@ -71,14 +72,25 @@ def run_subtitles(store, payload, report):
                 report({'stage': 'downloading_subtitles', 'speed': None, 'eta': None})
                 lease.check()
             options['progress_hooks'] = [heartbeat]
+            options = provider_options(options, force_subs=True)
             report({'stage': 'downloading_subtitles', 'speed': None, 'eta': None})
             if store and payload.get('_task_id') and not store.heartbeat(payload['_task_id'], store.owner):
                 raise DownloadLeaseLost('字幕任务租约已失效。')
             with download_cookie_session(options) as session:
                 class SubtitleDownloader(yt_dlp.YoutubeDL):
+                    def process_subtitles(self, video_id, normal_subtitles, automatic_captions):
+                        self.caption_session = getattr(self, 'caption_session', None) or SubtitleSession(self)
+                        captions = {language: automatic_tracks(automatic_captions, language)
+                                    for language in (automatic_captions or {})}
+                        return super().process_subtitles(video_id, normal_subtitles, captions)
+
                     def dl(self, name, info, subtitle=False, test=False):
                         if subtitle:
-                            with subtitle_slot(scheduler):
+                            def waiting(value):
+                                lease.check()
+                                report(value)
+                            self.caption_session.prepare([info], waiting)
+                            with request_slot(scheduler, waiting):
                                 return super().dl(name, info, subtitle, test)
                         return super().dl(name, info, subtitle, test)
                 with SubtitleDownloader(session) as downloader:

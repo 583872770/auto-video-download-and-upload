@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from sqlalchemy import select
 from tests import test_scale
-from webapp.delivery.contracts import normalize, KINDS
+from webapp.delivery.contracts import normalize, KINDS, variant
 from webapp.database import delivery_artifacts, delivery_requirements, delivery_runs
 
 
@@ -111,31 +111,82 @@ class DeliveryTests(unittest.TestCase):
         extract.assert_not_called()
         self.assertEqual(self.hits,[])
 
-    def test_subtitle_spacing_requeues_without_refetching_published_languages(self):
+    def test_subtitle_spacing_keeps_metadata_and_downloads_languages_in_one_session(self):
         import time
         from web_worker import execute
         from webapp.channel_scheduler import ChannelScheduler
         from webapp.subtitle_lane import INTERVAL
-        from webapp.throughput import PipelineBusy
         job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr']}})
         info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
         clock=[time.time()]
         task=self.store.claim(self.store.owner)
-        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info), \
-             patch.object(ChannelScheduler,'clock',lambda router,db:clock[0]):
-            with self.assertRaises(PipelineBusy):
-                execute('download',task['payload'],store=self.store,task_id=task['id'])
-            self.assertEqual(self.hits,['/en.vtt'])
-            self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
-            self.store.release(task['id'],self.store.owner,'subtitle interval',delay=0)
-            clock[0]+=INTERVAL+1
-            retry=self.store.claim(self.store.owner)
-            self.assertEqual(retry['id'],task['id'])
-            result=execute('download',retry['payload'],store=self.store,task_id=retry['id'])
-            self.store.finish(retry['id'],result=result,worker_id=self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info) as extract, \
+             patch.object(ChannelScheduler,'clock',lambda router,db:clock[0]), \
+             patch('webapp.subtitle_tracks.wait',side_effect=lambda seconds,*_:clock.__setitem__(0,clock[0]+seconds+1)) as wait:
+            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+            self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        self.assertEqual(extract.call_count,1)
+        self.assertEqual(wait.call_args.args[0],INTERVAL)
         self.assertEqual(result['delivery_status'],'complete')
         self.assertEqual(self.hits,['/en.vtt','/en.vtt'])
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],2)
+
+    def test_original_automatic_alias_keeps_requested_language_and_avoids_translated_url(self):
+        job=self.create(['subtitle'])
+        info=self.info(False)
+        info['automatic_captions']={'en-orig':[{'url':self.url+'/en.vtt','ext':'vtt'}],
+                                    'en':[{'url':self.url+'/limited.vtt','ext':'vtt'}]}
+        _,result=self.execute(info)
+        self.assertEqual(result['delivery_status'],'complete')
+        self.assertEqual(self.hits,['/en.vtt'])
+        files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
+        self.assertEqual(files[0]['language'],'en')
+
+    def test_default_original_mode_discovers_unconfigured_language_without_translation(self):
+        job=self.create(['subtitle'],{'subtitles':{'mode':'original'}})
+        info=self.info(False)
+        info['automatic_captions']={'ja-orig':[{'url':self.url+'/en.vtt','ext':'vtt'}],
+            'zh-Hans':[{'url':'https://www.youtube.com/api/timedtext?lang=ja&tlang=zh-Hans','ext':'vtt'}]}
+        _,result=self.execute(info)
+        self.assertEqual(result['delivery_status'],'complete')
+        self.assertEqual(self.hits,['/en.vtt'])
+        files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
+        self.assertEqual([row['language'] for row in files],['ja'])
+
+    def test_opt_in_targets_download_alongside_original_and_missing_targets_need_review(self):
+        for targets, policy, status in [(['fr'],'available_selected','complete'),
+                                        (['ja'],'available_selected','review'),
+                                        (['fr','ja'],'all_selected','review')]:
+            with self.subTest(targets=targets):
+                self.hits.clear()
+                job=self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated',
+                    'languages':targets,'language_policy':policy}})
+                info=self.info();info['automatic_captions']={'fr':[{'url':self.url+'/en.vtt','ext':'vtt'}]}
+                _,result=self.execute(info)
+                self.assertEqual(result['delivery_status'],status)
+                files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
+                # The fixture exposes English and French originals; selected
+                # translation targets add to that set when available.
+                self.assertEqual({row['language'] for row in files}, {'en', 'fr'})
+                self.assertEqual(len(self.hits), 2)
+
+    def test_subtitle_http_request_uses_the_cookie_created_during_metadata_extraction(self):
+        from web_worker import execute
+        self.create(['subtitle'])
+        task=self.store.claim(self.store.owner)
+        cookies=[]
+        original=self.server.RequestHandlerClass.func.do_GET
+        def download(handler):
+            cookies.append(handler.headers.get('Cookie'))
+            return original(handler)
+        def extract(downloader,*args,**kwargs):
+            downloader._load_cookies('caption_session=from_metadata',autoscope=self.url)
+            return self.info()
+        with patch.object(self.server.RequestHandlerClass.func,'do_GET',download), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',extract):
+            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+            self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        self.assertEqual(cookies,['caption_session=from_metadata'])
 
     def test_all_fifteen_combinations_and_track_reuse(self):
         for length in range(1,5):
@@ -358,6 +409,21 @@ class DeliveryTests(unittest.TestCase):
 
 
 class ContractValidationTests(unittest.TestCase):
+    def test_default_original_mode_and_legacy_contract_identity(self):
+        default=normalize()
+        self.assertEqual(default['subtitles']['mode'],'original')
+        self.assertEqual(normalize({'subtitles':{'mode':'original','languages':[]}})['subtitles']['languages'],[])
+        legacy=normalize({'subtitles':{'languages':['en','zh-Hans']}})
+        self.assertNotIn('mode',legacy['subtitles'])
+        self.assertEqual(normalize(legacy),legacy)
+        from webapp.delivery.contracts import digest
+        old_variant=digest({'kind':'subtitle','options':{'format':'srt','sources':['manual','automatic']}})
+        self.assertEqual(variant(legacy,'subtitle'),old_variant)
+        self.assertNotEqual(variant(default,'subtitle'),old_variant)
+        for invalid in ({'mode':'unknown'}, {'mode':'original_and_translated','languages':[]}):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                normalize({'subtitles':invalid})
+
     def test_invalid_or_empty_requirements_rejected(self):
         for invalid in ({'outputs':[]},{'outputs':['other']},{'outputs':[{}]},{'subtitles':{'languages':['../en']}},{'video':{'max_height':True}}):
             with self.subTest(invalid=invalid),self.assertRaises(ValueError):normalize(invalid)

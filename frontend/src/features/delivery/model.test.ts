@@ -12,7 +12,12 @@ describe('delivery editing contracts', () => {
     expect(validateDelivery(spec)).toContain('语言代码');
     spec.subtitles.languages = ['en', 'zh-Hans'];
     expect(validateDelivery(spec)).toBe('');
-    expect(defaultDelivery().subtitles.languages).toEqual(['en', 'zh-Hans', 'zh-Hant']);
+    expect(defaultDelivery().subtitles.mode).toBe('original');
+    expect(defaultDelivery().subtitles.languages).toEqual(['zh-Hans']);
+    spec.subtitles.languages = [];
+    expect(validateDelivery(spec)).toBe('');
+    spec.subtitles.mode = 'original_and_translated';
+    expect(validateDelivery(spec)).toContain('语言代码');
   });
   it('formats exact byte strings beyond JavaScript safe integer without losing digits', () => {
     expect(formatGB('9007199254740993')).toBe('9,007,199.254740 GB');

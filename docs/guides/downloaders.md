@@ -18,6 +18,22 @@ download_methods:
 
 yt-dlp 的账号准备见 [账号管理](accounts.md)、[YouTube 登录](youtube-login.md)。网页渠道的 Chromium、显示环境和人工验证入口见 [浏览器环境](../deployment/browser.md)。
 
+## YouTube 字幕请求
+
+字幕交付按所选语言先选人工字幕，再选该语言的原始自动字幕（如 `en-orig`），最后使用 YouTube 自动翻译轨道。不会用其他语言原文代替约定语言。原始自动字幕和翻译字幕仍受任务的“字幕来源”选项约束。
+
+解析和字幕请求共享同一个内存 Cookie 会话；只有实际 URL 带跨语言 `tlang` 的 YouTube 翻译轨道才等待会话预热约 75 秒，列表显示“翻译字幕会话预热”和倒计时。会话标识轮换后重新计时。短字幕排队间隔保留已解析信息及会话，长限流冷却退回队列，已交付语言继续复用。上传的登录 Cookie 文件不会被覆写。
+
+75 秒等待来自上游尚未合并的 [#15709 草案](https://github.com/yt-dlp/yt-dlp/pull/15709)，属于缓解策略，不能保证所有出口均成功。相关限制见 [#13831 维护者说明](https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3712613129)。本项目保留共享字幕串行间隔和 429 退避。
+
+当所选客户端需要字幕专用 PO Token 时，可选择启用官方 Wiki 列出的第三方 BgUtils Provider。它会按当前视频和请求上下文生成 `subs` Token，不配置固定 Token。启用方式：
+
+```shell
+docker compose -f compose.local.yaml -f compose.subtitles.yaml up -d --build
+```
+
+远程数据库部署将第一个文件替换为 `compose.remote.yaml`。该覆盖文件通过 `WITH_SUBTITLE_POT=1` 安装锁定版本的插件，并启动同版本私有服务，不发布服务端口。自定义部署需安装 `docker/requirements-subtitles.lock.txt`，并设置 `VIDEO_SUBTITLE_POT_URL` 指向可信 Provider 服务。插件与服务版本应一致；Token 不保证解决翻译字幕会话限制，也不替代有效 Cookie。原始部署不默认启动额外服务。
+
 ## yt5s
 
 使用服务器浏览器完成验证、解析和转换，再由现有传输模块下载。它不接收用户的 YouTube Cookie，与 yt1d、Bergung 共用浏览器并发预算。接口变化、网站验证及格式限制可能导致失败，按当前实例的渠道顺序继续尝试。

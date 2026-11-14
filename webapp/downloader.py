@@ -110,7 +110,8 @@ def build_ydl_options(config, base):
         if not cookie.is_file():
             raise FileNotFoundError(f'YouTube Cookie 文件不存在：{cookie}')
         options['cookiefile'] = str(cookie)
-    return options
+    from webapp.subtitle_tracks import provider_options
+    return provider_options(options) if config.get('download_method', 'yt_dlp') == 'yt_dlp' else options
 
 
 def require_download_tools(urls, options):

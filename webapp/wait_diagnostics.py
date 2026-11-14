@@ -38,7 +38,13 @@ def task_wait(progress, *, states=None, identity='local', stamp=0):
                      'channel:' + str(progress.get('channel_id', '')) if prefix == 'channel' else '')
             until = (states or {}).get(scope, {}).get('cooldown_until')
     elif stage == 'waiting_request':
-        if progress.get('request_wait_reason') == 'file_start':
+        if progress.get('request_wait_reason') in ('subtitle_session', 'subtitle_queue'):
+            warming = progress['request_wait_reason'] == 'subtitle_session'
+            code = 'subtitle_session' if warming else 'subtitle_queue'
+            label = '翻译字幕会话预热' if warming else '字幕请求间隔'
+            detail = '复用当前 YouTube 会话，预热后请求自动翻译字幕' if warming else '保留当前字幕会话，等待共享字幕请求名额'
+            until = progress.get('request_wait_until')
+        elif progress.get('request_wait_reason') == 'file_start':
             code, label, detail = 'file_interval', '下载前请求间隔', '按下载请求节奏等待后发起传输'
             until = progress.get('request_wait_until')
         else:

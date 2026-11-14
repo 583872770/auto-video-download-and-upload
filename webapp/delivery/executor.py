@@ -18,7 +18,8 @@ from webapp.delivery.verify import verify, convert, inspect, LocalDeliveryError
 from webapp.database import delivery_requirements as requirements, delivery_artifacts as artifacts
 from webapp.parallel_http import ParallelYoutubeDL
 from webapp.local_processing import local_processing
-from webapp.subtitle_lane import check as check_subtitle_lane, slot as shared_subtitle_slot
+from webapp.subtitle_lane import check as check_subtitle_lane
+from webapp.subtitle_tracks import SubtitleSession, caption_plan, request_slot, translated, provider_options
 
 
 def reporting_downloader(session):
@@ -159,7 +160,8 @@ def choose(info, kind, max_height):
 
 @contextmanager
 def subtitle_slot(session):
-    with shared_subtitle_slot(session.scheduler):
+    with request_slot(session.scheduler, lambda value: (
+            session.progress.state.update(value), session.progress.save(force=True))):
         yield
 
 
@@ -204,6 +206,11 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                    writeinfojson=False, writethumbnail=False, post_hooks=[],
                    format='bestvideo/bestaudio/best', progress_hooks=[progress.hook, session.meter.hook],
                    retries=2, fragment_retries=2, extractor_retries=1, concurrent_fragment_downloads=fragment_budget)
+    if not sub_done:
+        translating = spec['subtitles'].get('mode', 'selected') != 'original'
+        options = provider_options(options, force_subs=translating)
+        # Listing translated variants of author-provided captions is opt-in.
+        options['writeautomaticsub'] = spec['subtitles'].get('mode') == 'original_and_translated'
     if without_cookies or session.config.get('youtube_cookie_usage') == 'never' and not session.config.get('_cookie_pool_selected'):
         options.pop('cookiefile', None)
     temporary = Path(session.config.get('_temporary_directory') or session.payload['_disk_workspace']) / 'delivery'
@@ -220,6 +227,7 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     started = time.monotonic()
                     info = downloader.extract_info(addresses[0], download=False)
                     session.meter.resolved(time.monotonic() - started)
+                caption_session = SubtitleSession(downloader)
                 session.scheduler.prepared()
                 if not info or info.get('_type') in ('playlist', 'multi_video'):
                     raise RuntimeError('来源不是可处理的单条媒体。')
@@ -277,7 +285,7 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                         convert(inputs, output, kind, mp4=mp4, mp3=mp3)
                     publish(session, output, kind)
                 if not sub_done:
-                    subtitles(session, info, safe, temporary)
+                    subtitles(session, info, safe, temporary, caption_session)
     except yt_dlp.utils.DownloadError as error:
         text = session.failure.message(error).lower()
         if without_cookies and not cookie_retry and not session.config.get('_cookie_pool_selected') and session.config.get('youtube_cookie_usage', 'auto') == 'auto' and session.config.get('youtube_cookie') and not any(s in text for s in ('bot', 'captcha')) and any(s in text for s in ('sign in to', 'login required', 'age-restricted', 'private video')):
@@ -286,31 +294,32 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
     return False
 
 
-def subtitles(session, info, safe, temporary):
+def subtitles(session, info, safe, temporary, caption_session):
     spec = session.config['_delivery_contract']
     config = spec['subtitles']
     task_id = session.payload['_task_id']
-    available = {}
-    for language in config['languages']:
-        manual = info.get('subtitles', {}).get(language) if 'manual' in config['sources'] else None
-        automatic = info.get('automatic_captions', {}).get(language) if 'automatic' in config['sources'] else None
-        if manual or automatic:
-            available[language] = (manual, automatic)
+    available, requested = caption_plan(info, config)
     with session.store.connect() as db:
         ledger.fenced_run(session.store, db, task_id)
         # Replace the initial group requirement only after successful extraction.
-        if available or config['language_policy'] == 'all_selected':
+        if requested:
             db.execute(requirements.delete().where(requirements.c.task_id == task_id,
                 requirements.c.kind == 'subtitle', requirements.c.language == '', requirements.c.status != 'waived'))
-            for language in config['languages'] if config['language_policy'] == 'all_selected' else available:
+            # Availability may change between retries. Retain receipts and explicit
+            # waivers, but discard unresolved languages no longer in this plan.
+            if config.get('mode') in ('original', 'original_and_translated'):
+                db.execute(requirements.delete().where(requirements.c.task_id == task_id,
+                    requirements.c.kind == 'subtitle', requirements.c.language.not_in(requested),
+                    requirements.c.status.in_(('pending', 'failed', 'missing'))))
+            for language in requested:
                 ledger.requirement(session.store, db, task_id, spec, 'subtitle', language)
     if not available:
-        languages = config['languages'] if config['language_policy'] == 'all_selected' else ['']
+        languages = requested or ['']
         for language in languages:
             key = require_key(session, 'subtitle', language)
             ledger.mark(session.store, task_id, key, 'missing', '来源没有所需语言的字幕。')
         return
-    for language in config['languages'] if config['language_policy'] == 'all_selected' else available:
+    for language in requested:
         if ready(session, 'subtitle', language):
             continue
         key = require_key(session, 'subtitle', language)
@@ -325,14 +334,21 @@ def subtitles(session, info, safe, temporary):
                    'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024,
                    'retries': 0, 'fragment_retries': 0}
         manual, automatic = available[language]
+        from webapp.diagnostics import event
+        source_kind = 'translated' if any(translated(track) for track in (manual or automatic)) else 'manual' if manual else 'original_auto'
+        event('subtitle_selected', language=language, source=source_kind)
         subtitle_info = {**info, 'subtitles': {language: manual} if manual else {},
                          'automatic_captions': {language: automatic} if not manual and automatic else {}}
-        session.progress.state.update(stage='downloading_subtitles', output_kind='subtitle', output_language=language)
+        session.progress.state.update(stage='downloading_subtitles', output_kind='subtitle', output_language=language,
+                                      subtitle_source=source_kind)
         session.progress.save(force=True)
         session.failure_phase = 'subtitles'
         try:
+            caption_session.prepare(manual or automatic, lambda value: (
+                session.progress.state.update(value), session.progress.save(force=True)))
             with subtitle_slot(session):
                 with reporting_downloader(session)(options) as downloader:
+                    caption_session.attach(downloader)
                     downloader.process_ie_result(subtitle_info, download=True)
             files = [p for p in directory.iterdir() if p.suffix in ('.vtt', '.srt', '.ttml', '.srv3', '.json3')]
             if not files:

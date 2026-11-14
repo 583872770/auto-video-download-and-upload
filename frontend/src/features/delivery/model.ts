@@ -6,6 +6,7 @@ export interface DeliverySpec {
   audio: { format: string };
   av: { container: string };
   subtitles: {
+    mode?: 'original' | 'original_and_translated' | 'selected';
     languages: string[];
     format: string;
     sources: string[];
@@ -38,7 +39,8 @@ export function defaultDelivery(): DeliverySpec {
     audio: { format: 'source' },
     av: { container: 'auto' },
     subtitles: {
-      languages: ['en', 'zh-Hans', 'zh-Hant'],
+      mode: 'original',
+      languages: ['zh-Hans'],
       format: 'srt',
       sources: ['manual', 'automatic'],
       language_policy: 'available_selected',
@@ -51,7 +53,7 @@ export function validateDelivery(spec: DeliverySpec): string {
     return '请至少选择一种有效交付内容。';
   const languages = spec.subtitles.languages;
   if (
-    !languages.length ||
+    (!languages.length && spec.subtitles.mode !== 'original') ||
     languages.length > 8 ||
     languages.some((value) => !/^[A-Za-z][A-Za-z0-9-]{0,30}$/.test(value))
   )

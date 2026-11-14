@@ -1,0 +1,2 @@
+# Optional PO Token Provider plugin; keep in sync with compose.subtitles.yaml.
+bgutil-ytdlp-pot-provider==2.0.2

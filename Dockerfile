@@ -11,6 +11,7 @@ RUN npm run build
 
 FROM python:3.13-slim-bookworm
 ARG WITH_YT5S_BROWSER=0
+ARG WITH_SUBTITLE_POT=0
 ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PYTHONUNBUFFERED=1 \
@@ -37,6 +38,10 @@ RUN sed -i \
 COPY --from=javascript /usr/local/bin/node /usr/local/bin/node
 COPY requirements.lock.txt ./
 RUN python -m pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.lock.txt
+COPY docker/requirements-subtitles.lock.txt /tmp/requirements-subtitles.lock.txt
+RUN if [ "$WITH_SUBTITLE_POT" = "1" ]; then \
+      python -m pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r /tmp/requirements-subtitles.lock.txt; \
+    fi
 
 COPY docker/install_mihomo.py /tmp/install_mihomo.py
 ARG MIHOMO_DOWNLOAD_BASE_URL=""

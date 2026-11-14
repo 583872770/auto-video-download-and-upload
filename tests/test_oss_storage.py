@@ -136,6 +136,25 @@ class OSSStorageTests(unittest.TestCase):
             scheduler.return_value.transaction_call.assert_not_called()
             self.assertTrue(video.exists())
 
+    def test_background_subtitles_accept_metadata_without_caption_dictionaries(self):
+        import yt_dlp
+        from webapp.subtitles import run_subtitles
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('webapp.subtitles.ChannelScheduler') as scheduler, \
+             patch('webapp.subtitles.DiskBudget') as budget:
+            root=Path(directory);video=root/'clip.mp4';video.write_bytes(b'video')
+            scheduler.return_value.enabled=False
+            scheduler.return_value.youtube_pacing=False
+            budget.return_value.lease.return_value.__enter__.return_value.path=root/'cache'
+            def download(downloader, urls):
+                self.assertIsNone(downloader.process_subtitles('fixture',None,None))
+                return 0
+            payload={'base':str(root),'config':{**CONFIG,'storage_mode':'local'},
+                     'video_file':str(video),'urls':['https://example.test/clip.mp4']}
+            with patch.object(yt_dlp.YoutubeDL,'download',download):
+                result=run_subtitles(SimpleNamespace(directory=root/'state'),payload,lambda _:None)
+            self.assertTrue(result['video_preserved'])
+
     def test_selected_instance_does_not_inherit_local_credentials(self):
         from webapp.fleet_routes import selected_configuration
         remote = {'storage_mode': 'oss', 'oss_access_key_secret': '',

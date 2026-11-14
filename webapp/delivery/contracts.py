@@ -7,7 +7,7 @@ KINDS = ('subtitle', 'video_only', 'audio_only', 'av')
 LABELS = dict(zip(KINDS, ('字幕', '无声视频', '纯音频', '音视频成品')))
 DEFAULT = {'schema_version': 1, 'outputs': ['av'], 'video': {'max_height': 1080, 'container': 'source'},
            'audio': {'format': 'source'}, 'av': {'container': 'auto'},
-           'subtitles': {'languages': ['en', 'zh-Hans', 'zh-Hant'], 'format': 'srt',
+           'subtitles': {'mode': 'original', 'languages': ['zh-Hans'], 'format': 'srt',
                          'sources': ['manual', 'automatic'], 'language_policy': 'available_selected',
                          'missing_policy': 'review'}}
 
@@ -36,13 +36,18 @@ def normalize(value=None):
         if not isinstance(supplied, dict) or set(supplied) - set(DEFAULT[group]):
             raise ValueError('交付格式包含不支持的字段。')
         result[group] = {**DEFAULT[group], **supplied}
+        if group == 'subtitles' and 'languages' in supplied and 'mode' not in supplied:
+            # Existing contracts keep their selected-language behavior and hash.
+            result[group].pop('mode')
     video, audio, av, subs = (result[k] for k in ('video', 'audio', 'av', 'subtitles'))
     if type(video['max_height']) is not int or video['max_height'] not in (0, 360, 480, 720, 1080, 1440, 2160, 4320):
         raise ValueError('画质上限无效。')
     if video['container'] not in ('source', 'mp4') or audio['format'] not in ('source', 'mp3') or av['container'] not in ('auto', 'mp4', 'mkv'):
         raise ValueError('交付容器或音频格式无效。')
     languages = subs['languages']
-    if not isinstance(languages, list) or not 1 <= len(languages) <= 8 or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,30}', s) for s in languages):
+    if subs.get('mode', 'selected') not in ('original', 'original_and_translated', 'selected'):
+        raise ValueError('字幕下载模式无效。')
+    if not isinstance(languages, list) or len(languages) > 8 or (not languages and subs.get('mode') != 'original') or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,30}', s) for s in languages):
         raise ValueError('字幕语言需要 1 到 8 个有效语言代码。')
     subs['languages'] = list(dict.fromkeys(languages))
     if subs['format'] not in ('srt', 'vtt') or subs['language_policy'] not in ('available_selected', 'all_selected') or subs['missing_policy'] != 'review':
@@ -59,6 +64,9 @@ def variant(spec, kind):
         'video': spec['video'], **({'av': spec['av']} if kind == 'av' else {})}
     if kind == 'subtitle':
         options = {k: options[k] for k in ('format', 'sources')}
+        # Original-only output must never reuse a prior machine translation.
+        if spec['subtitles'].get('mode') in ('original', 'original_and_translated'):
+            options['mode'] = spec['subtitles']['mode']
     return digest({'kind': kind, 'options': options})
 
 
