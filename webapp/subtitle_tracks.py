@@ -1,10 +1,5 @@
-"""Select caption provenance and keep translated requests on their warmed session."""
-import time
-from contextlib import contextmanager, ExitStack
+"""Select caption provenance and reuse the originating download's HTTP session."""
 from urllib.parse import parse_qs, urlsplit
-
-
-SESSION_WARMUP = 75
 
 
 def translated(track):
@@ -93,49 +88,9 @@ def caption_plan(info, config):
     return available, required
 
 
-def wait(seconds, report, reason):
-    """Wait outside database transactions/permits, keeping lease and UI fresh."""
-    end = time.monotonic() + max(0, seconds)
-    until = time.time() + max(0, seconds)
-    while (remaining := end - time.monotonic()) > 0:
-        report({'stage': 'waiting_request', 'speed': None, 'eta': None,
-                'request_wait_reason': reason, 'request_wait_until': until})
-        time.sleep(min(2, remaining))
-
-
-@contextmanager
-def request_slot(scheduler, report):
-    from webapp.subtitle_lane import slot
-    from webapp.throughput import PipelineBusy
-    started = time.monotonic()
-    with ExitStack() as stack:
-        while True:
-            try:
-                stack.enter_context(slot(scheduler))
-                break
-            except PipelineBusy as error:
-                # Keep extracted URLs and Cookie jar for short queue waits.
-                # Long cooldowns free the account/worker by returning to queue.
-                if error.retry_after > 30 or time.monotonic() - started >= 90:
-                    raise
-                wait(error.retry_after, report, 'subtitle_queue')
-        report({'stage': 'downloading_subtitles', 'speed': None, 'eta': None})
-        yield
-
-
 class SubtitleSession:
     def __init__(self, downloader):
         self.cookiejar = downloader.cookiejar
-        self.visitor = None
-        self.since = time.monotonic()
-        self.observe()
-
-    def observe(self):
-        visitor = tuple(sorted((c.domain, c.name, c.value) for c in
-            self.cookiejar.get_cookies_for_url('https://www.youtube.com/')
-            if c.name in ('VISITOR_INFO1_LIVE', 'VISITOR_DATA')))
-        if visitor != self.visitor:
-            self.visitor, self.since = visitor, time.monotonic()
 
     def attach(self, downloader):
         # Set the cached property before creating any network request handler.
@@ -144,12 +99,6 @@ class SubtitleSession:
         if director is not None:
             director.close()
         downloader.cookiejar = self.cookiejar
-
-    def prepare(self, tracks, report):
-        if not any(translated(track) for track in tracks):
-            return
-        self.observe()
-        wait(SESSION_WARMUP - (time.monotonic() - self.since), report, 'subtitle_session')
 
 
 def provider_options(options, *, force_subs=False):

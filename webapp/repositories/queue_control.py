@@ -125,6 +125,8 @@ class QueueControl:
                 raise ValueError('请先暂停全部下载，并等待所有实例的下载任务停止后再清空素材库。')
             if self.media_clear_busy(db):
                 raise ValueError('素材库正在清空，请勿重复提交。')
+            if self._counts(db, ['action:import']).get('running', 0):
+                raise ValueError('请等待素材导入任务停止后再清空。')
             indexing = self._counts(db, ['action:index'])
             if indexing.get('queued', 0) or indexing.get('running', 0):
                 raise ValueError('请等待素材索引同步完成后再清空。')

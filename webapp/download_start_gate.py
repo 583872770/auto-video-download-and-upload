@@ -88,7 +88,7 @@ class DownloadStartGate:
             return StartTicket(self, token), False
 
     def claim(self, store, *, actions=None, exclude=None):
-        """Keep check/import/subtitle lanes runnable while downloads wait."""
+        """Keep auxiliary check/import work runnable while downloads wait."""
         if actions and 'download' not in actions:
             return store.claim(store.owner, actions=actions, exclude=exclude), None, False
         ticket, waiting = self.acquire()

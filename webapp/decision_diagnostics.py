@@ -5,7 +5,7 @@ from webapp.diagnostics import safe_text
 SCOPE_NAMES = {
     'channel': '渠道健康', 'resolver': '共享解析', 'upstream': '共享传输',
     'quota': '共享渠道配额', 'backend-quota': '后端共享配额',
-    'backend-resolver': '后端解析', 'subtitles': '字幕请求队列',
+    'backend-resolver': '后端解析',
     'youtube-pacing': '实例启动节奏', 'youtube-cookie-pool': '当前实例 Cookie 池',
     'youtube-start': '实例固定启动间隔',
     'execution': '当前实例停止领取',
@@ -27,7 +27,7 @@ def explain(states, channels, pool, pacing, stamp, *, paused=False, running=0):
     active_halt = None
     relevant = {r['scope'] + ':' + r['group'] for channel in channels for r in channel['resources']}
     relevant.update(scope for scope in states if scope.startswith((
-        'youtube-pacing:instance:', 'youtube-cookie-pool:', 'youtube-start:', 'subtitles:', 'execution:')))
+        'youtube-pacing:instance:', 'youtube-cookie-pool:', 'youtube-start:', 'execution:')))
     for scope in sorted(relevant):
         state = states.get(scope, {})
         prefix = scope.split(':', 1)[0]

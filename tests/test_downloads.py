@@ -74,13 +74,26 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(data['stage'], 'processing')
         self.assertEqual(data['downloaded_bytes'], 1500)
         self.assertIsNone(data['speed'])
-        tracker.hook({'status': 'finished', 'filename': 'captions.vtt', 'info_dict': {'ext': 'vtt'}})
-        self.assertEqual(self.store.get(task['id'])['progress'], data)
         self.store.finish(task['id'], error='download failed')
         failed = self.store.get(task['id'])['progress']
         self.assertEqual(failed['stage'], 'failed')
         self.assertIsNone(failed['speed'])
         self.assertIsNone(failed['eta'])
+
+    def test_subtitles_share_progress_and_bytes_with_other_outputs(self):
+        values=[]
+        tracker=DownloadProgress(values.append)
+        tracker.state['output_kind']='subtitle'
+        tracker.hook({'status':'downloading','filename':'captions.vtt','downloaded_bytes':40,
+                      'total_bytes':100,'speed':20,'info_dict':{'ext':'vtt','requested_formats':[{'filesize':9000}]}})
+        tracker.save(force=True)
+        self.assertEqual((values[-1]['stage'],values[-1]['percent']),('downloading',40))
+        self.assertEqual((values[-1]['downloaded_bytes'],values[-1]['total_bytes'],values[-1]['speed']),(40,100,20))
+        self.assertTrue(values[-1]['format'].startswith('字幕'))
+        tracker.hook({'status':'finished','filename':'captions.vtt','downloaded_bytes':100,
+                      'total_bytes':100,'info_dict':{'ext':'vtt'}})
+        self.assertEqual(values[-1]['percent'],100)
+        self.assertIsNone(values[-1]['speed'])
 
     def test_unknown_total_does_not_invent_percent_or_speed(self):
         values = []

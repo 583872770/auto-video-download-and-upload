@@ -91,7 +91,7 @@ class FailureEvidenceTests(unittest.TestCase):
         cause.headers = {'Retry-After': '720'}
         outer = RuntimeError('download failed')
         outer.__cause__ = cause
-        value = failure_evidence(outer, phase='subtitles', source='youtube')
+        value = failure_evidence(outer, phase='transfer', source='youtube')
         self.assertEqual((value.kind, value.http_status, value.retry_after), ('request_rate_limit', 429, 720))
         self.assertEqual(value.evidence, 'http_response')
         self.assertFalse(recovery_policy(value, {}).manual)

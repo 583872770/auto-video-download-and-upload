@@ -40,7 +40,7 @@ class ProviderExecution:
             progress.save(force=True)
 
         def ready():
-            progress.state.update(stage='extracting', speed=None, eta=None,
+            progress.state.update(stage='downloading', speed=None, eta=None,
                                   transfer_admitted=True, transfer_wait_resource=None)
             progress.save(force=True)
 
@@ -54,8 +54,7 @@ class ProviderExecution:
             progress.state['upstream_group'] = actual.upstream_group
             with transfer_slot(directory, config, waiting, ready) if not scheduler.enabled else nullcontext():
                 ready()
-                # Initial media requests can be throttled before yt-dlp's
-                # first progress event; the displayed stage is still extracting.
+                # Any output can be throttled before its first progress event.
                 session.failure_phase = 'transfer'
                 started = time.monotonic()
                 try:

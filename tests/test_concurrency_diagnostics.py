@@ -44,11 +44,11 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
     def test_cooldown_and_recovery_and_expiration(self):
         state = {'upstream:youtube-origin': {'cooldown_until': self.stamp + 30,
                  'recover_until': self.stamp + 90, 'cooldown_status': 429,
-                 'cooldown_kind': 'subtitles'}}
+                 'cooldown_kind': 'transfer'}}
         value = self.show(state)
         self.assertEqual(value['effective_limit'], 0)
         self.assertEqual(value['channels'][0]['cooldown_seconds'], 30)
-        self.assertEqual(value['channels'][0]['throttle_kind'], 'subtitles')
+        self.assertEqual(value['channels'][0]['throttle_kind'], 'transfer')
         self.stamp += 31
         self.assertEqual(self.show(state)['effective_limit'], 1)
         self.stamp += 60

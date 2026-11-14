@@ -122,24 +122,22 @@ class DownloadDecisionTests(unittest.TestCase):
                     execute.assert_called_once()
                 self.assertEqual(read(self.store)['failure_reasons'][reason], 1)
 
-    def test_caption_429_cools_caption_lane_and_original_account_only(self):
-        from webapp.subtitle_lane import COOLDOWN, SCOPE
-        error = RuntimeError('HTTP Error 429: Too Many Requests')
-        pool, router = self.apply_failure(error, phase='subtitles')
+    def test_caption_429_uses_the_same_account_recovery_as_other_transfers(self):
+        error = RuntimeError('Unable to download video subtitles: HTTP Error 429: Too Many Requests')
+        pool, router = self.apply_failure(error, phase='transfer')
         self.assertIsNone(router.youtube_pacing)  # The pool owns account budgets in both modes.
         for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp'):
             self.assertFalse(self.state(router, scope).get('cooldown_until'))
         scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
         state = self.state(router, scope)
-        self.assertEqual(state['cooldown_until'], self.now + COOLDOWN)
-        self.assertEqual(self.state(router, SCOPE)['cooldown_until'], self.now + COOLDOWN)
+        self.assertEqual(state['cooldown_until'], self.now + self.config['youtube_throttle_cooldown'])
         self.assertEqual(state['last_decision']['incident_id'], failure_evidence(error).incident_id)
         diagnostic = self.diagnostic(pool)
         self.assertFalse(diagnostic['decisions']['manual_required'])
         self.assertEqual(len(diagnostic['decisions']['history']), 1)
-        self.assertEqual(diagnostic['decisions']['history'][0]['failure']['phase'], 'subtitles')
+        self.assertEqual(diagnostic['decisions']['history'][0]['failure']['phase'], 'transfer')
         self.assertEqual({effect['layer'] for effect in diagnostic['decisions']['history'][0]['effects']},
-                         {'session', 'subtitles'})
+                         {'session'})
         self.now += 31
         with self.pool().assignment() as selected:
             self.assertNotEqual(selected['_cookie_pool_selected'], failure_evidence(error).profile_id)

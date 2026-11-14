@@ -66,6 +66,10 @@ class ProgressCache:
             return False
         return bool(self._call('set', self.prefix + row['id'], value, ex=120))
 
+    def discard(self, identities):
+        for start in range(0, len(identities), 100):
+            self._call('delete', *(self.prefix + identity for identity in identities[start:start + 100]))
+
     def read(self, row):
         if not self._eligible(row):
             return None

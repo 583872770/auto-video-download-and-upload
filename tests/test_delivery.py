@@ -2,7 +2,6 @@
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import itertools
-from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -65,21 +64,19 @@ class DeliveryTests(unittest.TestCase):
             db.execute(download_lists.update().where(download_lists.c.id==identity).values(released=1))
         return identity
 
-    def execute(self,info=None):
+    def execute(self,info=None,report=None):
         from web_worker import execute
         task=self.store.claim(self.store.owner)
         self.assertIsNotNone(task)
-        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info or self.info()), \
-                patch('webapp.delivery.executor.subtitle_slot',side_effect=lambda _:nullcontext()):
-            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info or self.info()):
+            result=execute('download',task['payload'],report_progress=report,store=self.store,task_id=task['id'])
         self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         return task,result
 
-    def test_subtitle_http_429_is_attributed_to_captions_and_honors_retry_after(self):
+    def test_subtitle_http_429_uses_shared_transfer_recovery_and_honors_retry_after(self):
         from web_worker import execute
         from webapp.channel_scheduler import ChannelScheduler
         from webapp.download_policy import failure_evidence
-        from webapp.subtitle_lane import SCOPE
         self.create(['subtitle'])
         task=self.store.claim(self.store.owner)
         info=self.info();info['subtitles']['en'][0]['url']=self.url+'/limited.vtt'
@@ -87,49 +84,71 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 execute('download',task['payload'],store=self.store,task_id=task['id'])
         evidence=failure_evidence(caught.exception)
-        self.assertEqual((evidence.phase,evidence.http_status),('subtitles',429))
+        self.assertEqual((evidence.phase,evidence.http_status),('transfer',429))
         self.assertGreaterEqual(caught.exception.retry_after,2390)
         self.assertEqual(self.hits,['/limited.vtt'])
         router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
-        states,_,stamp=router.snapshot([SCOPE,'upstream:youtube-origin','channel:yt_dlp'])
-        self.assertGreaterEqual(states[SCOPE]['cooldown_until'],stamp+2390)
+        states,_,stamp=router.snapshot(['upstream:youtube-origin','channel:yt_dlp'])
         for scope in ('upstream:youtube-origin','channel:yt_dlp'):
-            self.assertFalse(states.get(scope,{}).get('cooldown_until'))
+            self.assertGreaterEqual(states[scope]['cooldown_until'],stamp+2390)
 
-    def test_subtitle_cooldown_blocks_before_metadata_requests(self):
+    def test_shared_channel_cooldown_blocks_subtitle_metadata_requests(self):
         from web_worker import execute
         from webapp.channel_scheduler import ChannelScheduler
-        from webapp.subtitle_lane import failed
         from webapp.throughput import PipelineBusy
         self.create(['subtitle'])
         task=self.store.claim(self.store.owner)
         router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
-        failed(router,RuntimeError('HTTP Error 429'))
+        router.outcome(router.channels[0],success=False,error=RuntimeError('HTTP Error 429'),phase='transfer')
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
             with self.assertRaises(PipelineBusy):
                 execute('download',task['payload'],store=self.store,task_id=task['id'])
         extract.assert_not_called()
         self.assertEqual(self.hits,[])
 
-    def test_subtitle_spacing_keeps_metadata_and_downloads_languages_in_one_session(self):
-        import time
+    def test_multiple_subtitle_languages_share_one_task_start_and_keep_metadata(self):
         from web_worker import execute
         from webapp.channel_scheduler import ChannelScheduler
-        from webapp.subtitle_lane import INTERVAL
         job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr']}})
         info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
-        clock=[time.time()]
         task=self.store.claim(self.store.owner)
+        updates=[]
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info) as extract, \
-             patch.object(ChannelScheduler,'clock',lambda router,db:clock[0]), \
-             patch('webapp.subtitle_tracks.wait',side_effect=lambda seconds,*_:clock.__setitem__(0,clock[0]+seconds+1)) as wait:
-            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+             patch.object(ChannelScheduler,'wait_youtube_start',autospec=True) as start:
+            result=execute('download',task['payload'],report_progress=updates.append,store=self.store,task_id=task['id'])
             self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.assertEqual(extract.call_count,1)
-        self.assertEqual(wait.call_args.args[0],INTERVAL)
+        self.assertEqual(start.call_count,1)
         self.assertEqual(result['delivery_status'],'complete')
         self.assertEqual(self.hits,['/en.vtt','/en.vtt'])
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],2)
+        for language in ('en','fr'):
+            self.assertTrue(any(progress.get('output_kind')=='subtitle' and
+                progress.get('output_language')==language and progress['stage']=='downloading'
+                for progress in updates),language)
+
+    def test_mixed_delivery_starts_once_and_uses_common_transfer_admission_for_every_output(self):
+        from webapp.adapters.execution import ProviderExecution
+        from webapp.channel_scheduler import ChannelScheduler
+        self.create(['av','subtitle'])
+        reserve=ProviderExecution.transmitting
+        admitted=[]
+        updates=[]
+        def transmitting(executor,channel,info,streams):
+            admitted.append((executor.session.progress.state.get('output_kind'),streams))
+            return reserve(executor,channel,info,streams)
+        with patch.object(ProviderExecution,'transmitting',transmitting), \
+             patch.object(ChannelScheduler,'wait_youtube_start',autospec=True) as start:
+            task,result=self.execute(report=updates.append)
+        self.assertEqual(start.call_count,1)
+        self.assertEqual([kind for kind,_ in admitted],['video_only','audio_only','subtitle'])
+        self.assertEqual(admitted[-1][1],1)
+        self.assertEqual(result['delivery_status'],'complete')
+        expected=sum((self.media/name).stat().st_size for name in ('video.mp4','audio.m4a','en.vtt'))
+        self.assertEqual(updates[-1]['downloaded_bytes'],expected)
+        for kind in ('video_only','audio_only','subtitle'):
+            self.assertTrue(any(progress.get('output_kind')==kind and progress['stage']=='downloading'
+                for progress in updates),kind)
 
     def test_original_automatic_alias_keeps_requested_language_and_avoids_translated_url(self):
         job=self.create(['subtitle'])
@@ -295,11 +314,17 @@ class DeliveryTests(unittest.TestCase):
         self.create(['video_only','audio_only','av']);_,result=self.execute(info)
         self.assertEqual(result['file_count'],3);self.assertEqual(self.hits,['/combined.mp4'])
 
-    def test_subtitle_lane_busy_preserves_delivered_media(self):
+    def test_shared_transfer_busy_preserves_delivered_media_for_subtitle_retry(self):
         from web_worker import execute
         from webapp.throughput import PipelineBusy
         job=self.create(['av','subtitle']);task=self.store.claim(self.store.owner)
-        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch('webapp.delivery.executor.subtitle_slot',side_effect=PipelineBusy('busy')):
+        from webapp.adapters.execution import ProviderExecution
+        transmitting=ProviderExecution.transmitting
+        def reserve(executor,*args,**kwargs):
+            if executor.session.progress.state.get('output_kind')=='subtitle':
+                raise PipelineBusy('shared transfer busy')
+            return transmitting(executor,*args,**kwargs)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(ProviderExecution,'transmitting',reserve):
             with self.assertRaises(PipelineBusy):execute('download',task['payload'],store=self.store,task_id=task['id'])
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
         self.retry_failed(job,task);self.hits.clear();self.execute()

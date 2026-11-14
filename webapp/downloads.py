@@ -175,9 +175,6 @@ class DownloadProgress:
     def hook(self, event):
         previous_stage = self.state['stage']
         info = event.get('info_dict') or {}
-        # Subtitle downloads have their own progress hooks; keep the video meter separate.
-        if info.get('ext') in ('vtt', 'srt', 'ass', 'ttml', 'srv1', 'srv2', 'srv3', 'json3'):
-            return
         filename = event.get('filename') or info.get('format_id') or 'video'
         previous = self.streams.get(filename, {})
         downloaded = number(event.get('downloaded_bytes'))
@@ -208,7 +205,7 @@ class DownloadProgress:
             eta = max(0, total - downloaded) / speed
         self.streams[filename] = {'downloaded': downloaded, 'total': total, 'finished': finished,
                                   'rate_samples': samples}
-        formats = info.get('requested_formats') or self.formats
+        formats = [] if self.state.get('output_kind') == 'subtitle' else info.get('requested_formats') or self.formats
         count = max(len(formats), len(self.streams), 1)
         fraction = min(downloaded / total, 1) if total else 0
         completed = sum(stream['finished'] for stream in self.streams.values())
@@ -219,7 +216,8 @@ class DownloadProgress:
             all_total = total
         if all_total is None and len(self.streams) == count and all(stream['total'] for stream in self.streams.values()):
             all_total = sum(stream['total'] for stream in self.streams.values())
-        format_name = '音频' if info.get('vcodec') == 'none' else '视频'
+        format_name = ('字幕' if self.state.get('output_kind') == 'subtitle' else
+                       '音频' if info.get('vcodec') == 'none' else '视频')
         self.state.update(stage='processing' if finished else 'downloading',
                           percent=round(min(percent, 100), 1) if total or finished else None,
                           downloaded_bytes=sum(stream['downloaded'] for stream in self.streams.values()),

@@ -1,5 +1,4 @@
 """Native delivery attempts share acquired tracks and retain verified outputs."""
-from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -18,8 +17,7 @@ from webapp.delivery.verify import verify, convert, inspect, LocalDeliveryError
 from webapp.database import delivery_requirements as requirements, delivery_artifacts as artifacts
 from webapp.parallel_http import ParallelYoutubeDL
 from webapp.local_processing import local_processing
-from webapp.subtitle_lane import check as check_subtitle_lane
-from webapp.subtitle_tracks import SubtitleSession, caption_plan, request_slot, translated, provider_options
+from webapp.subtitle_tracks import SubtitleSession, caption_plan, translated, provider_options
 
 
 def reporting_downloader(session):
@@ -158,13 +156,6 @@ def choose(info, kind, max_height):
     return (only or candidates)[-1]
 
 
-@contextmanager
-def subtitle_slot(session):
-    with request_slot(session.scheduler, lambda value: (
-            session.progress.state.update(value), session.progress.save(force=True))):
-        yield
-
-
 def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
     session = executor.session
     from webapp.downloads import DownloadFailure
@@ -194,8 +185,6 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
         sub_done = bool(sub_rows) and all(r['status'] == 'waived' or r['language'] and ready(session, 'subtitle', r['language']) for r in sub_rows)
     if not remaining and sub_done:
         return False
-    if not remaining:
-        check_subtitle_lane(session.scheduler)
     from webapp.channels import execution_config
     from webapp.parallel_http import fragment_connection_budget, transfer_connection_units
     from webapp.throughput import runtime_limits
@@ -285,7 +274,7 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                         convert(inputs, output, kind, mp4=mp4, mp3=mp3)
                     publish(session, output, kind)
                 if not sub_done:
-                    subtitles(session, info, safe, temporary, caption_session)
+                    subtitles(executor, channel, info, safe, temporary, caption_session)
     except yt_dlp.utils.DownloadError as error:
         text = session.failure.message(error).lower()
         if without_cookies and not cookie_retry and not session.config.get('_cookie_pool_selected') and session.config.get('youtube_cookie_usage', 'auto') == 'auto' and session.config.get('youtube_cookie') and not any(s in text for s in ('bot', 'captcha')) and any(s in text for s in ('sign in to', 'login required', 'age-restricted', 'private video')):
@@ -294,7 +283,8 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
     return False
 
 
-def subtitles(session, info, safe, temporary, caption_session):
+def subtitles(executor, channel, info, safe, temporary, caption_session):
+    session = executor.session
     spec = session.config['_delivery_contract']
     config = spec['subtitles']
     task_id = session.payload['_task_id']
@@ -330,23 +320,19 @@ def subtitles(session, info, safe, temporary, caption_session):
         directory.mkdir(exist_ok=True)
         options = {**safe, 'skip_download': True, 'writesubtitles': True, 'writeautomaticsub': True,
                    'subtitleslangs': [language], 'subtitlesformat': 'vtt/best',
-                   'outtmpl': str(directory / 'caption.%(ext)s'), 'progress_hooks': [],
-                   'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024,
-                   'retries': 0, 'fragment_retries': 0}
+                   'outtmpl': str(directory / 'caption.%(ext)s'),
+                   'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024}
         manual, automatic = available[language]
         from webapp.diagnostics import event
         source_kind = 'translated' if any(translated(track) for track in (manual or automatic)) else 'manual' if manual else 'original_auto'
         event('subtitle_selected', language=language, source=source_kind)
         subtitle_info = {**info, 'subtitles': {language: manual} if manual else {},
                          'automatic_captions': {language: automatic} if not manual and automatic else {}}
-        session.progress.state.update(stage='downloading_subtitles', output_kind='subtitle', output_language=language,
+        session.progress.state.update(output_kind='subtitle', output_language=language,
                                       subtitle_source=source_kind)
         session.progress.save(force=True)
-        session.failure_phase = 'subtitles'
         try:
-            caption_session.prepare(manual or automatic, lambda value: (
-                session.progress.state.update(value), session.progress.save(force=True)))
-            with subtitle_slot(session):
+            with executor.transmitting(channel, subtitle_info, 1):
                 with reporting_downloader(session)(options) as downloader:
                     caption_session.attach(downloader)
                     downloader.process_ie_result(subtitle_info, download=True)

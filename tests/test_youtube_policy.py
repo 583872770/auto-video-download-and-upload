@@ -63,7 +63,7 @@ class YouTubePolicyTests(unittest.TestCase):
         options = build_ydl_options(config, self.root)
         self.assertEqual(options['sleep_interval_requests'], .75)
         self.assertEqual((options['sleep_interval'],options['max_sleep_interval']), (10,20))
-        self.assertEqual(options['sleep_interval_subtitles'], 5)
+        self.assertNotIn('sleep_interval_subtitles', options)
         for updated in ({'youtube_sleep_preset':False}, {'download_method':'bergung'}):
             self.assertNotIn('sleep_interval_requests', build_ydl_options({**config,**updated}, self.root))
         self.assertFalse(validate_settings({'youtube_sleep_preset':'false'})['youtube_sleep_preset'])

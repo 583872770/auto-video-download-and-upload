@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import yt_dlp
 
@@ -344,6 +345,23 @@ class ParallelHttpTests(unittest.TestCase):
             self.assertTrue(self.download(url, subtitle=True)[0])
         self.assert_file()
         self.assertNotIn('bytes=0-0', state['calls'])
+
+    def test_subtitles_inherit_common_file_start_sleep_and_can_disable_it(self):
+        for minimum, maximum, seconds in ((10, 20, 12.5), (0, 0, 0)):
+            with self.subTest(interval=(minimum, maximum)):
+                self.path.unlink(missing_ok=True)
+                with source() as (url, state), \
+                     patch('webapp.parallel_http.random.uniform', return_value=seconds) as choose, \
+                     patch('yt_dlp.downloader.common.time', wraps=time) as clock:
+                    clock.sleep.return_value=None
+                    self.assertTrue(self.download(url, subtitle=True, overrides={
+                        'sleep_interval': minimum, 'max_sleep_interval': maximum})[0])
+                choose.assert_called_once_with(minimum, maximum)
+                if seconds:
+                    clock.sleep.assert_called_once_with(seconds)
+                else:
+                    clock.sleep.assert_not_called()
+                self.assert_file()
 
     def test_retry_after_survives_ignored_download_error_for_scheduler_cooldown(self):
         from webapp.channel_scheduler import throttle_details

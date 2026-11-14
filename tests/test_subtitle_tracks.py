@@ -1,17 +1,13 @@
-"""Caption provenance, shared HTTP session, and cancellable warming waits."""
-from contextlib import contextmanager
+"""Caption provenance and the shared originating HTTP session."""
 import os
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import yt_dlp
-from yt_dlp.utils import DownloadError
 
 from webapp.subtitle_tracks import (SubtitleSession, automatic_tracks, select_tracks,
-                                   translated, provider_options, request_slot, original_tracks, caption_plan)
+                                   translated, provider_options, original_tracks, caption_plan)
 from webapp.delivery.contracts import normalize
-from webapp.throughput import PipelineBusy
 
 
 ORIGINAL = {'url': 'https://www.youtube.com/api/timedtext?lang=en', 'ext': 'vtt'}
@@ -64,85 +60,25 @@ class SubtitleTrackTests(unittest.TestCase):
         self.assertEqual(chosen, {'zh-Hans': (None, [TRANSLATED])})
         self.assertEqual(select_tracks({'automatic_captions': {'en-orig': [ORIGINAL]}}, ['en'], ['manual']), {})
 
-    def test_only_actual_youtube_translation_requests_require_warming(self):
+    def test_only_actual_cross_language_youtube_tracks_are_translations(self):
         self.assertTrue(translated(TRANSLATED))
         self.assertFalse(translated(ORIGINAL))
         self.assertFalse(translated({**ORIGINAL, 'url': ORIGINAL['url'] + '&tlang=en'}))
         self.assertFalse(translated({'url': 'https://other.test/subs?lang=en&tlang=fr'}))
 
-    def test_warming_is_once_per_visitor_and_preserves_cookiejar_without_reloading_login(self):
-        clock = [100.0]
-        events = []
-        with yt_dlp.YoutubeDL({'quiet': True}) as original, \
-                patch('webapp.subtitle_tracks.time.monotonic', side_effect=lambda: clock[0]), \
-                patch('webapp.subtitle_tracks.time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+    def test_caption_downloads_reuse_updated_cookiejar_without_reloading_login(self):
+        with yt_dlp.YoutubeDL({'quiet': True}) as original:
             original._load_cookies('VISITOR_INFO1_LIVE=first', autoscope='https://www.youtube.com')
             session = SubtitleSession(original)
-            session.prepare([ORIGINAL], events.append)
-            self.assertEqual(clock[0], 100)
-            session.prepare([TRANSLATED], events.append)
-            self.assertEqual(clock[0], 175)
-            self.assertTrue(all(event['request_wait_reason'] == 'subtitle_session' for event in events))
-            self.assertTrue(all('first' not in str(event) for event in events))
             with yt_dlp.YoutubeDL({'quiet': True}) as child:
                 session.attach(child)
                 self.assertIs(child.cookiejar, original.cookiejar)
                 child._load_cookies('VISITOR_INFO1_LIVE=second', autoscope='https://www.youtube.com')
-            session.prepare([TRANSLATED], events.append)
-            self.assertEqual(clock[0], 250)
-            session.prepare([TRANSLATED], events.append)
-            self.assertEqual(clock[0], 250)
-
-    def test_warming_stops_when_report_detects_a_lost_lease(self):
-        jar = SimpleNamespace(get_cookies_for_url=lambda _: [])
-        session = SubtitleSession(SimpleNamespace(cookiejar=jar))
-        with patch('webapp.subtitle_tracks.time.sleep') as sleep:
-            with self.assertRaisesRegex(RuntimeError, 'lease lost'):
-                session.prepare([TRANSLATED], lambda _: (_ for _ in ()).throw(RuntimeError('lease lost')))
-        sleep.assert_not_called()
-
-    def test_slot_retries_admission_only_and_propagates_request_failures_once(self):
-        attempts = []
-        @contextmanager
-        def slot(_):
-            attempts.append(1)
-            if len(attempts) == 1:
-                error = PipelineBusy('interval');error.retry_after = 12
-                raise error
-            yield
-        with patch('webapp.subtitle_lane.slot', slot), patch('webapp.subtitle_tracks.wait') as waiting:
-            with self.assertRaisesRegex(DownloadError, 'HTTP Error 429'):
-                with request_slot(None, lambda _: None):
-                    raise DownloadError('HTTP Error 429')
-            self.assertEqual(len(attempts), 2)
-            self.assertEqual(waiting.call_args.args[0], 12)
-
-    def test_long_cooldown_returns_to_queue_without_sleeping(self):
-        @contextmanager
-        def slot(_):
-            error = PipelineBusy('cooldown');error.retry_after = 900
-            raise error
-            yield
-        with patch('webapp.subtitle_lane.slot', slot), patch('webapp.subtitle_tracks.wait') as waiting:
-            with self.assertRaises(PipelineBusy):
-                with request_slot(None, lambda _: None):
-                    self.fail('admitted while cooling')
-            waiting.assert_not_called()
-
-    def test_contended_short_waits_are_bounded_before_returning_to_queue(self):
-        clock=[0]
-        @contextmanager
-        def slot(_):
-            error=PipelineBusy('another subtitle');error.retry_after=30
-            raise error
-            yield
-        with patch('webapp.subtitle_lane.slot',slot), \
-             patch('webapp.subtitle_tracks.time.monotonic',side_effect=lambda:clock[0]), \
-             patch('webapp.subtitle_tracks.wait',side_effect=lambda seconds,*_:clock.__setitem__(0,clock[0]+seconds)):
-            with self.assertRaises(PipelineBusy):
-                with request_slot(None,lambda _:None):
-                    self.fail('unexpected admission')
-        self.assertEqual(clock[0],90)
+            with yt_dlp.YoutubeDL({'quiet': True}) as another:
+                session.attach(another)
+                self.assertIs(another.cookiejar, original.cookiejar)
+                visitor = another.cookiejar.get_cookies_for_url('https://www.youtube.com/')
+                self.assertTrue(any(cookie.value == 'second' for cookie in visitor))
 
     def test_optional_provider_keeps_other_extractor_arguments(self):
         original = {'extractor_args': {'youtube': {'player_client': ['web']}}}

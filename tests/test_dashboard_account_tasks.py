@@ -63,13 +63,17 @@ class DashboardAccountTaskTests(unittest.TestCase):
         task_id = self.task()
         live = {'stage': 'downloading', 'cookie_profile_id': 'b', 'title': 'Live title',
                 'speed': 12345, '_reported_at': time.time(), 'last_bytes_at': time.time()}
-        with patch.object(self.store.progress_cache, 'read_many', return_value={task_id: {'progress': live}}):
-            result = self.allocation()
-        accounts = {account['id']: account for account in result['accounts']}
-        self.assertEqual(accounts['a']['tasks'], [])
-        task = accounts['b']['tasks'][0]
-        self.assertEqual((task['task_id'], task['stage'], task['title'], task['speed']),
-                         (task_id, 'downloading', 'Live title', 12345))
+        for kind in ('video_only', 'subtitle'):
+            with self.subTest(kind=kind):
+                live['output_kind'] = kind
+                with patch.object(self.store.progress_cache, 'read_many', return_value={task_id: {'progress': live}}):
+                    result = self.allocation()
+                accounts = {account['id']: account for account in result['accounts']}
+                self.assertEqual(accounts['a']['tasks'], [])
+                task = accounts['b']['tasks'][0]
+                self.assertEqual((task['task_id'], task['stage'], task['title'], task['speed']),
+                                 (task_id, 'downloading', 'Live title', 12345))
+                self.assertIsNone(task['wait'])
 
     def test_missing_cache_falls_back_to_persisted_task_stage(self):
         task_id = self.task(stage='processing')
@@ -143,14 +147,14 @@ class DashboardAccountTaskTests(unittest.TestCase):
         self.assertNotIn('冷却', capacity['label'])
         self.assertNotIn('until', capacity)
 
-    def test_translated_subtitle_warmup_is_visible_with_its_own_countdown(self):
+    def test_all_output_types_show_the_common_file_start_countdown(self):
         from webapp.wait_diagnostics import task_wait
-        for reason, label in [('subtitle_session', '翻译字幕会话预热'), ('subtitle_queue', '字幕请求间隔')]:
-            task_id=self.task(stage='waiting_request', details={'request_wait_reason':reason,'request_wait_until':time.time()+75})
+        for kind in ('video_only', 'subtitle'):
+            task_id=self.task(stage='waiting_request', details={'output_kind':kind,'request_wait_reason':'file_start','request_wait_until':time.time()+12})
             waiting=next(task for task in self.allocation()['accounts'][0]['tasks'] if task['task_id']==task_id)['wait']
-            self.assertEqual(waiting['label'],label)
+            self.assertEqual(waiting['label'],'下载前请求间隔')
             self.assertIn('until',waiting)
-            self.assertNotIn('until',task_wait({'stage':'waiting_request','request_wait_reason':reason,
+            self.assertNotIn('until',task_wait({'stage':'waiting_request','request_wait_reason':'file_start',
                                                'request_wait_until':90},stamp=100))
 
 

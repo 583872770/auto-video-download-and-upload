@@ -12,6 +12,7 @@ import TaskLog from '../../components/TaskLog.vue';
 import ArtifactPreview from '../delivery/ArtifactPreview.vue';
 import MediaPreview from './MediaPreview.vue';
 import { mediaAddress, type MediaItem, type UnifiedMediaPage } from './contracts';
+import { firstMediaPage, nextMediaPage, type MediaPosition } from './pagination';
 import { formatGB } from '../jobs/contracts';
 import { outputLabels, type DeliveryArtifact, type OutputKind } from '../delivery/model';
 
@@ -37,9 +38,8 @@ const resource = useResource<UnifiedMediaPage>(),
   busy = ref(false),
   query = ref(''),
   assetFilter = ref<AssetFilter>('all');
-const cursor = ref<string | null>(null),
-  artifactCursor = ref<string | null>(null),
-  history = ref<Array<{ media: string | null; artifacts: string | null }>>([]);
+const position = ref(firstMediaPage()),
+  history = ref<MediaPosition[]>([]);
 const preview = ref<MediaItem>(),
   artifactPreview = ref<DeliveryArtifact>(),
   dialog = ref<'import' | 'clear'>(),
@@ -82,23 +82,12 @@ const allAssets = computed<LibraryAsset[]>(() => {
   }));
   return [...local, ...outputs];
 });
-const assets = computed(() =>
-  allAssets.value.filter((item) => matchesFilter(item.kind, assetFilter.value)),
+const assets = allAssets;
+const filterCounts = computed(
+  () => resource.data.value?.counts || { all: 0, video: 0, audio: 0, subtitle: 0 },
 );
-const filterCounts = computed(() => ({
-  all: allAssets.value.length,
-  video: allAssets.value.filter((item) => matchesFilter(item.kind, 'video')).length,
-  audio: allAssets.value.filter((item) => matchesFilter(item.kind, 'audio')).length,
-  subtitle: allAssets.value.filter((item) => matchesFilter(item.kind, 'subtitle')).length,
-}));
 const loadedBytes = computed(() => assets.value.reduce((total, item) => total + item.size, 0));
 
-function matchesFilter(kind: AssetKind, filter: AssetFilter) {
-  if (filter === 'all') return true;
-  if (filter === 'video') return ['source_video', 'video_only', 'av'].includes(kind);
-  if (filter === 'audio') return ['audio_only', 'av'].includes(kind);
-  return kind === 'subtitle';
-}
 async function refresh(signal?: AbortSignal) {
   if (!ready.value || busy.value) return;
   const scope = instances.scope();
@@ -106,9 +95,12 @@ async function refresh(signal?: AbortSignal) {
     q: query.value,
     media_limit: '24',
     artifact_limit: '50',
+    type: assetFilter.value,
   });
-  if (cursor.value) params.set('media_cursor', cursor.value);
-  if (artifactCursor.value) params.set('artifact_cursor', artifactCursor.value);
+  if (position.value.media) params.set('media_cursor', position.value.media);
+  if (position.value.artifacts) params.set('artifact_cursor', position.value.artifacts);
+  if (position.value.mediaExhausted) params.set('media_exhausted', '1');
+  if (position.value.artifactsExhausted) params.set('artifact_exhausted', '1');
   if (instances.selectedId) params.set('instance_id', instances.selectedId);
   await resource.load(
     (requestSignal) => api.request('/api/media/assets?' + params, { scope, signal: requestSignal }),
@@ -116,8 +108,7 @@ async function refresh(signal?: AbortSignal) {
   );
 }
 function filter() {
-  cursor.value = null;
-  artifactCursor.value = null;
+  position.value = firstMediaPage();
   history.value = [];
   void refresh();
 }
@@ -126,13 +117,10 @@ function page(next: boolean) {
     next &&
     (resource.data.value?.media.next_cursor || resource.data.value?.artifacts.next_cursor)
   ) {
-    history.value.push({ media: cursor.value, artifacts: artifactCursor.value });
-    cursor.value = resource.data.value?.media.next_cursor || null;
-    artifactCursor.value = resource.data.value?.artifacts.next_cursor || null;
+    history.value.push({ ...position.value });
+    position.value = nextMediaPage(position.value, resource.data.value!);
   } else if (!next) {
-    const previous = history.value.pop();
-    cursor.value = previous?.media || null;
-    artifactCursor.value = previous?.artifacts || null;
+    position.value = history.value.pop() || firstMediaPage();
   }
   void refresh();
 }
@@ -202,8 +190,7 @@ async function write(action: 'import' | 'clear' | 'reindex') {
     video.value = undefined;
     cover.value = undefined;
     confirmation.value = '';
-    cursor.value = null;
-    artifactCursor.value = null;
+    position.value = firstMediaPage();
     history.value = [];
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : String(failure);
@@ -254,7 +241,7 @@ usePolling(
         ><small>当前实例已索引</small>
       </div>
       <div class="card">
-        <small>当前页资产</small><strong>{{ assets.length }}</strong
+        <small>素材总数</small><strong>{{ resource.data.value?.counts.all ?? '—' }}</strong
         ><small>视频、音频与字幕</small>
       </div>
       <div class="card">
@@ -263,7 +250,14 @@ usePolling(
       </div>
       <div class="card">
         <small>交付产物</small
-        ><strong>{{ resource.data.value?.artifacts.items.length ?? '—' }}</strong
+        ><strong>{{
+          resource.data.value
+            ? Object.values(resource.data.value.artifacts.counts).reduce(
+                (sum, count) => sum + count,
+                0,
+              )
+            : '—'
+        }}</strong
         ><small>已验证可用文件</small>
       </div>
     </div>
@@ -322,7 +316,11 @@ usePolling(
           :key="item[0]"
           type="button"
           :class="{ active: assetFilter === item[0] }"
-          @click="assetFilter = item[0]"
+          :disabled="busy || resource.loading.value"
+          @click="
+            assetFilter = item[0];
+            filter();
+          "
         >
           {{ item[1] }} <span>{{ filterCounts[item[0]] }}</span>
         </button>
@@ -397,7 +395,10 @@ usePolling(
         >
           上一页
         </button>
-        <span>第 {{ history.length + 1 }} 页</span>
+        <span
+          >第 {{ history.length + 1 }} 页 · 共 {{ filterCounts[assetFilter] }} 条 · 本页
+          {{ assets.length }} 条</span
+        >
         <button
           id="media-next"
           :disabled="
@@ -454,7 +455,8 @@ usePolling(
           ><p>
             将删除 {{ instances.name
             }}<template v-if="instances.selectedId">（{{ instances.selectedId }}）</template
-            >素材目录中的文件，无法撤销。
+            >的全部素材、该实例的 OSS
+            交付文件、下载缓存和相关执行记录、统计，仅保留下载去重记录。此操作无法撤销。
           </p>
           <p class="cell-note">{{ resource.data.value?.directory }}</p>
           <label

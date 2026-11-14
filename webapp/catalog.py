@@ -7,9 +7,9 @@ from pathlib import Path
 import time
 import uuid
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, literal, or_, select
 
-from webapp.database import media, roots
+from webapp.database import media, roots, delivery_artifacts
 from webapp.media import FORMAT_TRACK, IMAGE_SUFFIXES, VIDEO_SUFFIXES
 from webapp.store import now
 
@@ -111,10 +111,21 @@ class MediaCatalog:
             row = db.execute(select(roots).where(roots.c.root == self.root_key(root))).mappings().first()
             return dict(row) if row else {'count': 0, 'bytes': 0, 'last_indexed': None, 'scanned': 0}
 
-    def page(self, root, *, limit=24, cursor=None, query=''):
+    def page(self, root, *, limit=24, cursor=None, query='', exhausted=False, exclude_delivery=False):
         if not 1 <= limit <= 100:
             raise ValueError('每页素材条数必须在 1 到 100 之间。')
         statement = select(media).where(media.c.root == self.root_key(root))
+        if exclude_delivery:
+            local_id = self.store.fleet.id if self.store.fleet else 'local'
+            filename = literal(str(Path(root).resolve()) + os.sep) + func.replace(media.c.name, '/', os.sep)
+            statement = statement.where(filename.not_in(select(delivery_artifacts.c.path).where(
+                delivery_artifacts.c.instance_id == local_id, delivery_artifacts.c.test_mode == 0,
+                delivery_artifacts.c.available == 1)))
+        if query:
+            escaped = query.casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            statement = statement.where(or_(media.c.search_title.contains(escaped, escape='\\'),
+                                           media.c.name.contains(query, autoescape=True), media.c.video_id == query))
+        count_statement = statement.with_only_columns(func.count()).select_from(media)
         if cursor:
             try:
                 modified, identity = json.loads(base64.urlsafe_b64decode(cursor.encode()))
@@ -124,16 +135,14 @@ class MediaCatalog:
             except (ValueError, TypeError, UnicodeError):
                 raise ValueError('素材分页游标无效。') from None
             statement = statement.where(or_(media.c.modified < modified, and_(media.c.modified == modified, media.c.id < identity)))
-        if query:
-            escaped = query.casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-            statement = statement.where(or_(media.c.search_title.startswith(escaped, escape='\\'), media.c.video_id == query))
         with self.store.connect() as db:
-            rows = db.execute(statement.order_by(media.c.modified.desc(), media.c.id.desc()).limit(limit + 1)).mappings().all()
+            rows = [] if exhausted else db.execute(statement.order_by(media.c.modified.desc(), media.c.id.desc()).limit(limit + 1)).mappings().all()
             items = [{**row, 'playable': bool(row['playable']), 'prepared': bool(row['prepared']),
                       'instance_id': self.store.fleet.id if self.store.fleet else None} for row in rows[:limit]]
             status = db.execute(select(roots).where(roots.c.root == self.root_key(root))).mappings().first()
+            total = db.execute(count_statement).scalar_one() if query or exclude_delivery else int(status['count']) if status else 0
         cursor = base64.urlsafe_b64encode(json.dumps([items[-1]['modified'], items[-1]['id']]).encode()).decode() if len(rows) > limit else None
-        return {'items': items, 'next_cursor': cursor, 'total': int(status['count']) if status else 0,
+        return {'items': items, 'next_cursor': cursor, 'total': total,
                 'indexing': {'scanned': int(status['scanned']) if status else 0,
                              'last_indexed': status['last_indexed'] if status else None}}
 

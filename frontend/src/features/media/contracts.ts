@@ -18,7 +18,8 @@ export interface MediaPage extends Page<MediaItem> {
 }
 export interface UnifiedMediaPage {
   media: MediaPage;
-  artifacts: Page<DeliveryArtifact>;
+  artifacts: Page<DeliveryArtifact> & { total: number; counts: Record<string, number> };
+  counts: Record<'all' | 'video' | 'audio' | 'subtitle', number>;
   directory: string;
   indexing: MediaPage['indexing'];
 }

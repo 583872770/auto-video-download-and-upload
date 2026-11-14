@@ -536,11 +536,6 @@ class ChannelScheduler:
             profile_id=self.config.get('_cookie_pool_selected'),
             profile_name=self.config.get('_cookie_pool_profile_name')) if error else None
         policy = recovery_policy(failure, self.config, youtube=channel.adapter == 'yt_dlp') if failure else None
-        if (failure and failure.phase == 'subtitles' and channel.adapter == 'yt_dlp'
-                and failure.http_status in (429, 503)):
-            from webapp.subtitle_lane import failed as subtitle_failed
-            subtitle_failed(self, error)
-            return
         if failure and failure.kind == 'transient_failure' and 'channel' not in policy.targets:
             # Connectivity failures remain in task/Cookie diagnostics. They
             # must not degrade channel health or trigger a second backoff.
@@ -628,8 +623,7 @@ class ChannelScheduler:
                     shared['cooldown_kind'] = throttle.get('last_throttle_kind')
                     shared['cooldown_until'] = max(shared.get('cooldown_until', 0), until)
                     shared['recover_until'] = shared['cooldown_until'] + 60
-                    remember_decision(shared, failure, layer='shared', scope='共享解析与渠道配额' if phase == 'resolve' else
-                        '共享字幕与渠道配额' if phase == 'subtitles' else '共享传输与渠道配额',
+                    remember_decision(shared, failure, layer='shared', scope='共享解析与渠道配额' if phase == 'resolve' else '共享传输与渠道配额',
                         action='cooldown', until=shared['cooldown_until'], stamp=stamp)
                     self._save(db, key, shared)
         self.transaction_call(record)

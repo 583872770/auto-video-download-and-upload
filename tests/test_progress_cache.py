@@ -30,6 +30,11 @@ class MemoryRedis:
         self.data[key] = value
         return True
 
+    def delete(self, *keys):
+        if self.failed:
+            raise OSError('cache unavailable')
+        return sum(self.data.pop(key, None) is not None for key in keys)
+
 
 class ProgressCacheTests(unittest.TestCase):
     def setUp(self):
@@ -51,6 +56,15 @@ class ProgressCacheTests(unittest.TestCase):
     def durable(self):
         with self.store.connect() as db:
             return json.loads(db.execute(select(tasks.c.progress).where(tasks.c.id == self.task['id'])).scalar_one())
+
+    def test_material_reset_discards_only_the_requested_progress_keys_in_batches(self):
+        cache = self.store.progress_cache
+        identities = [f'{index:032x}' for index in range(205)]
+        for identity in identities:
+            self.redis.set(cache.prefix + identity, 'old progress')
+        self.redis.set(cache.prefix + 'unrelated', 'keep')
+        cache.discard(identities)
+        self.assertEqual(self.redis.data, {cache.prefix + 'unrelated': 'keep'})
 
     def test_live_updates_skip_redundant_writes_but_checkpoint_and_stage_change_persist(self):
         self.assertTrue(self.report(10))

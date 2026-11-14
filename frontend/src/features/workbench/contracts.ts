@@ -167,7 +167,7 @@ export interface Capacity extends InstanceStatus {
   };
 }
 export const stageLabels: Record<string, string> = {
-  downloading: '传输中',
+  downloading: '下载中',
   extracting: '解析视频',
   processing: '合并 / 后处理',
   cleaning: '清理文件',

@@ -3,6 +3,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import suppress
 import os
+import random
 from pathlib import Path
 import threading
 import time
@@ -262,6 +263,12 @@ class ParallelHttpFD(HttpFD):
 class ParallelYoutubeDL(yt_dlp.YoutubeDL):
     """Use bounded HTTP transfers and verified empty-tail HLS recovery."""
     def dl(self, name, info, subtitle=False, test=False):
+        if subtitle:
+            # yt-dlp uses a separate parameter for captions. Derive it from
+            # the common file-start policy instead of imposing another delay.
+            minimum = self.params.get('sleep_interval') or 0
+            self.params['sleep_interval_subtitles'] = random.uniform(
+                minimum, self.params.get('max_sleep_interval') or minimum)
         if (not subtitle and not test and name != '-' and not hasattr(name, 'write')
                 and not self.params.get('test') and not info.get('is_live')
                 and (info.get('extractor_key') == 'Youtube' or info.get('extractor') == 'youtube')

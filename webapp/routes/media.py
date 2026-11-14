@@ -29,16 +29,30 @@ def register_media_routes(context, media_library):
         """Load local media and verified delivery outputs in one round trip."""
         config, base = settings()
         root = Path(io_path(video_directory(config, base))).resolve()
+        asset_type = request.args.get('type', 'all')
+        kinds = {'all': None, 'video': ('av', 'video_only'), 'audio': ('av', 'audio_only'),
+                 'subtitle': ('subtitle',)}
+        if asset_type not in kinds:
+            raise ValueError('请选择有效素材类型。')
         media_page = catalog.page(root, limit=int(request.args.get('media_limit', 24)),
-                                  cursor=request.args.get('media_cursor'), query=request.args.get('q', '')[:200])
-        artifacts = artifact_page(store, instance_id=request.args.get('instance_id', ''),
+                                  cursor=request.args.get('media_cursor'), query=request.args.get('q', '')[:200],
+                                  exclude_delivery=True,
+                                  exhausted=asset_type in ('audio', 'subtitle') or request.args.get('media_exhausted') == '1')
+        artifacts = artifact_page(store, instance_id=store.fleet.id if store.fleet else 'local',
                                    cursor=request.args.get('artifact_cursor'),
                                    query=request.args.get('q', ''),
                                    kind=request.args.get('kind', ''),
+                                   kinds=kinds[asset_type],
                                    language=request.args.get('language', ''),
+                                   exhausted=request.args.get('artifact_exhausted') == '1',
                                    limit=int(request.args.get('artifact_limit', 50)))
+        by_kind = artifacts['counts']
+        counts = {'all': media_page['total'] + sum(by_kind.values()),
+                  'video': media_page['total'] + by_kind.get('av', 0) + by_kind.get('video_only', 0),
+                  'audio': by_kind.get('av', 0) + by_kind.get('audio_only', 0),
+                  'subtitle': by_kind.get('subtitle', 0)}
         return jsonify(media=media_page, artifacts=artifacts, directory=str(root),
-                       indexing=media_page['indexing'])
+                       counts=counts, indexing=media_page['indexing'])
 
     @app.post('/api/media/reindex')
     def reindex_media():

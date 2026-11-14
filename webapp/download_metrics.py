@@ -48,8 +48,6 @@ class DownloadMeter:
     @synchronized
     def hook(self, event):
         info = event.get('info_dict') or {}
-        if info.get('ext') in ('vtt', 'srt', 'ass', 'ttml', 'json3'):
-            return
         key = event.get('filename') or info.get('format_id') or 'video'
         size = max(0, event.get('downloaded_bytes') or 0)
         previous = self.streams.get(key, 0)

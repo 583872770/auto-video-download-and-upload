@@ -27,7 +27,7 @@ from webapp.store import TaskStore
 
 
 class TaskRunner:
-    """Supervise download slots, one import/index lane and one subtitle lane."""
+    """Supervise download slots and auxiliary import/index work."""
     def __init__(self, store, settings=None, *, base=None):
         self.store = store
         self.settings = settings or (lambda: {})

@@ -78,10 +78,10 @@ def build_ydl_options(config, base):
         options['concurrent_fragment_downloads'] = fragment_connection_budget(config, None,
             max(1, int(config.get('worker_count', 1))))
     if config.get('download_method', 'yt_dlp') == 'yt_dlp' and config.get('youtube_sleep_preset', True):
-        # Equivalent to yt-dlp's documented `-t sleep` preset. This spaces
-        # extractor requests and file starts; it does not rate-limit CDN bytes.
+        # Space extractor requests and all output file starts. Captions inherit
+        # the same file-start range in ParallelYoutubeDL, without a second policy.
         options.update(sleep_interval_requests=.75, sleep_interval=10,
-                       max_sleep_interval=20, sleep_interval_subtitles=5)
+                       max_sleep_interval=20)
     if config.get('js_runtimes') is not None:
         if not isinstance(config['js_runtimes'], dict):
             raise ValueError('js_runtimes 必须是运行时配置表')

@@ -20,7 +20,7 @@ from webapp.wait_diagnostics import task_wait
 def scopes_for(config, identity):
     scopes = {'local-transfers:' + identity, 'local-connections:' + identity, 'route-probe:' + identity,
               'youtube-pacing:instance:' + identity, 'youtube-cookie-pool:' + identity,
-              'youtube-start:' + identity, 'subtitles:youtube-origin', 'execution:' + identity}
+              'youtube-start:' + identity, 'execution:' + identity}
     for channel in registry(config):
         for group in {channel.upstream_group, 'youtube-origin'}:
             scopes.update(('upstream:' + group, 'local-upstream:' + identity + ':' + group))

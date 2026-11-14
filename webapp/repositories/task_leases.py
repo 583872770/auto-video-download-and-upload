@@ -70,7 +70,7 @@ class TaskLeases:
             if resource_blocked(self, db):
                 statement = statement.where(tasks.c.action != 'download')
             if self.media_clear_busy(db):
-                statement = statement.where(~tasks.c.action.in_(('download', 'index')))
+                statement = statement.where(~tasks.c.action.in_(('download', 'import', 'index')))
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:

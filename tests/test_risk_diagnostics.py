@@ -45,7 +45,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
         self.assertFalse(task_risks(task)['retry_scheduled'])
         task.update(status='queued', available_at=time.time()+120, progress={'stage': 'retrying'})
         self.assertTrue(task_risks(task)['retry_scheduled'])
-        task['progress']['last_failure'] = {'phase': 'subtitles', 'kind': 'request_rate_limit', 'http_status': 429}
+        task['progress'].update(output_kind='subtitle',last_failure={'phase': 'transfer', 'kind': 'request_rate_limit', 'http_status': 429})
         self.assertIn('subtitle', task_risks(task)['codes'])
         task.update(status='failed', error='unknown fixture', progress={})
         self.assertEqual(task_risks(task)['codes'], ['unknown'])

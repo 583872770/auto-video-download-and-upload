@@ -47,7 +47,7 @@ class MediaLibraryService:
                     if not self.context.store.update_progress(task['id'], value, self.context.store.owner):
                         raise RuntimeError('清空任务租约已失效，清理已停止。')
                 validate_clear_root(root, protected)
-                result = clear_media(self.context.catalog, root, report)
+                result = clear_media(self.context.catalog, root, report, config=config, base=base, protected=protected)
                 self.context.store.finish(task['id'], result=result, worker_id=self.context.store.owner)
             except Exception as error:
                 self.context.store.finish(task['id'], error=str(error), worker_id=self.context.store.owner)
@@ -58,6 +58,8 @@ class MediaLibraryService:
         return dict(task), 202
 
     def import_media(self, video, image):
+        if self.context.store.media_clear_busy():
+            return dict(error='素材库正在清空，完成后再导入素材。'), 409
         if self.context.store.pending():
             return dict(error='请等待当前任务结束后再导入素材。'), 409
         if video is None or image is None or not video.filename or not image.filename:
@@ -74,6 +76,8 @@ class MediaLibraryService:
         root.mkdir(parents=True, exist_ok=True)
         target, cover_target = root / (stem + suffix), root / (stem + cover_suffix)
         with self.context.media_lock:
+            if self.context.store.media_clear_busy():
+                return dict(error='素材库正在清空，完成后再导入素材。'), 409
             if self.context.store.pending():
                 return dict(error='请等待当前任务结束后再导入素材。'), 409
             if target.exists() or any((root / (stem + ext)).exists() for ext in ('.jpg', '.jpeg', '.webp', '.png')):
