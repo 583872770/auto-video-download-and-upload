@@ -79,19 +79,6 @@ export const groups = {
       '临时网络错误退避重试，账号失效与视频不存在直接报告。',
     ),
   ],
-  subtitles: [
-    select('subtitle_mode', '历史任务字幕', 'download', [
-      ['optional', '视频优先，字幕后台补下载'],
-      ['required', '字幕必须完整'],
-      ['off', '不下载字幕'],
-    ]),
-    field(
-      'subtitle_languages',
-      '字幕语言代码',
-      'download',
-      '最多 8 个，以逗号分隔；新任务请使用交付要求。',
-    ),
-  ],
   performance: [
     select('throughput_mode', '运行模式', 'performance', [
       ['manual', '自定义'],

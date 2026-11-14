@@ -22,11 +22,4 @@
     <label data-provider-setting="downmp3">downmp3 转换等待上限（秒）<input name="downmp3_timeout" type="number" min="30" max="1800" required><small>默认 300 秒；这是远端准备时间，实际文件下载另行显示进度和速度。</small></label>
     <label>单个视频最多尝试<input name="download_attempts" type="number" min="1" max="10" required><small>仅临时网络错误自动退避重试；登录失效和视频不存在直接报告。</small></label>
   </div>
-  <details class="settings-advanced" data-provider-setting="yt_dlp">
-    <summary>历史任务字幕策略<span>新任务请在交付要求中配置</span></summary>
-    <div class="settings-field-grid">
-      <label>yt-dlp 字幕<select name="subtitle_mode"><option value="optional">视频优先，字幕后台补下载（推荐）</option><option value="required">字幕必须完整，失败则任务未完成</option><option value="off">不下载字幕</option></select><small>字幕限流不暂停视频传输；测试模式不补下载字幕。</small></label>
-      <label>字幕语言代码<input name="subtitle_languages" maxlength="264" required placeholder="en,zh-Hans,zh-Hant"><small>最多 8 个，以逗号分隔。</small></label>
-    </div>
-  </details>
 </section>

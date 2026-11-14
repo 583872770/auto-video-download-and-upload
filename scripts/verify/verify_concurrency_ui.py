@@ -172,8 +172,6 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'settings mobile horizontal overflow'
                 page.set_viewport_size({'width': 1440, 'height': 1150})
                 page.get_by_role('tab', name='下载策略').click()
-                page.locator('[name=subtitle_mode]').select_option('optional')
-                page.locator('[name=subtitle_languages]').fill('en,zh-Hans')
                 page.get_by_role('tab', name='Cookie 与登录').click()
                 page.locator('#settings-pane-accounts .settings-policy-details > summary').click()
                 expect(page.locator('[name=youtube_start_interval]')).to_have_value('120')
@@ -187,7 +185,6 @@ def main():
                 page.reload()
                 expect(page.locator('[name=builtin_transfer_limit]')).to_have_value('16')
                 expect(page.locator('[name=builtin_connection_limit]')).to_have_count(0)
-                expect(page.locator('[name=subtitle_languages]')).to_have_value('en,zh-Hans')
                 expect(page.locator('[name=youtube_start_interval]')).to_have_value('5')
                 expect(page.locator('[name=youtube_cookie_fallback]')).to_have_value('false')
                 expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('false')

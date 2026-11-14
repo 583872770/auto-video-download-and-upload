@@ -122,13 +122,6 @@ export function validate(config: ConsoleConfig): ValidationIssue[] {
         message: '前缀不能包含反斜杠、控制字符、. 或 .. 目录，最多 512 字节。',
       });
   }
-  const languages = config.subtitle_languages.split(',');
-  if (
-    !languages.length ||
-    languages.length > 8 ||
-    languages.some((value) => !/^[A-Za-z0-9-]{1,32}$/.test(value.trim()))
-  )
-    issues.push({ key: 'subtitle_languages', message: '请填写 1～8 个有效语言代码，用逗号分隔。' });
   if (config.disk_resume_free_gb < config.disk_min_free_gb) {
     issues.push({ key: 'disk_resume_free_gb', message: '恢复水位不能低于暂停水位。' });
   }

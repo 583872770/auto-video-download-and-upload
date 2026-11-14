@@ -49,7 +49,7 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
-    # Retired setting: old files and task snapshots must not restore its cap.
+    # Retired settings must not return from saved files or task snapshots.
     discard_retired_settings(config)
     if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
         raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
@@ -78,12 +78,6 @@ def validate_settings(config, *, download_only=False):
         config['youtube_sleep_preset'] = sleep_preset == 'true'
     elif type(sleep_preset) is not bool:
         raise ValueError('yt-dlp 请求等待预设必须为开关值。')
-    if config.get('subtitle_mode', 'optional') not in ('optional', 'required', 'off'):
-        raise ValueError('字幕请选择后台补下载、必须完整或关闭。')
-    languages = config.get('subtitle_languages', 'en,zh-Hans,zh-Hant')
-    if not isinstance(languages, str) or not 1 <= len(languages.split(',')) <= 8 or any(
-            not re.fullmatch(r'[A-Za-z0-9-]{1,32}', language.strip()) for language in languages.split(',')):
-        raise ValueError('字幕语言请填写最多 8 个语言代码，用逗号分隔，例如 en,zh-Hans。')
     from Utils.download_storage import storage_mode
     storage_mode(config)
     if config.get('storage_mode') == 'oss':

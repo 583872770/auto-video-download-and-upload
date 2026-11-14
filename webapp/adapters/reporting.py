@@ -54,10 +54,6 @@ def build_reporting_downloader(session):
             return super().report_error(message, *args, **kwargs)
 
         def process_info(self, info_dict):
-            if (progress.state.get('download_method') == 'yt_dlp'
-                    and config.get('subtitle_mode', 'optional') == 'required'
-                    and not info_dict.get('requested_subtitles')):
-                raise RuntimeError('此视频没有所选语言字幕；当前设置要求字幕完整。')
             # yt-dlp removes requested_formats before individual stream hooks.
             from Utils.paths import io_path
             current_video.update(id=info_dict.get('id', ''), title=info_dict.get('title', ''))

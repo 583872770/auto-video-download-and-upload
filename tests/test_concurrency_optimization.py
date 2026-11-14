@@ -239,7 +239,7 @@ class SubtitleTests(unittest.TestCase):
         self.assertEqual(self.store.get(parent['id'])['subtitle_tasks'][0]['status'], 'succeeded')
         self.assertTrue(params[0]['skip_download'])
         self.assertIsNone(params[0]['download_archive'])
-        self.assertEqual(params[0]['subtitleslangs'], ['en','zh-Hans','zh-Hant'])
+        self.assertNotIn('subtitleslangs', params[0])
 
     def test_separate_subtitle_process_drains_after_last_video(self):
         parent, child = self.queue()
@@ -273,7 +273,7 @@ class BudgetAndPolicyTests(unittest.TestCase):
             self.assertEqual(estimate['budget_for_configured_bytes'], 64*GIB)
             self.assertEqual(snapshot['budget_bytes'], 20*GIB)
 
-    def test_explicit_channel_limits_and_subtitle_policy_validation(self):
+    def test_explicit_channel_limits_and_retired_subtitle_settings(self):
         from webapp.settings import validate_settings
         from webapp.downloader import build_ydl_options
         config = {'builtin_transfer_limit':16,'builtin_connection_limit':32,'builtin_resolver_limit':6}
@@ -284,9 +284,11 @@ class BudgetAndPolicyTests(unittest.TestCase):
         self.assertIsNone(registry({'scheduler_mode':'auto','builtin_transfer_limit':0})[0].transfer_limit)
         with tempfile.TemporaryDirectory() as root:
             self.assertFalse(build_ydl_options(config, root)['writesubtitles'])
-            self.assertTrue(build_ydl_options({**config,'subtitle_mode':'required'}, root)['writesubtitles'])
-        for values in ({'subtitle_languages':'all'}, {'subtitle_languages':'.*'}, {'builtin_transfer_limit':65}):
-            if values.get('subtitle_languages') == 'all':
-                values['subtitle_languages']='en,'*9
-            with self.assertRaises(ValueError):
-                validate_settings(values)
+            # Old task snapshots must not re-enable global subtitle downloads.
+            options = build_ydl_options({**config, 'subtitle_mode': 'required',
+                                         'subtitle_languages': 'en,zh-Hans'}, root)
+            self.assertFalse(options['writesubtitles'])
+            self.assertFalse(options['writeautomaticsub'])
+            self.assertNotIn('subtitleslangs', options)
+        with self.assertRaises(ValueError):
+            validate_settings({'builtin_transfer_limit': 65})

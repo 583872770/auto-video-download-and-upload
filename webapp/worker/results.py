@@ -1,7 +1,6 @@
 """Verify completed files and record durable delivery receipts."""
 import json
 import os
-import re
 import time
 from pathlib import Path
 from Utils.config import video_directory
@@ -25,7 +24,6 @@ def record_completed_file(session, filename):
     output_files = session.output_files
     existing_files = session.existing_files
     deferred_files = session.deferred_files
-    subtitle_files = session.subtitle_files
 
     if store and payload.get('_business_job') and not store.heartbeat(payload['_task_id'], store.owner):
         from webapp.downloads import DownloadLeaseLost
@@ -82,9 +80,6 @@ def record_completed_file(session, filename):
             if not test_mode:
                 session.billable_bytes += size
     meter.verified(size)
-    if (progress.state.get('download_method') == 'yt_dlp' and not test_mode
-            and config.get('subtitle_mode', 'optional') == 'optional'):
-        subtitle_files[str(path)] = current_video.get('id', '')
 
 
 def finish_delivery(session, oss_storage, skipped_any, used_fallback):
@@ -99,7 +94,6 @@ def finish_delivery(session, oss_storage, skipped_any, used_fallback):
     existing_files = session.existing_files
     deferred_files = session.deferred_files
     deferred_archives = session.deferred_archives
-    subtitle_files = session.subtitle_files
     oss_objects = []
     # Cloud delivery is outside provider/account health accounting. An OSS
     # error must not try a different YouTube provider or mark a Cookie bad.
@@ -127,9 +121,6 @@ def finish_delivery(session, oss_storage, skipped_any, used_fallback):
     return {'message': '已下载过，跳过重复下载。' if skipped else
             f'OSS 上传完成：{len(oss_objects)} 个文件已保存至 {config["oss_bucket"]}，本地副本已保留。' if oss_mode else
             '下载任务完成，请在素材库检查视频与封面。',
-            '_subtitle_jobs': [{'base': str(base), 'config': dict(config), 'video_file': path,
-                'urls': ['https://www.youtube.com/watch?v=' + identity]} for path, identity in subtitle_files.items()
-                if store and re.fullmatch(r'[A-Za-z0-9_-]{11}', identity)],
             'skipped': skipped, 'file_count': len(output_files), 'file_bytes': sum(output_files.values()),
             'billable_bytes': session.billable_bytes, 'download_method': progress.state['download_method'],
             'channel_id': progress.state.get('channel_id'),

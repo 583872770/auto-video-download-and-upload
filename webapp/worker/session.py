@@ -24,7 +24,6 @@ class DownloadSession:
     current_video: dict = field(default_factory=dict)
     deferred_files: dict = field(default_factory=dict)
     deferred_archives: dict = field(default_factory=dict)
-    subtitle_files: dict = field(default_factory=dict)
     failure: Any = None
     failure_phase: str = 'resolve'
     transfer_seconds: float = 0

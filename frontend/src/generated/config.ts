@@ -37,8 +37,6 @@ export interface ConsoleConfig {
   auto_channel_attempts: number;
   download_connection_limit: number;
   shared_parser: boolean;
-  subtitle_mode: string;
-  subtitle_languages: string;
   builtin_transfer_limit: number;
   builtin_resolver_limit: number;
   youtube_source_address: string;
@@ -281,8 +279,6 @@ export const defaultConfig: ConsoleConfig = {
   "auto_channel_attempts": 3,
   "download_connection_limit": 32,
   "shared_parser": true,
-  "subtitle_mode": "optional",
-  "subtitle_languages": "en,zh-Hans,zh-Hant",
   "builtin_transfer_limit": 12,
   "builtin_resolver_limit": 4,
   "youtube_source_address": "",

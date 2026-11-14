@@ -383,7 +383,6 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'preparing': sum(value for stage, value in stages.items() if stage not in ('downloading', 'waiting_transfer', 'processing', 'waiting_processing', 'cleaning', 'uploading_oss')),
             'processing': sum(stages.get(name, 0) for name in ('processing', 'waiting_processing', 'cleaning', 'uploading_oss')), 'waiting_transfer': stages.get('waiting_transfer', 0),
             'wait_resources': dict(waits), 'stages': dict(stages), 'channels': rows,
-            'subtitle_mode': config.get('subtitle_mode', 'optional'),
             'youtube_start_interval': int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])),
             'youtube_task_rest_interval': int(config.get('youtube_task_rest_interval', DEFAULTS['youtube_task_rest_interval'])),
             'youtube_task_rest_until': task_rest_until(config, states.get('youtube-start:' + identity, {})) if not pooled else 0,

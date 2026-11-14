@@ -77,8 +77,6 @@ SETTINGS = MappingProxyType({
     'auto_channel_attempts': Setting(3, limits=(1, 6), scope='policy'),
     'download_connection_limit': Setting(32, limits=(2, 128), persist_runtime=True, pipeline_key=True),
     'shared_parser': Setting(True),
-    'subtitle_mode': Setting('optional', scope='policy'),
-    'subtitle_languages': Setting('en,zh-Hans,zh-Hant', scope='policy'),
     'builtin_transfer_limit': Setting(12, limits=(0, 64), scope='policy', resource_override=True,
                                       persist_runtime=True, pipeline_key=True),
     'builtin_resolver_limit': Setting(4, limits=(0, 16), scope='policy', persist_runtime=True, pipeline_key=True),
@@ -155,7 +153,7 @@ OSS_INTEGER_FIELDS = {key: INTEGER_FIELDS[key] for key in OSS_DEFAULTS if key in
 OSS_SECRETS = {key for key, spec in SETTINGS.items() if spec.secret}
 PACING_FIELDS = {key for key, spec in SETTINGS.items() if spec.family == 'pacing'}
 
-RETIRED_FIELDS = frozenset({'builtin_connection_limit'})
+RETIRED_FIELDS = frozenset({'builtin_connection_limit', 'subtitle_mode', 'subtitle_languages'})
 
 
 def discard_retired_settings(config):

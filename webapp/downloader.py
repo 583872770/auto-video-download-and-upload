@@ -62,9 +62,9 @@ def build_ydl_options(config, base):
         'retries': 3,
         'extractor_retries': 2,
         'socket_timeout': 20,
-        'writesubtitles': config.get('subtitle_mode', 'optional') == 'required',
-        'writeautomaticsub': config.get('subtitle_mode', 'optional') == 'required',
-        'subtitleslangs': [value.strip() for value in config.get('subtitle_languages', 'en,zh-Hans,zh-Hant').split(',')],
+        # Subtitle outputs are selected by the job delivery contract only.
+        'writesubtitles': False,
+        'writeautomaticsub': False,
         'writeinfojson': True,
         'writethumbnail': True,
         'concurrent_fragment_downloads': int(config.get('fragment_concurrency', 4)),

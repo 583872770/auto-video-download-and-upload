@@ -3,7 +3,6 @@ import { useSettings } from '../../stores/settings';
 import type { Provider } from '../../generated/config';
 import { groups, qualityFields } from './fields';
 import FieldGroup from './FieldGroup.vue';
-import SettingField from './SettingField.vue';
 const store = useSettings();
 const providers: Array<[Provider, string]> = [
   ['yt_dlp', 'yt-dlp'],
@@ -56,13 +55,4 @@ function move(index: number) {
       :title="provider + ' 下载参数'"
       :fields="qualityFields[provider]!"
   /></template>
-  <section class="card">
-    <details>
-      <summary>历史任务字幕兼容</summary>
-      <p>新任务的交付要求请在任务中心创建或编辑任务时指定。这里只影响旧任务。</p>
-      <div class="fields">
-        <SettingField v-for="field in groups.subtitles" :key="field.key" :field="field" />
-      </div>
-    </details>
-  </section>
 </template>
