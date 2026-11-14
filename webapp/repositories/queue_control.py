@@ -141,11 +141,19 @@ class QueueControl:
         with self.connect() as db:
             counts = self._counts(db, ['action:download'])
             importing = self._counts(db, ['action:import'])
+            # Exclude pending rows retained by the old logical-delete behavior.
+            # Use per-job counters so polling never scans the full video queue.
+            deleted_queued = db.execute(select(func.coalesce(func.sum(counters.c.value), 0))
+                .select_from(job_profiles.join(counters,
+                    counters.c.scope == 'batch:' + job_profiles.c.id)).where(
+                        job_profiles.c.deleted == 1, counters.c.status == 'queued')).scalar_one()
             waiting_lists = db.execute(select(func.count()).select_from(download_lists).where(
+                ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id,
+                    job_profiles.c.deleted == 1).exists(),
                 download_lists.c.released == 0, or_(select(counters.c.scope).where(
                     counters.c.scope == 'batch:' + download_lists.c.id, counters.c.status == 'queued', counters.c.value > 0).exists(),
                     select(imports.c.id).where(imports.c.id == download_lists.c.id, imports.c.finished == 0).exists()))).scalar_one()
-            return {'paused': self.downloads_paused(db), 'queued': counts.get('queued', 0), 'running': counts.get('running', 0),
+            return {'paused': self.downloads_paused(db), 'queued': max(0, counts.get('queued', 0) - int(deleted_queued)), 'running': counts.get('running', 0),
                     'waiting_lists': waiting_lists, 'importing': importing.get('running', 0) + importing.get('queued', 0)}
 
     def apply_download_connection(self, config, clash=None):

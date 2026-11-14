@@ -6,7 +6,7 @@ from flask import jsonify, request
 from sqlalchemy import func, select
 from werkzeug.exceptions import Conflict
 
-from webapp.database import instances, settings, tasks
+from webapp.database import download_lists, instances, job_profiles, settings, tasks
 from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
 from webapp.jobs import Jobs
 
@@ -40,6 +40,18 @@ class Workbench:
     def __init__(self, store):
         self.store = store
         self.jobs = Jobs(store)
+
+    @staticmethod
+    def selection(db, key):
+        # Earlier versions left selections behind when logically deleting a job.
+        return db.execute(select(settings.c.value).join(download_lists,
+            download_lists.c.id == settings.c.value).where(settings.c.key == key,
+                ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id,
+                    job_profiles.c.deleted == 1).exists())).scalar_one_or_none()
+
+    def visible_job(self, identity, *, compact=False):
+        job = self.jobs.detail(identity, details=not compact) if identity else None
+        return job if job and not job['deleted'] else None
 
     def node(self, identity, db, *, lock=False):
         statement = select(instances).where(instances.c.id == identity, instances.c.role.in_(DOWNLOAD_ROLES))
@@ -83,8 +95,7 @@ class Workbench:
     def status(self, identity, preview=None, *, compact=False):
         with self.store.connect() as db:
             row = self.node(identity, db)
-            selected = db.execute(select(settings.c.value).where(
-                settings.c.key == 'workbench_job:' + identity)).scalar_one_or_none()
+            selected = self.selection(db, 'workbench_job:' + identity)
             # Legacy global selections are intentionally not inherited by a new instance.
             active = self.store.decode_many(db.execute(select(tasks).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
@@ -100,9 +111,7 @@ class Workbench:
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
         active = self.decorate_cookie_names(active, None, self.store, scope=identity)
-        job = self.jobs.detail(preview or selected, details=not compact) if preview or selected else None
-        if job and job['deleted']:
-            job = None
+        job = self.visible_job(preview or selected, compact=compact)
         if job:
             desired = selected == job['id'] and enabled
             job = {**job, 'running': sum(task['batch_id'] == job['id'] for task in active),
@@ -187,8 +196,9 @@ def register_workbench(app, store, configuration, preflight):
                         raise Conflict('检查期间下载策略发生变化，请重新开始。')
                 workbench.jobs.control(data.get('job_id') or store.selected_download_job(), action,
                     config, {'resume_system': action == 'start'})
-            identity = store.selected_download_job()
-            job = workbench.jobs.detail(request.args.get('job_id') or identity, details=not compact) if request.args.get('job_id') or identity else None
+            with store.connect() as db:
+                identity = workbench.selection(db, 'selected_download_job')
+            job = workbench.visible_job(request.args.get('job_id') or identity, compact=compact)
             queue = store.download_queue()
             active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
             active = Workbench.decorate_cookie_names(active, base, store)

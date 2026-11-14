@@ -352,8 +352,8 @@ class Jobs:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             if self.store.fleet and action != 'retry':
                 db.execute(select(schema_settings.c.key).where(schema_settings.c.key == 'fleet_budget').with_for_update()).first()
-            # Claims lock system permission before the job; starts use that order too.
-            if action == 'start':
+            # Claims lock system permission before the job; selection changes do too.
+            if action in ('start', 'delete'):
                 db.execute(select(schema_settings.c.key).where(
                     schema_settings.c.key == 'downloads_paused').with_for_update()).first()
             row, old = self.require(db, identity, editable=action not in ('delete', 'unarchive'))
@@ -398,7 +398,10 @@ class Jobs:
                     db.execute(job_profiles.update().where(job_profiles.c.id == identity).values(
                         archived=int(action=='archive'), deleted=int(action=='delete'), revision=value['revision']+1))
                     self.cancel_imports(db, identity)
-                if action != 'pause':
+                if action == 'delete':
+                    self.cancel_downloads(db, identity)
+                    self.clear_workbench_selection(db, identity)
+                elif action != 'pause':
                     self.stop_running(db, tasks.c.batch_id == identity)
                 # Pause/drain and stop both end the instance lifecycle session;
                 # a draining session remains stopping until its last task exits.
@@ -416,6 +419,44 @@ class Jobs:
             event(self.store, db, identity, retry_message if action == 'retry' else {'start':'开始任务','pause':'完成当前视频后暂停','stop':'立即停止当前任务',
                 'archive':'归档任务','delete':'删除任务（保留账本与文件）','unarchive':'恢复归档任务','retry':'重新入队失败视频'}[action])
             self.store.statistics.settle(db, instance_id=session_scope)
+
+    def cancel_downloads(self, db, identity):
+        """Cancel pending execution without removing completed files or receipts."""
+        condition = and_(tasks.c.batch_id == identity, tasks.c.action == 'download',
+                         tasks.c.status.in_(('queued', 'running')))
+        cursor = 0
+        while True:
+            rows = db.execute(select(tasks).where(condition, tasks.c.seq > cursor).order_by(tasks.c.seq)
+                .limit(500).with_for_update()).mappings().all()
+            if not rows:
+                break
+            cursor = rows[-1]['seq']
+            changes = Counter(task['status'] for task in rows)
+            for scope in sorted(('action:download', 'batch:' + identity)):
+                for status in sorted({*changes, 'cancelled'}):
+                    self.store._counter(db, scope, status,
+                        len(rows) if status == 'cancelled' else -changes[status])
+            db.execute(tasks.update().where(tasks.c.id.in_([task['id'] for task in rows])).values(
+                status='cancelled', worker_id=None, lease_until=None, available_at=0,
+                progress=None, finished_at=stamp(), error='所属任务已删除，下载已取消。'))
+            for task in rows:
+                if task['status'] == 'running':
+                    self.store.statistics.transition(db, task, 'paused')
+
+    def clear_workbench_selection(self, db, identity):
+        keys = db.execute(select(schema_settings.c.key).where(schema_settings.c.value == identity,
+            or_(schema_settings.c.key == 'selected_download_job',
+                schema_settings.c.key.startswith('workbench_job:')))).scalars().all()
+        if not keys:
+            return
+        db.execute(schema_settings.delete().where(schema_settings.c.key.in_(keys)))
+        for key in keys:
+            node = key.removeprefix('workbench_job:') if key.startswith('workbench_job:') else 'local'
+            if key == 'selected_download_job':
+                # Removing a selection must not release unrelated legacy queues.
+                db.execute(schema_settings.update().where(schema_settings.c.key == 'downloads_paused').values(value='true'))
+            self.store.statistics.stop_session(db, node)
+            self.store.statistics.settle(db, instance_id=node)
 
     def stop_running(self, db, condition):
         rows = db.execute(select(tasks).where(condition, tasks.c.action == 'download',

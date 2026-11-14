@@ -39,6 +39,7 @@ export interface Job {
   test_file_bytes_exact: string;
   skipped: number;
   archived: boolean;
+  deleted: boolean;
   edit_version: number;
   waiting_reason: string;
   transfer_speed: number;
@@ -87,6 +88,7 @@ export const videoStates: Record<string, string> = {
   failed: '失败',
   interrupted: '已中断',
   removed: '已移除',
+  cancelled: '已取消',
 };
 export function jobEndpoint(id: string) {
   return '/api/jobs/' + encodeURIComponent(id);

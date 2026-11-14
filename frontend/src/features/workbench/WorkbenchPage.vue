@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../../api';
 import { bootstrap } from '../../bootstrap';
@@ -47,6 +47,7 @@ const canStart = computed(
     selectedMatches.value &&
     queue.value?.online &&
     !job.value?.archived &&
+    !job.value?.deleted &&
     !!(job.value?.queued || job.value?.running || job.value?.importing) &&
     !alreadyStarted.value &&
     !(queue.value?.stop_requested && queue.value.running),
@@ -74,6 +75,11 @@ async function loadJobs(more = false) {
     return { ...result, items: more ? [...previous, ...result.items] : result.items };
   });
 }
+function refreshJobChoices() {
+  if (ready.value && !busy.value) void loadJobs();
+}
+onMounted(() => window.addEventListener('focus', refreshJobChoices));
+onUnmounted(() => window.removeEventListener('focus', refreshJobChoices));
 let refreshTicket = 0;
 let lastStarted: string | null | undefined;
 async function refresh(signal?: AbortSignal) {
@@ -97,12 +103,21 @@ async function refresh(signal?: AbortSignal) {
     !queue.value
   )
     return;
+  const previousStarted = lastStarted;
+  lastStarted = queue.value.selected_job_id;
+  if (selected && !job.value) {
+    selection.value = '';
+    message.value = '所选任务已删除或不存在，请重新选择任务。';
+    void clearPreviewLink();
+    await loadJobs();
+    return;
+  }
   if (
-    (!selected || (lastStarted !== undefined && lastStarted !== queue.value.selected_job_id)) &&
+    (!selected ||
+      (previousStarted !== undefined && previousStarted !== queue.value.selected_job_id)) &&
     queue.value.selected_job_id
   )
     selection.value = queue.value.selected_job_id;
-  lastStarted = queue.value.selected_job_id;
 }
 async function refreshCapacity(signal?: AbortSignal) {
   if (!ready.value || busy.value) return;
@@ -229,7 +244,7 @@ usePolling(
           >
             <option value="">请选择任务</option>
             <option
-              v-if="selection && !jobItems.some((item) => item.id === selection)"
+              v-if="selection && job && !jobItems.some((item) => item.id === selection)"
               :value="selection"
             >
               {{ job?.name || selection }}

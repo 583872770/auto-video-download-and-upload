@@ -440,6 +440,49 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.control('alpha', 'start', a, expected_status=400)
         self.assertEqual(self.b.claim('beta-owner')['batch_id'], b)
 
+    def test_delete_cancels_pending_videos_and_unbinds_only_affected_instances(self):
+        a, b = self.pair()
+        first, second = self.a.claim('alpha-owner'), self.b.claim('beta-owner')
+        response = self.client.post(f'/api/jobs/{a}/control', json={
+            'action': 'delete', 'confirmation': 'List A'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        alpha, beta = self.status('alpha'), self.status('beta')
+        self.assertIsNone(alpha['selected_job_id'])
+        self.assertIsNone(alpha['job'])
+        self.assertEqual(alpha['active_tasks'], [])
+        self.assertTrue(alpha['paused'])
+        self.assertEqual(beta['selected_job_id'], b)
+        self.assertFalse(beta['paused'])
+        self.assertFalse(self.a.heartbeat(first['id'], 'alpha-owner'))
+        self.assertFalse(self.a.finish(first['id'], result={}, worker_id='alpha-owner'))
+        self.assertTrue(self.b.heartbeat(second['id'], 'beta-owner'))
+        self.assertEqual(self.manager.counts(batch_id=a).get('cancelled'), 3)
+        self.assertEqual(self.manager.download_queue()['queued'], 2)
+        with self.manager.connect() as db:
+            self.assertIsNone(db.execute(select(settings.c.value).where(
+                settings.c.key == 'workbench_job:alpha')).scalar_one_or_none())
+            self.assertEqual(db.execute(select(settings.c.value).where(
+                settings.c.key == 'workbench_job:beta')).scalar_one(), b)
+
+    def test_old_deleted_selection_is_hidden_from_workbench_and_instance_cards(self):
+        a, b = self.pair()
+        # Simulate a job deleted by the earlier version, with its selection left behind.
+        with self.manager.connect() as db:
+            db.execute(job_profiles.update().where(job_profiles.c.id == a).values(deleted=1))
+            db.execute(download_lists.update().where(download_lists.c.id == a).values(released=0))
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(paused=1))
+        for suffix in ('', '?job_id=' + a, '?compact=1&job_id=' + a):
+            response = self.client.get('/api/jobs/workbench' + suffix, headers={'X-Instance-ID': 'alpha'})
+            self.assertEqual(response.status_code, 200, response.json)
+            self.assertIsNone(response.json['selected_job_id'])
+            self.assertIsNone(response.json['job'])
+            self.assertEqual(response.json['queued'], 0)
+        cards = {row['id']: row for row in self.client.get('/api/instances').json['items']}
+        self.assertIsNone(cards['alpha']['selected_job'])
+        self.assertEqual(cards['beta']['selected_job']['id'], b)
+        self.assertEqual(self.manager.download_queue()['queued'], 3)
+        self.assertEqual(self.manager.download_queue()['waiting_lists'], 1)
+
     def test_offline_or_unknown_instance_cannot_start(self):
         a = self.create()
         with self.manager.connect() as db:
@@ -460,6 +503,45 @@ class WorkbenchFleetTests(unittest.TestCase):
 class StandaloneWorkbenchTests(unittest.TestCase):
     setUp = test_jobs.JobTests.setUp
     create = test_jobs.JobTests.create
+
+    def test_delete_last_job_clears_workbench_and_preserves_delivered_files_and_ledger(self):
+        job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk', price='2')
+        with patch('app.require_downmp3_environment'):
+            response = self.client.post('/api/jobs/workbench', json={
+                'action': 'start', 'job_id': job}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        completed = self.store.claim(self.store.owner)
+        delivered = self.root / 'delivered.mp4'
+        delivered.write_bytes(b'x' * 100)
+        self.assertTrue(self.store.statistics.record_file(completed['id'], delivered))
+        self.assertTrue(self.store.finish(completed['id'], result={}, worker_id=self.store.owner))
+        running = self.store.claim('running-owner')
+        response = self.client.post(f'/api/jobs/{job}/control', json={
+            'action': 'delete', 'confirmation': 'List A'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(self.client.get('/api/jobs').json['items'], [])
+        for suffix in ('', '?job_id=' + job, '?compact=1&job_id=' + job):
+            value = self.client.get('/api/jobs/workbench' + suffix).json
+            self.assertIsNone(value['selected_job_id'])
+            self.assertIsNone(value['job'])
+            self.assertTrue(value['paused'])
+            self.assertEqual((value['queued'], value['running']), (0, 0))
+        self.assertEqual(self.store.download_queue()['queued'], 0)
+        self.assertEqual(self.store.download_queue()['waiting_lists'], 0)
+        self.assertEqual(self.store.counts(batch_id=job).get('cancelled'), 2)
+        self.assertFalse(self.store.heartbeat(running['id'], 'running-owner'))
+        self.assertFalse(self.store.finish(running['id'], result={}, worker_id='running-owner'))
+        self.assertEqual(self.store.get(completed['id'])['status'], 'succeeded')
+        from webapp.jobs import Jobs
+        self.assertEqual(Jobs(self.store).detail(job)['file_bytes_exact'], '100')
+        self.assertEqual(delivered.read_bytes(), b'x' * 100)
+        # Existing installations may still have a deleted selection in settings.
+        with self.store.connect() as db:
+            db.execute(self.store.db.upsert(settings,
+                {'key': 'selected_download_job', 'value': job}, ['key']))
+        value = self.client.get('/api/jobs/workbench?job_id=' + job).json
+        self.assertIsNone(value['selected_job_id'])
+        self.assertIsNone(value['job'])
 
     def test_start_pause_stop_and_persisted_selection(self):
         job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')

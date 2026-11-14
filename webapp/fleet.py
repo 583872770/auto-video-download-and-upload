@@ -10,7 +10,7 @@ import uuid
 
 from sqlalchemy import func, select, text
 
-from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles
+from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles, job_profiles
 from webapp.config_schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, DEFAULTS
 from webapp.service_role import normalize_role
 
@@ -263,7 +263,9 @@ class Fleet:
                 settings.c.key.startswith('workbench_job:'))).all())
             jobs = {job['id']: dict(job) for job in db.execute(select(
                 download_lists.c.id, download_lists.c.name, download_lists.c.customer).where(
-                    download_lists.c.id.in_(list(selections.values())))).mappings()}
+                    download_lists.c.id.in_(list(selections.values())),
+                    ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id,
+                        job_profiles.c.deleted == 1).exists())).mappings()}
             for row in rows:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **self.resource_limits(row)}

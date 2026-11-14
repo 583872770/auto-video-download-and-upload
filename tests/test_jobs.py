@@ -217,6 +217,18 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/' + a).status_code, 404)
         self.assertEqual(self.client.get('/api/jobs/summary').json['total'], 1)
 
+    def test_delete_large_queue_cancels_every_pending_video(self):
+        identity = self.create(urls='')
+        self.store.create_batch([{'base': str(self.root), 'batch_id': identity,
+            'urls': [f'https://www.youtube.com/watch?v={number:011d}']} for number in range(1003)])
+        self.control(identity, 'delete')
+        counts = self.store.counts(batch_id=identity)
+        self.assertEqual(counts.get('queued', 0), 0)
+        self.assertEqual(counts.get('running', 0), 0)
+        self.assertEqual(counts.get('cancelled'), 1003)
+        self.assertEqual(counts['total'], 0)
+        self.assertEqual(self.store.download_queue()['waiting_lists'], 0)
+
     def test_rejects_invalid_scope_links_and_unsafe_clear(self):
         a = self.create()
         invalid = self.client.post('/api/jobs', json={'customer':'A','name':'B','urls':'https://example.com'},headers=self.headers)
