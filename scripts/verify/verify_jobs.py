@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -50,7 +51,7 @@ def main():
                 page.locator('[data-action=append]').click()
                 page.locator('#editor textarea').fill('npNnbj46_ik')
                 page.locator('#editor button[type=submit]').click()
-                a = page.url.split('#')[1]
+                a = urlsplit(page.url).path.rsplit('/', 1)[-1]
                 page.locator('[data-tab=videos]').click()
                 expect(page.locator('#detail-content tbody tr')).to_have_count(1)
                 page.locator('[data-action=append]').click()
@@ -81,7 +82,7 @@ def main():
                 page.locator('[data-action=append]').click()
                 page.locator('#editor textarea').fill('npNnbj46_ik')
                 page.locator('#editor button[type=submit]').click()
-                b = page.url.split('#')[1]
+                b = urlsplit(page.url).path.rsplit('/', 1)[-1]
                 page.locator('[data-tab=videos]').click()
                 expect(page.locator('#detail-content tbody tr')).to_have_count(1)
                 page.locator('[data-action=clear]').click()
@@ -122,7 +123,7 @@ def main():
                 page.locator('#editor input[name=name]').fill('Archived order')
                 page.locator('#editor button[type=submit]').click()
                 expect(page.locator('#detail-heading h1')).to_have_text('Archived order')
-                c = page.url.split('#')[1]
+                c = urlsplit(page.url).path.rsplit('/', 1)[-1]
                 page.locator('[data-tab=settings]').click()
                 page.locator('.task-maintenance summary').click()
                 page.locator('[data-action=archive]').click()
@@ -169,9 +170,9 @@ def main():
                 expect(stale.locator('#detail-heading h1')).to_have_text('Merged order')
                 stale.close()
                 page.goto(base + '/#statistics')
-                expect(page.locator('#statistics-totals')).to_contain_text('¥ 0.70')
-                expect(page.locator('#statistics-sessions')).to_contain_text('按客户任务计费')
-                expect(page.locator('#customer-lists [data-list-form]')).to_have_count(0)
+                expect(page.locator('.metrics')).to_contain_text('¥ 0.70')
+                expect(page.get_by_role('heading',name='交付与账单',exact=True)).to_be_visible()
+                expect(page.locator('.ledger-row form')).to_have_count(0)
                 page.screenshot(path=str(output / 'unified-statistics.png'),full_page=True)
                 page.goto(base + '/jobs#' + a)
                 page.locator('[data-tab=overview]').click()
@@ -180,26 +181,27 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 page.set_viewport_size({'width':1440,'height':1050})
                 page.locator('.console-identity').click()
-                page.locator('[name=bootstrap_key]').fill(app.extensions['console_auth'].bootstrap_key)
-                page.locator('#login-form [name=username]').fill('admin')
-                page.locator('#login-form [name=password]').fill('secure-browser-test')
-                page.locator('#login-form button').click()
+                page.get_by_label('初始设置码',exact=True).fill(app.extensions['console_auth'].bootstrap_key)
+                page.get_by_label('用户名',exact=True).fill('admin')
+                page.get_by_label('密码',exact=True).fill('secure-browser-test')
+                page.get_by_role('button',name='创建管理员',exact=True).click()
                 expect(page.locator('#center-view')).to_be_visible()
                 page.locator('.console-identity').click()
-                page.locator('#create-account [name=username]').fill('reader')
-                page.locator('#create-account [name=password]').fill('secure-browser-test')
-                page.locator('#create-account button').click()
-                expect(page.locator('#accounts')).to_contain_text('reader')
+                create=page.locator('form').filter(has=page.get_by_role('heading',name='创建管理账户',exact=True))
+                create.get_by_label('用户名',exact=True).fill('reader')
+                create.get_by_label('密码',exact=True).fill('secure-browser-test')
+                create.get_by_role('button',name='创建账户',exact=True).click()
+                expect(page.get_by_text('reader · 只读 · 启用',exact=True)).to_be_visible()
                 anonymous = browser.new_context(viewport={'width':390,'height':844})
                 login = anonymous.new_page()
                 login.goto(base + '/jobs')
-                expect(login.locator('h1')).to_have_text('登录管理账户')
-                login.locator('[name=username]').fill('reader')
-                login.locator('[name=password]').fill('wrong-password')
-                login.locator('#login-form button').click()
-                expect(login.locator('#access-message')).to_contain_text('用户名或密码')
-                login.locator('[name=password]').fill('secure-browser-test')
-                login.locator('#login-form button').click()
+                expect(login.locator('h1')).to_have_text('管理账户')
+                login.get_by_label('用户名',exact=True).fill('reader')
+                login.get_by_label('密码',exact=True).fill('wrong-password')
+                login.get_by_role('button',name='登录',exact=True).click()
+                expect(login.get_by_role('alert')).to_contain_text('用户名或密码')
+                login.get_by_label('密码',exact=True).fill('secure-browser-test')
+                login.get_by_role('button',name='登录',exact=True).click()
                 expect(login.locator('#new-task')).to_be_disabled()
                 expect(login.locator('#task-table')).to_contain_text('Merged order')
                 expect(login.locator('#task-table [data-action=delete]')).to_be_disabled()
@@ -210,12 +212,12 @@ def main():
                 expect(login.locator('#download-job-pause')).to_be_disabled()
                 expect(login.locator('#download-form')).to_have_count(0)
                 expect(login.locator('#bulk-import-dialog')).to_have_count(0)
-                login.evaluate('refresh()')
+                login.reload()
                 expect(login.locator('#download-queue-start')).to_be_disabled()
                 expect(login.locator('#download-job-pause')).to_be_disabled()
                 login.locator('.console-identity').click()
-                login.locator('#logout').click()
-                expect(login.locator('#login-form')).to_be_visible()
+                login.get_by_role('button',name='退出登录',exact=True).click()
+                expect(login.get_by_role('button',name='登录',exact=True)).to_be_visible()
                 anonymous.close()
                 assert a != b
                 assert not errors, errors

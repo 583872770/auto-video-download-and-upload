@@ -198,7 +198,9 @@ class DispatchContract:
         self.assertEqual(result.status_code, 200, result.json)
         config = self.client.get('/api/config').json['config']
         self.assertEqual(build_ydl_options(config, self.root)['concurrent_fragment_downloads'], 2)
-        self.assertIn('name="fragment_concurrency"', self.client.get('/').text)
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('name="fragment_concurrency"', self.client.get('/').text)
 
 
 class SQLiteDispatchTests(DispatchContract, unittest.TestCase):

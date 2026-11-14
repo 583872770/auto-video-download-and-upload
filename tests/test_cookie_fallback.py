@@ -22,6 +22,13 @@ class CookieFallbackTests(unittest.TestCase):
                                    'youtube_cookie_fallback': True, 'youtube_cookie_usage': 'always',
                                    'youtube_cookie': str(self.cookie)}}
 
+    def account_cookie(self, store):
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        library = AccountCookieProfiles(self.root, store)
+        library.save_legacy(self.original)
+        self.cookie = library.require('legacy')
+        self.payload['config']['youtube_cookie'] = str(self.cookie)
+
     def test_cookie_unavailable_retries_once_without_mutating_uploaded_cookie_or_double_counting(self):
         for raises in (False, True):
             with self.subTest(raises=raises):
@@ -96,6 +103,8 @@ class CookieFallbackTests(unittest.TestCase):
         from webapp.store import TaskStore
         from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired
         store = TaskStore(self.root / 'state')
+        self.addCleanup(store.db.engine.dispose)
+        self.account_cookie(store)
         calls = []
         def download(downloader, urls):
             calls.append(bool(downloader.params.get('cookiefile')))
@@ -162,6 +171,7 @@ class CookieFallbackTests(unittest.TestCase):
 
 class CookieUsageTests(unittest.TestCase):
     setUp = CookieFallbackTests.setUp
+    account_cookie = CookieFallbackTests.account_cookie
 
     def test_third_party_only_execution_ignores_an_unavailable_native_cookie(self):
         from webapp.store import TaskStore
@@ -185,6 +195,7 @@ class CookieUsageTests(unittest.TestCase):
         from webapp.store import TaskStore
         store = TaskStore(self.root / 'fallback-state')
         self.addCleanup(store.db.engine.dispose)
+        self.account_cookie(store)
         self.payload['config'].update(download_methods=['downmp3', 'yt_dlp'], youtube_cookie_usage=usage)
         calls = []
 
@@ -223,6 +234,7 @@ class CookieUsageTests(unittest.TestCase):
         self.payload['config']['youtube_cookie_usage'] = 'auto'
         store = TaskStore(self.root / 'state')
         self.addCleanup(store.db.engine.dispose)
+        self.account_cookie(store)
         calls = []
         def download(downloader, urls):
             calls.append(bool(downloader.params.get('cookiefile')))

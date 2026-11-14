@@ -71,6 +71,7 @@ settings = Table('schema_settings', metadata, Column('key', String(128), primary
 # Migration admission shares this definition to distinguish empty schema
 # metadata from a destination containing application data or custom settings.
 BOOTSTRAP_SETTINGS = {
+    'youtube_account_cookie_aliases': '{}',
     'downloads_paused': 'false',
     'download_statistics_active': '',
     'download_statistics_since': None,

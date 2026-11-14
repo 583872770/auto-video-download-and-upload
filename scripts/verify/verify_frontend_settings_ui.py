@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server, WSGIRequestHandler
 from tests.test_console_auth import ConsoleAuthTests
+from webapp.browser import browser_options
 
 
 class QuietHandler(WSGIRequestHandler):
@@ -34,7 +35,7 @@ def main():
         output.mkdir(parents=True, exist_ok=True)
         errors = []
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, **({'executable_path':args.browser_path} if args.browser_path else {}))
+            browser = pw.chromium.launch(headless=True, **browser_options(pw.chromium, args.browser_path))
             context = browser.new_context(viewport={'width':1440,'height':1050})
             cookie_name = fixture.app.config['SESSION_COOKIE_NAME']
             context.add_cookies([dict(name=cookie_name,value=fixture.client.get_cookie(cookie_name).value,url=url)])
@@ -168,13 +169,13 @@ def main():
             expect(reader_page.locator('[name=oss_endpoint]')).to_be_disabled()
             expect(reader_page.locator('.savebar').get_by_role('button',name='保存设置',exact=True)).to_be_disabled()
             readonly.close()
-            # Compatibility workbench still initializes after navigation updates.
+            # Old root hashes now land in the Vue workbench.
             legacy = browser.new_context()
             legacy.add_cookies([dict(name=cookie_name,value=fixture.client.get_cookie(cookie_name).value,url=url)])
             legacy_page = legacy.new_page()
             legacy_page.on('pageerror',lambda error: errors.append(str(error)))
             legacy_page.goto(url + '/#overview')
-            legacy_page.wait_for_function('state.config && !state.polling')
+            expect(legacy_page.get_by_role('heading',name='下载工作台',exact=True)).to_be_visible()
             expect(legacy_page.get_by_role('link',name='系统设置',exact=True)).to_have_attribute('href','/settings')
             legacy.close()
             browser.close()

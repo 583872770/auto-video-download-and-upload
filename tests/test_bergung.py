@@ -262,7 +262,9 @@ class WorkflowTests(unittest.TestCase):
     def test_page_policy_and_fallback(self):
         import yt_dlp
 
-        self.assertIn('name="bergung_quality"', self.client.get('/').text)
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('name="bergung_quality"', self.client.get('/').text)
         self.save(['bergung', 'downmp3'])
         task = self.store.create('download', {'urls': [VIDEO]})
         claimed = self.store.claim()

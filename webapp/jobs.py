@@ -510,7 +510,25 @@ def register_jobs(app, store, settings, preflight):
 
     @app.get('/jobs')
     def jobs_page():
+        from webapp.frontend import render_workspace
+        page = render_workspace(app)
+        if page is not None:
+            return page
         return render_template('jobs.html', csrf=session.get('csrf',''), service_role=app.extensions['fleet'].role if app.extensions.get('fleet') else 'hybrid')
+
+    @app.get('/jobs/<identity>')
+    def job_detail_page(identity):
+        import re
+        from flask import redirect
+        if not re.fullmatch(r'[a-f0-9]{32}', identity):
+            abort(404)
+        from webapp.frontend import render_workspace
+        page = render_workspace(app)
+        if page is not None:
+            return page
+        from urllib.parse import urlencode
+        query = '?' + urlencode(request.args) if request.args else ''
+        return redirect('/jobs' + query + '#' + identity)
 
     @app.get('/api/jobs')
     def job_page():

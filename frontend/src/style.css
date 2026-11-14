@@ -1,13 +1,13 @@
 @import 'element-plus/theme-chalk/base.css';
 :root {
   font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-  color: #243247;
+  color: #1e293b;
   background: #f4f6fa;
   font-synthesis: none;
-  --el-color-primary: #245cda;
+  --el-color-primary: #2563eb;
   --el-border-radius-base: 8px;
-  --line: #e3e8f0;
-  --muted: #6c788b;
+  --line: #e2e8f0;
+  --muted: #64748b;
 }
 * {
   box-sizing: border-box;
@@ -45,11 +45,11 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
-  outline: 3px solid #93b6ff;
+  outline: 3px solid #93c5fd;
   outline-offset: 3px;
 }
 button:not(.el-button):not(.el-message-box__headerbtn) {
-  border: 1px solid #d9e0eb;
+  border: 1px solid #d7e0ec;
   background: white;
   border-radius: 8px;
   padding: 8px 12px;
@@ -153,7 +153,7 @@ button:not(.el-button):not(.el-message-box__headerbtn) {
   margin-bottom: 30px;
 }
 .eyebrow {
-  color: #657fa8;
+  color: #64748b;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 2px;
@@ -218,12 +218,12 @@ h3 {
   color: var(--muted);
 }
 .settings-nav button.active:not(.el-button) {
-  background: #e9effc;
-  border-color: #dce6fb;
-  color: #245cda;
+  background: #e8f0ff;
+  border-color: #c4d8fd;
+  color: #2563eb;
 }
 .settings-nav button.active small {
-  color: #6981ad;
+  color: #64748b;
 }
 .settings-body {
   min-width: 0;
@@ -248,7 +248,7 @@ h3 {
   flex-direction: column;
   gap: 8px;
   font-size: 12px;
-  color: #42516a;
+  color: #475569;
 }
 .field label {
   font-weight: 500;
@@ -258,15 +258,15 @@ select {
   width: 100%;
   min-width: 0;
   background: #fff;
-  border: 1px solid #d6deea;
+  border: 1px solid #d7e0ec;
   border-radius: 7px;
   height: 39px;
   padding: 8px 11px;
-  color: #25364e;
+  color: #1e293b;
 }
 input[type='checkbox'],
 input[type='radio'] {
-  accent-color: #245cda;
+  accent-color: #2563eb;
   flex-shrink: 0;
   width: 16px;
   height: 16px;
@@ -292,8 +292,8 @@ small {
   color: #21805a !important;
 }
 .notice {
-  background: #edf2fa;
-  border: 1px solid #dae3f0;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
   padding: 14px 18px;
   border-radius: 8px;
   font-size: 13px;
@@ -329,8 +329,8 @@ small {
 }
 .choice.selected,
 .choice:has(input:checked) {
-  background: #f3f7ff;
-  border-color: #83a7f3;
+  background: #eff6ff;
+  border-color: #9bbcf6;
 }
 .choice strong {
   font-size: 13px;
@@ -351,7 +351,7 @@ details {
 summary {
   font-size: 13px;
   cursor: pointer;
-  color: #50617a;
+  color: #52647e;
 }
 .storage-groups {
   display: flex;
@@ -449,7 +449,7 @@ fieldset {
 }
 .metrics > div {
   padding: 16px;
-  background: #f5f7fb;
+  background: #f8fafc;
   border-radius: 8px;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -470,8 +470,8 @@ fieldset {
   font-size: 11px;
   padding: 4px 10px;
   border-radius: 5px;
-  background: #eaf6ef;
-  color: #288158;
+  background: #ecfdf5;
+  color: #16805d;
   white-space: nowrap;
 }
 .badge.warning {
@@ -489,7 +489,7 @@ fieldset {
   justify-content: space-between;
   gap: 8px;
   padding: 10px;
-  background: #f5f7fb;
+  background: #f8fafc;
   border-radius: 6px;
   font-size: 12px;
 }
@@ -501,7 +501,7 @@ fieldset {
   font:
     12px/1.8 Consolas,
     monospace;
-  background: #f6f8fb;
+  background: #f8fafc;
   border-radius: 8px;
   padding: 16px;
 }

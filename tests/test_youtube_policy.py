@@ -28,7 +28,10 @@ class YouTubePolicyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.store = TaskStore(self.root / 'state')
-        (self.root / 'cookies.txt').write_bytes(COOKIE)
+        self.addCleanup(self.store.db.engine.dispose)
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        AccountCookieProfiles(self.root, self.store).save_legacy(COOKIE)
+        self.cookie_path = 'Cookies/youtube.txt'
 
     def scheduler(self, store=None):
         store = store or self.store
@@ -68,7 +71,7 @@ class YouTubePolicyTests(unittest.TestCase):
             validate_settings({'youtube_sleep_preset':1})
 
     def test_auth_cache_isolated_by_source_and_probe_uses_same_source(self):
-        config = {'youtube_cookie':'cookies.txt', 'proxy_mode':'direct'}
+        config = {'youtube_cookie':self.cookie_path, 'proxy_mode':'direct'}
         auth = YouTubeAuth(self.store)
         with patch('webapp.youtube_auth.probe', return_value=('valid','ok')) as probe:
             auth.check(config, self.root)
@@ -97,7 +100,7 @@ class YouTubePolicyTests(unittest.TestCase):
             with self.subTest(evidence=evidence):
                 checked = ProbeResult('verification_required', 'fixture', **evidence)
                 with patch('webapp.youtube_auth.probe', return_value=checked):
-                    auth.check({'youtube_cookie': 'cookies.txt', 'proxy_mode': 'direct'}, self.root, force=True)
+                    auth.check({'youtube_cookie': self.cookie_path, 'proxy_mode': 'direct'}, self.root, force=True)
                 with self.store.connect() as db:
                     saved = read_auth(db, ['local'], standalone=True)['local']
                 for key, value in evidence.items():

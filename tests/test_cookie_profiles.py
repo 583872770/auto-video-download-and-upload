@@ -143,7 +143,8 @@ class CookieProfileTests(unittest.TestCase):
         self.assertEqual(pool['execution_limit'], 64)
         self.assertEqual(pool['accounts'][0]['configured_limit'], 2)
         self.assertEqual(pool['accounts'][0]['limit'], 1)
-        self.assertIn('name="youtube_cookie_session_limit"', self.client.get('/').text)
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('name="youtube_cookie_session_limit"', self.client.get('/').text)
 
     def test_database_restores_deleted_cache_and_metadata(self):
         from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles

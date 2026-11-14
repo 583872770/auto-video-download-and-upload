@@ -1,7 +1,6 @@
 """Ordered providers, excluded providers, preflight and retry-safe accounting."""
 from contextlib import ExitStack, contextmanager
 from itertools import permutations
-from io import BytesIO
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import shutil
@@ -13,7 +12,6 @@ from unittest.mock import patch
 import yt_dlp
 
 from tests.test_yt5s import Yt5sTests, VIDEO
-from tests.test_youtube_auth import COOKIE
 from web_worker import execute
 from webapp.settings import download_methods
 
@@ -170,9 +168,8 @@ class ProviderPriorityTests(unittest.TestCase):
         response = self.client.post('/api/downloads/resume', headers=self.headers)
         self.assertEqual(response.status_code, 409)
         self.assertTrue(self.store.downloads_paused())
-        upload = self.client.post('/api/youtube/cookie', headers=self.headers,
-            data={'cookie': (BytesIO(COOKIE), 'cookies.txt')})
-        self.assertEqual(upload.status_code, 201, upload.json)
+        from tests.test_youtube_auth import AuthContract
+        AuthContract.cookie(self)
         with patch('webapp.yt5s.require_browser_environment', side_effect=AssertionError('no browser')), \
                 patch('webapp.youtube_auth.probe', return_value=('valid', 'fixture verified')):
             response = self.client.post('/api/downloads/resume', headers=self.headers)

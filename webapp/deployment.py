@@ -403,6 +403,10 @@ class DeploymentGateway:
 
         @app.get('/setup')
         def page():
+            from webapp.frontend import render_workspace
+            workspace = render_workspace(app)
+            if workspace is not None:
+                return workspace
             return render_template('deployment.html', csrf=session['csrf'], unlocked=bool(session.get('deployment_admin')))
 
         @app.post('/api/deployment/unlock')

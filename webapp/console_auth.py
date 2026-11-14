@@ -215,6 +215,10 @@ class ConsoleAuth:
 
         @app.get('/login')
         def console_login_page():
+            from webapp.frontend import render_workspace
+            workspace = render_workspace(app)
+            if workspace is not None:
+                return workspace
             configured, user = self.identity()
             return render_template('console_login.html', csrf=session['csrf'], configured=configured,
                 current_user=user, bootstrap_path=str(self.key_file))
@@ -222,7 +226,7 @@ class ConsoleAuth:
         @app.get('/api/auth/status')
         def console_status():
             configured, user = self.identity()
-            return jsonify(configured=configured, user=user, local_access=not configured and local_request())
+            return jsonify(configured=configured, user=user, local_access=not configured and local_request(), bootstrap_path=str(self.key_file) if not configured else '')
 
         @app.post('/api/auth/setup')
         def console_setup():

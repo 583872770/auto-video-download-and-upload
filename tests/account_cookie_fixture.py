@@ -1,9 +1,15 @@
-"""Seed account-owned credentials for scheduler tests, without a browser.
+"""Prepare account-owned credentials for scheduler and HTTP tests.
 
-This fixture deliberately bypasses HTTP setup. Production CookieProfiles.add
-and save_legacy are retired and their rejection is covered by API tests.
+HTTP helpers exercise real authentication and account uploads. The
+AccountCookieProfiles fixture bypasses HTTP setup for scheduler tests.
+Production CookieProfiles.add and save_legacy stay retired.
 """
 from datetime import datetime, timezone
+import base64
+from io import BytesIO
+import os
+import re
+from unittest.mock import patch
 import uuid
 from sqlalchemy import select
 
@@ -11,6 +17,38 @@ from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.cookie_profiles import CookieProfiles
 from webapp.cookie_binding import claim, credential_keys
 from webapp.database import youtube_accounts, youtube_account_cookies, cookie_profiles
+
+
+def sign_in_cookie_admin(test, client, headers):
+    """Use real sessions and CSRF when a Cookie API test needs an administrator."""
+    status = client.get('/api/auth/status').json
+    if status['user']:
+        test.assertEqual(status['user']['role'], 'admin')
+        return
+    credentials = {'username': 'cookie-fixture-admin', 'password': 'cookie-fixture-password'}
+    path = '/api/auth/login'
+    if not status['configured']:
+        path = '/api/auth/setup'
+        credentials['bootstrap_key'] = client.application.extensions['console_auth'].bootstrap_key
+    response = client.post(path, json=credentials, headers=headers)
+    test.assertEqual(response.status_code, 201 if path.endswith('/setup') else 200, response.json)
+    headers['X-CSRF-Token'] = re.search(
+        r'name="csrf-token" content="([^"]+)"', client.get('/login').text)[1]
+
+
+def upload_account_cookie(test, client, headers, data, instance_id):
+    """Create an owned credential through the supported account upload API."""
+    from webapp.account_routes import PREFIX
+    sign_in_cookie_admin(test, client, headers)
+    with patch.dict(os.environ, {'VIDEO_ACCOUNT_ENCRYPTION_KEY': base64.urlsafe_b64encode(b'f' * 32).decode()}):
+        response = client.post(PREFIX, headers=headers, json={
+            'email': uuid.uuid4().hex + '@fixture.test', 'password': 'account-fixture-password',
+            'instance_id': instance_id})
+        test.assertEqual(response.status_code, 201, response.json)
+        response = client.post(PREFIX + '/' + response.json['id'] + '/upload', headers=headers,
+            data={'cookie': (BytesIO(data), 'fixture.txt'), 'version': '1', 'confirmed': 'true'})
+        test.assertEqual(response.status_code, 201, response.json)
+        return response.json['profile_id']
 
 
 class AccountCookieProfiles(CookieProfiles):

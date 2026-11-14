@@ -1,6 +1,5 @@
 """A shared cluster in which every node can manage and execute downloads."""
 from concurrent.futures import ThreadPoolExecutor
-from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
@@ -10,6 +9,8 @@ from unittest.mock import patch
 
 from app import create_app
 from tests import test_fleet
+from tests.account_cookie_fixture import sign_in_cookie_admin, upload_account_cookie
+from webapp.cookie_profiles import CookieProfiles
 from webapp.database import instances, settings, tasks
 from webapp.store import TaskStore
 
@@ -120,11 +121,15 @@ class HybridTests(unittest.TestCase):
 
     def test_cookie_and_media_can_be_accessed_from_either_management_page(self):
         cookie = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfixture\n'
-        response = self.clients['alpha'].post('/api/youtube/cookie',
-            data={'cookie': (BytesIO(cookie), 'cookies.txt')}, headers={**self.headers['alpha'], 'X-Instance-ID': 'beta'})
-        self.assertEqual(response.status_code, 201, response.json)
-        self.assertFalse((self.root / 'alpha/Cookies/youtube.txt').exists())
-        self.assertTrue((self.root / 'beta/Cookies/youtube.txt').exists())
+        for identity, client in self.clients.items():
+            sign_in_cookie_admin(self, client, self.headers[identity])
+        profile = upload_account_cookie(self, self.clients['alpha'], self.headers['alpha'], cookie, 'beta')
+        self.assertFalse(CookieProfiles(self.root / 'alpha', self.a).items())
+        response = self.clients['alpha'].post('/api/youtube/cookies/export', json={'id': profile},
+            headers={**self.headers['alpha'], 'X-Instance-ID': 'beta'})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.data, cookie)
+        response.close()
         for identity in ('alpha', 'beta'):
             root = self.root / identity / f'videos-{identity}'
             root.mkdir()

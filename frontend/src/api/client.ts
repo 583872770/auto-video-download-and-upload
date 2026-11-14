@@ -18,6 +18,7 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   scope?: RequestScope;
   timeoutMs?: number;
+  responseType?: 'json' | 'text' | 'blob';
 }
 
 export class ApiClient {
@@ -27,7 +28,7 @@ export class ApiClient {
   ) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { body, scope, timeoutMs, signal, ...init } = options;
+    const { body, scope, timeoutMs, signal, responseType = 'json', ...init } = options;
     const method = (init.method || 'GET').toUpperCase();
     const writing = !['GET', 'HEAD', 'OPTIONS'].includes(method);
     const headers = new Headers(init.headers);
@@ -62,12 +63,18 @@ export class ApiClient {
         signal: controller.signal,
       });
       current();
-      if (response.status === 401) {
+      if (response.status === 401 && path !== '/api/auth/login') {
         this.expired();
         throw new ApiError('登录已过期，请重新登录。', 401);
       }
+      if (response.ok && responseType === 'blob') {
+        const value = await response.blob();
+        current();
+        return value as T;
+      }
       const raw = await response.text();
       current();
+      if (response.ok && responseType === 'text') return raw as T;
       let data: unknown;
       try {
         data = raw ? JSON.parse(raw) : {};

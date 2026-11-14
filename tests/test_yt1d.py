@@ -170,7 +170,9 @@ class WebTests(unittest.TestCase):
 
     def test_page_settings_job_policy_hot_update_and_missing_environment(self):
         self.save(yt1d_quality='1080', yt1d_timeout=90)
-        self.assertIn('name="yt1d_quality"', self.client.get('/').text)
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('name="yt1d_quality"', self.client.get('/').text)
         response = self.client.post('/api/jobs', json={'customer': 'A', 'name': 'Yt1d',
             'urls': 'jNQXAC9IVRw\nnpNnbj46_ik'}, headers=self.headers)
         self.assertEqual(response.status_code, 201, response.json)

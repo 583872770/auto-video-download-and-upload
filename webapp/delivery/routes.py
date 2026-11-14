@@ -41,6 +41,10 @@ def register_delivery(app, store, settings):
 
     @app.get('/delivery-files')
     def delivery_files_page():
+        from webapp.frontend import render_workspace
+        page = render_workspace(app)
+        if page is not None:
+            return page
         from flask import render_template, session
         return render_template('delivery_files.html', csrf=session.get('csrf', ''), service_role='hybrid')
 

@@ -39,7 +39,7 @@ export const useInstances = defineStore('instances', () => {
     const url = new URL(location.href);
     if (id) url.searchParams.set('instance_id', id);
     else url.searchParams.delete('instance_id');
-    history.replaceState(null, '', url);
+    history.replaceState(history.state, '', url);
   }
   async function load() {
     if (!bootstrap().fleetEnabled) return;

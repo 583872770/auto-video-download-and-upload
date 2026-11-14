@@ -13,7 +13,7 @@ from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server, WSGIRequestHandler
 from app import create_app
 from webapp.browser import browser_options
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import instances
 from webapp.deployment import DeploymentGateway
 
@@ -83,7 +83,7 @@ def main():
                         expect(page.locator('#fleet-target-name')).to_have_text(target)
                         expect(page.locator('#fleet-entry-name')).to_have_text(source)
                         expect(page.locator('#fleet-target-status')).to_contain_text('在线')
-                        expect(page.locator('#settings-form button[type=submit]')).to_contain_text(f'「{target}」')
+                        expect(page.locator('#settings-form button[type=submit]')).to_contain_text(target)
                         page.locator('#settings-tab-storage').click()
                         value = f'{source}-manages-{target}'
                         page.locator('[name=path]').fill(value)
@@ -98,8 +98,8 @@ def main():
                         page.locator('[data-view=accounts].nav-item').click()
                         page.locator('[data-account-tab=library]').click()
                         page.locator('#account-instance').select_option(target)
-                        expect(page.locator('#youtube-cookie-list')).to_contain_text(f'{target}-cookie')
-                        page.locator('#account-rows [data-credential-open]').first.click()
+                        expect(page.get_by_role('checkbox',name=f'加入账号池：{target}-cookie',exact=True)).to_be_visible()
+                        page.locator('#account-rows [data-account-open]').first.click()
                         page.locator('[data-account-detail-tab=schedule]').click()
                         expect(page.locator('#account-detail-dialog')).to_be_visible()
                         expect(page.locator('[data-account-detail-pane=schedule]')).to_be_visible()
@@ -109,7 +109,7 @@ def main():
                         form = page.locator('#instance-deployment-form')
                         expect(form).to_be_visible()
                         expect(form.locator('[name=instance_id]')).to_have_value(target)
-                        expect(form.locator('button[type=submit]')).to_contain_text(f'「{target}」')
+                        expect(form.locator('button[type=submit]')).to_contain_text(target)
                         expect(form.locator('[name=mysql_password]')).to_have_value('')
                         expect(form.locator('[name=redis_url]')).to_have_value('')
                         name = f'{source}-deployment-{target}'

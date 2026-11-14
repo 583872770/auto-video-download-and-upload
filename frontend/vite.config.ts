@@ -4,7 +4,8 @@ import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
   plugins: [vue()],
-  base: '/static/frontend/',
+  // The recovery gateway serves the same bundle under /setup-static/frontend/.
+  base: './',
   build: {
     outDir: '../static/frontend',
     emptyOutDir: true,

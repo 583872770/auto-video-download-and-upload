@@ -14,7 +14,7 @@ from webapp.downloader import download_cookie_session
 from tests import test_yt5s
 from tests.test_yt5s import VIDEO
 from tests.test_mysql import StandaloneMySQLFixture
-from tests.test_youtube_auth import COOKIE
+from tests.test_youtube_auth import AuthContract
 from webapp.downloads import DownloadLeaseLost
 from webapp.environment import DownloadEnvironmentRequired, require_fallback_environment
 from webapp.settings import validate_method_urls
@@ -29,9 +29,7 @@ class FallbackContract:
         self.method('yt5s_fallback')
         response = self.client.put('/api/config', json={'youtube_cookie_usage': 'always'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        response = self.client.post('/api/youtube/cookie', headers=self.headers,
-            data={'cookie': (BytesIO(COOKIE), 'cookies.txt')})
-        self.assertEqual(response.status_code, 201, response.json)
+        AuthContract.cookie(self)
 
     def payload(self, **config):
         return {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s_fallback',

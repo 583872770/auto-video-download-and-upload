@@ -5,6 +5,57 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('same-origin API', () => {
+  it('exports Cookie blobs with scope fencing and preserves JSON errors', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('cookie fixture'))
+      .mockResolvedValueOnce(new Response('{"error":"凭据已删除"}', { status: 409 }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new ApiClient(() => 'csrf');
+    const blob = await client.request<Blob>('/api/youtube/cookies/export', {
+      method: 'POST',
+      body: { id: 'profile' },
+      scope: { id: 'alpha', epoch: 0, isCurrent: () => true },
+      responseType: 'blob',
+    });
+    expect(await blob.text()).toBe('cookie fixture');
+    expect(new Headers(fetcher.mock.calls[0]![1].headers).get('X-Instance-ID')).toBe('alpha');
+    await expect(
+      client.request('/api/youtube/cookies/export', {
+        method: 'POST',
+        body: { id: 'missing' },
+        responseType: 'blob',
+      }),
+    ).rejects.toMatchObject({ status: 409, message: '凭据已删除' });
+  });
+  it('keeps incorrect login credentials on the login page', async () => {
+    const expired = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"error":"用户名或密码不正确。"}', { status: 401 })),
+    );
+    await expect(
+      new ApiClient(() => '', expired).request('/api/auth/login', {
+        method: 'POST',
+        body: { username: 'fixture', password: 'bad' },
+      }),
+    ).rejects.toMatchObject({ status: 401, message: '用户名或密码不正确。' });
+    expect(expired).not.toHaveBeenCalled();
+  });
+  it('reads subtitle text while preserving authentication and structured errors', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello'))
+      .mockResolvedValueOnce(new Response('{"error":"文件不存在"}', { status: 404 }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new ApiClient(() => 'csrf');
+    expect(await client.request('/api/delivery/files/fixture', { responseType: 'text' })).toContain(
+      'WEBVTT',
+    );
+    await expect(
+      client.request('/api/delivery/files/missing', { responseType: 'text' }),
+    ).rejects.toMatchObject({ status: 404, message: '文件不存在' });
+  });
   it('adds CSRF and selected instance to mutations, never retries a write', async () => {
     const fetcher = vi
       .fn()

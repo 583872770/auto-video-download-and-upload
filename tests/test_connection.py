@@ -33,7 +33,9 @@ class ConnectionContract:
                 'proxy': 'http://127.0.0.1:17890'}
 
     def test_requires_csrf_pause_drained_queue_and_idle_login(self):
-        page = self.client.get('/').text
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            page = self.client.get('/').text
         self.assertIn('id="clash-apply-connection"', page)
         self.assertIn('检查当前连接</button>', page)
         self.assertEqual(self.client.post('/api/downloads/connection').status_code, 403)

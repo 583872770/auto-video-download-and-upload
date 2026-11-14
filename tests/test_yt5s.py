@@ -183,7 +183,9 @@ class Yt5sTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.json)
 
     def test_provider_selection_persists_and_method_two_creates_jobs_without_cookie(self):
-        self.assertIn('id="download-method"', self.client.get('/').text)
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('id="download-method"', self.client.get('/').text)
         self.assertEqual(self.client.get('/api/config').json['config']['download_method'], 'yt_dlp')
         self.assertEqual(self.client.put('/api/config', json={'download_method': 'yt5s'}).status_code, 403)
         self.method('yt5s')

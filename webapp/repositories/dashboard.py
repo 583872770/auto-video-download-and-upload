@@ -11,11 +11,21 @@ def concurrency_inputs(store, config, base, fleet, queue):
     identity = fleet.id if fleet else 'local'
     with store.connect() as db:
         stamp = fleet.clock(db) if fleet else time.time()
-        statement = select(diagnostic_tasks.c.progress).where(
+        statement = select(diagnostic_tasks.c.id, diagnostic_tasks.c.batch_id,
+            diagnostic_tasks.c.video_id, diagnostic_tasks.c.title, diagnostic_tasks.c.progress,
+            diagnostic_tasks.c.status, diagnostic_tasks.c.worker_id, diagnostic_tasks.c.started_at,
+            diagnostic_tasks.c.attempts, diagnostic_tasks.c.lease_until).where(
             diagnostic_tasks.c.status == 'running', diagnostic_tasks.c.action == 'download')
         if fleet:
             statement = statement.where(diagnostic_tasks.c.instance_id == identity)
-        progress = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
+        active = list(db.execute(statement.order_by(diagnostic_tasks.c.seq)).mappings())
+        live = store.progress_cache.read_many(active)
+        current_tasks = [
+            {key: task[key] for key in ('id', 'batch_id', 'video_id', 'title', 'lease_until')} |
+            {'progress': live[task['id']]['progress'] if task['id'] in live else json.loads(task['progress'] or '{}')}
+            for task in active
+        ]
+        progress = [task['progress'] for task in current_tasks]
         context = read_context(db, [(identity, config)], stamp)
         budget = db.execute(select(diagnostic_settings.c.value).where(diagnostic_settings.c.key == 'fleet_budget')).scalar_one_or_none()
         global_running = db.execute(select(func.count()).select_from(diagnostic_tasks).where(
@@ -33,7 +43,7 @@ def concurrency_inputs(store, config, base, fleet, queue):
                     diagnostic_profiles.c.id.in_(config['youtube_cookie_pool']))).mappings())
         node = fleet.row(db) if fleet else {}
         subtitles = subtitle_summary(db, stamp, identity)
-    return dict(identity=identity, stamp=stamp, progress=progress, context=context,
+    return dict(identity=identity, stamp=stamp, progress=progress, current_tasks=current_tasks, context=context,
                 budget=int(budget or 0), global_running=global_running, profiles=profile_metadata,
                 paused=bool(node['paused']) if fleet else queue.get('paused', False),
                 error=node.get('error', ''), subtitles=subtitles)

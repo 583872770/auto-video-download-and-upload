@@ -538,7 +538,9 @@ class DiskWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.store.runtime()['disk_budget_gb'], 25)
         self.assertEqual(self.client.get('/api/disk').json['budget_bytes'], 25 * GIB)
-        self.assertIn('磁盘容量管理', self.client.get('/').text)
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            self.assertIn('磁盘容量管理', self.client.get('/').text)
 
     def test_upload_is_bounded_during_multipart_parsing(self):
         response = self.client.put('/api/config', json={'disk_upload_limit_mb':1}, headers=self.headers)

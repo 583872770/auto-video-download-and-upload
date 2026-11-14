@@ -1,11 +1,11 @@
 """Every console can manage every peer without borrowing local state."""
-from io import BytesIO
 import re
 import unittest
 from unittest.mock import patch
 
 from tests import test_fleet
-from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
+from tests.account_cookie_fixture import (AccountCookieProfiles as CookieProfiles,
+    sign_in_cookie_admin, upload_account_cookie)
 
 
 class InstanceManagementTests(unittest.TestCase):
@@ -48,6 +48,8 @@ class InstanceManagementTests(unittest.TestCase):
 
     def test_cookie_library_timeline_export_and_delete_from_every_entry(self):
         clients = self.clients()
+        for client, headers in clients.values():
+            sign_in_cookie_admin(self, client, headers)
         for source, (client, headers) in clients.items():
             for target, app in self.apps.items():
                 if source == target:
@@ -56,11 +58,9 @@ class InstanceManagementTests(unittest.TestCase):
                     selected = {**headers, 'X-Instance-ID': target}
                     cookie = ('# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\t'
                               f'fixture-{source}-{target}\n').encode()
-                    response = client.post('/api/youtube/cookies', headers=selected,
-                        data={'name': f'{source}-{target}', 'cookie': (BytesIO(cookie), 'cookies.txt')})
-                    self.assertEqual(response.status_code, 201, response.json)
+                    profile = upload_account_cookie(self, client, headers, cookie, target)
                     library = CookieProfiles(self.root / target, app.extensions['task_store'])
-                    item = next(i for i in library.items() if i['name'] == f'{source}-{target}')
+                    item = next(i for i in library.items() if i['id'] == profile)
                     response = client.get(f'/api/youtube/cookies/{item["id"]}/timeline?limit=3', headers=selected)
                     self.assertEqual(response.status_code, 200, response.json)
                     self.assertEqual(response.json['profile']['instance_id'], target)

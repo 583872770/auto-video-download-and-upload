@@ -188,7 +188,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             add('unknown', '账号状态尚未取得新鲜采样，原因待确认')
         if profile_id not in config['youtube_cookie_pool']:
             add('removed', '已移出账号池，当前任务结束后不再分配')
-        if not reasons:
+        if not reasons and not grouped.get(profile_id):
             add('unassigned', '当前未分配任务；仍需等待队列调度')
         accounts.append({'id': profile_id, 'name': names.get(profile_id) or sample.get('name') or profile_id,
                          **account_metadata.get(profile_id, {}),

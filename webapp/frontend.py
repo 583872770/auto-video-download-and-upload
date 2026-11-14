@@ -24,3 +24,17 @@ def assets(static_folder):
 
     visit(entry)
     return dict(script='frontend/' + entry['file'], styles=styles, preload=preload)
+
+
+def render_workspace(app):
+    """Share the authenticated Vue shell without exposing runtime configuration."""
+    from flask import g, render_template, session
+    from webapp.cobalt_catalog import catalog
+    bundle = assets(app.static_folder)
+    if bundle is None:
+        return None
+    return render_template('frontend.html', assets=bundle, bootstrap={
+        'csrf': session['csrf'], 'fleetEnabled': app.extensions.get('fleet') is not None,
+        'role': g.console_user['role'] if getattr(g, 'console_user', None) else 'admin',
+        'cobaltCatalog': catalog(),
+    })

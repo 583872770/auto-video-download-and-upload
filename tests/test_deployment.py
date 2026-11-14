@@ -78,7 +78,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_new_deployments_use_one_role_and_allow_local_only_operation(self):
         self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
-        page = self.client.get('/setup').text
+        with patch('webapp.frontend.assets', return_value=None):
+            page = self.client.get('/setup').text
         self.assertIn('管理与下载一体', page)
         self.assertNotIn('name="role"', page)
         self.assertNotIn('single-transition', page)
@@ -201,7 +202,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_page_has_no_database_inputs(self):
-        page = self.client.get('/setup').text
+        with patch('webapp.frontend.assets', return_value=None):
+            page = self.client.get('/setup').text
         for key in MYSQL_FIELDS:
             self.assertNotIn(f'name="{key}"', page)
         self.assertIn('页面不可修改', page)

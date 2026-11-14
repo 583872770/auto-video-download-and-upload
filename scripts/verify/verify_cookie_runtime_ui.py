@@ -16,7 +16,7 @@ from werkzeug.serving import make_server, WSGIRequestHandler
 from app import create_app
 from webapp.browser import browser_options
 from webapp.cookie_pool import CookiePool
-from webapp.cookie_profiles import CookieProfiles
+from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
 from webapp.database import cookie_profiles, download_permits, instances, tasks
 from webapp.settings import save_settings
 from webapp.throughput import policy_key
@@ -165,9 +165,6 @@ def main():
                 page.set_viewport_size({'width': 1440, 'height': 1100})
                 page.goto(f'http://127.0.0.1:{server.server_port}/#accounts')
                 page.locator('[data-account-tab=pool]').click()
-                policy = page.locator('.settings-policy-details')
-                if not policy.evaluate('node => node.open'):
-                    policy.locator('summary').click()
                 field = page.locator('[name="youtube_cookie_pool_start_interval"]')
                 runtime = page.locator('[data-youtube-pacing-runtime]')
                 expect(field).to_have_value('5')
@@ -179,7 +176,7 @@ def main():
                     expect(runtime).to_contain_text('请求节奏有待确认的修改')
                     expect(runtime).to_contain_text('已保存的账号池共用启动间隔：' + ('5 秒' if value == '3' else '3 秒'))
                     page.locator('#account-pool-form button[type="submit"]').click()
-                    expect(page.locator('#account-pool-save-state')).to_contain_text('账号池与节奏已保存')
+                    expect(page.locator('#account-pool-save-state')).to_contain_text('节奏已保存')
                     saved = page.request.get(f'http://127.0.0.1:{server.server_port}/api/config').json()['config']
                     assert saved['youtube_cookie_pool_start_interval'] == int(value)
                     assert saved['youtube_cookie_pool'] == ids
@@ -188,8 +185,6 @@ def main():
                     beat()
                     page.reload()
                     page.locator('[data-account-tab=pool]').click()
-                    if not policy.evaluate('node => node.open'):
-                        policy.locator('summary').click()
                     expect(field).to_have_value(value)
                     expect(runtime).to_contain_text('已保存的账号池共用启动间隔：' + ('3 秒' if value == '3' else '已关闭'))
                     expect(runtime).not_to_contain_text('请求节奏有待确认的修改')

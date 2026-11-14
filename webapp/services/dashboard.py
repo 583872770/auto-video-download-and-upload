@@ -34,7 +34,7 @@ class DashboardService:
         snapshot = concurrency_inputs(self.context.store, config, base, self.context.fleet, queue)
         stamp = snapshot['stamp']
         concurrency = diagnose(config, snapshot['identity'], snapshot['progress'], rate,
-            snapshot['context'], stamp, cookie_profiles=snapshot['profiles'],
+            snapshot['context'], stamp, cookie_profiles=snapshot['profiles'], current_tasks=snapshot['current_tasks'],
             global_limit=snapshot['budget'], global_running=snapshot['global_running'],
             paused=snapshot['paused'])
         concurrency['subtitles'] = snapshot['subtitles']

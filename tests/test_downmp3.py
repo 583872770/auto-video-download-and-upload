@@ -112,7 +112,9 @@ class Downmp3WebTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.json)
 
     def test_page_configuration_queue_import_and_resume_do_not_require_browser_or_cookie(self):
-        page = self.client.get('/').text
+        # Explicitly verify the source-template fallback; built routes use Vue.
+        with patch('webapp.frontend.assets', return_value=None):
+            page = self.client.get('/').text
         self.assertIn('id="download-method" class="provider-choices"', page)
         self.assertNotIn('id="settings-download-method"', page)
         self.assertIn('id="settings-form"', page)
