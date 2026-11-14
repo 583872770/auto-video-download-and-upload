@@ -33,19 +33,66 @@ const modes: Record<string, string> = {
   unknown: '状态待确认',
 };
 const mainStages = [
-  { key: 'downloading', label: '传输中' },
+  { key: 'downloading', label: '下载中' },
+  { key: 'uploading', label: '上传中' },
+  { key: 'processing', label: '合并中' },
   { key: 'extracting', label: '解析视频' },
-  { key: 'waiting_transfer', label: '等待传输' },
-  { key: 'processing', label: '合并 / 后处理' },
-  { key: 'waiting_request', label: '等待请求间隔' },
-  { key: 'uploading_oss', label: '上传 OSS' },
+  { key: 'waiting', label: '等待中' },
+  { key: 'cooldown', label: '冷却中' },
 ];
+const downloadingStages = new Set(['downloading']);
+const uploadingStages = new Set(['uploading', 'uploading_oss']);
+const processingStages = new Set(['processing', 'converting', 'cleaning', 'waiting_processing']);
+const extractingStages = new Set([
+  'extracting',
+  'waiting_resolver',
+  'waiting_browser',
+  'waiting_verification',
+  'checking_environment',
+  'checking_login',
+]);
+function taskStageGroup(task: AccountTask) {
+  if (downloadingStages.has(task.stage)) return 'downloading';
+  if (uploadingStages.has(task.stage)) return 'uploading';
+  if (processingStages.has(task.stage)) return 'processing';
+  if (extractingStages.has(task.stage)) return 'extracting';
+  if (isWaitingStage(task.stage)) return 'waiting';
+  return '';
+}
+function taskIsCooldown(task: AccountTask) {
+  const wait = task.wait;
+  return !!wait && (wait.code.includes('cooldown') || wait.label.includes('冷却'));
+}
+function accountIsCooldown(account: RuntimeAccount) {
+  return (
+    accountState(account) === 'cooldown' ||
+    account.tasks.some(taskIsCooldown) ||
+    account.reasons?.some(
+      (reason) => reason.code.includes('cooldown') || reason.label.includes('冷却'),
+    )
+  );
+}
+function accountMatchesFor(account: RuntimeAccount, selectedStage: string) {
+  if (!selectedStage) return true;
+  if (selectedStage === 'cooldown') return accountIsCooldown(account);
+  if (selectedStage === 'waiting') {
+    return (
+      !accountIsCooldown(account) &&
+      (account.tasks.some((task) => taskStageGroup(task) === 'waiting') ||
+        !!account.reasons?.length ||
+        (account.known && account.state !== 'ready' && !account.tasks.length))
+    );
+  }
+  return account.tasks.some((task) => taskStageGroup(task) === selectedStage);
+}
+function accountMatches(account: RuntimeAccount) {
+  return accountMatchesFor(account, stage.value);
+}
 function matches(task: AccountTask) {
   return (
     !stage.value ||
-    (stage.value === 'other'
-      ? !mainStages.some((item) => item.key === task.stage)
-      : task.stage === stage.value)
+    taskStageGroup(task) === stage.value ||
+    (stage.value === 'cooldown' && taskIsCooldown(task))
   );
 }
 function accountState(account: RuntimeAccount) {
@@ -73,24 +120,23 @@ const searched = computed(() =>
   matchingQuery.value.filter((account) => !state.value || accountState(account) === state.value),
 );
 const counts = computed(() => {
-  const result: Record<string, number> = { '': 0, other: 0 };
+  const result: Record<string, number> = { '': searched.value.length };
   for (const account of searched.value) {
-    for (const task of account.tasks) {
-      result['']!++;
-      const key = mainStages.some((item) => item.key === task.stage) ? task.stage : 'other';
-      result[key] = (result[key] || 0) + 1;
+    for (const item of mainStages) {
+      // Evaluate each tab independently so an account with multiple active
+      // tasks remains visible in every relevant stage.
+      if (accountMatchesFor(account, item.key)) result[item.key] = (result[item.key] || 0) + 1;
     }
   }
   return result;
 });
 const tabs = computed(() =>
-  [{ key: '', label: '全部任务' }, ...mainStages, { key: 'other', label: '其他阶段' }].map(
-    (item) => ({ ...item, count: counts.value[item.key] || 0 }),
-  ),
+  [{ key: '', label: '全部任务' }, ...mainStages].map((item) => ({
+    ...item,
+    count: counts.value[item.key] || 0,
+  })),
 );
-const filtered = computed(() =>
-  searched.value.filter((account) => !stage.value || account.tasks.some(matches)),
-);
+const filtered = computed(() => searched.value.filter(accountMatches));
 const waitingSummary = computed(() =>
   summarizeWaits(searched.value.flatMap((account) => account.tasks.filter(matches))),
 );
@@ -225,7 +271,8 @@ const accountLink = computed(
       <div class="account-panel-title">
         <h3>账号任务与等待</h3>
         <span
-          >{{ searched.length }} 个账号 · {{ counts[''] }} 个{{
+          >{{ searched.length }} 个账号 ·
+          {{ searched.reduce((total, account) => total + account.tasks.length, 0) }} 个{{
             fresh ? '执行任务' : '任务记录'
           }}</span
         >
@@ -289,8 +336,7 @@ const accountLink = computed(
     </p>
     <p v-if="stage" class="account-filter-note" aria-live="polite">
       当前筛选：<b>{{ tabs.find((tab) => tab.key === stage)?.label }}</b
-      >，共 <b>{{ counts[stage] || 0 }}</b> 个{{ fresh ? '任务' : '任务记录' }}，分布在
-      <b>{{ filtered.length }}</b> 个账号。
+      >，共 <b>{{ filtered.length }}</b> 个账号。
       <button type="button" class="account-text-button" @click="stage = ''">清除阶段筛选</button>
     </p>
     <div v-if="waitingSummary.length" class="account-wait-summary" aria-label="任务等待原因汇总">
