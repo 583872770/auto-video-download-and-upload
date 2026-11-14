@@ -747,7 +747,7 @@ class DiskBudget:
                     except (OSError, ValueError):
                         pass
         for path in (self.runtime / 'cache').glob('worker-*'):
-            if not re.fullmatch(r'worker-(\d+|maintenance|subtitles)', path.name):
+            if not re.fullmatch(r'worker-(\d+|maintenance)', path.name):
                 continue
             with file_lock(self.directory / (path.name + '.lock')) as available:
                 if not available:

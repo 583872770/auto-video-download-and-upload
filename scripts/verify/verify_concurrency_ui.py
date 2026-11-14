@@ -33,7 +33,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='concurrency-ui-', dir=output.parent) as temporary, patch.dict(os.environ, environment, clear=True):
         root = Path(temporary)
         config = root / 'config.yaml'
-        config.write_text('path: videos\nproxy_mode: direct\nworker_count: 16\nmin_free_gb: 0\n', encoding='utf-8')
+        config.write_text('path: videos\nproxy_mode: direct\nworker_count: 16\nbuiltin_transfer_limit: 8\nmin_free_gb: 0\n', encoding='utf-8')
         app = create_app(config, root / 'state', start_worker=False, role='hybrid', instance_id='preview',
                          instance_name='下载实例 A', database_url='sqlite:///' + (root / 'fixture.sqlite3').as_posix())
         store = app.extensions['task_store']
@@ -72,10 +72,6 @@ def main():
                     db.execute(download_resources.insert().values(
                         key=hashlib.sha256(b'upstream:youtube-origin').hexdigest(),
                         state=json.dumps({'cooldown_until': stamp - 1, 'recover_until': stamp + 60})))
-                if kind == 'subtitles':
-                    db.execute(download_resources.insert().values(
-                        key=hashlib.sha256(b'subtitles:youtube-origin').hexdigest(),
-                        state=json.dumps({'cooldown_until': stamp + 120})))
                 if kind == 'disk':
                     db.execute(store.db.upsert(settings, {'key': 'disk:preview', 'value': json.dumps({
                         'time': stamp, 'blocked': True, 'message': '测试下载分类预算不足，等待空间。'})}, ['key']))
@@ -171,31 +167,14 @@ def main():
                 page.locator('#channel-settings').screenshot(path=str(output/'channel-settings-mobile.png'))
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'settings mobile horizontal overflow'
                 page.set_viewport_size({'width': 1440, 'height': 1150})
-                page.get_by_role('tab', name='下载策略').click()
-                page.get_by_role('tab', name='Cookie 与登录').click()
-                page.locator('#settings-pane-accounts .settings-policy-details > summary').click()
-                expect(page.locator('[name=youtube_start_interval]')).to_have_value('120')
-                page.locator('[name=youtube_start_interval]').fill('5')
-                page.locator('[name=youtube_cookie_fallback]').select_option('false')
-                expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('true')
-                page.locator('[name=youtube_sleep_preset]').select_option('false')
                 expect(draft).not_to_have_class('micro-copy capacity-draft-warning')
                 page.locator('#settings-form button[type=submit]').click()
                 expect(page.locator('#settings-save-state')).to_contain_text('设置已保存', timeout=12000)
                 page.reload()
                 expect(page.locator('[name=builtin_transfer_limit]')).to_have_value('16')
                 expect(page.locator('[name=builtin_connection_limit]')).to_have_count(0)
-                expect(page.locator('[name=youtube_start_interval]')).to_have_value('5')
-                expect(page.locator('[name=youtube_cookie_fallback]')).to_have_value('false')
-                expect(page.locator('[name=youtube_sleep_preset]')).to_have_value('false')
-                expect(page.locator('[name=youtube_source_address]')).to_have_value('')
-                child = store.create('subtitles', {'base': str(root), 'config': cfg})
-                fixture('subtitles')
                 page.get_by_role('tab', name='运行诊断').click()
-                expect(settings_panel).to_contain_text('字幕独立补下载', timeout=12000)
-                expect(settings_panel).to_contain_text('字幕上游冷却')
-                expect(settings_panel).not_to_contain_text('渠道冷却中')
-                expect(settings_panel.locator('.transfer-effective b')).to_contain_text('16')
+                expect(settings_panel).not_to_contain_text('字幕独立补下载')
                 page.screenshot(path=str(output/'settings-optimized.png'), full_page=True)
                 failed_task = store.create('download', {'base': str(root), 'config': cfg,
                     'urls': ['https://youtu.be/jNQXAC9IVRw']})

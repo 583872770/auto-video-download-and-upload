@@ -63,20 +63,20 @@ class TaskLeases:
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
             if self.claims_paused(db, lock=True):
-                statement = statement.where(~tasks.c.action.in_(('download', 'subtitles')))
+                statement = statement.where(tasks.c.action != 'download')
             elif not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
             from webapp.disk_budget import resource_blocked
             if resource_blocked(self, db):
                 statement = statement.where(tasks.c.action != 'download')
             if self.media_clear_busy(db):
-                statement = statement.where(~tasks.c.action.in_(('download', 'index', 'subtitles')))
+                statement = statement.where(~tasks.c.action.in_(('download', 'index')))
             if actions:
                 statement = statement.where(tasks.c.action.in_(actions))
             if exclude:
                 statement = statement.where(~tasks.c.action.in_(exclude))
             download_only = actions and set(actions) == {'download'}
-            regular_worker = actions is None and set(exclude or ()) in ({'import', 'index'}, {'import', 'index', 'subtitles'})
+            regular_worker = actions is None and set(exclude or ()) == {'import', 'index'}
             workbench_download = self.workbench_job(db) if self.fleet and (download_only or regular_worker) else None
             row = None
             if workbench_download and regular_worker:
@@ -252,14 +252,6 @@ class TaskLeases:
                 return False
             if result:
                 result = dict(result)
-                subtitle_jobs = result.pop('_subtitle_jobs', [])
-                if row['action'] == 'download' and not error and subtitle_jobs:
-                    children = []
-                    for spec in subtitle_jobs:
-                        child = self._create(db, 'subtitles', {**spec, 'parent_task_id': task_id}, self.db.sequence(db, 'task'))
-                        children.append(child)
-                    result.update(subtitle_tasks=children)
-                    result['message'] = result.get('message', '') + ' 已创建独立字幕任务，处理结果见下方；字幕限流不影响视频成功。'
             retry = bool(error and retryable and row['attempts'] < row['max_attempts'])
             delay = min(300, 5 * 2 ** max(0, row['attempts'] - 1))
             delay = max(delay, min(86400, retry_after or 0)) + random.uniform(0, delay * .2)
@@ -343,7 +335,7 @@ class TaskLeases:
             scopes = set()
             for row in rows:
                 scopes.add(row.get('instance_id'))
-                retry = expired_only and row['action'] in ('download', 'import', 'index', 'subtitles') and row['attempts'] < row['max_attempts']
+                retry = expired_only and row['action'] in ('download', 'import', 'index') and row['attempts'] < row['max_attempts']
                 status = 'queued' if retry else 'interrupted'
                 self._transition(db, row, status)
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,

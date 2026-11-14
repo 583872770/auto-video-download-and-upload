@@ -33,7 +33,7 @@ class MigrationDestinationTests(unittest.TestCase):
 
     def test_modified_bootstrap_values_and_invalid_timestamps_are_rejected(self):
         with self.database.engine.begin() as db:
-            for key, value in [('downloads_paused', 'true'), ('download_statistics_active', 'existing-session'),
+            for key, value in [('downloads_paused', 'true'), ('download_statistics_active:local', 'existing-session'),
                                ('download_statistics_since', 'not a timestamp')]:
                 with self.subTest(key=key):
                     original = db.execute(select(settings.c.value).where(settings.c.key == key)).scalar_one()
@@ -44,7 +44,7 @@ class MigrationDestinationTests(unittest.TestCase):
 
     def test_missing_bootstrap_metadata_is_rejected(self):
         with self.database.engine.begin() as db:
-            db.execute(settings.delete().where(settings.c.key == 'download_statistics_active'))
+            db.execute(settings.delete().where(settings.c.key == 'download_statistics_active:local'))
             self.assertFalse(pristine_target(db))
 
     def test_account_alias_history_is_not_mistaken_for_empty_metadata(self):

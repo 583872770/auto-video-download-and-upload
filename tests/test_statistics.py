@@ -400,6 +400,17 @@ class StatisticsContract:
 class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
+    def test_file_registration_requires_a_current_download_session(self):
+        self.job()
+        task = self.claim()
+        payload = dict(task['payload'])
+        payload.pop('download_session_id')
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id == task['id']).values(payload=json.dumps(payload)))
+        with self.assertRaisesRegex(ValueError, '任务缺少下载会话'):
+            self.store.statistics.record_file(task['id'], self.final_file())
+        self.assertEqual(self.overview()['summary']['file_count'], 0)
+
     def test_post_hook_deadlock_does_not_repeat_the_download(self):
         from webapp.parallel_http import ParallelYoutubeDL
         content = b'completed video fixture\n' * 100

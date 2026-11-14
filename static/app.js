@@ -36,7 +36,7 @@ let rotationNodeSignature = '';
 const pages = Object.fromEntries(['tasks', 'media'].map(name => [name, { cursor: null, next: null, history: [] }]));
 state.overview = { recent_media: [], recent_tasks: [], media: { count: 0 } };
 
-const actionNames = { download: '下载视频', subtitles: '补下载字幕', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
+const actionNames = { download: '下载视频', check: '下载环境检查', import: '导入下载清单', index: '同步素材索引', clear_media: '清空素材库' };
 const actionIcons = { download: 'download', check: 'server', import: 'upload', index: 'refresh' };
 const statusNames = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
 const viewNames = {
@@ -187,10 +187,10 @@ function openMedia(name, instanceId) {
   if (item.playable) player.play().catch(() => {});
 }
 function taskRows(tasks) {
-  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import', 'subtitles'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
+  return tasks.map(task => `<button class="task-row" data-task="${task.id}"><span class="task-action-icon">${icon(actionIcons[task.action] || 'list')}</span><span class="task-row-text"><strong>${escapeHTML(task.progress?.title || task.video_id || actionNames[task.action] || task.action)}</strong><small>${['download', 'import'].includes(task.action) ? progressLabel(task) : task.action === 'index' ? '同步素材索引' : '本机工具'} · ${task.id.slice(0, 8)}${task.instance_id ? ' &middot; ' + escapeHTML(instanceName(task.instance_id)) : ''}</small></span><span class="task-status status-${task.status}">${taskStatus(task)}</span><time class="task-time" title="${task.finished_at ? '结束时间' : '创建时间'}">${escapeHTML(formatDate(task.finished_at || task.created_at))}</time>${icon('arrow', 'task-arrow')}</button>`).join('');
 }
 function taskPaused(task) {
-  if (!['download', 'subtitles'].includes(task.action) || task.status !== 'queued') return false;
+  if (task.action !== 'download' || task.status !== 'queued') return false;
   const item = state.fleet?.items.find(item => item.id === task.instance_id);
   return task.instance_id && task.instance_id !== state.instanceId ? !!item?.paused : !!state.workbench?.paused;
 }
@@ -204,14 +204,6 @@ function etaText(seconds) {
 }
 function progressLabel(task) {
   if (taskPaused(task)) return '实例已停止 · 等待启动';
-  if (task.action === 'subtitles') {
-    if (task.status === 'failed') return '字幕补下载失败 · 视频已保留';
-    if (task.status === 'succeeded') return task.result?.skipped ? '字幕任务已跳过' : '字幕任务已处理';
-    if (task.status === 'interrupted') return '字幕任务已中断 · 视频已保留';
-    if (task.status === 'queued') return task.progress?.stage === 'retrying' ? '字幕等待退避重试' : '字幕排队中 · 独立限速';
-    if (task.progress?.stage === 'uploading_oss') return '正在同步字幕到阿里云 OSS';
-    return task.progress?.stage === 'disk_wait' ? '字幕等待临时空间' : '正在补下载字幕 · 视频已完成';
-  }
   if (task.status === 'queued' && task.progress?.stage === 'paused') return '等待启动';
   if (task.status === 'queued' && task.progress?.stage === 'scheduling_wait') {
     const remaining = Math.max(0, Math.ceil((task.progress.retry_at || task.available_at || 0) - Date.now() / 1000));
@@ -1261,7 +1253,6 @@ async function updateTaskDetail() {
   $('#task-download-progress').innerHTML = task.action === 'clear_media' ? `<p class="micro-copy">已删除 ${Number(task.progress?.deleted_files || 0)} 个文件 · 释放 ${bytes(task.progress?.deleted_bytes || 0)}${task.progress?.failed_files ? ` · ${Number(task.progress.failed_files)} 个文件未能删除` : ''}</p>` : ['download', 'import'].includes(task.action) ? downloadProgress(task) : task.progress?.scanned ? `<p class="micro-copy">已扫描 ${task.progress.scanned} 个文件</p>` : '';
   const result = task.result;
   $('#task-result').innerHTML = result?.message ? `<div class="result-summary">${escapeHTML(result.message)}</div>` : '';
-  if (task.subtitle_tasks?.length) $('#task-result').innerHTML += `<p class="micro-copy">字幕补下载（独立于视频计费和成功状态）：${task.subtitle_tasks.map(child => `<button type="button" class="text-button" data-task="${escapeHTML(child.id)}">${escapeHTML({queued:'待补下载',running:'正在补下载',succeeded:'已处理',failed:'补下载失败',interrupted:'已中断'}[child.status] || child.status)} ↗</button>`).join(' · ')}</p>`;
   if (logs.text) {
     const log = $('#task-log');
     const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 45;

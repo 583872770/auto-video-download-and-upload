@@ -464,25 +464,6 @@ class WorkbenchFleetTests(unittest.TestCase):
             self.assertEqual(db.execute(select(settings.c.value).where(
                 settings.c.key == 'workbench_job:beta')).scalar_one(), b)
 
-    def test_old_deleted_selection_is_hidden_from_workbench_and_instance_cards(self):
-        a, b = self.pair()
-        # Simulate a job deleted by the earlier version, with its selection left behind.
-        with self.manager.connect() as db:
-            db.execute(job_profiles.update().where(job_profiles.c.id == a).values(deleted=1))
-            db.execute(download_lists.update().where(download_lists.c.id == a).values(released=0))
-            db.execute(instances.update().where(instances.c.id == 'alpha').values(paused=1))
-        for suffix in ('', '?job_id=' + a, '?compact=1&job_id=' + a):
-            response = self.client.get('/api/jobs/workbench' + suffix, headers={'X-Instance-ID': 'alpha'})
-            self.assertEqual(response.status_code, 200, response.json)
-            self.assertIsNone(response.json['selected_job_id'])
-            self.assertIsNone(response.json['job'])
-            self.assertEqual(response.json['queued'], 0)
-        cards = {row['id']: row for row in self.client.get('/api/instances').json['items']}
-        self.assertIsNone(cards['alpha']['selected_job'])
-        self.assertEqual(cards['beta']['selected_job']['id'], b)
-        self.assertEqual(self.manager.download_queue()['queued'], 3)
-        self.assertEqual(self.manager.download_queue()['waiting_lists'], 1)
-
     def test_offline_or_unknown_instance_cannot_start(self):
         a = self.create()
         with self.manager.connect() as db:
@@ -535,13 +516,6 @@ class StandaloneWorkbenchTests(unittest.TestCase):
         from webapp.jobs import Jobs
         self.assertEqual(Jobs(self.store).detail(job)['file_bytes_exact'], '100')
         self.assertEqual(delivered.read_bytes(), b'x' * 100)
-        # Existing installations may still have a deleted selection in settings.
-        with self.store.connect() as db:
-            db.execute(self.store.db.upsert(settings,
-                {'key': 'selected_download_job', 'value': job}, ['key']))
-        value = self.client.get('/api/jobs/workbench?job_id=' + job).json
-        self.assertIsNone(value['selected_job_id'])
-        self.assertIsNone(value['job'])
 
     def test_start_pause_stop_and_persisted_selection(self):
         job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')

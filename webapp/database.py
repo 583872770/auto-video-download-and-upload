@@ -73,7 +73,7 @@ settings = Table('schema_settings', metadata, Column('key', String(128), primary
 BOOTSTRAP_SETTINGS = {
     'youtube_account_cookie_aliases': '{}',
     'downloads_paused': 'false',
-    'download_statistics_active': '',
+    'download_statistics_active:local': '',
     'download_statistics_since': None,
     'download_test_statistics_since': None,
     'download_method_statistics_since': None,

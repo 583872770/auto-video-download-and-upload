@@ -9,9 +9,6 @@ def run_action(action, payload, report_progress=None, rotation_completed=None, s
     from webapp.media import VIDEO_SUFFIXES
     from webapp.environment import check_download_environment
     config, base = payload.get('config', {}), Path(payload['base'])
-    if action == 'subtitles':
-        from webapp.subtitles import run_subtitles
-        return run_subtitles(store, payload, report_progress or (lambda value: None))
     if action == 'import':
         from webapp.bulk import run_import
         return run_import(store, payload, report_progress or (lambda value: None))

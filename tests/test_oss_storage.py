@@ -106,55 +106,6 @@ class OSSStorageTests(unittest.TestCase):
                 keys.append(storage.upload_video(path, root)[0]['key'])
             self.assertEqual(keys, ['exports/jobs/list/task/clip.mp4'] * 2)
 
-    def test_background_subtitles_sync_without_reuploading_video_or_cooling_youtube(self):
-        import yt_dlp
-        from webapp.subtitles import run_subtitles
-        with tempfile.TemporaryDirectory() as directory, \
-             patch('webapp.subtitles.ChannelScheduler') as scheduler, \
-             patch('webapp.subtitles.DiskBudget') as budget, \
-             patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), \
-             patch('oss2.Bucket') as factory, patch('oss2.resumable_upload') as upload:
-            root = Path(directory)
-            video = root / 'videos' / 'clip.mp4'
-            video.parent.mkdir()
-            video.write_bytes(b'video')
-            video.with_suffix('.en.vtt').write_bytes(b'sub')
-            scheduler.return_value.enabled = False
-            scheduler.return_value.youtube_pacing = False
-            budget.return_value.lease.return_value.__enter__.return_value.path = root / 'cache'
-            factory.return_value.head_object.return_value.content_length = 3
-            payload = {'base': str(root), 'config': CONFIG, 'video_file': str(video),
-                       'urls': ['https://example.test/clip.mp4']}
-            store = SimpleNamespace(directory=root / 'state')
-            result = run_subtitles(store, payload, lambda _: None)
-            self.assertEqual(result['oss_objects'], [{'key': 'exports/clip.en.vtt', 'size': 3}])
-            self.assertEqual(upload.call_count, 1)
-            upload.side_effect = oss2.exceptions.ServerError(403, {}, b'', {'Code': 'AccessDenied'})
-            with self.assertRaises(OSSUploadError):
-                run_subtitles(store, payload, lambda _: None)
-            scheduler.return_value.outcome.assert_not_called()
-            scheduler.return_value.transaction_call.assert_not_called()
-            self.assertTrue(video.exists())
-
-    def test_background_subtitles_accept_metadata_without_caption_dictionaries(self):
-        import yt_dlp
-        from webapp.subtitles import run_subtitles
-        with tempfile.TemporaryDirectory() as directory, \
-             patch('webapp.subtitles.ChannelScheduler') as scheduler, \
-             patch('webapp.subtitles.DiskBudget') as budget:
-            root=Path(directory);video=root/'clip.mp4';video.write_bytes(b'video')
-            scheduler.return_value.enabled=False
-            scheduler.return_value.youtube_pacing=False
-            budget.return_value.lease.return_value.__enter__.return_value.path=root/'cache'
-            def download(downloader, urls):
-                self.assertIsNone(downloader.process_subtitles('fixture',None,None))
-                return 0
-            payload={'base':str(root),'config':{**CONFIG,'storage_mode':'local'},
-                     'video_file':str(video),'urls':['https://example.test/clip.mp4']}
-            with patch.object(yt_dlp.YoutubeDL,'download',download):
-                result=run_subtitles(SimpleNamespace(directory=root/'state'),payload,lambda _:None)
-            self.assertTrue(result['video_preserved'])
-
     def test_selected_instance_does_not_inherit_local_credentials(self):
         from webapp.fleet_routes import selected_configuration
         remote = {'storage_mode': 'oss', 'oss_access_key_secret': '',

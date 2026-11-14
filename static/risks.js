@@ -54,7 +54,7 @@ function taskRiskHTML(task) {
   const remaining = Math.max(0, Math.ceil((risk.available_at || 0) - Date.now() / 1000));
   const exhausted = task.status === 'failed' && risk.max_attempts > 0 && risk.attempts >= risk.max_attempts;
   const stateText = task.status === 'failed' ? '任务已失败，当前没有已安排的自动重试。' : task.status === 'interrupted' ? '任务已中断，以当前队列状态为准。' : retry ? `已安排退避重试，${remaining ? `约 ${remaining} 秒后可再次领取` : '已到可领取时间，仍需等待实例、额度及资源'}。` : queued ? '正在排队，等待可用实例与资源。' : task.status === 'running' ? '任务正在执行，最终结果尚未确认。' : '任务已结束，请查看结果。';
-  return `<section class="task-risk"><h3>限制与处理建议</h3><p class="risk-task-state">${escapeHTML(stateText)} 当前任务已尝试 ${Number(risk.attempts || 0)} / ${Number(risk.max_attempts || 0)} 次。${exhausted ? '已达到最大尝试次数，请先处理原因再手动重试。' : ''}${task.action === 'subtitles' ? '字幕任务状态不会改变父视频成功及计费。' : ''}</p>${failureEvidenceHTML(risk.failure)}${risk.codes.map(code => {
+  return `<section class="task-risk"><h3>限制与处理建议</h3><p class="risk-task-state">${escapeHTML(stateText)} 当前任务已尝试 ${Number(risk.attempts || 0)} / ${Number(risk.max_attempts || 0)} 次。${exhausted ? '已达到最大尝试次数，请先处理原因再手动重试。' : ''}</p>${failureEvidenceHTML(risk.failure)}${risk.codes.map(code => {
     const item = riskByCode.get(code);
     return item ? `<article data-risk-code="${escapeHTML(code)}"><strong>${escapeHTML(item.title)}</strong><p>${escapeHTML(item.impact)}</p><p><b>恢复：</b>${escapeHTML(item.recovery)}</p><p><b>操作：</b>${escapeHTML(item.action)} <a href="${escapeHTML(item.href)}">前往查看 ↗</a></p></article>` : '';
   }).join('')}<p class="capacity-footnote">分类依据当前任务已记录的信息，可能同时匹配多个原因；请结合下方错误与日志判断，不能据此认定封号或封 IP。</p></section>`;

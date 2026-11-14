@@ -13,9 +13,6 @@ class TaskQueries:
     def get(self, task_id, private=False):
         with self.connect() as db:
             value = self.decode(db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first(), private, db)
-            if value and (value.get('result') or {}).get('subtitle_tasks'):
-                value['subtitle_tasks'] = [dict(row) for row in db.execute(select(tasks.c.id, tasks.c.status, tasks.c.error).where(
-                    tasks.c.id.in_(value['result']['subtitle_tasks']))).mappings()]
             return value
 
     def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False):
@@ -151,11 +148,11 @@ class TaskQueries:
         if self.fleet and self.fleet.can_download:
             with self.connect() as db:
                 running = db.execute(select(tasks.c.id).where(tasks.c.instance_id == self.fleet.id,
-                    tasks.c.status == 'running', tasks.c.action.in_(('download', 'subtitles'))).limit(1)).first()
+                    tasks.c.status == 'running', tasks.c.action == 'download').limit(1)).first()
                 return bool(running or (not self.fleet.row(db)['paused'] and not self.claims_paused(db)
                                         and self._released_queued_count(db)))
         with self.connect() as db:
-            downloads, checks = self._counts(db, ['action:download', 'action:subtitles']), self._counts(db, ['action:check'])
+            downloads, checks = self._counts(db, ['action:download']), self._counts(db, ['action:check'])
             return bool(downloads.get('running', 0) or checks.get('running', 0) or checks.get('queued', 0)
                         or (not self.downloads_paused(db) and self._released_queued_count(db)))
 
@@ -169,8 +166,6 @@ class TaskQueries:
             roles = set()
             for scope in queued:
                 action = scope.removeprefix('action:')
-                if action == 'subtitles' and paused:
-                    continue
                 if action == 'download' and (paused or not self._released_queued_count(db)):
                     continue
                 due = db.execute(select(tasks.c.id).where(
@@ -178,7 +173,7 @@ class TaskQueries:
                     tasks.c.available_at <= time.time(), self.released_condition()).limit(1)).first()
                 if due:
                     roles.update(('download', 'regular') if action == 'download' else
-                                 ('maintenance',) if action in ('import', 'index') else ('subtitles',) if action == 'subtitles' else ('regular',))
+                                 ('maintenance',) if action in ('import', 'index') else ('regular',))
             return roles
 
     def runnable_counts(self):
@@ -188,12 +183,10 @@ class TaskQueries:
             counts = {}
             stamp = self.fleet.clock(db) if self.fleet else time.time()
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
-                                  ('subtitles', ('subtitles',)), ('regular', ('check',))):
+                                  ('regular', ('check',))):
                 if self.fleet and role == 'download' and not self.fleet.admission(db, lock=False):
                     continue
                 if not self._counts(db, ['action:' + action for action in actions]).get('queued', 0):
-                    continue
-                if role == 'subtitles' and paused:
                     continue
                 if role == 'download' and (paused or not self._released_queued_count(db)):
                     continue

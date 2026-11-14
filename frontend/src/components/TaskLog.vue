@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, watch } from 'vue';
 import { api } from '../api';
 import { useResource } from '../composables/resource';
 import { usePolling } from '../composables/polling';
@@ -42,7 +42,6 @@ interface Detail {
       evidence?: string;
     };
   };
-  subtitle_tasks?: Array<{ id: string; status: string }>;
 }
 interface LogResponse {
   text: string;
@@ -52,7 +51,7 @@ interface LogResponse {
 }
 const props = defineProps<{ task: { id: string; video_id?: string; instance_id?: string } }>();
 const emit = defineEmits<{ close: [] }>();
-const identity = ref(props.task.id);
+const identity = computed(() => props.task.id);
 const resource = useResource<{ detail: Detail; text: string; offset: number; message?: string }>();
 const detail = computed(() => resource.data.value?.detail);
 function refresh(signal?: AbortSignal) {
@@ -92,8 +91,7 @@ usePolling(
 <template>
   <WorkspaceDialog :open="true" title="执行日志" @close="emit('close')">
     <div class="actions">
-      <button v-if="identity !== task.id" @click="identity = task.id">返回主任务</button
-      ><button @click="refresh()">刷新日志</button>
+      <button @click="refresh()">刷新日志</button>
     </div>
     <p v-if="resource.error.value" class="form-error" role="alert">{{ resource.error.value }}</p>
     <template v-if="detail"
@@ -133,16 +131,6 @@ usePolling(
         已添加 {{ detail.progress?.added || 0 }} 条 · 重复 {{ detail.progress?.duplicates || 0 }} 条
         · 无效 {{ detail.progress?.invalid || 0 }} 条
       </p>
-      <div v-if="detail.subtitle_tasks?.length" class="actions">
-        <span>字幕补下载（独立于视频计费）：</span
-        ><button
-          v-for="child in detail.subtitle_tasks"
-          :key="child.id"
-          @click="identity = child.id"
-        >
-          {{ videoStates[child.status] || child.status }} ↗
-        </button>
-      </div>
     </template>
     <pre id="log-content" class="log-output">{{
       resource.data.value?.text ||

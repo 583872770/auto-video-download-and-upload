@@ -1,5 +1,4 @@
 """Validate the new time migration and candidate scan against disposable MySQL."""
-from datetime import datetime, timezone
 import json
 import unittest
 
@@ -28,7 +27,7 @@ class SmoothnessMySQLTests(MySQLFixture, unittest.TestCase):
             self.assertLessEqual(scans['ix_tasks_batch_ready'], 100)
             print('QUEUE_SCAN_FIXTURE', json.dumps(scans), flush=True)
 
-    def test_legacy_time_backfill_and_index_creation_are_restartable(self):
+    def test_time_schema_and_index_creation_are_restartable_without_backfill(self):
         with self.store.connect() as db:
             for table in (deliveries, test_files):
                 index_name = next(index.name for index in table.indexes if index.name.endswith('_time'))
@@ -40,5 +39,5 @@ class SmoothnessMySQLTests(MySQLFixture, unittest.TestCase):
         for table in (deliveries, test_files):
             with self.store.connect() as db:
                 value = db.execute(select(table.c.created_epoch).where(table.c.id=='fixture')).scalar_one()
-            self.assertEqual(value, datetime(2026, 11, 6, tzinfo=timezone.utc).timestamp())
+            self.assertIsNone(value)
             self.assertTrue(any(index['name'].endswith('_time') for index in inspect(self.store.db.engine).get_indexes(table.name)))

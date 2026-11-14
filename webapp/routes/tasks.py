@@ -12,7 +12,7 @@ def register_tasks_routes(context, queue, preflight):
 
     @app.get('/api/tasks')
     def tasks():
-        actions = ('download', 'subtitles', 'check', 'import', 'index', 'clear_media') if request.args.get('scope') == 'download' else None
+        actions = ('download', 'check', 'import', 'index', 'clear_media') if request.args.get('scope') == 'download' else None
         active = request.args.get('view') == 'active'
         if active:
             actions = ('download',)

@@ -9,7 +9,7 @@ def main(drain):
     parser = argparse.ArgumentParser()
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--slot', type=int, default=0)
-    parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance', 'subtitles'), default='all')
+    parser.add_argument('--role', choices=('all', 'regular', 'download', 'maintenance'), default='all')
     args = parser.parse_args()
     with process_diagnostics(args.state, args.slot):
         event('worker_boot', worker_slot=args.slot, role=args.role, pid=os.getpid())

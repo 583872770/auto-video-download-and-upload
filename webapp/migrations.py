@@ -5,7 +5,7 @@ its version is recorded. Large queue tables are never rewritten here.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import inspect, select, bindparam, tuple_
+from sqlalchemy import inspect, select, tuple_
 
 from webapp.database import deliveries, download_lists, job_profiles, media, schema_migrations, test_files
 
@@ -92,28 +92,11 @@ def _optimize_indexes(engine):
 
 
 def _completed_file_times(engine):
-    # Only the completed-file ledgers are backfilled. Never rewrite queued tasks.
+    # Schema changes remain resumable; test data is not backfilled.
     for table in (deliveries, test_files):
         if 'created_epoch' not in {c['name'] for c in inspect(engine).get_columns(table.name)}:
             with engine.begin() as db:
                 db.exec_driver_sql('ALTER TABLE ' + table.name + ' ADD COLUMN created_epoch DOUBLE')
-        cursor = -1
-        while True:
-            with engine.begin() as db:
-                rows = db.execute(select(table.c.id, table.c.seq, table.c.created_at).where(
-                    table.c.created_epoch.is_(None), table.c.seq > cursor).order_by(table.c.seq).limit(500)).all()
-                if not rows:
-                    break
-                values = []
-                for identity, seq, created in rows:
-                    try:
-                        epoch = datetime.fromisoformat(created).timestamp()
-                    except (ValueError, TypeError, OverflowError):
-                        epoch = 0  # Invalid legacy timestamps were already ignored.
-                    values.append({'file_id': identity, 'file_epoch': epoch})
-                db.execute(table.update().where(table.c.id == bindparam('file_id')).values(
-                    created_epoch=bindparam('file_epoch')), values)
-                cursor = rows[-1].seq
         for index in table.indexes:
             if index.name.endswith('_time'):
                 index.create(engine, checkfirst=True)
@@ -157,20 +140,12 @@ def _delivery_outputs(engine):
 
 
 def _media_download_times(engine):
-    """Add the completion time shown in the media library.
-
-    Existing catalog rows predate this field. Their filesystem modification
-    time is the safest available fallback; completed downloads write the real
-    completion timestamp through MediaCatalog.index_file.
-    """
+    """Add the completion time written by MediaCatalog.index_file."""
     columns = {column['name'] for column in inspect(engine).get_columns(media.name)}
     if 'downloaded_at' not in columns:
         with engine.begin() as db:
             db.exec_driver_sql('ALTER TABLE ' + media.name +
                                ' ADD COLUMN downloaded_at DOUBLE NOT NULL DEFAULT 0')
-    with engine.begin() as db:
-        db.exec_driver_sql('UPDATE ' + media.name +
-                           ' SET downloaded_at = modified WHERE downloaded_at = 0 OR downloaded_at IS NULL')
 
 
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),

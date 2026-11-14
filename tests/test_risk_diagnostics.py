@@ -45,9 +45,9 @@ class RiskDiagnosticsTests(unittest.TestCase):
         self.assertFalse(task_risks(task)['retry_scheduled'])
         task.update(status='queued', available_at=time.time()+120, progress={'stage': 'retrying'})
         self.assertTrue(task_risks(task)['retry_scheduled'])
-        task.update(action='subtitles')
+        task['progress']['last_failure'] = {'phase': 'subtitles', 'kind': 'request_rate_limit', 'http_status': 429}
         self.assertIn('subtitle', task_risks(task)['codes'])
-        task.update(action='download', status='failed', error='unknown fixture')
+        task.update(status='failed', error='unknown fixture', progress={})
         self.assertEqual(task_risks(task)['codes'], ['unknown'])
 
     def test_auth_evidence_unknown_and_expired_are_not_invalid_cookie(self):

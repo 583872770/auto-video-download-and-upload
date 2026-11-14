@@ -110,7 +110,7 @@ def task_risks(task):
             codes.append('http_429')
     else:
         codes = classify(task.get('error'))
-    if task['action'] == 'subtitles':
+    if failure and failure.get('phase') == 'subtitles':
         codes.append('subtitle')
     if task['status'] == 'queued' and progress.get('stage') == 'retrying':
         codes.append('retry')

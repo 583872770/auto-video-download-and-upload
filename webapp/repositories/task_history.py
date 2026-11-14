@@ -68,9 +68,6 @@ class TaskHistory:
     def log_path(self, task_id, *, create=True):
         if len(task_id) != 32 or any(c not in '0123456789abcdef' for c in task_id):
             raise ValueError('无效的任务 ID')
-        legacy = self.directory / f'{task_id}.log'
-        if legacy.is_file():
-            return legacy
         path = self.directory / 'logs' / task_id[:2] / task_id[2:4] / f'{task_id}.log'
         if create:
             path.parent.mkdir(parents=True, exist_ok=True)

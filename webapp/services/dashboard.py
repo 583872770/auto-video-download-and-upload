@@ -50,7 +50,6 @@ class DashboardService:
             snapshot['context'], stamp, cookie_profiles=snapshot['profiles'], current_tasks=snapshot['current_tasks'],
             global_limit=snapshot['budget'], global_running=snapshot['global_running'],
             paused=snapshot['paused'])
-        concurrency['subtitles'] = snapshot['subtitles']
         from webapp.risk_diagnostics import observed, local_health
         concurrency['local_health'] = local_health(self.context.store.directory, config, self.context.clash.directory)
         concurrency['local_health']['progress_cache'] = self.context.store.progress_cache.health()
@@ -75,11 +74,11 @@ class DashboardService:
         if self.context.fleet and self.context.fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.repositories.dashboard import fleet_media_overview
             total, recent = fleet_media_overview(self.context.store)
-            return dict(counts=self.context.store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
+            return dict(counts=self.context.store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
                 download_counts=self.context.store.counts(actions=('download',)), accounting=accounting,
                 media={'count': int(total)}, recent_media=recent,
-                recent_tasks=self.context.store.page(limit=5, actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
-        return dict(counts=self.context.store.counts(actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media')),
+                recent_tasks=self.context.store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
+        return dict(counts=self.context.store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
                        download_counts=self.context.store.counts(actions=('download',)), accounting=accounting,
                        media=self.context.catalog.root_status(root), recent_media=self.context.catalog.page(root, limit=4)['items'],
-                       recent_tasks=self.context.store.page(limit=5, actions=('download', 'subtitles', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
+                       recent_tasks=self.context.store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])

@@ -325,15 +325,11 @@ function concurrencyHTML(data, {compact = false, key = 'main'} = {}) {
   const notices = [];
   const poolCooling = Number(data.cookie_pool?.cooling_sessions || 0);
   const poolRecovering = Number(data.cookie_pool?.recovery_sessions || 0);
-  const subtitles = data.subtitles || {};
-  const subtitleRate = subtitles.cooldown_status ? ` HTTP ${Number(subtitles.cooldown_status)}` : '';
-  const subtitleInterval = subtitles.interval_seconds ? `最少请求间隔：${concurrencyCountdown(subtitles.interval_seconds, data.time)}。` : '';
   const pacing = data.youtube_pacing;
   if (pacing) notices.push(['info', 'YouTube 渐进调速', `当前启动间隔 ${Number(pacing.interval)} 秒 · 最近一小时 ${Number(pacing.hourly_used)} / ${pacing.hourly_limit === 0 ? '不限制' : Number(pacing.hourly_limit)} 次 · 最近二十四小时 ${Number(pacing.daily_used)} / ${pacing.daily_limit === 0 ? '不限制' : Number(pacing.daily_limit)} 次。${pacing.interval_reason ? escapeHTML(pacing.interval_reason) : ''}${pacing.next_start_at > data.time ? '下一启动窗口：' + concurrencyCountdown(pacing.next_start_at - data.time, data.time) + '。' : ''}${escapeHTML(pacing.reason || '')}。文件传输可并行，累计预算包含启动许可、重试及字幕请求。`, '#settings', '查看请求节奏']);
   if (!pacing && data.cookie_pool) notices.push(['info', '账号池请求节奏', `已保存的共用启动间隔：${Number(data.youtube_cookie_pool_start_interval ?? 5)} 秒（0 表示关闭）。${data.cookie_pool.min_interval ? `当前账号会话采样最短启动间隔 ${Number(data.cookie_pool.min_interval)} 秒。` : ''}账号与共用间隔分别生效，已开始的文件传输可并行。`, '#settings', '查看设置']);
   else if (!pacing && data.youtube_start_interval) notices.push(['info', 'YouTube 请求节奏', `本实例视频启动至少间隔 ${Number(data.youtube_start_interval)} 秒，当前 ${Number(data.youtube_waiting || 0)} 个视频等待；文件传输仍可并行。${data.youtube_source_address ? `直连源地址 ${escapeHTML(data.youtube_source_address)}。` : ''}这是本地保护配置，不是源站公开额度。`, '#settings', '查看设置']);
 
-  if (subtitles.queued || subtitles.running || subtitles.failed) notices.push(['info', '字幕独立补下载', `待补 ${subtitles.queued || 0} · 执行中 ${subtitles.running || 0} · 补下载失败 ${subtitles.failed || 0}。${subtitleInterval}${subtitles.cooldown_seconds ? '字幕上游冷却'+subtitleRate+'：'+concurrencyCountdown(subtitles.cooldown_seconds, data.time)+'。' : ''}字幕队列不占用视频传输额度，也不改变视频成功及计费；完成当前后停止时不再领取新字幕任务。`, '#tasks', '查看执行日志']);
   if (!data.online || stale) notices.push(['unavailable', !data.online ? '实例离线' : '状态暂未更新', '下方保留最近数据，无法确认当前可用额度。请检查实例连接。', '#instances', '查看实例']);
   if (cooled.length) {
     const subtitle = cooled.some(row => row.throttle_kind === 'subtitles');

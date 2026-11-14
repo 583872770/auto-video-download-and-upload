@@ -16,7 +16,7 @@ class TaskRecovery:
         store = self.store
         task = self.task
         last_progress = self.progress
-        evidence = failure_evidence(error, phase='subtitles' if task['action'] == 'subtitles' else None)
+        evidence = failure_evidence(error)
         last_progress['last_failure'] = evidence.public()
         store.update_progress(task['id'], dict(last_progress), store.owner)
 

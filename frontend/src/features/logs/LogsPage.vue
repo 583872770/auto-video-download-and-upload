@@ -15,7 +15,6 @@ const resource = useResource<Page<RuntimeTask>>(),
   selected = ref<RuntimeTask>();
 const actions: Record<string, string> = {
   download: '视频下载',
-  subtitles: '字幕补下载',
   check: '环境检查',
   import: '清单导入',
   index: '同步素材',

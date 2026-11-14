@@ -1,5 +1,5 @@
 """Transactional session totals and a ledger of completed video files."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -87,21 +87,11 @@ class DownloadStatistics:
         return 'download_statistics_active:' + cls._scope(instance_id)
 
     def _active(self, db, instance_id=None):
-        """Return the active session for one executor scope.
-
-        Session ownership is per download instance.  The old singleton setting
-        is read only as a compatibility fallback for sessions created before
-        instance-scoped sessions were introduced.
-        """
+        """Return the active session for one executor scope."""
         key = self._active_key(instance_id)
         value = db.execute(self.store._locked(select(settings.c.value).where(
             settings.c.key == key))).scalar_one_or_none()
-        if value is not None:
-            return value or ''
-        if self._scope(instance_id) == 'local':
-            return db.execute(self.store._locked(select(settings.c.value).where(
-                settings.c.key == 'download_statistics_active'))).scalar_one_or_none() or ''
-        return ''
+        return value or ''
 
     def defaults(self, db):
         value = db.execute(select(settings.c.value).where(settings.c.key == 'download_billing_defaults')).scalar_one_or_none()
@@ -154,24 +144,11 @@ class DownloadStatistics:
             elapsed = max(0, min(end, begin + 60) - max(started, begin))
             points.append(dict(start_at=begin, end_at=begin + 60, elapsed_seconds=round(elapsed, 3),
                                file_bytes=0, file_count=0, output_mbps=None, partial=elapsed < 60))
-        # ISO timestamps may use different UTC offsets. Use a loose date bound
-        # for SQL, then compare actual instants in Python (never string order).
         lower = max(started, min(first_minute, recent_start))
-        date_bound = (datetime.fromtimestamp(lower, timezone.utc) - timedelta(days=1)).date().isoformat()
         for ledger in (deliveries, test_files):
             rows = list(db.execute(select(ledger.c.created_epoch, ledger.c.size).where(
                 ledger.c.session_id == identity, ledger.c.created_epoch >= lower,
                 ledger.c.created_epoch <= end)))
-            # Older writers can still publish ISO-only rows during an upgrade.
-            legacy = db.execute(select(ledger.c.created_at, ledger.c.size).where(
-                ledger.c.session_id == identity, ledger.c.created_epoch.is_(None),
-                ledger.c.created_at >= date_bound))
-            for created, size in legacy:
-                try:
-                    completed = datetime.fromisoformat(created).timestamp()
-                except (ValueError, TypeError, OverflowError):
-                    continue
-                rows.append((completed, size))
             for completed, size in rows:
                 if not started <= completed <= end:
                     continue
@@ -214,14 +191,6 @@ class DownloadStatistics:
                 return existing
             db.execute(sessions.update().where(sessions.c.id == existing, sessions.c.ended_at.is_(None)).values(
                 status='paused', ended_at=stamp()))
-        # A pre-upgrade local session used the singleton key. Close it before
-        # creating the first scoped session so a restart cannot reuse it.
-        if scope == 'local':
-            legacy = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one_or_none()
-            if legacy and legacy != existing:
-                db.execute(sessions.update().where(sessions.c.id == legacy, sessions.c.ended_at.is_(None)).values(
-                    status='paused', ended_at=stamp()))
-            db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
         identity = uuid.uuid4().hex
         db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
             started_at=stamp(), status='active', label='', **self.defaults(db)))
@@ -247,8 +216,6 @@ class DownloadStatistics:
             db.execute(sessions.update().where(sessions.c.id == identity).values(
                 status='paused', ended_at=stamp()))
             db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=''))
-            if scope == 'local':
-                db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
 
     def stop_all(self, db):
         """Stop every instance session for a global pause/stop command."""
@@ -256,7 +223,6 @@ class DownloadStatistics:
             settings.c.key.startswith('download_statistics_active:'))).scalars().all()
         for key in keys:
             self.stop_session(db, key.split(':', 1)[1])
-        self.stop_session(db, 'local')
 
     def begin(self, db, row):
         identity = self.ensure_session(db, row.get('instance_id'))
@@ -317,8 +283,6 @@ class DownloadStatistics:
             db.execute(sessions.update().where(sessions.c.id == identity).values(
                 status='paused', ended_at=stamp()))
             db.execute(settings.update().where(settings.c.key == self._active_key(instance_id)).values(value=''))
-            if self._scope(instance_id) == 'local':
-                db.execute(settings.update().where(settings.c.key == 'download_statistics_active').values(value=''))
 
     def file_identity(self, task, path, *, test_mode=False):
         """Use the same durable identity for registration and receipt recovery."""
@@ -362,7 +326,7 @@ class DownloadStatistics:
                 raise DownloadLeaseLost('任务租约已过期，无法登记下载文件。')
             session_id = self.store.decode(task, private=True, db=db)['payload'].get('download_session_id')
             if not session_id:
-                return False  # Jobs already executing during an upgrade have no reliable session.
+                raise ValueError('任务缺少下载会话，无法登记下载文件。')
             identity = artifact['id'] if artifact else self.file_identity(task, path, test_mode=test_mode)
             self._active(db, task.get('instance_id'))
             if db.execute(select(ledger.c.id).where(ledger.c.id == identity)).first():
@@ -415,10 +379,8 @@ class DownloadStatistics:
                 .where(condition)).mappings().one()
             from webapp.billing import BillingService
             billing = BillingService(self.store).summary(db)
-            active_id = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_active')).scalar_one_or_none()
-            if not active_id:
-                active_id = db.execute(select(sessions.c.id).where(sessions.c.status.in_(('active', 'stopping')))
-                    .order_by(sessions.c.seq.desc()).limit(1)).scalar_one_or_none()
+            active_id = db.execute(select(sessions.c.id).where(sessions.c.status.in_(('active', 'stopping')))
+                .order_by(sessions.c.seq.desc()).limit(1)).scalar_one_or_none()
             active = db.execute(session_select().where(sessions.c.id == active_id, condition)).mappings().first() if active_id else None
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
             test_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_test_statistics_since')).scalar_one()

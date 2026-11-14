@@ -4,9 +4,6 @@ from pathlib import Path
 import tempfile
 import threading
 import time
-import os
-import subprocess
-import sys
 import unittest
 from unittest.mock import patch
 
@@ -108,155 +105,6 @@ class TransactionTests(unittest.TestCase):
                     self.assertEqual(operation.call_count, attempts)
 
 
-class SubtitleTests(unittest.TestCase):
-    def test_pool_subtitle_limit_cools_only_original_account_and_blocks_new_requests(self):
-        import yt_dlp
-        from web_worker import execute
-        from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
-        from webapp.cookie_pool import CookiePool
-        from webapp.channel_scheduler import ChannelScheduler
-        from webapp.downloads import YouTubeAccountLimited
-        from webapp.throughput import PipelineBusy
-        profiles = CookieProfiles(self.root, self.store)
-        ids = [profiles.add(str(i), (f'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-{i}\n').encode())['id']
-               for i in range(2)]
-        self.config.update(youtube_cookie_pool=ids, _cookie_pool_selected=ids[0],
-                           youtube_pacing_mode='adaptive', youtube_start_interval=0)
-        parent, child = self.queue()
-        with patch.object(yt_dlp.YoutubeDL, 'download', side_effect=RuntimeError(
-                'Your account has been rate-limited')) as download:
-            with self.assertRaises(YouTubeAccountLimited) as caught:
-                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-            self.assertEqual(download.call_count, 1)
-        pool = CookiePool(self.store, self.config, self.root, child['id'])
-        snapshot = pool.status()
-        self.assertFalse(snapshot['halted'])
-        self.assertEqual(snapshot['capacity_summary']['capacity'], 1)
-        self.assertEqual(caught.exception._download_evidence.profile_id, ids[0])
-        scheduler = ChannelScheduler(self.store, self.config, child['id'])
-        with self.store.connect() as db:
-            self.assertFalse(scheduler._state(db, 'subtitles:youtube-origin').get('cooldown_until'))
-            self.assertFalse(scheduler._state(db, 'youtube-pacing:instance:local').get('cooldown_until'))
-            self.assertEqual(db.execute(select(download_permits)).all(), [])
-        with patch.object(yt_dlp.YoutubeDL, 'download') as download:
-            with self.assertRaises(PipelineBusy):
-                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-            download.assert_not_called()
-        self.assertTrue(self.video.is_file())
-
-    def test_adaptive_subtitle_account_limit_stops_upstream_and_releases_permits(self):
-        import yt_dlp
-        from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
-        from webapp.downloads import YouTubeAccountLimited
-        self.config.update(youtube_pacing_mode='adaptive', youtube_start_interval=45)
-        parent, child = self.queue()
-        with patch.object(yt_dlp.YoutubeDL, 'download', side_effect=RuntimeError(
-                'Your account has been rate-limited by YouTube for up to an hour.')):
-            with self.assertRaises(YouTubeAccountLimited) as limited:
-                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-        self.assertGreaterEqual(limited.exception.retry_after, 3600)
-        router = ChannelScheduler(self.store, self.config, child['id'])
-        with self.store.connect() as db:
-            self.assertEqual(db.execute(select(download_permits)).all(), [])
-            state = router._state(db, 'youtube-pacing:instance:local')
-        self.assertGreaterEqual(state['cooldown_until'] - time.time(), 3598)
-        self.assertEqual(len(state['starts']), 1)
-        self.assertTrue(self.video.is_file())
-
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
-        self.store = TaskStore(self.root/'state')
-        self.addCleanup(self.store.db.engine.dispose)
-        self.store.set_downloads_paused(False)
-        self.config = {'path': str(self.root/'videos'), 'proxy_mode': 'direct', 'download_method': 'yt_dlp',
-                       'disk_min_free_gb': 0, 'disk_resume_free_gb': 0, 'download_attempts': 3}
-        self.video = self.root/'videos'/'title [jNQXAC9IVRw].mp4'
-        self.video.parent.mkdir()
-        self.video.write_bytes(b'fixture video')
-
-    def queue(self):
-        job = self.store.create('download', {'base': str(self.root), 'config': self.config, 'urls':['https://youtu.be/jNQXAC9IVRw']})
-        result = {'message': 'video complete', '_subtitle_jobs': [{'base': str(self.root), 'config': self.config,
-                    'video_file': str(self.video), 'urls': ['https://youtu.be/jNQXAC9IVRw']}]}
-        self.assertTrue(self.store.finish(job['id'], result=result))
-        self.assertFalse(self.store.finish(job['id'], result=result))
-        parent = self.store.get(job['id'])
-        self.assertNotIn('_subtitle_jobs', parent['result'])
-        self.assertEqual(len(parent['subtitle_tasks']), 1)
-        self.assertIn('subtitles', self.store.runnable_counts())
-        child = self.store.claim(self.store.owner, actions=('subtitles',))
-        return parent, child
-
-    def test_video_commit_enqueues_once_and_last_video_does_not_block_subtitles(self):
-        parent, child = self.queue()
-        self.assertEqual(parent['status'], 'succeeded')
-        self.assertIsNotNone(child)
-        self.assertEqual(self.store.counts(actions=('subtitles',))['total'], 1)
-        self.assertEqual(self.store.counts(actions=('download',))['succeeded'], 1)
-
-    def test_subtitle_429_cools_only_subtitles_and_preserves_video(self):
-        import yt_dlp
-        from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
-        from webapp.throughput import PipelineBusy
-        parent, child = self.queue()
-        with patch.object(yt_dlp.YoutubeDL, 'download', side_effect=RuntimeError('HTTP Error 429: Too Many Requests')):
-            with self.assertRaisesRegex(RuntimeError, '429'):
-                execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-        scheduler = ChannelScheduler(self.store, self.config, child['id'])
-        with self.store.connect() as db:
-            state = scheduler._state(db, 'subtitles:youtube-origin')
-            self.assertGreater(state['cooldown_until'], time.time())
-            self.assertEqual(scheduler._state(db, 'upstream:youtube-origin'), {})
-        with scheduler.permit(scheduler.channels[0], 'transfer', timeout=0):
-            pass
-        with self.assertRaises(PipelineBusy):
-            execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-        self.assertEqual(self.store.get(parent['id'])['status'], 'succeeded')
-        self.assertEqual(self.video.read_bytes(), b'fixture video')
-
-    def test_pause_blocks_subtitle_claim_and_success_never_downloads_media(self):
-        import yt_dlp
-        from web_worker import execute
-        parent, child = self.queue()
-        self.store.release(child['id'], self.store.owner, 'fixture', delay=0)
-        self.store.set_downloads_paused(True)
-        self.assertNotIn('subtitles', self.store.runnable_counts())
-        self.assertNotIn('subtitles', self.store.runnable_roles())
-        self.assertIsNone(self.store.claim(actions=('subtitles',)))
-        self.store.set_downloads_paused(False)
-        child = self.store.claim(actions=('subtitles',))
-        params = []
-        def download(downloader, addresses):
-            params.append(dict(downloader.params))
-            return 0
-        with patch.object(yt_dlp.YoutubeDL, 'download', download):
-            result = execute('subtitles', child['payload'], store=self.store, task_id=child['id'])
-        self.store.finish(child['id'], result=result, worker_id=self.store.owner)
-        self.assertEqual(self.store.get(parent['id'])['subtitle_tasks'][0]['status'], 'succeeded')
-        self.assertTrue(params[0]['skip_download'])
-        self.assertIsNone(params[0]['download_archive'])
-        self.assertNotIn('subtitleslangs', params[0])
-
-    def test_separate_subtitle_process_drains_after_last_video(self):
-        parent, child = self.queue()
-        self.store.release(child['id'], self.store.owner, 'fixture', delay=0)
-        self.video.unlink()
-        process = subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.store.directory),
-            '--slot', '-2', '--role', 'subtitles'], cwd=Path(__file__).resolve().parents[1],
-            env={**os.environ, 'VIDEO_WORKER_DATABASE_URL': self.store.db.url, 'PYTHONUTF8': '1'},
-            capture_output=True, timeout=30)
-        self.assertEqual(process.returncode, 0, process.stderr.decode('utf-8', errors='replace'))
-        finished = self.store.get(child['id'])
-        self.assertEqual(finished['status'], 'succeeded')
-        self.assertTrue(finished['result']['skipped'])
-        self.assertEqual(self.store.get(parent['id'])['status'], 'succeeded')
-        self.assertTrue((self.store.directory / 'worker-subtitles.lock').exists())
-
-
 class BudgetAndPolicyTests(unittest.TestCase):
     def test_budget_estimate_accounts_for_peak_size_without_growing_budget(self):
         from webapp.disk_budget import DiskBudget, GIB
@@ -273,7 +121,7 @@ class BudgetAndPolicyTests(unittest.TestCase):
             self.assertEqual(estimate['budget_for_configured_bytes'], 64*GIB)
             self.assertEqual(snapshot['budget_bytes'], 20*GIB)
 
-    def test_explicit_channel_limits_and_retired_subtitle_settings(self):
+    def test_explicit_channel_limits_and_delivery_owned_subtitles(self):
         from webapp.settings import validate_settings
         from webapp.downloader import build_ydl_options
         config = {'builtin_transfer_limit':16,'builtin_connection_limit':32,'builtin_resolver_limit':6}
@@ -284,11 +132,7 @@ class BudgetAndPolicyTests(unittest.TestCase):
         self.assertIsNone(registry({'scheduler_mode':'auto','builtin_transfer_limit':0})[0].transfer_limit)
         with tempfile.TemporaryDirectory() as root:
             self.assertFalse(build_ydl_options(config, root)['writesubtitles'])
-            # Old task snapshots must not re-enable global subtitle downloads.
-            options = build_ydl_options({**config, 'subtitle_mode': 'required',
-                                         'subtitle_languages': 'en,zh-Hans'}, root)
-            self.assertFalse(options['writesubtitles'])
-            self.assertFalse(options['writeautomaticsub'])
-            self.assertNotIn('subtitleslangs', options)
+            self.assertFalse(build_ydl_options(config, root)['writeautomaticsub'])
+            self.assertNotIn('subtitleslangs', build_ydl_options(config, root))
         with self.assertRaises(ValueError):
             validate_settings({'builtin_transfer_limit': 65})

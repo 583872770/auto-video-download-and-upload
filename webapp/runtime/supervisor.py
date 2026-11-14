@@ -195,8 +195,8 @@ class TaskRunner:
                         self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
                         self.parser.start()
                     download_starts = role_counts.get('download', 0)
-                    for slot in [-2, -1, *range(count)]:
-                        role = 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
+                    for slot in [-1, *range(count)]:
+                        role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
                         if role not in roles:
                             continue
                         if role == 'download' and download_starts <= 0:

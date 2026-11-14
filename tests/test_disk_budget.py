@@ -184,24 +184,24 @@ class DiskBudgetTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.budget = DiskBudget(self.root, {'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
 
-    def test_stale_subtitle_cache_is_reclaimed_after_worker_exits(self):
-        cache = self.budget.runtime / 'cache' / 'worker-subtitles'
+    def test_stale_maintenance_cache_is_reclaimed_after_worker_exits(self):
+        cache = self.budget.runtime / 'cache' / 'worker-maintenance'
         cache.mkdir(parents=True, exist_ok=True)
-        (cache / 'leftover.tmp').write_bytes(b'partial subtitle')
+        (cache / 'leftover.tmp').write_bytes(b'partial maintenance output')
         old = time.time() - 7200
         os.utime(cache, (old, old))
-        with file_lock(self.root / 'worker-subtitles.lock') as owned:
+        with file_lock(self.root / 'worker-maintenance.lock') as owned:
             self.assertTrue(owned)
             self.budget._clean_diagnostics(grace=3600)
-            self.assertTrue(cache.exists(), 'live subtitle worker owns its cache')
+            self.assertTrue(cache.exists(), 'live maintenance worker owns its cache')
         self.budget._clean_diagnostics(grace=3600)
         self.assertFalse(cache.exists())
 
-    def test_recent_subtitle_cache_is_preserved(self):
-        cache = self.budget.runtime / 'cache' / 'worker-subtitles'
+    def test_recent_maintenance_cache_is_preserved(self):
+        cache = self.budget.runtime / 'cache' / 'worker-maintenance'
         cache.mkdir(parents=True, exist_ok=True)
         leftover = cache / 'leftover.tmp'
-        leftover.write_bytes(b'recent subtitle')
+        leftover.write_bytes(b'recent maintenance output')
         self.budget._clean_diagnostics(grace=3600)
         self.assertTrue(leftover.exists())
 

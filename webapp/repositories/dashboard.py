@@ -4,7 +4,6 @@ import time
 from sqlalchemy import func, select
 from webapp.concurrency_diagnostics import read_context
 from webapp.database import tasks as diagnostic_tasks, settings as diagnostic_settings
-from webapp.subtitles import summary as subtitle_summary
 
 
 def concurrency_inputs(store, config, base, fleet, queue):
@@ -42,11 +41,10 @@ def concurrency_inputs(store, config, base, fleet, queue):
                     diagnostic_profiles.c.scope == CookieProfiles.scope_for(base, store), diagnostic_profiles.c.deleted == 0,
                     diagnostic_profiles.c.id.in_(config['youtube_cookie_pool']))).mappings())
         node = fleet.row(db) if fleet else {}
-        subtitles = subtitle_summary(db, stamp, identity)
     return dict(identity=identity, stamp=stamp, progress=progress, current_tasks=current_tasks, context=context,
                 budget=int(budget or 0), global_running=global_running, profiles=profile_metadata,
                 paused=bool(node['paused']) if fleet else queue.get('paused', False),
-                error=node.get('error', ''), subtitles=subtitles)
+                error=node.get('error', ''))
 
 
 def fleet_media_overview(store):

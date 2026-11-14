@@ -8,8 +8,6 @@ from webapp.diagnostics import event
 def execute_task(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None,
             start_ticket=None, *, pipeline):
     _execute = pipeline
-    if action == 'subtitles':
-        payload = {**payload, '_task_id': task_id}
     if store and action == 'download':
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':

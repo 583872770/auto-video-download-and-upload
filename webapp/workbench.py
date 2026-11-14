@@ -43,11 +43,7 @@ class Workbench:
 
     @staticmethod
     def selection(db, key):
-        # Earlier versions left selections behind when logically deleting a job.
-        return db.execute(select(settings.c.value).join(download_lists,
-            download_lists.c.id == settings.c.value).where(settings.c.key == key,
-                ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id,
-                    job_profiles.c.deleted == 1).exists())).scalar_one_or_none()
+        return db.execute(select(settings.c.value).where(settings.c.key == key)).scalar_one_or_none()
 
     def visible_job(self, identity, *, compact=False):
         job = self.jobs.detail(identity, details=not compact) if identity else None

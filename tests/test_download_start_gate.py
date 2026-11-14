@@ -49,7 +49,7 @@ class DownloadStartGateTests(unittest.TestCase):
         ticket, _ = self.gate.acquire()
         store = Mock(owner='fixture')
         store.claim.return_value = {'action': 'check'}
-        task, other_ticket, waiting = self.gate.claim(store, exclude=('import', 'index', 'subtitles'))
+        task, other_ticket, waiting = self.gate.claim(store, exclude=('import', 'index'))
         self.assertEqual(task['action'], 'check')
         self.assertIsNone(other_ticket)
         self.assertTrue(waiting)

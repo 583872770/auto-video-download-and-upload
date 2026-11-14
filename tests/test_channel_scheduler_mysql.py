@@ -65,11 +65,10 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
                 blocker.close()
             first._release(token)
 
-    def test_completion_deadlock_rolls_back_subtitle_enqueue_and_counters(self):
+    def test_completion_deadlock_rolls_back_result_and_counters(self):
         job = self.first.create('download', {'base': str(self.root), 'config': {},
                                'urls': ['https://youtu.be/jNQXAC9IVRw']})
-        result = {'message': 'done', '_subtitle_jobs': [{'base': str(self.root), 'config': {},
-                   'video_file': str(self.root / 'video.mp4'), 'urls': ['https://youtu.be/jNQXAC9IVRw']}]}
+        result = {'message': 'done', 'file_count': 1}
         settle = self.first.statistics.settle
         calls = []
         def deadlock(db, **kwargs):
@@ -81,6 +80,5 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
             self.assertTrue(self.first.finish(job['id'], result=result))
         self.assertEqual(len(calls), 2)
         self.assertFalse(self.first.finish(job['id'], result=result))
-        self.assertEqual(len(self.first.get(job['id'])['subtitle_tasks']), 1)
-        self.assertEqual(self.first.counts(actions=('subtitles',))['total'], 1)
+        self.assertEqual(self.first.get(job['id'])['result'], result)
         self.assertEqual(self.first.counts(actions=('download',))['succeeded'], 1)

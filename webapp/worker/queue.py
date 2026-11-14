@@ -28,13 +28,13 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     # Mark this process as a worker for dynamic connection pool sizing
     os.environ['VIDEO_WORKER_PROCESS'] = 'true'
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
-    name = 'subtitles' if slot == -2 else 'maintenance' if slot < 0 else str(slot)
+    name = 'maintenance' if slot < 0 else str(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
         if not acquired:
             return
         store.recover(expired_only=True)
-        actions = ('subtitles',) if role == 'subtitles' else ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
-        exclude = ('import', 'index', 'subtitles') if role == 'regular' else None
+        actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
+        exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
         from webapp.download_start_gate import DownloadStartGate
         start_gate = DownloadStartGate(store.directory)

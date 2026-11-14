@@ -320,8 +320,6 @@ class Fleet:
                         item['throughput'], context, stamp, global_limit=budget, global_running=sum(counts.values()),
                         paused=item['paused'], online=item['online'], current_tasks=item['current_tasks'],
                         cookie_profiles=profile_names.get(item['id'], []))
-                    from webapp.subtitles import summary as subtitle_summary
-                    item['concurrency']['subtitles'] = subtitle_summary(db, stamp, item['id'])
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],
                         auths.get(item['id']), stamp, error=item['error'])
                     item['concurrency']['auth_checked_at'] = auths.get(item['id'], {}).get('checked_at')
