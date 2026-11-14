@@ -5,6 +5,7 @@ export interface MediaItem {
   name: string;
   title: string;
   size: number;
+  downloaded_at?: number | null;
   video_id?: string | null;
   cover: string | null;
   playable: boolean;

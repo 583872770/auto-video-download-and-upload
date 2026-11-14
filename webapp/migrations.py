@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import inspect, select, bindparam, tuple_
 
-from webapp.database import deliveries, download_lists, job_profiles, schema_migrations, test_files
+from webapp.database import deliveries, download_lists, job_profiles, media, schema_migrations, test_files
 
 
 def _applied(engine, version):
@@ -156,6 +156,23 @@ def _delivery_outputs(engine):
         table.create(engine, checkfirst=True)
 
 
+def _media_download_times(engine):
+    """Add the completion time shown in the media library.
+
+    Existing catalog rows predate this field. Their filesystem modification
+    time is the safest available fallback; completed downloads write the real
+    completion timestamp through MediaCatalog.index_file.
+    """
+    columns = {column['name'] for column in inspect(engine).get_columns(media.name)}
+    if 'downloaded_at' not in columns:
+        with engine.begin() as db:
+            db.exec_driver_sql('ALTER TABLE ' + media.name +
+                               ' ADD COLUMN downloaded_at DOUBLE NOT NULL DEFAULT 0')
+    with engine.begin() as db:
+        db.exec_driver_sql('UPDATE ' + media.name +
+                           ' SET downloaded_at = modified WHERE downloaded_at = 0 OR downloaded_at IS NULL')
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
@@ -163,7 +180,8 @@ STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261106_completed_file_times', _completed_file_times),
          ('20261107_cookie_ownership', _cookie_ownership),
          ('20261113_account_credentials', _account_credentials),
-         ('20261113_delivery_outputs', _delivery_outputs))
+         ('20261113_delivery_outputs', _delivery_outputs),
+         ('20261114_media_download_times', _media_download_times))
 
 
 def upgrade(engine):

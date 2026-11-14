@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 from Utils.config import video_directory
 from Utils.oss_storage import archive_key
@@ -53,7 +54,7 @@ def record_completed_file(session, filename):
                 path.unlink(missing_ok=True)
             raise
     if catalog and not payload.get('_business_job') and not oss_mode:
-        catalog.index_file(path, video_directory(config, base))
+        catalog.index_file(path, video_directory(config, base), downloaded_at=time.time())
     if (path in existing_files and not oss_mode) or str(path) in output_files:
         return
     size = path.stat().st_size
@@ -77,7 +78,7 @@ def record_completed_file(session, filename):
                 current_video.get('id', ''), current_video.get('title', progress.state.get('title', '')),
                 test_mode=test_mode):
             if catalog and payload.get('_business_job'):
-                catalog.index_file(path, Path(config['_job_media_root']))
+                catalog.index_file(path, Path(config['_job_media_root']), downloaded_at=time.time())
             if not test_mode:
                 session.billable_bytes += size
     meter.verified(size)
@@ -114,7 +115,7 @@ def finish_delivery(session, oss_storage, skipped_any, used_fallback):
             path = Path(filename)
             if catalog:
                 catalog.index_file(path, Path(config['_job_media_root']) if payload.get('_business_job')
-                                   else video_directory(config, base))
+                                   else video_directory(config, base), downloaded_at=time.time())
             if store and payload.get('_task_id') and store.statistics.record_file(payload['_task_id'], path,
                     info.get('id', ''), info.get('title', '')):
                 session.billable_bytes += output_files[filename]

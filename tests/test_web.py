@@ -163,6 +163,19 @@ class WebTests(unittest.TestCase):
         self.assertEqual(video.read_bytes(), b'video-track')
         self.assertEqual(audio.read_bytes(), b'audio-track')
 
+    def test_media_catalog_exposes_and_preserves_download_time(self):
+        folder = self.root / 'videos'
+        folder.mkdir()
+        video = folder / 'downloaded.mp4'
+        video.write_bytes(b'video')
+        catalog = self.app.extensions['media_catalog']
+        catalog.index_file(video, folder, downloaded_at=1234.5)
+        item = self.client.get('/api/media').json['items'][0]
+        self.assertEqual(item['downloaded_at'], 1234.5)
+        catalog.reindex(folder)
+        item = self.client.get('/api/media').json['items'][0]
+        self.assertEqual(item['downloaded_at'], 1234.5)
+
     def test_video_stream_supports_ranges_unicode_and_blocks_non_video_paths(self):
         self.import_video()
         url = '/media/videos/我的世界.v2.mp4'

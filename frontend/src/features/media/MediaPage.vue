@@ -25,6 +25,7 @@ interface LibraryAsset {
   kindLabel: string;
   origin: string;
   sourceId: string;
+  downloadedAt?: number | string | null;
   local?: MediaItem;
   artifact?: DeliveryArtifact;
 }
@@ -65,6 +66,7 @@ const allAssets = computed<LibraryAsset[]>(() => {
     kindLabel: typeLabels.source_video,
     origin: '本地素材目录',
     sourceId: item.video_id || item.name,
+    downloadedAt: item.downloaded_at,
     local: item,
   }));
   const outputs = (resource.data.value?.artifacts.items || []).map((item) => ({
@@ -75,6 +77,7 @@ const allAssets = computed<LibraryAsset[]>(() => {
     kindLabel: typeLabels[item.kind],
     origin: '任务交付产物',
     sourceId: item.video_id,
+    downloadedAt: item.created_at,
     artifact: item,
   }));
   return [...local, ...outputs];
@@ -222,6 +225,11 @@ function assetUrl(asset: LibraryAsset) {
     ? mediaAddress('videos', asset.local.name, instances.selectedId || asset.local.instance_id)
     : '/api/delivery/files/' + encodeURIComponent(asset.artifact!.id) + '?download=1';
 }
+function formatDownloadTime(value?: number | string | null) {
+  if (value === undefined || value === null || value === '' || value === 0) return '—';
+  const date = new Date(typeof value === 'number' ? value * 1000 : value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN');
+}
 usePolling(
   computed(() => ready.value && !busy.value && !dialog.value),
   refresh,
@@ -332,6 +340,7 @@ usePolling(
               <th>类型</th>
               <th>来源</th>
               <th>大小</th>
+              <th>下载时间</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -358,6 +367,9 @@ usePolling(
                 }}<small class="cell-note">{{ asset.size.toLocaleString() }} 字节</small>
               </td>
               <td>
+                {{ formatDownloadTime(asset.downloadedAt) }}
+              </td>
+              <td>
                 <div class="actions">
                   <button :data-preview="asset.id" @click="selectAsset(asset)">
                     {{
@@ -372,7 +384,7 @@ usePolling(
               </td>
             </tr>
             <tr v-if="resource.data.value && !assets.length">
-              <td colspan="5" class="empty">暂无符合条件的资产。</td>
+              <td colspan="6" class="empty">暂无符合条件的资产。</td>
             </tr>
           </tbody>
         </table>

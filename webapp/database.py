@@ -211,6 +211,7 @@ media = Table('media_catalog', metadata, Column('id', String(64), primary_key=Tr
               Column('logical_key', Text, nullable=False), Column('title', Text, nullable=False),
               Column('search_title', Text, nullable=False), Column('video_id', String(256)),
               Column('size', BigInteger, nullable=False), Column('modified', Float, nullable=False),
+              Column('downloaded_at', Float, nullable=False, server_default='0'),
               Column('cover', Text), Column('playable', Integer, nullable=False),
               Column('prepared', Integer, nullable=False), Column('status', String(24)),
               Column('scan_id', String(32)), Column('indexed_at', Float, nullable=False, server_default='0'))

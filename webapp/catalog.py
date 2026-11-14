@@ -27,7 +27,7 @@ class MediaCatalog:
     def physical_root(key):
         return key.split('|', 1)[1] if key.startswith('@') and '|' in key else key
 
-    def describe(self, path, root):
+    def describe(self, path, root, *, downloaded_at=None):
         path, root = Path(path).resolve(), Path(root).resolve()
         if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
             return None
@@ -60,7 +60,8 @@ class MediaCatalog:
         title = str(info.get('title') or stem)
         return dict(id=identity, root=root_key, name=path.relative_to(root).as_posix(), logical_key=logical,
                     title=title, search_title=title.casefold()[:512], video_id=str(info.get('id') or '')[:256] or None,
-                    size=stat.st_size, modified=stat.st_mtime, cover=cover.relative_to(root).as_posix() if cover else None,
+                    size=stat.st_size, modified=stat.st_mtime, downloaded_at=downloaded_at,
+                    cover=cover.relative_to(root).as_posix() if cover else None,
                     playable=int(not track), status='incomplete' if track else 'ready',
                     prepared=int((path.parent / (path.name + '.parts')).is_dir()), scan_id=None, indexed_at=time.time())
 
@@ -81,6 +82,12 @@ class MediaCatalog:
             previous = {row['id']: row for row in db.execute(select(media).where(media.c.id.in_(combined))).mappings()}
             for key, value in list(combined.items()):
                 old = previous.get(key)
+                if value['downloaded_at'] is None:
+                    # Re-indexing must not make an old download look new. A
+                    # catalog row keeps its recorded completion time; a file
+                    # seen for the first time falls back to filesystem mtime.
+                    value['downloaded_at'] = (old.get('downloaded_at') if old and old.get('downloaded_at')
+                                              else value['modified'])
                 if old and (Path(self.physical_root(old['root'])) / old['name']).is_file() and (old['playable'] > value['playable'] or
                             (not value['playable'] and old['name'].endswith('.mp4') and not value['name'].endswith('.mp4'))):
                     combined[key] = {**old, 'scan_id': scan_id}
@@ -94,8 +101,8 @@ class MediaCatalog:
                 db.execute(roots.update().where(roots.c.root == root).values(count=roots.c.count + count_delta,
                                                                            bytes=roots.c.bytes + bytes_delta))
 
-    def index_file(self, path, root):
-        item = self.describe(path, root)
+    def index_file(self, path, root, *, downloaded_at=None):
+        item = self.describe(path, root, downloaded_at=downloaded_at)
         if item:
             self.upsert([item])
 
