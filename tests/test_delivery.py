@@ -126,6 +126,9 @@ class DeliveryTests(unittest.TestCase):
             self.assertTrue(any(progress.get('output_kind')=='subtitle' and
                 progress.get('output_language')==language and progress['stage']=='downloading'
                 for progress in updates),language)
+        files=self.client.get('/api/media/assets?type=subtitle').json['artifacts']['items']
+        self.assertEqual({(row['language'],row['subtitle_source']) for row in files},
+                         {('en','manual'),('fr','manual')})
 
     def test_mixed_delivery_starts_once_and_uses_common_transfer_admission_for_every_output(self):
         from webapp.adapters.execution import ProviderExecution
@@ -171,6 +174,31 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.hits,['/en.vtt'])
         files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
         self.assertEqual([row['language'] for row in files],['ja'])
+        self.assertEqual(files[0]['subtitle_source'],'original_auto')
+
+    def test_translated_subtitle_source_is_preserved_in_library(self):
+        self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated','languages':['fr']}})
+        info=self.info(False)
+        info['automatic_captions']={'fr':[{'url':self.url+'/en.vtt','ext':'vtt'}]}
+        with patch('webapp.subtitle_tracks.translated',return_value=True), \
+             patch('webapp.delivery.executor.translated',return_value=True):
+            self.execute(info)
+        files=self.client.get('/api/media/assets?type=subtitle').json['artifacts']['items']
+        self.assertEqual([(row['language'],row['subtitle_source']) for row in files],[('fr','translated')])
+
+    def test_subtitle_source_survives_verified_file_retry(self):
+        from web_worker import execute
+        job=self.create(['subtitle']);task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(self.store.statistics,'record_file',side_effect=RuntimeError('interrupted before receipt')):
+            with self.assertRaises(RuntimeError):
+                execute('download',task['payload'],store=self.store,task_id=task['id'])
+        self.retry_failed(job,task);self.hits.clear()
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
+            self.execute();extract.assert_not_called()
+        files=self.client.get('/api/media/assets?type=subtitle').json['artifacts']['items']
+        self.assertEqual([(row['language'],row['subtitle_source']) for row in files],[('en','manual')])
+        self.assertEqual(self.hits,[])
 
     def test_opt_in_targets_download_alongside_original_and_missing_targets_need_review(self):
         for targets, policy, status in [(['fr'],'available_selected','complete'),

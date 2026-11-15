@@ -6,7 +6,6 @@ from webapp.adapters.execution import ProviderExecution
 from webapp.diagnostics import event, error_details
 from webapp.download_policy import failure_evidence
 from webapp.worker.session import DownloadSession
-from webapp.worker.formatting import format_bytes
 
 
 def run_download(payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0):
@@ -233,7 +232,6 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
                         elapsed=progress.state.get('stage_seconds', {}).get('downloading', 0))
                 transferred = progress.state.get('downloaded_bytes', 0)
                 output_bytes = sum(output_files.values()) - before_bytes
-                print(f'{PROVIDERS[provider]} 完成：传输 {format_bytes(transferred)}，生成文件 {format_bytes(output_bytes)}。', flush=True)
                 event('provider_end', provider=provider, outcome='completed',
                       warning_counts=dict(session.failure.warnings),
                       transferred_bytes=transferred, output_bytes=output_bytes,

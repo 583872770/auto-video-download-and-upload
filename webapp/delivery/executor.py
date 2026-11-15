@@ -63,7 +63,7 @@ def ready(session, kind, language=''):
                 verify(path, kind)
             except LocalDeliveryError:
                 return False
-            publish(session, path, kind, language, retained=True)
+            publish(session, path, kind, language, retained=True, subtitle_source=artifact['subtitle_source'])
             return True
     if artifact and artifact['available'] and not artifact['test_mode']:
         local = artifact['instance_id'] == (session.store.fleet.id if session.store.fleet else 'local')
@@ -97,12 +97,13 @@ def ready(session, kind, language=''):
                     verify(artifact['path'], kind)
                 except LocalDeliveryError:
                     return False
-                publish(session, Path(artifact['path']), kind, language, retained=True)
+                publish(session, Path(artifact['path']), kind, language, retained=True,
+                        subtitle_source=artifact['subtitle_source'])
                 return True
     return False
 
 
-def publish(session, source, kind, language='', *, retained=False):
+def publish(session, source, kind, language='', *, retained=False, subtitle_source=''):
     spec = session.config['_delivery_contract']
     task_id = session.payload['_task_id']
     with session.store.connect() as db:
@@ -116,6 +117,7 @@ def publish(session, source, kind, language='', *, retained=False):
     if not retained:
         shutil.copyfile(source, target)
     artifact = dict(id=identity, kind=kind, language=language, variant=variant(spec, kind),
+                    subtitle_source=subtitle_source,
                     title=session.current_video.get('title', ''), storage='oss' if session.oss_mode else 'local')
     if not session.test_mode:
         ledger.pending(session.store, task_id, artifact, target)
@@ -347,7 +349,9 @@ def subtitles(executor, channel, info, safe, temporary, caption_session):
                     shutil.copyfile(source, target);verify(target, 'subtitle')
                 else:
                     convert([source], target, 'subtitle')
-            publish(session, target, 'subtitle', language)
+            event('subtitle_processed', language=language, source_format=source.suffix.lstrip('.'),
+                  target_format=target.suffix.lstrip('.'))
+            publish(session, target, 'subtitle', language, subtitle_source=source_kind)
         except Exception as error:
             from webapp.throughput import PipelineBusy
             if not isinstance(error, PipelineBusy):

@@ -13,6 +13,7 @@ PUBLIC_FIELDS = (
     artifacts.c.title,
     artifacts.c.kind,
     artifacts.c.language,
+    artifacts.c.subtitle_source,
     artifacts.c.variant,
     artifacts.c.size,
     artifacts.c.instance_id,

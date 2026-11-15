@@ -68,6 +68,7 @@ export interface DeliveryArtifact {
   title: string;
   kind: OutputKind;
   language: string;
+  subtitle_source?: 'manual' | 'original_auto' | 'translated' | '';
   size: number;
   storage: string;
   available: boolean;

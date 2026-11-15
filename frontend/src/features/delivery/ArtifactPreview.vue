@@ -4,6 +4,7 @@ import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import { useResource } from '../../composables/resource';
 import { api } from '../../api';
 import type { DeliveryArtifact } from './model';
+import { subtitleDescription } from './presentation';
 const props = defineProps<{ artifact: DeliveryArtifact }>();
 const emit = defineEmits<{ close: [] }>();
 const resource = useResource<string>(),
@@ -26,6 +27,7 @@ if (props.artifact.kind === 'subtitle')
   <WorkspaceDialog :open="true" :title="artifact.title || artifact.video_id" @close="emit('close')"
     ><p>{{ artifact.video_id }}</p>
     <template v-if="artifact.kind === 'subtitle'">
+      <p class="notice">{{ subtitleDescription(artifact) }}</p>
       <pre v-if="resource.data.value">{{ resource.data.value }}</pre>
       <p v-else-if="resource.loading.value" role="status">正在读取字幕…</p>
       <p v-if="resource.error.value" role="alert" class="form-error">

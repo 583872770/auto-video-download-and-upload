@@ -15,6 +15,7 @@ import { mediaAddress, type MediaItem, type UnifiedMediaPage } from './contracts
 import { firstMediaPage, nextMediaPage, type MediaPosition } from './pagination';
 import { formatGB } from '../jobs/contracts';
 import { outputLabels, type DeliveryArtifact, type OutputKind } from '../delivery/model';
+import { subtitleDescription } from '../delivery/presentation';
 
 type AssetFilter = 'all' | 'video' | 'audio' | 'subtitle';
 type AssetKind = 'source_video' | OutputKind;
@@ -353,6 +354,9 @@ usePolling(
               </td>
               <td>
                 <span class="badge">{{ asset.kindLabel }}</span>
+                <small v-if="asset.artifact?.kind === 'subtitle'" class="subtitle-label">
+                  {{ subtitleDescription(asset.artifact) }}
+                </small>
               </td>
               <td>
                 {{ asset.origin
@@ -474,3 +478,13 @@ usePolling(
     </WorkspaceDialog>
   </main>
 </template>
+<style scoped>
+.subtitle-label {
+  display: block;
+  margin-top: 5px;
+  max-width: 240px;
+  color: #0f766e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+</style>

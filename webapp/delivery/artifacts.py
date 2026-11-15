@@ -105,7 +105,8 @@ def pending(store, task_id, artifact, path):
         old = db.execute(select(artifacts.c.id).where(artifacts.c.id == artifact['id'])).first()
         values = dict(path=str(path), size=Path(path).stat().st_size,
                       instance_id=store.fleet.id if store.fleet else 'local',
-                      storage=artifact['storage'], object_key=None, available=0)
+                      storage=artifact['storage'], object_key=None, available=0,
+                      subtitle_source=artifact.get('subtitle_source', ''))
         if old:
             db.execute(artifacts.update().where(artifacts.c.id == artifact['id']).values(**values))
         else:
@@ -127,6 +128,7 @@ def receipt(store, db, task, artifact, path, size, *, fresh):
     values = dict(id=artifact['id'], job_id=run['job_id'], task_id=task['id'],
         video_id=task['video_id'], title=artifact.get('title') or task['video_id'] or '',
         kind=artifact['kind'], language=artifact.get('language', ''), variant=artifact['variant'],
+        subtitle_source=artifact.get('subtitle_source', ''),
         path=str(path), size=size, instance_id=task.get('instance_id') or (store.fleet.id if store.fleet else 'local'),
         storage=artifact.get('storage', 'local'), object_key=artifact.get('object_key'), available=1,
         test_mode=int(run['test_mode']), created_at=stamp())
@@ -134,7 +136,8 @@ def receipt(store, db, task, artifact, path, size, *, fresh):
     if old:
         db.execute(artifacts.update().where(artifacts.c.id == artifact['id']).values(
             path=str(path), size=size, available=1, instance_id=values['instance_id'],
-            storage=values['storage'], object_key=values['object_key']))
+            storage=values['storage'], object_key=values['object_key'],
+            subtitle_source=values['subtitle_source']))
     else:
         db.execute(artifacts.insert().values(**values, seq=store.db.sequence(db, 'delivery_artifact')))
     key = requirement(store, db, task['id'], spec, artifact['kind'], artifact.get('language', ''))

@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="AgentCommitMessageProject"><![CDATA[{
+  "mode": "CUSTOM",
+  "instruction": "避免过于冗长的描述或不必要的细节。"
+}]]></component>
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
   </component>

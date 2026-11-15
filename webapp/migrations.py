@@ -148,6 +148,13 @@ def _media_download_times(engine):
                                ' ADD COLUMN downloaded_at DOUBLE NOT NULL DEFAULT 0')
 
 
+def _subtitle_provenance(engine):
+    columns = {column['name'] for column in inspect(engine).get_columns('delivery_artifacts')}
+    if 'subtitle_source' not in columns:
+        with engine.begin() as db:
+            db.exec_driver_sql("ALTER TABLE delivery_artifacts ADD COLUMN subtitle_source VARCHAR(24) NOT NULL DEFAULT ''")
+
+
 STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261027_task_center_indexes', _task_center_indexes),
          ('20261030_url_prefix_index', _add_url_prefix_index),
@@ -156,7 +163,8 @@ STEPS = (('20261026_job_edit_versions', _job_edit_versions),
          ('20261107_cookie_ownership', _cookie_ownership),
          ('20261113_account_credentials', _account_credentials),
          ('20261113_delivery_outputs', _delivery_outputs),
-         ('20261114_media_download_times', _media_download_times))
+         ('20261114_media_download_times', _media_download_times),
+         ('20261115_subtitle_provenance', _subtitle_provenance))
 
 
 def upgrade(engine):
