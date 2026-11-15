@@ -7,8 +7,6 @@ export interface DownloadChannel {
   task_limit: number; weight: number; verification: string;
 }
 export interface ConsoleConfig {
-  path: string;
-  dir: string;
   url: string;
   proxy: string;
   proxy_mode: string;
@@ -21,8 +19,6 @@ export interface ConsoleConfig {
   min_free_gb: number;
   log_retention_days: number;
   max_log_mb: number;
-  shard_downloads: boolean;
-  storage_mode: string;
   yt5s_quality: string;
   yt5s_browser_count: number;
   download_methods: Provider[];
@@ -71,6 +67,14 @@ export interface ConsoleConfig {
   disk_upload_limit_mb: number;
   disk_success_log_hours: number;
   disk_failure_log_days: number;
+}
+export type ConfigKey = keyof ConsoleConfig;
+export const taskStorageKeys = ["path", "dir", "shard_downloads", "storage_mode", "oss_endpoint", "oss_bucket", "oss_prefix", "oss_access_key_id", "oss_access_key_secret", "oss_security_token", "oss_upload_threads", "oss_part_size_mb", "oss_upload_limit"] as const;
+export interface TaskStorage {
+  path: string;
+  dir: string;
+  shard_downloads: boolean;
+  storage_mode: string;
   oss_endpoint: string;
   oss_bucket: string;
   oss_prefix: string;
@@ -83,9 +87,6 @@ export interface ConsoleConfig {
   oss_access_key_secret_configured?: boolean;
   oss_security_token_configured?: boolean;
 }
-export type ConfigKey = keyof ConsoleConfig;
-export const taskStorageKeys = ["path", "dir", "shard_downloads", "storage_mode", "oss_endpoint", "oss_bucket", "oss_prefix", "oss_access_key_id", "oss_access_key_secret", "oss_security_token", "oss_upload_threads", "oss_part_size_mb", "oss_upload_limit"] as const;
-export type TaskStorage = Pick<ConsoleConfig, typeof taskStorageKeys[number]>;
 export const defaultTaskStorage: TaskStorage = {
   "path": "videos",
   "dir": "",
@@ -249,24 +250,9 @@ export const constraints: Partial<Record<ConfigKey, readonly [number, number]>> 
   "disk_failure_log_days": [
     1,
     100000
-  ],
-  "oss_upload_threads": [
-    1,
-    8
-  ],
-  "oss_part_size_mb": [
-    4,
-    64
-  ],
-  "oss_upload_limit": [
-    1,
-    8
   ]
 };
-export const secretKeys = ["oss_access_key_secret", "oss_security_token"] as const;
 export const defaultConfig: ConsoleConfig = {
-  "path": "videos",
-  "dir": "",
   "url": "",
   "proxy": "",
   "proxy_mode": "manual",
@@ -279,8 +265,6 @@ export const defaultConfig: ConsoleConfig = {
   "min_free_gb": 2,
   "log_retention_days": 0,
   "max_log_mb": 2,
-  "shard_downloads": true,
-  "storage_mode": "local",
   "yt5s_quality": "best",
   "yt5s_browser_count": 2,
   "download_methods": [
@@ -330,14 +314,5 @@ export const defaultConfig: ConsoleConfig = {
   "disk_resume_free_gb": 15,
   "disk_upload_limit_mb": 256,
   "disk_success_log_hours": 6,
-  "disk_failure_log_days": 7,
-  "oss_endpoint": "",
-  "oss_bucket": "",
-  "oss_prefix": "videos",
-  "oss_access_key_id": "",
-  "oss_access_key_secret": "",
-  "oss_security_token": "",
-  "oss_upload_threads": 2,
-  "oss_part_size_mb": 8,
-  "oss_upload_limit": 2
+  "disk_failure_log_days": 7
 };

@@ -7,7 +7,7 @@ import time
 from sqlalchemy import select
 
 from Utils.paths import io_path
-from webapp.database import delivery_artifacts, delivery_runs, delivery_contracts, roots, tasks
+from webapp.database import delivery_artifacts, roots, tasks
 
 
 def validate_clear_root(root, protected=()):
@@ -49,12 +49,8 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
         from webapp.delivery.artifacts import storage_config
         destinations = {a['id']: storage_config(db, a) for a in artifacts if a['storage'] == 'oss'}
         from Utils.config import video_directory
-        import json
-        used = db.execute(select(delivery_runs.c.spec).join(tasks, tasks.c.id == delivery_runs.c.task_id).where(
-            tasks.c.instance_id == local_id if store.fleet else tasks.c.instance_id.is_(None)).distinct()).scalars()
         managed_roots = {root, *(Path(catalog.physical_root(key)).resolve() for key in db.execute(select(roots.c.root)).scalars()
             if (key.startswith('@' + local_id + '|') if store.fleet else not key.startswith('@'))),
-            *(video_directory({**json.loads(raw)['storage']}, base) for raw in used),
             *(video_directory(value, base) for value in destinations.values())}
         managed_roots = {validate_clear_root(p, (ROOT, store.directory, *protected)) for p in managed_roots}
     deleted = total_bytes = 0

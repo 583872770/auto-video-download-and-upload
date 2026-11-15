@@ -57,7 +57,8 @@ class JobTests(unittest.TestCase):
         task = self.store.claim(self.store.owner)
         self.assertEqual(task['batch_id'], a)
         self.assertEqual(task['payload']['config']['download_methods'], ['downmp3'])
-        self.assertIn(a, task['payload']['config']['dir'])
+        self.assertEqual(task['payload']['config']['dir'], '')
+        self.assertIn('_delivery_contract', task['payload']['config'])
         self.store.archive_add('youtube npNnbj46_ik', job_id=a)
         self.assertFalse(self.store.archive_has('youtube npNnbj46_ik', job_id=b))
         self.assertFalse(self.store.archive_has('youtube npNnbj46_ik'))
@@ -259,34 +260,6 @@ class JobTests(unittest.TestCase):
         response=self.client.put('/api/jobs/'+a,json={'policy':{'storage_mode':'test'},'edit_version':self.detail(a)['edit_version']},headers=self.headers)
         self.assertEqual(response.status_code,400)
 
-    def test_worker_indexes_two_jobs_under_the_shared_media_root(self):
-        import yt_dlp
-        from web_worker import execute
-        a,b=self.create(),self.create('List B')
-        self.control(a,'start')
-        self.control(b,'start')
-        info={'id':'npNnbj46_ik','title':'fixture','ext':'mp4','extractor_key':'Youtube'}
-        def process(downloader,metadata,download=True):
-            path=Path(downloader.prepare_filename(metadata))
-            path.parent.mkdir(parents=True,exist_ok=True)
-            path.write_bytes(b'x'*500)
-            for hook in downloader.params['post_hooks']:
-                hook(str(path))
-            downloader.record_download_archive(metadata)
-        with patch('webapp.downmp3.resolve',return_value=info), patch('webapp.yt5s.verify_media'), \
-                patch('webapp.downloader.require_download_tools'), patch('webapp.environment.require_downmp3_environment'), \
-                patch.object(yt_dlp.YoutubeDL,'process_ie_result',process):
-            for _ in range(2):
-                task=self.store.claim(self.store.owner)
-                result=execute('download',task['payload'],store=self.store,task_id=task['id'])
-                self.assertFalse(result.get('skipped'))
-                self.store.finish(task['id'],result=result,worker_id=self.store.owner)
-        self.assertEqual(self.catalog.root_status(self.root/'videos')['count'],2)
-        self.assertEqual(self.detail(a)['file_bytes'],500)
-        self.assertEqual(self.detail(b)['file_bytes'],500)
-
-
-
 class JobFleetTests(unittest.TestCase):
     setUp = test_fleet.FleetTests.setUp
     setup_fleet = test_fleet.FleetTests.setup_fleet
@@ -295,7 +268,7 @@ class JobFleetTests(unittest.TestCase):
         self.b.fleet.save_policy({'downmp3_quality':'1080'})
         ids=[]
         for name,quality in [('A','720'),('B','1080')]:
-            response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik'},headers=self.headers)
+            response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik','delivery':{'storage':{'path':'task-'+name,'dir':name}}},headers=self.headers)
             self.assertEqual(response.status_code,201,response.json)
             ids.append(response.json['id'])
         from webapp.workbench import Workbench
@@ -305,8 +278,8 @@ class JobFleetTests(unittest.TestCase):
         b=self.b.claim(self.b.owner)
         self.assertEqual(a['batch_id'],ids[0])
         self.assertEqual(b['batch_id'],ids[1])
-        self.assertEqual(a['payload']['config']['path'],'videos-alpha')
-        self.assertEqual(b['payload']['config']['path'],'videos-beta')
+        self.assertEqual(a['payload']['config']['path'],'task-A')
+        self.assertEqual(b['payload']['config']['path'],'task-B')
         self.assertEqual(a['payload']['config']['downmp3_quality'],'720')
         self.assertEqual(b['payload']['config']['downmp3_quality'],'1080')
         response=self.client.post(f'/api/jobs/{ids[0]}/control',json={'action':'stop'},headers=self.headers)
@@ -316,5 +289,6 @@ class JobFleetTests(unittest.TestCase):
         Workbench(self.b).control('beta', 'start', ids[0])
         retry=self.b.claim(self.b.owner)
         self.assertEqual(retry['id'],a['id'])
-        self.assertNotEqual(retry['payload']['config']['dir'],a['payload']['config']['dir'])
+        self.assertEqual(retry['payload']['config']['dir'],a['payload']['config']['dir'])
+        self.assertEqual(retry['payload']['config']['path'], 'task-A')
         self.assertFalse(self.a.finish(a['id'],result={},worker_id=self.a.owner))

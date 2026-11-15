@@ -1,6 +1,5 @@
 import {
   constraints,
-  secretKeys,
   taskStorageKeys,
   type ConfigKey,
   type ConsoleConfig,
@@ -12,13 +11,6 @@ export interface ValidationIssue {
 }
 
 export function canonical(key: ConfigKey, value: unknown): string {
-  if (key === 'oss_endpoint') {
-    const text = String(value ?? '')
-      .trim()
-      .replace(/\/+$/, '');
-    return text && !text.includes('://') ? 'https://' + text : text;
-  }
-  if (key === 'oss_prefix') return String(value ?? '').replace(/^\/+|\/+$/g, '');
   if (key === 'download_channels' && Array.isArray(value)) {
     return JSON.stringify(
       value.map((item) => ({
@@ -49,8 +41,8 @@ export function changes(
   if (!baseline) return {};
   const changed: Partial<ConsoleConfig> = {};
   for (const key of Object.keys(baseline) as ConfigKey[]) {
-    if (key.endsWith('_configured') || (taskStorageKeys as readonly string[]).includes(key)) continue;
-    if (secretKeys.some((secret) => secret === key) && !draft[key]) continue;
+    if (key.endsWith('_configured') || (taskStorageKeys as readonly string[]).includes(key))
+      continue;
     if (canonical(key, draft[key]) !== canonical(key, baseline[key])) {
       Object.assign(changed, { [key]: draft[key] });
     }
@@ -60,9 +52,6 @@ export function changes(
 
 export function unconfirmed(submitted: Partial<ConsoleConfig>, saved: ConsoleConfig): ConfigKey[] {
   return (Object.keys(submitted) as ConfigKey[]).filter((key) => {
-    if (key === 'oss_access_key_secret' || key === 'oss_security_token') {
-      return !!submitted[key] && !saved[`${key}_configured`];
-    }
     return canonical(key, submitted[key]) !== canonical(key, saved[key]);
   });
 }

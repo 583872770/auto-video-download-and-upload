@@ -78,9 +78,9 @@ describe('same-origin API', () => {
     const expired = vi.fn(),
       fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }));
     vi.stubGlobal('fetch', fetcher);
-    await expect(
-      new ApiClient(() => '', expired).request('/api/delivery/defaults'),
-    ).rejects.toMatchObject({ status: 401 });
+    await expect(new ApiClient(() => '', expired).request('/api/jobs')).rejects.toMatchObject({
+      status: 401,
+    });
     expect(expired).toHaveBeenCalledOnce();
     expect(new Headers(fetcher.mock.calls[0]![1].headers).has('X-Instance-ID')).toBe(false);
   });

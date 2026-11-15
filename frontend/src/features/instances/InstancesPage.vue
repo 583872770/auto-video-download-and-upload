@@ -103,9 +103,15 @@ usePolling(
       {{ resource.error.value || op.error.value }}
     </p>
     <p v-if="op.message.value" class="notice" role="status">{{ op.message.value }}</p>
-    <ScopePanel level="global" purpose="view" target="全部下载实例" description="全局并发约束所有实例；下方实例卡片中的操作仅影响该卡片对应实例。" />
+    <ScopePanel
+      level="global"
+      purpose="view"
+      target="全部下载实例"
+      description="全局并发约束所有实例；下方实例卡片中的操作仅影响该卡片对应实例。"
+    />
     <form v-if="resource.data.value" class="card toolbar" @submit.prevent="saveLimit">
-      <span class="badge">全局配置 · 全部实例共用</span><label
+      <span class="badge">全局配置 · 全部实例共用</span
+      ><label
         >全局并发上限<input
           v-model.number="limit"
           type="number"

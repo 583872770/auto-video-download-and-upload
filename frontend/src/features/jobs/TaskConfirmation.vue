@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { api } from '../../api';
 import { useLeaveGuard } from '../../composables/leaveGuard';
+import ScopePanel from '../../components/ScopePanel.vue';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import { jobEndpoint, type Job } from './contracts';
 const props = defineProps<{ job: Job; action: 'clear' | 'delete' }>();
@@ -47,6 +48,12 @@ async function submit() {
     :busy="busy"
     @close="emit('close')"
   >
+    <ScopePanel
+      level="task"
+      purpose="operate"
+      :target="job.customer + ' / ' + job.name"
+      description="操作作用于此任务及承接它的全部实例。"
+    />
     <p class="notice">
       {{
         action === 'delete'

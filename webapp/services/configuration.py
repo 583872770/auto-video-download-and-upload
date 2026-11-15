@@ -16,7 +16,7 @@ class ConfigurationService:
                 # node. Resolving a peer's relative paths against this entry
                 # node's base silently describes a different directory.
                 return dict(rpc(self.context.fleet, selected_id(), '/api/config'))
-        config, base = self.context.settings()
+        config, _ = self.context.settings()
         from webapp.task_storage import FIELDS
         editable = {key: config.get(key, default) for key, default in DEFAULTS.items() if key not in FIELDS}
         editable['download_methods'] = download_methods(config)

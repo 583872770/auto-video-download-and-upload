@@ -77,7 +77,12 @@ usePolling(
         <p>汇总执行记录、进度和错误；日志从任务实际执行的实例读取。</p>
       </div>
     </div>
-    <ScopePanel level="global" purpose="view" target="全部实例的执行记录" description="筛选只改变记录列表；详情日志由任务实际执行的实例提供。" />
+    <ScopePanel
+      level="global"
+      purpose="view"
+      target="全部实例的执行记录"
+      description="筛选只改变记录列表；详情日志由任务实际执行的实例提供。"
+    />
     <section class="card">
       <form class="toolbar" @submit.prevent="filter">
         <input

@@ -83,7 +83,12 @@ defineExpose({ dirty, saving });
 </script>
 <template>
   <form :id="job ? 'settings-form' : 'editor-form'" @submit.prevent="save">
-    <ScopePanel v-if="!job" level="task" :target="draft.name || '新建任务'" description="交付内容与文件保存仅作用于此任务。保存规则在有在途执行时锁定，已有文件保留原位置。" />
+    <ScopePanel
+      v-if="!job"
+      level="task"
+      :target="draft.name || '新建任务'"
+      description="交付内容与文件保存仅作用于此任务。保存规则在有在途执行时锁定，已有文件保留原位置。"
+    />
     <fieldset :disabled="disabled || saving">
       <div v-if="latest" class="notice" data-conflict>
         <p>
@@ -132,7 +137,13 @@ defineExpose({ dirty, saving });
         </div>
         <DeliverySpecEditor v-model="draft.delivery" />
         <p v-if="!storageEditable" class="muted">文件保存配置由管理员管理，可在此查看。</p>
-        <fieldset :disabled="!storageEditable || disabled || saving"><TaskStorageEditor v-model="draft.delivery.storage" /></fieldset>
+        <p v-if="job && job.running > 0" class="notice">
+          本任务仍有
+          {{ job.running }} 个来源执行中，文件保存暂时锁定。先暂停任务并等待执行结束后可修改。
+        </p>
+        <fieldset :disabled="!storageEditable || disabled || saving || !!job?.running">
+          <TaskStorageEditor v-model="draft.delivery.storage" />
+        </fieldset>
       </section>
       <p v-if="job" class="muted">
         已开始的来源沿用固定要求版本；补交可以显式采用最新要求。交付要求可随时在此任务中调整。

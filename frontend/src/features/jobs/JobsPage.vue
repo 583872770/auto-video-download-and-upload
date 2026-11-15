@@ -91,7 +91,12 @@ async function deleted() {
       </div>
     </div>
     <p v-if="!editable" class="notice">当前角色只有查看权限。</p>
-    <ScopePanel level="global" purpose="view" target="全部客户任务" description="跨实例查看任务与交付进度。每项任务独立配置交付内容、文件保存和计费规则。" />
+    <ScopePanel
+      level="global"
+      purpose="view"
+      target="全部客户任务"
+      description="跨实例查看任务与交付进度。每项任务独立配置交付内容、文件保存和计费规则。"
+    />
     <SystemNotice />
     <p v-if="message" role="status">{{ message }}</p>
     <div class="summary-grid" id="center-cards">

@@ -41,22 +41,14 @@ def state(store, db, run, value):
     db.execute(runs.update().where(runs.c.task_id == run['task_id']).values(status=value))
 
 
-def pin(store, db, task_id, job, test=None, *, force=False):
+def pin(store, db, task_id, job):
     run = db.execute(select(runs).where(runs.c.task_id == task_id).with_for_update()).mappings().first()
     if run:
-        if test is None:
-            return {'version': run['version'], 'spec': json.loads(run['spec'])}
-        if bool(run['test_mode']) != bool(test):
-            count(store, db, job, '@' + run['status'], run['test_mode'], -1)
-            count(store, db, job, '@pending', test, 1)
-            db.execute(runs.update().where(runs.c.task_id == task_id).values(status='pending', test_mode=int(test)))
-            db.execute(requirements.delete().where(requirements.c.task_id == task_id))
         return {'version': run['version'], 'spec': json.loads(run['spec'])}
     contract = current(db, job)
     if not contract:
-        return None  # Direct downloads do not have a customer delivery contract.
-    if test is None:
-        test = contract['spec']['storage']['storage_mode'] == 'test'
+        raise ValueError('任务缺少交付与保存配置，请在任务中心设置后执行。')
+    test = contract['spec']['storage']['storage_mode'] == 'test'
     db.execute(runs.insert().values(task_id=task_id, job_id=job, version=contract['version'],
         spec=packed(contract['spec']), status='pending', test_mode=int(test)))
     count(store, db, job, '@pending', test, 1)

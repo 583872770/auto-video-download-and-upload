@@ -1,10 +1,15 @@
 import { defaultTaskStorage, type TaskStorage } from '../../generated/config';
 export type { TaskStorage };
-export function defaultStorage(): TaskStorage { return structuredClone(defaultTaskStorage); }
+export function defaultStorage(): TaskStorage {
+  return structuredClone(defaultTaskStorage);
+}
 export type OutputKind = 'subtitle' | 'video_only' | 'audio_only' | 'av';
 export interface DeliverySpec {
   schema_version: number;
-  storage: TaskStorage & { oss_access_key_secret_configured?: boolean; oss_security_token_configured?: boolean };
+  storage: TaskStorage & {
+    oss_access_key_secret_configured?: boolean;
+    oss_security_token_configured?: boolean;
+  };
   outputs: OutputKind[];
   video: { max_height: number; container: string };
   audio: { format: string };
@@ -55,9 +60,14 @@ export function defaultDelivery(): DeliverySpec {
 }
 export function validateDelivery(spec: DeliverySpec): string {
   const directory = spec.storage.dir.replace(/\\/g, '/');
-  if (/^(?:[A-Za-z]:|\/)/.test(directory) || directory.split('/').some(p => p === '.' || p === '..')) return '任务子目录必须为相对路径，不能包含 . 或 ..。';
+  if (
+    /^(?:[A-Za-z]:|\/)/.test(directory) ||
+    directory.split('/').some((p) => p === '.' || p === '..')
+  )
+    return '任务子目录必须为相对路径，不能包含 . 或 ..。';
   if (!spec.storage.path.trim()) return '请填写本任务的素材根目录。';
-  if (!['local', 'oss', 'test'].includes(spec.storage.storage_mode)) return '请选择有效的文件保存方式。';
+  if (!['local', 'oss', 'test'].includes(spec.storage.storage_mode))
+    return '请选择有效的文件保存方式。';
   if (!spec.outputs.length || spec.outputs.some((kind) => !(kind in outputLabels)))
     return '请至少选择一种有效交付内容。';
   const languages = spec.subtitles.languages;

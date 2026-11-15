@@ -23,6 +23,14 @@ class MediaCatalog:
         identity = self.store.fleet.id if self.store.fleet else None
         return f'@{identity}|{path}' if identity else path
 
+    def register_root(self, root):
+        """Remember managed folders even for audio/captions or interrupted attempts."""
+        key = self.root_key(root)
+        if self.db.mysql and len(key) > 512:
+            raise ValueError('MySQL 素材根目录不能超过 512 个字符，请缩短目录路径。')
+        with self.store.connect() as db:
+            self.db.ensure(db, roots, {'root': key, 'count': 0, 'bytes': 0, 'scanned': 0})
+
     @staticmethod
     def physical_root(key):
         return key.split('|', 1)[1] if key.startswith('@') and '|' in key else key

@@ -249,7 +249,17 @@ usePolling(
       <span>{{ tab === 'library' ? '全部实例的账号集中管理' : '按实例配置，作用于后续任务' }}</span>
     </div>
     <template v-if="tab === 'library'">
-      <ScopePanel level="global" purpose="view" :target="filter.instance === 'unbound' ? '尚未分配的账号' : resource.data.value?.instances.find(node => node.id === filter.instance)?.name || '全部实例的账号'" description="实例筛选只改变查看范围。批量操作以勾选账号为准，分配实例时另行指定目标。" />
+      <ScopePanel
+        level="global"
+        purpose="view"
+        :target="
+          filter.instance === 'unbound'
+            ? '尚未分配的账号'
+            : resource.data.value?.instances.find((node) => node.id === filter.instance)?.name ||
+              '全部实例的账号'
+        "
+        description="实例筛选只改变查看范围。批量操作以勾选账号为准，分配实例时另行指定目标。"
+      />
       <section class="account-filters card">
         <form class="account-search" @submit.prevent="search">
           <label class="search-field"

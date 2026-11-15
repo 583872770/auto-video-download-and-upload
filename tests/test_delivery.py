@@ -270,6 +270,32 @@ class DeliveryTests(unittest.TestCase):
         self.execute();after=self.client.get('/api/jobs/'+job).json
         self.assertEqual(after['file_bytes'],before['file_bytes']);self.assertEqual(after['file_count'],4);self.assertEqual(self.hits,[])
 
+    def test_two_tasks_publish_into_independent_directories_and_library_sees_both(self):
+        for directory in ('customer-a', 'customer-b'):
+            job = self.create(['audio_only'], {'storage': {'path': directory}})
+            self.execute()
+            with self.store.connect() as db:
+                path = Path(db.execute(select(delivery_artifacts.c.path).where(delivery_artifacts.c.job_id == job)).scalar_one())
+            self.assertEqual(path.parent, self.root / directory / 'npNnbj46_ik')
+            self.assertTrue(path.is_file())
+        result = self.client.get('/api/media/groups').json
+        self.assertEqual(result['file_count'], 2)
+        self.assertEqual(result['total'], 1)
+
+    def test_old_oss_preview_uses_original_bucket_after_latest_repair(self):
+        from webapp.delivery.artifacts import save_contract
+        job = self.create(['audio_only']);task,_ = self.execute()
+        with self.store.connect() as db:
+            row = db.execute(select(delivery_artifacts).where(delivery_artifacts.c.job_id == job)).mappings().one()
+            db.execute(delivery_artifacts.update().where(delivery_artifacts.c.id == row['id']).values(storage='oss',object_key='old/audio'))
+            save_contract(db, job, {'storage': {'oss_bucket': 'new-bucket'}})
+        response = self.client.post('/api/jobs/' + job + '/redeliver',json={'ids':[task['id']], 'use_latest':True},headers=self.headers)
+        self.assertEqual(response.status_code,202,response.json)
+        with patch('Utils.oss_storage.OSSStorage') as storage:
+            response = self.client.head('/api/delivery/files/' + row['id'])
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(storage.call_args.args[0]['oss_bucket'], '')
+
     def test_contract_pin_and_latest_repair_only_fetch_added_output(self):
         job=self.create(['audio_only']);task,_=self.execute();old=self.client.get('/api/jobs/'+job).json
         response=self.client.put('/api/jobs/'+job,json={'edit_version':old['edit_version'],'delivery':{'outputs':['audio_only','video_only']}},headers=self.headers)
@@ -527,6 +553,16 @@ class DeliveryPermissionsTests(unittest.TestCase):
         self.assertEqual(operator.put('/api/delivery/defaults',json={'outputs':['av']},headers=oh).status_code,403)
         self.assertEqual(self.client.put('/api/delivery/defaults',json={'outputs':['av']}).status_code,403)
         self.assertEqual(self.client.put('/api/delivery/defaults',json={'outputs':['av']},headers=self.headers).status_code,404)
+        created = operator.post('/api/jobs',json={'customer':'C','name':'Operator task'},headers=oh)
+        self.assertEqual(created.status_code,201,created.json)
+        identity = created.json['id']
+        detail = operator.get('/api/jobs/' + identity).json
+        response = operator.put('/api/jobs/' + identity,json={'edit_version':detail['edit_version'],
+            'delivery':{'storage':{'path':'admin-only-folder'}}},headers=oh)
+        self.assertEqual(response.status_code,403,response.json)
+        response = operator.put('/api/jobs/' + identity,json={'edit_version':detail['edit_version'],
+            'delivery':{'outputs':['subtitle']}},headers=oh)
+        self.assertEqual(response.status_code,200,response.json)
         from webapp.console_auth import rpc_allowed
         for path,method,allowed in [('/api/delivery/files/'+'a'*64,'GET',True),('/api/delivery/files/'+'a'*64,'HEAD',True),('/api/delivery/files/'+'a'*64,'POST',False),('/api/delivery/artifacts','GET',False),('/api/jobs/any/redeliver','POST',False)]:
             with self.app.test_request_context(path,method=method):self.assertEqual(rpc_allowed(),allowed)

@@ -164,10 +164,15 @@ usePolling(
       <div>
         <span class="eyebrow">MEDIA LIBRARY</span>
         <h1>素材库</h1>
-        <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。</p>
+        <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。保存规则在各自任务中管理。</p>
       </div>
     </div>
-    <InstancePicker purpose="view" description="查看所选实例的全部任务素材；导入与清空也仅作用于此实例。" :disabled="busy || !!dialog" @change="instanceChanged" />
+    <InstancePicker
+      purpose="view"
+      description="查看所选实例的全部任务素材；导入与清空也仅作用于此实例。"
+      :disabled="busy || !!dialog"
+      @change="instanceChanged"
+    />
     <p v-if="message" class="notice" role="status">{{ message }}</p>
     <p v-if="error && !dialog" class="form-error" role="alert">{{ error }}</p>
     <div class="summary-grid media-summary">
@@ -354,8 +359,13 @@ usePolling(
       @close="closeDialog"
     >
       <form @submit.prevent="write(dialog!)">
-        <template v-if="dialog === 'import'"
-          ><label
+        <template v-if="dialog === 'import'">
+          <p class="cell-note">
+            导入至 {{ instances.name }} 的默认素材目录：{{
+              resource.data.value?.directory
+            }}。不使用任务保存规则。
+          </p>
+          <label
             >视频文件<input
               type="file"
               accept=".mp4,.mkv,.webm,.mov"
@@ -375,7 +385,11 @@ usePolling(
             >的全部素材、该实例的 OSS
             交付文件、下载缓存和相关执行记录、统计，仅保留下载去重记录。此操作无法撤销。
           </p>
-          <p class="cell-note">{{ resource.data.value?.directory }}</p>
+          <p class="cell-note">
+            清理范围包含本实例登记的全部任务保存目录，以及默认素材目录：{{
+              resource.data.value?.directory
+            }}。
+          </p>
           <label
             >输入“清空”确认<input
               v-model="confirmation"

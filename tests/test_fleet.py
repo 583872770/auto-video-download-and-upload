@@ -262,11 +262,11 @@ class FleetTests(unittest.TestCase):
 
     def test_manager_settings_target_only_one_worker(self):
         self.serve('alpha')
-        result = self.client.put('/api/config', json={'path': 'new-alpha', 'download_methods': ['downmp3']},
+        result = self.client.put('/api/config', json={'worker_count': 3, 'download_methods': ['downmp3']},
                                  headers={**self.headers, 'X-Instance-ID': 'alpha'})
         self.assertEqual(result.status_code, 200, result.json)
-        self.assertEqual(self.a.fleet.local_settings()['config']['path'], 'new-alpha')
-        self.assertEqual(self.b.fleet.local_settings()['config']['path'], 'videos-beta')
+        self.assertEqual(self.a.fleet.local_settings()['config']['worker_count'], 3)
+        self.assertEqual(self.b.fleet.local_settings()['config']['worker_count'], 3)
 
     def test_download_node_auth_failure_does_not_expire_management_login(self):
         manager = self.apps['manager']

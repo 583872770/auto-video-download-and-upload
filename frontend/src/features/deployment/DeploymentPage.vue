@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../../api';
 import { ApiError } from '../../api/client';
+import ScopePanel from '../../components/ScopePanel.vue';
 import InstancePicker from '../../components/InstancePicker.vue';
 import { useInstances } from '../../stores/instances';
 import { useOperation } from '../../composables/operation';
@@ -148,7 +149,18 @@ onMounted(async () => {
       </div>
       <a v-if="setup && current?.running" href="/">进入工作区</a>
     </div>
-    <InstancePicker v-if="!setup" :disabled="dirty || op.busy.value" @change="changed" />
+    <InstancePicker
+      v-if="!setup"
+      description="名称、网络地址与部署连接仅保存到所选实例；显示名称立即同步，其他部署参数重启该实例后生效。"
+      :disabled="dirty || op.busy.value"
+      @change="changed"
+    />
+    <ScopePanel
+      v-else
+      level="instance"
+      target="当前访问的本机服务"
+      description="此入口只配置当前服务器的部署与连接。"
+    />
     <p v-if="op.error.value" class="notice error" role="alert">{{ op.error.value }} 输入已保留。</p>
     <p v-if="op.message.value" class="notice" role="status">{{ op.message.value }}</p>
     <form v-if="setup && !current" class="card form-grid" @submit.prevent="unlock">

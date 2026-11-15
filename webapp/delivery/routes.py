@@ -1,19 +1,18 @@
 """Authenticated output listing, preview, missing-item acceptance and repair."""
 import csv
 from io import StringIO
-import json
 from pathlib import Path
 from flask import Response, abort, g, jsonify, request, send_file, stream_with_context
 from sqlalchemy import select
 from werkzeug.exceptions import Conflict
 from webapp.database import delivery_artifacts as artifacts, delivery_requirements as requirements, delivery_runs as runs, tasks
 from webapp.delivery import artifacts as ledger
-from webapp.delivery.contracts import DEFAULT, normalize, packed
+from webapp.delivery.contracts import packed
 from webapp.delivery.listing import page as artifact_page
 from webapp.statistics import stamp
 
 
-def register_delivery(app, store, settings):
+def register_delivery(app, store):
     from webapp.jobs import Jobs, event
     jobs = Jobs(store)
 
@@ -126,7 +125,7 @@ def register_delivery(app, store, settings):
                         db.execute(runs.update().where(runs.c.task_id == row['id']).values(version=contract['version'], spec=packed(contract['spec']), status='pending', test_mode=int(test)))
                         db.execute(requirements.delete().where(requirements.c.task_id == row['id']))
                     else:
-                        ledger.pin(store, db, row['id'], identity, force=True)
+                        ledger.pin(store, db, row['id'], identity)
                 if row['status'] != 'queued':
                     store._transition(db, row, 'queued')
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status='queued', worker_id=None,

@@ -46,16 +46,13 @@ def apply_job_scope(store, db, task_id, payload):
     config = dict(payload['config'])
     from webapp.delivery.artifacts import pin
     delivery = pin(store, db, task_id, value['id'])
-    if delivery:
-        from webapp.task_storage import FIELDS
-        config = {**{k: v for k, v in config.items() if k not in FIELDS}, **delivery['spec']['storage'],
-                  '_task_storage': True, '_business_job': value['id']}
-        from Utils.config import video_directory
-        config['_job_media_root'] = str(video_directory(config, payload['base']))
-        config['_delivery_contract'] = delivery['spec']
-        config['_delivery_version'] = delivery['version']
-    else:
-        raise ValueError('任务缺少交付与保存配置，请在任务中心设置后执行。')
+    from webapp.task_storage import FIELDS
+    config = {**{k: v for k, v in config.items() if k not in FIELDS}, **delivery['spec']['storage'],
+              '_task_storage': True, '_business_job': value['id']}
+    from Utils.config import video_directory
+    config['_job_media_root'] = str(video_directory(config, payload['base']))
+    config['_delivery_contract'] = delivery['spec']
+    config['_delivery_version'] = delivery['version']
     return {**payload, 'config': config, '_business_job': value['id']}
 
 
@@ -103,7 +100,8 @@ class Jobs:
             raise ValueError('备注最多 2000 个字符。')
         if data.get('policy'):
             raise ValueError('下载策略由执行实例管理，请在实例设置中选择实例后修改。')
-        config = {**DEFAULTS, **config}
+        from webapp.task_storage import FIELDS
+        config = {**DEFAULTS, **{k: v for k, v in config.items() if k not in FIELDS}}
         if data.get('request_id'):
             try:
                 request_id = uuid.UUID(str(data['request_id'])).hex
@@ -129,8 +127,11 @@ class Jobs:
             self.ensure(db, identity, config, data)
             from webapp.delivery.artifacts import save_contract
             from webapp.task_storage import normalize as normalize_storage, require_edit
-            require_edit(normalize_storage(data.get('delivery', {}).get('storage')))
-            save_contract(db, identity, data.get('delivery', {}))
+            spec = data.get('delivery', {})
+            if not isinstance(spec, dict):
+                raise ValueError('请提交有效的交付要求。')
+            require_edit(normalize_storage(spec.get('storage')))
+            save_contract(db, identity, spec)
             ids = self.store.insert_downloads(db, [{'base': str(base), 'scope': 'download',
                 'batch_id': identity, 'urls': [url]} for url in urls])
             event(self.store, db, identity, f'创建任务；新增 {len(ids)} 个视频。')

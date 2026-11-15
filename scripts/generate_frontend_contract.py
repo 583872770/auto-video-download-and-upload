@@ -24,22 +24,23 @@ def render():
         'export interface ConsoleConfig {',
     ]
     for key, spec in SETTINGS.items():
+        if spec.scope == 'task':
+            continue
         value_type = custom.get(key) or {str: 'string', int: 'number', bool: 'boolean',
                                        list: 'string[]', type(None): 'null'}[spec.value_type]
         lines.append(f'  {key}: {value_type};')
-    lines += ['  oss_access_key_secret_configured?: boolean;',
-              '  oss_security_token_configured?: boolean;', '}',
-              'export type ConfigKey = keyof ConsoleConfig;',
+    lines += ['}', 'export type ConfigKey = keyof ConsoleConfig;',
               'export const taskStorageKeys = ' + json.dumps([key for key, spec in SETTINGS.items() if spec.scope == 'task']) + ' as const;',
-              'export type TaskStorage = Pick<ConsoleConfig, typeof taskStorageKeys[number]>;',
+              'export interface TaskStorage {']
+    for key, spec in SETTINGS.items():
+        if spec.scope == 'task':
+            lines.append(f'  {key}: ' + {str: 'string', int: 'number', bool: 'boolean'}[spec.value_type] + ';')
+    lines += ['  oss_access_key_secret_configured?: boolean;', '  oss_security_token_configured?: boolean;', '}',
               'export const defaultTaskStorage: TaskStorage = ' + json.dumps({key: spec.default_value() for key, spec in SETTINGS.items() if spec.scope == 'task'}, ensure_ascii=False, indent=2) + ';',
               'export const constraints: Partial<Record<ConfigKey, readonly [number, number]>> = ' +
-              json.dumps({key: spec.limits for key, spec in SETTINGS.items() if spec.limits},
-                         indent=2) + ';',
-              'export const secretKeys = ["oss_access_key_secret", "oss_security_token"] as const;',
+              json.dumps({key: spec.limits for key, spec in SETTINGS.items() if spec.limits and spec.scope != 'task'}, indent=2) + ';',
               'export const defaultConfig: ConsoleConfig = ' +
-              json.dumps({key: spec.default_value() for key, spec in SETTINGS.items()},
-                         ensure_ascii=False, indent=2) + ';', '']
+              json.dumps({key: spec.default_value() for key, spec in SETTINGS.items() if spec.scope != 'task'}, ensure_ascii=False, indent=2) + ';', '']
     return '\n'.join(lines)
 
 

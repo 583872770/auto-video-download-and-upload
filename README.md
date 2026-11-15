@@ -30,7 +30,7 @@ docker compose -f compose.local.yaml up -d --build
 
 需要 Python 3.13+、FFmpeg、Node.js 或 Deno。
 
-工作区统一使用 Vue：任务中心 `/jobs`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、系统设置 `/settings`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 和部署 `/deployment`。登录使用 `/login`，本机部署恢复使用 `/setup`，任务详情使用 `/jobs/<任务编号>`。本机运行前需用 Node.js 22.12+ 在 `frontend/` 执行 `npm.cmd ci`、`npm.cmd run build`；Docker 自动打包。未构建时返回构建提示，不运行旧界面。
+工作区统一使用 Vue：任务中心 `/jobs`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、实例设置 `/settings`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 和部署 `/deployment`。登录使用 `/login`，本机部署恢复使用 `/setup`，任务详情使用 `/jobs/<任务编号>`。本机运行前需用 Node.js 22.12+ 在 `frontend/` 执行 `npm.cmd ci`、`npm.cmd run build`；Docker 自动打包。未构建时返回构建提示，不运行旧界面。
 
 开发阶段只维护当前结构和配置，不执行旧数据升级，详见[当前数据合同](docs/development/current-schema.md)。
 

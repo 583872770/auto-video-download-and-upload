@@ -131,25 +131,36 @@ class OSSStorageTests(unittest.TestCase):
 class OSSWebTests(unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
-    def test_config_roundtrip_never_returns_saved_secrets_and_blank_preserves(self):
-        response = self.client.put('/api/config', json=CONFIG, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        data = self.client.get('/api/config').json['config']
+    def test_task_storage_roundtrip_never_returns_saved_secrets_and_blank_preserves(self):
+        from webapp.delivery.artifacts import current
+        from webapp.task_storage import FIELDS
+        self.assertEqual(self.client.put('/api/config', json=CONFIG, headers=self.headers).status_code, 400)
+        response = self.client.post('/api/jobs', json={'customer': 'C', 'name': 'Cloud',
+            'delivery': {'storage': CONFIG}}, headers=self.headers)
+        self.assertEqual(response.status_code, 201, response.json)
+        job = response.json['id']
+        detail = self.client.get('/api/jobs/' + job).json
+        data = detail['delivery']['contract']['spec']['storage']
         self.assertEqual(data['storage_mode'], 'oss')
         self.assertEqual(data['oss_access_key_secret'], '')
         self.assertTrue(data['oss_access_key_secret_configured'])
-        self.assertNotIn('FIXTURE-SECRET', self.client.get('/api/config').text)
-        response = self.client.put('/api/config', json={'oss_access_key_secret': '', 'oss_prefix': 'new'}, headers=self.headers)
+        self.assertNotIn('FIXTURE-SECRET', self.client.get('/api/jobs/' + job).text)
+        self.assertFalse(FIELDS & self.client.get('/api/config').json['config'].keys())
+        data['oss_prefix'] = 'new'
+        spec = detail['delivery']['contract']['spec']
+        response = self.client.put('/api/jobs/' + job, json={'edit_version': detail['edit_version'],
+            'delivery': spec}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertIn('FIXTURE-SECRET', self.config.read_text(encoding='utf-8'))
-        self.assertTrue(self.client.get('/api/config').json['config']['oss_access_key_secret_configured'])
+        with self.store.connect() as db:
+            self.assertEqual(current(db, job)['spec']['storage']['oss_access_key_secret'], 'FIXTURE-SECRET')
+        self.assertNotIn('FIXTURE-SECRET', self.config.read_text(encoding='utf-8'))
 
     def test_upload_failure_keeps_files_unbilled_unarchived_then_retry_delivers(self):
         import yt_dlp
         from web_worker import execute
         from webapp.database import deliveries
         from sqlalchemy import func, select
-        self.assertEqual(self.client.put('/api/config', json=CONFIG, headers=self.headers).status_code, 200)
+        self.store.set_download_settings(CONFIG, self.root, self.root / 'clash')
         task = self.store.create('download', {'config': CONFIG, 'base': str(self.root),
                                              'urls': ['https://example.test/clip.mp4']})
         claimed = self.store.claim(self.store.owner)

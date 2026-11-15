@@ -124,8 +124,12 @@ onMounted(() => {
         <p>按用途管理配置，所有分类的修改统一保存到当前实例。</p>
       </div>
     </div>
-      <ScopePanel level="instance" :target="instances.name" description="下载策略、资源预算和空间维护仅作用于此实例。交付与文件保存在任务中心配置。">
-    <label v-if="boot.fleetEnabled" class="instance-picker"
+    <ScopePanel
+      level="instance"
+      :target="instances.name"
+      description="下载策略、资源预算和空间维护仅作用于此实例。交付与文件保存在任务中心配置。"
+    >
+      <label v-if="boot.fleetEnabled" class="instance-picker"
         >切换实例<select
           aria-label="当前实例"
           :value="instances.selectedId"
@@ -136,7 +140,8 @@ onMounted(() => {
             {{ item.name }}{{ item.online ? '' : '（离线）' }}
           </option>
         </select></label
-      ><span v-else class="badge">当前实例</span></ScopePanel>
+      ><span v-else class="badge">当前实例</span></ScopePanel
+    >
     <p v-if="!admin" class="notice">当前角色只有查看权限，修改设置需要管理员登录。</p>
     <p v-if="instances.current && !instances.current.online" class="notice">
       当前实例离线，读取和保存可能失败。请在下载实例中检查连接。
@@ -173,12 +178,9 @@ onMounted(() => {
           <DiagnosticsSettings v-if="section === 'diagnostics'" :key="instances.epoch" />
           <form v-else novalidate @submit.prevent="save">
             <fieldset :disabled="busy || (!admin && section !== 'maintenance')">
-              <DownloadSettings
-                v-if="section === 'download'"
-              /><PerformanceSettings v-if="section === 'performance'" /><MaintenanceSettings
-                v-if="section === 'maintenance'"
-                :key="instances.epoch"
-              />
+              <DownloadSettings v-if="section === 'download'" /><PerformanceSettings
+                v-if="section === 'performance'"
+              /><MaintenanceSettings v-if="section === 'maintenance'" :key="instances.epoch" />
             </fieldset>
           </form>
         </template>

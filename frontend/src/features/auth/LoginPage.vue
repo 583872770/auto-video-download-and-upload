@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
+import ScopePanel from '../../components/ScopePanel.vue';
 import { api } from '../../api';
 import { useOperation } from '../../composables/operation';
 import { confirmNavigation, useLeaveGuard } from '../../composables/leaveGuard';
@@ -156,6 +157,11 @@ onMounted(() => op.run(load));
           <button :disabled="op.busy.value" @click="logout">退出登录</button>
         </section>
         <template v-if="state.user.role === 'admin'">
+          <ScopePanel
+            level="global"
+            target="全部实例共用的管理账户"
+            description="管理账户与权限在所有实例共用；停用或修改角色后，对该账户的所有入口生效。下载账号在账号管理中维护。"
+          />
           <section class="card">
             <h2>已有账户</h2>
             <p v-for="user in users" :key="user.username">

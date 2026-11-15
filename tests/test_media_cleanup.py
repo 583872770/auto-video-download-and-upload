@@ -54,6 +54,9 @@ class MediaCleanupTests(unittest.TestCase):
 
     def artifact(self, path, *, storage='local', instance='local'):
         with self.store.connect() as db:
+            from webapp.delivery.artifacts import save_contract, current
+            if not current(db, 'j' * 32):
+                save_contract(db, 'j' * 32, {})
             seq = self.store.db.sequence(db, 'delivery_artifact')
             identity = f'{seq:064x}'
             db.execute(delivery_artifacts.insert().values(
@@ -114,6 +117,37 @@ class MediaCleanupTests(unittest.TestCase):
         clear_media(self.catalog, self.root)
         self.assertFalse(audio.exists())
         self.assertFalse(cover.exists())
+
+    def test_registered_task_directories_remove_orphans_after_destination_changes(self):
+        old = self.base / 'old-task-output'
+        old.mkdir()
+        orphan = old / 'unregistered-caption.srt'
+        orphan.write_bytes(b'caption')
+        self.catalog.register_root(old)
+        clear_media(self.catalog, self.root, base=self.base)
+        self.assertFalse(orphan.exists())
+        self.assertEqual(list(old.iterdir()), [])
+
+    def test_same_object_key_in_different_task_buckets_is_deleted_from_each_bucket(self):
+        from unittest.mock import MagicMock
+        from webapp.delivery.artifacts import save_contract
+        first = self.artifact(self.root / 'a.srt', storage='oss')
+        second = self.artifact(self.root / 'b.srt', storage='oss')
+        with self.store.connect() as db:
+            v1 = save_contract(db, 'j' * 32, {'storage': {'oss_bucket': 'bucket-a'}})['version']
+            v2 = save_contract(db, 'j' * 32, {'storage': {'oss_bucket': 'bucket-b'}})['version']
+            for identity, version in ((first, v1), (second, v2)):
+                db.execute(delivery_artifacts.update().where(delivery_artifacts.c.id == identity).values(contract_version=version))
+        clients = {}
+        def storage(config):
+            client = clients.setdefault(config['oss_bucket'], MagicMock())
+            client.bucket.object_exists.return_value = False
+            return client
+        with patch('Utils.oss_storage.OSSStorage', side_effect=storage):
+            clear_media(self.catalog, self.root, base=self.base)
+        self.assertEqual(set(clients), {'bucket-a', 'bucket-b'})
+        for client in clients.values():
+            client.bucket.delete_object.assert_called_once_with('fixture')
 
     def test_orphan_locked_cover_is_removed_on_retry_without_its_audio(self):
         audio = self.write('audio.m4a')

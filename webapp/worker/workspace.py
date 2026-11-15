@@ -53,6 +53,9 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         if not workspace.test_mode:
             from Utils.config import video_directory
             lease.media_directory = video_directory(config, payload['base'])
+            if store:
+                from webapp.catalog import MediaCatalog
+                MediaCatalog(store).register_root(lease.media_directory)
             lease.media_directory.mkdir(parents=True, exist_ok=True)
         def stop_children():
             from webapp.control import terminate_own_descendants
