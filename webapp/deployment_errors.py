@@ -4,9 +4,8 @@ import re
 import traceback
 from urllib.parse import quote, quote_plus
 
-from webapp.database import SchemaUpgradeInProgress
+from webapp.database import SchemaInitializationBusy, SchemaMismatch
 from webapp.fleet import InstanceIdentityConflict
-from webapp.modes import ModeTransitionError
 
 
 class BrowserDesktopError(OSError):
@@ -36,15 +35,12 @@ def explain_startup_error(error, stage, profile):
         remedy = ('若为原容器重启，确认旧服务已停止后，等待 45 秒，再在部署页点击“保存并启动服务”。'
                   '若为新增实例，请同时使用独立实例 ID 和独立状态卷，并检查已保存的部署配置。不要删除原状态卷。')
         detail = message
-    elif isinstance(error, ModeTransitionError):
-        summary = str(error)
-        remedy = '使用原数据库和原状态目录，停止旧服务并等待其进程及租约退出后，在部署设置中保存并启动；服务将继续升级为管理与下载一体。'
-    elif isinstance(error, SchemaUpgradeInProgress):
-        summary = '数据库仍在升级或等待表结构锁。'
-        remedy = '先等待现有数据库升级完成，再点“保存并启动服务”；不要反复提交或同时启动多个实例，不需要修改实例 ID 和密码。'
-    elif code in (2006, 2013, 1205) and any(word in stage for word in ('升级', '表结构', '索引')):
-        summary = f'数据库升级等待超时（MySQL {code}），服务尚未就绪。'
-        remedy = '大表升级可能仍在 MySQL 后台执行。先等待升级完成，避免重复提交；若持续等待，请让数据库管理员检查正在执行的 ALTER TABLE 和表结构锁。'
+    elif isinstance(error, SchemaMismatch):
+        summary = '数据库结构与当前开发版本不一致。'
+        remedy = str(error)
+    elif isinstance(error, SchemaInitializationBusy):
+        summary = '另一个实例正在初始化数据库。'
+        remedy = '等待初始化完成后重试；无需修改实例 ID 和密码。'
     elif code in (1044, 1045, 1142, 1143, 1227):
         summary = f'数据库账号权限不足或认证失败（MySQL {code}）。'
         remedy = '确认当前账号能访问所填数据库，并具有 SELECT、INSERT、UPDATE、DELETE、CREATE、ALTER、INDEX 权限；由数据库管理员为该库授权后重试。'
@@ -54,9 +50,6 @@ def explain_startup_error(error, stage, profile):
     elif code in (2002, 2003, 2005, 2006, 2013):
         summary = f'MySQL 连接失败或已断开（MySQL {code}）。'
         remedy = '在此页面测试连接，确认数据库地址、端口、服务器白名单及网络连通性。'
-    elif code == 1060:
-        summary = '字段已被另一个升级进程添加（MySQL 1060）。'
-        remedy = '等待其他实例升级完成后重试，避免旧版和新版同时升级同一个数据库。'
     elif '实例 ID 已在线' in message:
         summary = '这个实例 ID 已被运行中的服务使用。'
         remedy = '关闭使用相同状态目录的旧服务后重试；不同下载实例请使用独立状态目录和不同实例 ID，不要删除原状态目录。'

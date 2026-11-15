@@ -51,7 +51,7 @@ def initialize_application(import_name, config_path=None, state_dir=None, *, env
     # the unified registry. Preserve the embedded SQLite application used by
     # local tools without inventing a second public service role.
     registered = bool(role or os.environ.get('VIDEO_SERVICE_ROLE') or database_url
-                      or os.environ.get('VIDEO_DATABASE_URL') or store.fleet or store.single
+                      or os.environ.get('VIDEO_DATABASE_URL') or store.fleet
                       or store.db.mysql or state_dir is None)
     if startup_report:
         startup_report('数据库已就绪，正在初始化素材库与实例配置…')

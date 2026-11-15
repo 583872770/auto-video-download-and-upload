@@ -19,7 +19,7 @@ from flask import Flask
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 from app import create_app
-from scripts.verify.verify_jobs import QuietHandler
+from scripts.verify.support import QuietHandler
 from webapp.account_routes import PREFIX
 from webapp.browser import browser_options
 from webapp.database import instances
@@ -151,7 +151,7 @@ def main():
                 page.on('dialog', lambda dialog: dialog.accept())
                 base = addresses['alpha']
 
-                page.goto(base + '/?instance_id=alpha#accounts')
+                page.goto(base + '/accounts?instance_id=alpha')
                 expect(page.get_by_role('heading', name='账号管理', exact=True)).to_be_visible()
                 expect(page.get_by_role('row').filter(has_text='account0@example.com')).to_be_visible()
                 page.get_by_role('row').filter(has_text='account0@example.com').get_by_role('button', name='详情 / 编辑 / 登录').click()

@@ -41,10 +41,21 @@ def concurrency_inputs(store, config, base, fleet, queue):
                     diagnostic_profiles.c.scope == CookieProfiles.scope_for(base, store), diagnostic_profiles.c.deleted == 0,
                     diagnostic_profiles.c.id.in_(config['youtube_cookie_pool']))).mappings())
         node = fleet.row(db) if fleet else {}
+        if fleet:
+            from webapp.database import counters, download_lists, job_profiles
+            selected = db.execute(select(diagnostic_settings.c.value).where(
+                diagnostic_settings.c.key == 'workbench_job:' + identity)).scalar_one_or_none()
+            pending = db.execute(select(counters.c.value).where(
+                counters.c.scope == 'batch:' + selected, counters.c.status == 'queued',
+                select(download_lists.c.id).where(download_lists.c.id == selected).exists(),
+                ~select(job_profiles.c.id).where(job_profiles.c.id == selected,
+                    job_profiles.c.deleted == 1).exists())).scalar_one_or_none() if selected else 0
+        else:
+            pending = queue.get('queued', 0)
     return dict(identity=identity, stamp=stamp, progress=progress, current_tasks=current_tasks, context=context,
                 budget=int(budget or 0), global_running=global_running, profiles=profile_metadata,
                 paused=bool(node['paused']) if fleet else queue.get('paused', False),
-                error=node.get('error', ''))
+                error=node.get('error', ''), pending_count=int(pending or 0))
 
 
 def fleet_media_overview(store):
@@ -53,7 +64,7 @@ def fleet_media_overview(store):
     with store.connect() as db:
         current_roots = []
         for identity, value in db.execute(select(fleet_instances.c.id, fleet_instances.c.config)
-                                          .where(fleet_instances.c.role.in_(('worker', 'hybrid')))):
+                                          .where(fleet_instances.c.role == 'hybrid')):
             directory = json.loads(value).get('directory')
             if directory:
                 current_roots.append('@' + identity + '|' + directory)

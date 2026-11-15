@@ -33,11 +33,6 @@ def register_statistics(app, store):
     def list_overview():
         return jsonify(store.lists.page(request.args.get('cursor'), request.args.get('q', '')[:200]))
 
-    @app.put('/api/statistics/lists/<identity>')
-    def list_update(identity):
-        store.lists.update(identity, body())
-        return jsonify(message='客户、清单名称及整单计费设置已保存，跨暂停区间累计。')
-
     @app.get('/api/statistics/lists/export')
     def list_export():
         query = request.args.get('q', '')[:200]
@@ -62,15 +57,11 @@ def register_statistics(app, store):
                 for row in page['items']:
                     if not row['price_set']:
                         row = {**row, 'price': ''}
-                    if not row['tracked']:
-                        row = {**row, **dict.fromkeys(('file_count', 'file_bytes_exact', 'test_file_count',
-                            'test_file_bytes_exact', 'price', 'unit', 'amount'), '')}
                     yield line([row[key] for key in ('id', 'customer', 'name', 'created_at', 'total', 'queued', 'running',
                         'succeeded', 'failed', 'test_succeeded', 'skipped', 'file_count', 'file_bytes_exact',
                         'test_file_count', 'test_file_bytes_exact', 'price', 'unit', 'amount')] + [
-                            '任务交付累计；单价待定' if row['tracked'] and not row['price_set'] else
-                            '任务交付累计；免费' if row['tracked'] and row['price'] == '0' else
-                            '任务交付累计' if row['tracked'] else '历史清单无完整独立账本，未补算'])
+                            '任务交付累计；单价待定' if not row['price_set'] else
+                            '任务交付累计；免费' if row['price'] == '0' else '任务交付累计'])
                 if not page['next_cursor']:
                     break
                 cursor = page['next_cursor']

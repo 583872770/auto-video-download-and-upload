@@ -48,10 +48,7 @@ def pin(store, db, task_id, job, test=False, *, force=False):
         return {'version': run['version'], 'spec': json.loads(run['spec'])}
     contract = current(db, job)
     if not contract:
-        return None  # Preserve historical jobs and optional sidecars.
-    from webapp.database import tasks
-    if not force and db.execute(select(tasks.c.started_at).where(tasks.c.id == task_id)).scalar_one_or_none():
-        return None  # Previously started legacy items retain their original behavior.
+        return None  # Direct downloads do not have a customer delivery contract.
     db.execute(runs.insert().values(task_id=task_id, job_id=job, version=contract['version'],
         spec=packed(contract['spec']), status='pending', test_mode=int(test)))
     count(store, db, job, '@pending', test, 1)

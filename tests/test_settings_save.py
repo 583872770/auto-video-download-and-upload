@@ -59,17 +59,6 @@ class SettingsSaveContract:
             response = self.client.put('/api/config', json={key: invalid}, headers=self.headers)
             self.assertEqual(response.status_code, 400)
 
-    def test_cached_frontend_retired_connection_field_is_ignored_and_not_persisted(self):
-        response = self.client.put('/api/config', json={
-            'builtin_connection_limit': 1, 'download_connection_limit': 24}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        saved = self.client.get('/api/config').json
-        self.assertNotIn('builtin_connection_limit', saved['config'])
-        self.assertEqual(saved['config']['download_connection_limit'], 24)
-        import yaml
-        stored = yaml.safe_load(Path(saved['config_path']).read_text(encoding='utf-8'))
-        self.assertNotIn('builtin_connection_limit', stored)
-        self.assertEqual(stored['download_connection_limit'], 24)
 
     def test_pool_start_interval_saves_and_rejects_invalid_values(self):
         key = 'youtube_cookie_pool_start_interval'
@@ -176,12 +165,10 @@ class SettingsSaveContract:
         response = self.client.put('/api/config', json={'path':'different-directory'}, headers=self.headers)
         self.assertEqual(response.status_code, 409, response.json)
 
-    def test_historical_job_policy_does_not_lock_instance_mode(self):
+    def test_job_has_no_policy_override_columns(self):
         identity = self.create()
-        with self.store.connect() as db:
-            policy = json.loads(db.execute(select(job_profiles.c.policy).where(job_profiles.c.id==identity)).scalar_one())
-            policy['storage_mode'] = 'local'
-            db.execute(job_profiles.update().where(job_profiles.c.id==identity).values(policy=json.dumps(policy)))
+        self.assertNotIn('policy', job_profiles.c)
+        self.assertNotIn('policy_version', job_profiles.c)
         self.start(identity)
         self.store.claim(self.store.owner)
         response = self.client.put('/api/config', json={'storage_mode':'test'}, headers=self.headers)
@@ -201,44 +188,7 @@ class HybridSettingsSaveTests(SettingsSaveContract, unittest.TestCase):
         self.client = self.clients['alpha']
         self.headers = self.headers['alpha']
 
-    def test_legacy_instance_overrides_cannot_undo_saved_download_strategy(self):
-        for target in ('alpha', 'beta'):
-            with self.subTest(target=target):
-                with self.store.connect() as db:
-                    db.execute(instances.update().where(instances.c.id == target).values(limits=json.dumps({
-                        'download_method': 'yt_dlp', 'download_methods': ['yt_dlp'],
-                        'scheduler_mode': 'ordered_fallback', 'worker_count': 3})))
-                headers = {**self.headers, 'X-Instance-ID': target}
-                submitted = {'download_methods': ['downmp3', 'bergung'], 'scheduler_mode': 'auto'}
-                response = self.client.put('/api/config', json=submitted, headers=headers)
-                self.assertEqual(response.status_code, 200, response.json)
-                saved = self.client.get('/api/config', headers=headers).json['config']
-                for key, value in submitted.items():
-                    self.assertEqual(saved[key], value)
-                self.assertEqual(saved['worker_count'], 3)
-                fleet = self.apps[target].extensions['fleet']
-                self.assertEqual(fleet.local_settings()['config']['download_methods'], submitted['download_methods'])
-                item = next(row for row in fleet.list()['items'] if row['id'] == target)
-                self.assertEqual(item['policy']['scheduler_mode'], 'auto')
-                self.assertEqual(item['policy']['download_methods'], submitted['download_methods'])
-                fleet.control(target, {'worker_count': 4})
-                overrides = json.loads(fleet.row()['limits'])
-                self.assertEqual(overrides, {'worker_count': 4})
 
-    def test_restart_discards_legacy_strategy_overrides_and_keeps_resource_controls(self):
-        with self.store.connect() as db:
-            db.execute(instances.update().where(instances.c.id == 'alpha').values(heartbeat=0,
-                limits=json.dumps({'download_methods': ['yt_dlp'], 'scheduler_mode': 'auto',
-                                  'worker_count': 4, 'yt5s_browser_count': 3, 'min_free_gb': 1})))
-        app = create_app(self.root / 'alpha/config.yaml', self.root / 'alpha/state', start_worker=False,
-                         role='hybrid', instance_id='alpha', database_url=self.url)
-        self.addCleanup(app.extensions['task_store'].db.engine.dispose)
-        fleet = app.extensions['fleet']
-        self.assertEqual(json.loads(fleet.row()['limits']),
-                         {'worker_count': 4, 'yt5s_browser_count': 3, 'min_free_gb': 1})
-        config = app.test_client().get('/api/config').json['config']
-        self.assertEqual(config['download_methods'], ['downmp3'])
-        self.assertEqual(config['worker_count'], 4)
 
 
 if __name__ == '__main__':

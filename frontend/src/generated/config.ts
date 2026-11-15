@@ -23,10 +23,9 @@ export interface ConsoleConfig {
   max_log_mb: number;
   shard_downloads: boolean;
   storage_mode: string;
-  download_method: string;
   yt5s_quality: string;
   yt5s_browser_count: number;
-  download_methods: Provider[] | null;
+  download_methods: Provider[];
   fragment_concurrency: number;
   throughput_mode: string;
   bandwidth_mbps: number;
@@ -265,10 +264,11 @@ export const defaultConfig: ConsoleConfig = {
   "max_log_mb": 2,
   "shard_downloads": true,
   "storage_mode": "local",
-  "download_method": "yt_dlp",
   "yt5s_quality": "best",
   "yt5s_browser_count": 2,
-  "download_methods": null,
+  "download_methods": [
+    "yt_dlp"
+  ],
   "fragment_concurrency": 4,
   "throughput_mode": "manual",
   "bandwidth_mbps": 0,

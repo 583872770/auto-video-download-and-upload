@@ -54,20 +54,20 @@ class CookieExportTests(unittest.TestCase):
 
     def test_legacy_and_expired_saved_content_can_be_exported_without_cache(self):
         profiles = CookieProfiles(self.root, self.store)
-        profiles.save_legacy(COOKIE)
+        profiles.seed_default(COOKIE)
         expired = COOKIE.replace(b'\t0\tSID', b'\t1\tSID')
         with self.store.connect() as db:
-            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'legacy').values(content=expired.decode()))
-        self.assertFalse(profiles.path('legacy').exists())
-        response = self.export('legacy')
+            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'dddddddddddddddddddddddddddddddd').values(content=expired.decode()))
+        self.assertFalse(profiles.path('dddddddddddddddddddddddddddddddd').exists())
+        response = self.export('dddddddddddddddddddddddddddddddd')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, expired)
-        self.assertFalse(profiles.path('legacy').exists())
+        self.assertFalse(profiles.path('dddddddddddddddddddddddddddddddd').exists())
 
     def test_missing_deleted_and_path_ids_do_not_export_credentials(self):
         identity = self.add().json['item']['id']
         self.assertEqual(self.action('delete', identity).status_code, 200)
-        for value in (identity, '0' * 32, '../youtube.txt', None, ['legacy']):
+        for value in (identity, '0' * 32, '../youtube.txt', None, ['dddddddddddddddddddddddddddddddd']):
             response = self.export(value)
             self.assertEqual(response.status_code, 400, response.text)
             self.assertNotIn('PRIVATE_COOKIE_VALUE', response.text)
@@ -109,10 +109,10 @@ class CookieExportFleetTests(unittest.TestCase):
     def test_download_attachment_is_forwarded_from_selected_instance_only(self):
         for name in ('manager', 'alpha', 'beta'):
             store = self.apps[name].extensions['task_store']
-            CookieProfiles(self.root / name, store).save_legacy(
+            CookieProfiles(self.root / name, store).seed_default(
                 COOKIE.replace(b'PRIVATE_COOKIE_VALUE', name.encode() + b'_SECRET'))
         self.serve('alpha')
-        response = self.client.post('/api/youtube/cookies/export', json={'id': 'legacy'},
+        response = self.client.post('/api/youtube/cookies/export', json={'id': 'dddddddddddddddddddddddddddddddd'},
                                     headers={**self.headers, 'X-Instance-ID': 'alpha'})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn(b'alpha_SECRET', response.data)

@@ -1,4 +1,4 @@
-"""Run queue, login, media and storage contracts against isolated MySQL 5.7/8 DBs.
+"""Run queue, login, media and storage contracts against isolated MySQL 8.4+ DBs.
 
 Set VIDEO_TEST_MYSQL_URL to a test administrator URL, never the application URL.
 Every test creates and drops its own randomly named database.
@@ -47,7 +47,7 @@ class MySQLFixture:
         self.admin = admin
         self.addCleanup(admin.dispose)
         with admin.begin() as db:
-            self.collation = 'utf8mb4_0900_bin' if admin.dialect.server_version_info >= (8, 0, 21) else 'utf8mb4_bin'
+            self.collation = 'utf8mb4_0900_bin'
             db.exec_driver_sql(f'CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE {self.collation}')
 
         def cleanup():
@@ -182,8 +182,6 @@ class MySQLScaleTests(StandaloneMySQLFixture, test_scale.ScaleTests):
         self.assertEqual(owners, {row['id'] for group in created for row in group})
 
     def test_skip_locked_claims_a_different_task_without_waiting(self):
-        if not self.store.db.supports_skip_locked:
-            self.skipTest('MySQL 5.7 uses blocking row locks; covered by the waiting-claim test')
         created = self.store.create_batch([{'config': {}, 'base': str(self.root),
                                            'urls': [f'https://example.test/{index}.mp4']} for index in range(2)])
         with self.store.connect() as db:
@@ -192,32 +190,6 @@ class MySQLScaleTests(StandaloneMySQLFixture, test_scale.ScaleTests):
                 claimed = pool.submit(self.store.claim, 'parallel-owner').result(timeout=5)
             self.assertEqual(claimed['id'], created[1]['id'])
 
-    def test_waiting_claim_rechecks_status_after_first_task_is_claimed(self):
-        if self.store.db.supports_skip_locked:
-            self.skipTest('Blocking fallback is only used on MySQL 5.7')
-        created = self.store.create_batch([{'config': {}, 'base': str(self.root),
-                                           'urls': [f'https://example.test/{index}.mp4']} for index in range(2)])
-        entered = Event()
-        def before_sql(connection, cursor, statement, parameters, context, executemany):
-            if 'FOR UPDATE' in statement:
-                entered.set()
-        with ThreadPoolExecutor(1) as pool:
-            # Release the transaction before awaiting the future or exiting
-            # the executor, including when assertions inside the block fail.
-            with self.store.connect() as db:
-                first = db.execute(select(tasks).where(tasks.c.id == created[0]['id']).with_for_update()).mappings().one()
-                event.listen(self.store.db.engine, 'before_cursor_execute', before_sql)
-                try:
-                    pending = pool.submit(self.store.claim, 'second-owner')
-                    self.assertTrue(entered.wait(timeout=5))
-                    with self.assertRaises(TimeoutError):
-                        pending.result(timeout=0.25)
-                finally:
-                    event.remove(self.store.db.engine, 'before_cursor_execute', before_sql)
-                self.store._transition(db, first, 'running')
-                db.execute(tasks.update().where(tasks.c.id == first['id']).values(status='running', worker_id='first-owner'))
-            self.assertEqual(pending.result(timeout=5)['id'], created[1]['id'])
-        self.assertEqual(self.store.counts()['running'], 2)
 
 
 class MySQLControlTests(StandaloneMySQLFixture, test_controls.ControlContract, unittest.TestCase):

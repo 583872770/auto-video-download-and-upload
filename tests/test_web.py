@@ -1,4 +1,4 @@
-﻿"""Web boundaries, durable jobs, and a real local HTTP background download."""
+"""Web boundaries, durable jobs, and a real local HTTP background download."""
 import functools
 import http.server
 import io
@@ -55,7 +55,7 @@ class WebTests(unittest.TestCase):
 
     def test_page_assets_and_read_endpoints(self):
         self.assertEqual(self.client.get('/').status_code, 200)
-        for url in ('/static/app.js', '/static/app.css', '/api/config', '/api/status', '/api/media', '/api/tasks'):
+        for url in ('/api/config', '/api/status', '/api/media', '/api/tasks'):
             with self.client.get(url) as response:
                 self.assertEqual(response.status_code, 200, url)
         self.assertIn("script-src 'self'", self.client.get('/').headers['Content-Security-Policy'])
@@ -218,7 +218,7 @@ class WebTests(unittest.TestCase):
         content=b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tDO_NOT_EXPOSE\n'
         before=self.config.read_bytes()
         response=self.upload_cookie(content)
-        self.assertEqual(response.status_code,400,response.json)
+        self.assertEqual(response.status_code,404,response.json)
         self.assertNotIn('DO_NOT_EXPOSE',response.text)
         self.assertEqual(self.config.read_bytes(),before)
         self.assertFalse((self.root/'Cookies/youtube.txt').exists())

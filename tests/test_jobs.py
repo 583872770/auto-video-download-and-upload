@@ -285,24 +285,6 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.detail(a)['file_bytes'],500)
         self.assertEqual(self.detail(b)['file_bytes'],500)
 
-    def test_legacy_import_is_adopted_and_cancelled_without_late_rows(self):
-        response=self.client.post('/api/downloads/import',data={'customer':'Legacy',
-            'file':(BytesIO(b'00000000001\n00000000002\n00000000003\n'),'legacy.txt')},headers=self.headers)
-        self.assertEqual(response.status_code,202,response.json)
-        task=self.store.get(response.json['id'],private=True)
-        identity=task['payload']['import_id']
-        self.assertEqual(len(self.detail(identity)['imports']),1)
-        cleared=[]
-        def clear(_):
-            if not cleared:
-                cleared.append(True)
-                response=self.client.post(f'/api/jobs/{identity}/videos/remove',json={
-                    'clear':True,'scope':'all','confirmation':'legacy.txt'},headers=self.headers)
-                self.assertEqual(response.status_code,200,response.json)
-        with patch('webapp.bulk.CHUNK',2),self.assertRaises(InterruptedError):
-            run_import(self.store,task['payload'],clear)
-        self.assertEqual(self.detail(identity)['total'],0)
-        self.assertEqual(self.detail(identity)['importing'],0)
 
 
 class JobFleetTests(unittest.TestCase):
@@ -316,10 +298,9 @@ class JobFleetTests(unittest.TestCase):
             response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik'},headers=self.headers)
             self.assertEqual(response.status_code,201,response.json)
             ids.append(response.json['id'])
-        with patch('webapp.fleet_routes.rpc',return_value={'ready':True}):
-            for identity in ids:
-                response=self.client.post(f'/api/jobs/{identity}/control',json={'action':'start'},headers=self.headers)
-                self.assertEqual(response.status_code,200,response.json)
+        from webapp.workbench import Workbench
+        Workbench(self.a).control('alpha', 'start', ids[0])
+        Workbench(self.b).control('beta', 'start', ids[1])
         a=self.a.claim(self.a.owner)
         b=self.b.claim(self.b.owner)
         self.assertEqual(a['batch_id'],ids[0])
@@ -332,8 +313,7 @@ class JobFleetTests(unittest.TestCase):
         self.assertEqual(response.status_code,200,response.json)
         self.assertFalse(self.a.heartbeat(a['id'],self.a.owner))
         self.assertTrue(self.b.heartbeat(b['id'],self.b.owner))
-        with patch('webapp.fleet_routes.rpc',return_value={'ready':True}):
-            self.client.post(f'/api/jobs/{ids[0]}/control',json={'action':'start'},headers=self.headers)
+        Workbench(self.b).control('beta', 'start', ids[0])
         retry=self.b.claim(self.b.owner)
         self.assertEqual(retry['id'],a['id'])
         self.assertNotEqual(retry['payload']['config']['dir'],a['payload']['config']['dir'])

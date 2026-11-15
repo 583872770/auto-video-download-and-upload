@@ -54,8 +54,6 @@ def describe(row):
     value = with_test_sizes(row)
     size = value['file_bytes']
     value['file_bytes_exact'] = str(size)
-    value['quantity'] = format(Decimal(size) / UNITS[value['unit']], '.6f')
-    # Historical rate columns are retained for migration, not used as a bill.
     value['amount'] = None
     value['billing_scope'] = 'execution_only'
     value['unfinished'] = max(0, value['attempted'] - sum(value[key] for key in
@@ -175,7 +173,7 @@ class DownloadStatistics:
                 return identity
         identity = uuid.uuid4().hex
         db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
-            started_at=stamp(), status='active', label='', **self.defaults(db)))
+            started_at=stamp(), status='active', label=''))
         self.db.ensure(db, settings, {'key': self._active_key(scope), 'value': identity})
         db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=identity))
         return identity
@@ -193,7 +191,7 @@ class DownloadStatistics:
                 status='paused', ended_at=stamp()))
         identity = uuid.uuid4().hex
         db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
-            started_at=stamp(), status='active', label='', **self.defaults(db)))
+            started_at=stamp(), status='active', label=''))
         self.db.ensure(db, settings, {'key': key, 'value': ''})
         db.execute(settings.update().where(settings.c.key == key).values(value=identity))
         return identity
@@ -247,7 +245,7 @@ class DownloadStatistics:
             self.methods.change(db, row, identity, 'running')
         return identity
 
-    def transition(self, db, row, status, error=None, *, fallback_used=False):
+    def transition(self, db, row, status, error=None):
         if row['action'] != 'download':
             return
         identity = self.store.decode(row, private=True, db=db)['payload'].get('download_session_id')
@@ -267,7 +265,7 @@ class DownloadStatistics:
             changes[status] = sessions.c[status] + 1
         if changes:
             db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
-        self.methods.change(db, row, identity, status, fallback_used=fallback_used)
+        self.methods.change(db, row, identity, status)
 
     def settle(self, db, *, stop=False, instance_id=None):
         # Sessions follow instance start/stop.  A completed queue does not end
@@ -287,7 +285,7 @@ class DownloadStatistics:
     def file_identity(self, task, path, *, test_mode=False):
         """Use the same durable identity for registration and receipt recovery."""
         logical = (task['id'] + ('\0test' if test_mode else '\0delivery')) if (
-            self.store.fleet or self.store.single or (task['source_key'] or '').startswith('job:')) else (
+            self.store.fleet or (task['source_key'] or '').startswith('job:')) else (
             (task['id'] + '\0' if test_mode else '') + str(path))
         return hashlib.sha256(logical.encode('utf-8')).hexdigest()
 
@@ -385,7 +383,7 @@ class DownloadStatistics:
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
             test_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_test_statistics_since')).scalar_one()
             method_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_method_statistics_since')).scalar_one()
-            methods = self.methods.summary(db, {**totals, **test_summary}, query=query)
+            methods = self.methods.summary(db, query=query)
             defaults = self.defaults(db)
         return {'summary': {**with_test_sizes({**{key: int(value) for key, value in totals.items()}, **test_summary}),
                             'file_bytes_exact': str(int(totals['file_bytes'])),
@@ -398,8 +396,7 @@ class DownloadStatistics:
 
     def method_summary(self, identity):
         with self.store.connect() as db:
-            row = db.execute(session_select().where(sessions.c.id == identity)).mappings().one()
-            return self.methods.summary(db, row, identity=identity)
+            return self.methods.summary(db, identity=identity)
 
     @staticmethod
     def cursor(value):

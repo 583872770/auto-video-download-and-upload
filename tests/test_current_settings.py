@@ -26,7 +26,7 @@ class CurrentSettingsTests(unittest.TestCase):
         return self.store.get(response.json['id'], private=True)
 
     def test_import_needs_no_cookie_browser_or_proxy_and_stores_only_input(self):
-        self.save(download_method='yt5s_fallback', proxy_mode='clash')
+        self.save(download_methods=['yt5s', 'yt_dlp'], proxy_mode='clash')
         with patch('app.require_browser_environment', side_effect=AssertionError('no browser')), \
                 patch('app.require_fallback_environment', side_effect=AssertionError('no tools')), \
                 patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('no cookie')), \
@@ -42,14 +42,14 @@ class CurrentSettingsTests(unittest.TestCase):
         self.assertEqual(self.store.counts(actions=('download',))['total'], 2)
 
     def test_old_queue_uses_all_current_settings_without_rewriting_pending_rows(self):
-        old = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'old',
+        old = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'path': 'old',
             'storage_mode': 'local', 'download_attempts': 2}, 'base': str(self.root),
             'clash': {'directory': 'old', 'node': 'removed'}, 'urls': ['https://youtu.be/npNnbj46_ik']})
         self.store.set_downloads_paused(True)
         with self.store.connect() as db:
             before = list(db.execute(select(tasks)).all())
             old_snapshots = list(db.execute(select(snapshots)).all())
-        self.save(download_method='downmp3', path='new-videos', dir='customer', downmp3_quality='1080',
+        self.save(download_methods=['downmp3'], path='new-videos', dir='customer', downmp3_quality='1080',
                   downmp3_timeout=90, download_attempts=7, fragment_concurrency=1,
                   shard_downloads=False, proxy_mode='manual', proxy='http://127.0.0.1:9000')
         with self.store.connect() as db:
@@ -61,8 +61,8 @@ class CurrentSettingsTests(unittest.TestCase):
         task = worker.claim(worker.owner)
         self.assertEqual(task['id'], old['id'])
         config = task['payload']['config']
-        self.assertEqual((config['download_method'], config['path'], config['dir']),
-                         ('downmp3', 'new-videos', 'customer'))
+        self.assertEqual((config['download_methods'], config['path'], config['dir']),
+                         (['downmp3'], 'new-videos', 'customer'))
         self.assertEqual((config['downmp3_quality'], config['downmp3_timeout'], task['max_attempts']), ('1080', 90, 7))
         self.assertEqual((config['fragment_concurrency'], config['shard_downloads'], config['proxy_mode']),
                          (1, False, 'manual'))
@@ -75,18 +75,18 @@ class CurrentSettingsTests(unittest.TestCase):
         task = self.upload(b'npNnbj46_ik\n')
         run_import(self.store, task['payload'], lambda value: None)
         self.store.finish(task['id'], result={})
-        self.save(download_method='yt5s', path='before')
+        self.save(download_methods=['yt5s'], path='before')
         self.store.activate_download_lists()
         first = self.store.claim(self.store.owner, actions=('download',))
-        self.save(download_method='downmp3', path='after', download_attempts=8)
+        self.save(download_methods=['downmp3'], path='after', download_attempts=8)
         with patch('web_worker._execute', return_value={'message': 'fixture'}) as work:
             execute('download', first['payload'], store=self.store, task_id=first['id'])
-        self.assertEqual(work.call_args.args[1]['config']['download_method'], 'yt5s')
+        self.assertEqual(work.call_args.args[1]['config']['download_methods'], ['yt5s'])
         self.assertEqual(work.call_args.args[1]['config']['path'], 'before')
         self.store.release(first['id'], self.store.owner, 'fixture pause', delay=0)
         again = self.store.claim(self.store.owner, actions=('download',))
         self.assertEqual(again['id'], first['id'])
-        self.assertEqual(again['payload']['config']['download_method'], 'downmp3')
+        self.assertEqual(again['payload']['config']['download_methods'], ['downmp3'])
         self.assertTrue(again['payload']['_restart_transfer'])
         self.assertEqual(again['max_attempts'], 8)
         self.store.finish(again['id'], result={}, worker_id=self.store.owner)
@@ -94,10 +94,10 @@ class CurrentSettingsTests(unittest.TestCase):
         self.assertEqual((rows['downmp3']['succeeded'], rows['downmp3']['running'], rows['yt5s']['running']), (1, 0, 0))
 
     def test_resume_preflight_uses_current_method_not_old_queue_or_connection_override(self):
-        old = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'old'},
+        old = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'path': 'old'},
             'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']})
         self.store.set_downloads_paused(True)
-        self.save(download_method='downmp3', storage_mode='test')
+        self.save(download_methods=['downmp3'], storage_mode='test')
         with patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('no cookie')), \
                 patch('app.require_downmp3_environment') as probe:
             response = self.client.post('/api/downloads/resume', headers=self.headers)
@@ -106,13 +106,13 @@ class CurrentSettingsTests(unittest.TestCase):
         task = self.store.claim(self.store.owner)
         self.assertEqual(task['id'], old['id'])
         self.assertEqual(task['payload']['config']['storage_mode'], 'test')
-        self.assertEqual(task['payload']['config']['download_method'], 'downmp3')
+        self.assertEqual(task['payload']['config']['download_methods'], ['downmp3'])
 
     def test_method_restrictions_are_checked_at_execution_after_import(self):
         imported = self.upload(b'https://www.youtube.com/playlist?list=PLfixture\n')
         run_import(self.store, imported['payload'], lambda value: None)
         self.store.finish(imported['id'], result={})
-        self.save(download_method='downmp3')
+        self.save(download_methods=['downmp3'])
         self.store.activate_download_lists()
         task = self.store.claim(self.store.owner, actions=('download',))
         with patch('webapp.downmp3.resolve') as resolve:
@@ -122,7 +122,7 @@ class CurrentSettingsTests(unittest.TestCase):
 
     def test_old_import_snapshot_is_not_inherited_by_new_downloads(self):
         imported = self.upload()
-        legacy = {**imported['payload'], 'config': {'download_method': 'yt5s', 'path': 'old'},
+        legacy = {**imported['payload'], 'config': {'download_methods': ['yt5s'], 'path': 'old'},
                   'clash': {'directory': 'old', 'node': 'deleted'}}
         run_import(self.store, legacy, lambda value: None)
         for row in self.store.page(actions=('download',))['items']:

@@ -70,7 +70,7 @@ class Workbench:
             from webapp.cookie_profiles import CookieProfiles
             from webapp.database import cookie_profiles
             scope = scope or CookieProfiles.scope_for(base, store)
-            # Display reads need metadata only, without legacy migration or
+            # Display reads need metadata only, without data conversion or
             # credential materialization on every workbench poll.
             with store.connect() as db:
                 names = dict(db.execute(select(cookie_profiles.c.id, cookie_profiles.c.name).where(

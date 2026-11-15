@@ -18,7 +18,7 @@ from sqlalchemy import select
 from werkzeug.serving import make_server
 
 from app import create_app
-from webapp.database import instances, settings, tasks
+from webapp.database import delivery_artifacts, instances, settings, tasks
 from webapp.store import TaskStore
 
 
@@ -32,12 +32,12 @@ class FleetTests(unittest.TestCase):
 
     def setup_fleet(self):
         self.apps = {}
-        for identity, role, count in [('manager', 'manager', 1), ('alpha', 'worker', 2), ('beta', 'worker', 3)]:
+        for identity, role, count in [('manager', 'hybrid', 1), ('alpha', 'hybrid', 2), ('beta', 'hybrid', 3)]:
             base = self.root / identity
             base.mkdir()
             config = base / 'config.yaml'
             config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nworker_count: {count}\n'
-                              'min_free_gb: 0\ndownload_method: downmp3\ndownmp3_quality: "720"\n', encoding='utf-8')
+                              'min_free_gb: 0\ndownload_methods: [downmp3]\ndownmp3_quality: "720"\n', encoding='utf-8')
             app = create_app(config, base / 'state', start_worker=False, role=role,
                              instance_id=identity, instance_name=identity, database_url=self.url)
             app.testing = True
@@ -120,7 +120,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(first['payload']['base'], str(self.root / 'alpha'))
         self.assertEqual(first['payload']['config']['path'], 'videos-alpha')
         self.assertEqual(first['policy_version'], version)
-        self.b.fleet.save_policy({'download_method': 'downmp3', 'downmp3_quality': '1080'})
+        self.b.fleet.save_policy({'download_methods': ['downmp3'], 'downmp3_quality': '1080'})
         second = self.b.claim(self.b.owner)
         self.assertEqual(second['payload']['config']['path'], 'videos-beta')
         self.assertEqual(second['payload']['config']['downmp3_quality'], '1080')
@@ -204,6 +204,31 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(response.headers['Content-Range'], 'bytes 2-5/10')
         response.close()
 
+    def test_grouped_media_rpc_keeps_source_groups_and_files_on_selected_worker(self):
+        self.serve('alpha')
+        self.serve('beta')
+        for instance, count in [('alpha', 2), ('beta', 1)]:
+            with self.manager.connect() as db:
+                for index in range(count):
+                    seq = self.manager.db.sequence(db, 'delivery_artifact')
+                    db.execute(delivery_artifacts.insert().values(
+                        id=f'{seq:064x}', seq=seq, job_id='j' * 32, task_id='t' * 32,
+                        video_id='abcdefghijk', title='Same source across hosts',
+                        kind='subtitle', language=['en', 'fr'][index], subtitle_source='manual',
+                        variant='fixture', path='/private/caption.srt', size=7,
+                        instance_id=instance, storage='local', available=1, test_mode=0,
+                        created_at='2026-11-15T12:00:00+08:00'))
+        for instance, count in [('alpha', 2), ('beta', 1)]:
+            result = self.client.get('/api/media/groups', query_string={'instance_id': instance})
+            self.assertEqual(result.status_code, 200, result.json)
+            self.assertEqual(result.json['total'], 1)
+            self.assertEqual(result.json['file_count'], count)
+            result = self.client.get('/api/media/group-files', query_string={
+                'instance_id': instance, 'key': 'video:abcdefghijk'})
+            self.assertEqual(result.status_code, 200, result.json)
+            self.assertEqual(len(result.json['items']), count)
+            self.assertEqual({item['artifact']['instance_id'] for item in result.json['items']}, {instance})
+
     def test_overview_uses_workers_current_directories_without_interpreting_remote_paths(self):
         empty_count = self.client.get('/api/overview').json['media']['count']
         self.assertEqual(empty_count, 0)
@@ -280,13 +305,14 @@ class FleetTests(unittest.TestCase):
         self.assertIn('/setup', response.json['error'])
         self.assertEqual(self.client.get('/api/overview').status_code, 200)
 
-    def test_legacy_cookie_upload_is_rejected_on_selected_worker(self):
+    def test_removed_cookie_upload_is_rejected_on_selected_worker(self):
         self.serve('beta')
         cookie = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only-secret\n'
-        response = self.client.post('/api/youtube/cookie', data={'cookie': (BytesIO(cookie), 'cookies.txt')},
-                                    headers={**self.headers, 'X-Instance-ID': 'beta'})
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn('账号', response.json['error'])
+        with patch('webapp.fleet_routes.requests.Session') as transport:
+            response = self.client.post('/api/youtube/cookie', data={'cookie': (BytesIO(cookie), 'cookies.txt')},
+                                        headers={**self.headers, 'X-Instance-ID': 'beta'})
+            transport.assert_not_called()
+        self.assertEqual(response.status_code, 404, response.text)
         self.assertFalse((self.root / 'beta/Cookies/youtube.txt').exists())
         self.assertFalse((self.root / 'alpha/Cookies/youtube.txt').exists())
         self.assertFalse((self.root / 'manager/Cookies/youtube.txt').exists())
@@ -368,7 +394,7 @@ class FleetTests(unittest.TestCase):
     def test_boot_identity_fences_old_executors_and_errors_survive_heartbeat(self):
         from webapp.fleet import Fleet
         with self.assertRaisesRegex(ValueError, '实例 ID 已在线'):
-            duplicate = Fleet(self.b, 'worker', identity='alpha')
+            duplicate = Fleet(self.b, 'hybrid', identity='alpha')
             duplicate.initialize({}, self.root, self.root / 'clash')
         self.b.fleet = self.apps['beta'].extensions['fleet']
         self.a.fleet.beat('fixture cookie error')
@@ -388,7 +414,7 @@ class FleetTests(unittest.TestCase):
     def test_container_pid_reuse_waits_for_heartbeat_expiry_before_registration(self):
         from webapp.fleet import Fleet, InstanceIdentityConflict, ONLINE_SECONDS
         old = self.a.fleet.row()
-        replacement = Fleet(self.b, 'worker', identity='alpha')
+        replacement = Fleet(self.b, 'hybrid', identity='alpha')
         with patch('psutil.pid_exists', return_value=True), \
                 patch.object(replacement, 'clock', return_value=old['heartbeat'] + 2):
             with self.assertRaises(InstanceIdentityConflict) as raised:
@@ -441,7 +467,7 @@ class FleetTests(unittest.TestCase):
             thread.join(timeout=3)
         self.addCleanup(close_server)
         for store in (self.a, self.b):
-            store.fleet.save_policy({'download_methods': ['yt_dlp'], 'download_method': 'yt_dlp', 'download_format': 'best'})
+            store.fleet.save_policy({'download_methods': ['yt_dlp'], 'download_format': 'best'})
             store.fleet.control(store.fleet.id, {'worker_count': 1})
         self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/0.mp4']})
         self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/1.mp4']})

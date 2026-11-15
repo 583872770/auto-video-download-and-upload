@@ -67,7 +67,7 @@ class AccountBrowserLoginTests(unittest.TestCase):
         self.assertEqual(result.status_code,202,result.json)
         self.assertTrue(self.fixture.ready.wait(5))
         self.assertEqual(self.fixture.options['credentials']['password'],' a&!#Secret 123 ')
-        self.assertEqual(self.fixture.options['credentials']['code_url'],'http://example.com/')
+        self.assertNotIn('code_url',self.fixture.options['credentials'])
         self.assertNotIn('extra',self.fixture.options['credentials'])
         self.assertNotIn('Secret',result.text)
         self.assertNotIn('Secret',self.manager.path.read_text(encoding='utf-8'))

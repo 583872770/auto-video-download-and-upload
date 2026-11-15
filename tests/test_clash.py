@@ -1,4 +1,4 @@
-﻿"""Private subscription boundaries and real Mihomo routing with local fixtures."""
+"""Private subscription boundaries and real Mihomo routing with local fixtures."""
 import http.server
 import json
 from pathlib import Path

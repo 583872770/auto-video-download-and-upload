@@ -12,7 +12,6 @@ METHODS = {
     'downmp3': 'downmp3',
     'yt1d': 'yt1d',
     'bergung': 'Bergung',
-    'unknown': '未分类',
 }
 FIELDS = (*COUNTERS, 'test_file_count', 'test_file_bytes', 'fallback_tasks')
 
@@ -88,7 +87,7 @@ class MethodStatistics:
             method_tasks.c.task_id == row['id']).values(method=method, status=status, fallback_used=current['fallback_used']))
         return current
 
-    def change(self, db, row, identity, status, *, fallback_used=False):
+    def change(self, db, row, identity, status):
         current = self.ensure(db, row, identity)
         if current is None:
             return
@@ -101,15 +100,11 @@ class MethodStatistics:
                 changes[current['status']] = -1
             if status in OUTCOMES:
                 changes[status] = changes.get(status, 0) + 1
-        fallback = current['method'] == 'yt5s_fallback' and fallback_used and not current['fallback_used']
-        if fallback:
-            changes['fallback_tasks'] = 1
         if changes:
             self.add(db, identity, current['method'], changes)
         db.execute(method_tasks.update().where(method_tasks.c.session_id == identity,
-            method_tasks.c.task_id == row['id']).values(status=status,
-                fallback_used=1 if fallback or current['fallback_used'] else 0))
-        self.remember(db, {**current, 'status': status, 'fallback_used': int(fallback or current['fallback_used'])})
+            method_tasks.c.task_id == row['id']).values(status=status))
+        self.remember(db, {**current, 'status': status})
 
     def record_file(self, db, row, identity, size, test_mode):
         current = self.ensure(db, row, identity)
@@ -146,7 +141,7 @@ class MethodStatistics:
                 elif current['status'] != 'running':
                     self.activate(db, row, identity, provider, 'running', fallback=fallback)
 
-    def summary(self, db, totals, *, identity=None, query=''):
+    def summary(self, db, *, identity=None, query=''):
         statement = select(method_totals.c.method, *(func.sum(method_totals.c[key]).label(key) for key in FIELDS))
         statement = statement.select_from(method_totals.join(sessions, method_totals.c.session_id == sessions.c.id))
         if identity:
@@ -154,9 +149,5 @@ class MethodStatistics:
         if query:
             statement = statement.where(sessions.c.label.contains(query[:200], autoescape=True))
         rows = {row['method']: dict(row) for row in db.execute(statement.group_by(method_totals.c.method)).mappings()}
-        known = [describe_method(method, rows.get(method, {})) for method in METHODS if method != 'unknown']
-        residual = {key: max(0, int(totals.get(key) or 0) - sum(row[key] for row in known))
-                    for key in FIELDS if key != 'fallback_tasks'}
-        residual['fallback_tasks'] = int(rows.get('unknown', {}).get('fallback_tasks', 0))
-        return [*known, *([describe_method('unknown', residual)] if any(residual.values()) else [])]
+        return [describe_method(method, rows.get(method, {})) for method in METHODS]
 

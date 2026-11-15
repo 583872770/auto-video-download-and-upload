@@ -1,6 +1,6 @@
 # 配置定义与维护边界
 
-配置的默认值、整数范围和字段分类统一定义在 `webapp/config/schema.py`，`webapp/config_schema.py` 保留为兼容导出入口。
+配置的默认值、整数范围和字段分类统一定义在 `webapp/config/schema.py`，`webapp/config_schema.py` 作为公共导出入口。
 该模块仅依赖 Python 标准库，磁盘、OSS、实例和调度模块均可直接引用，避免循环导入。
 
 ## 一项配置在哪里定义
@@ -31,7 +31,6 @@
 1. 在 `SETTINGS` 中维护默认值、范围及消费者标记，不再到多个模块手写同名集合。
 2. 枚举、领域约束和跨字段约束继续放在 `settings.py` 或相应领域模块中。
 3. 实际功能、前端输入和运行时读取仍需按业务需求实现；元数据不自动改变调度算法。
-4. 已删除但旧前端仍可能发送的键放入 `RETIRED_FIELDS`，入口和校验使用同一个清理函数。
 5. 有意修改配置契约时，审核并更新 `tests/fixtures/settings_contract.json` 及对应行为测试。
    不要在测试运行时从当前实现生成预期值，否则无法发现意外变化。
 
@@ -43,7 +42,7 @@ MySQL / Redis 连接由启动环境管理，实例地址等由部署模块管理
 
 ```text
 python -m unittest tests.test_config_schema -v
-node tests/test_polling.cjs
+cd frontend && npm test
 python scripts/verify/verify_settings_save.py
 python scripts/verify/verify_settings_save.py --hybrid
 python scripts/verify/verify_hot_policy.py

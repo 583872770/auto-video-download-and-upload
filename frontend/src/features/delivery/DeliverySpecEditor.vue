@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import { outputLabels as labels, type DeliverySpec, type OutputKind } from './model';
 const model = defineModel<DeliverySpec>({ required: true });
 const spec = computed(() => model.value);
-const mode = computed(() => spec.value.subtitles.mode || 'selected');
+const mode = computed(() => spec.value.subtitles.mode);
 const translate = computed(() => mode.value !== 'original');
 const languageOptions: [string, string][] = [
   ['zh-Hans', '简体中文'],
@@ -71,8 +71,7 @@ function updateLanguages(value: string) {
         </select></label
       >
       <label class="field"
-        >{{ mode === 'selected' ? '字幕来源' : '原始字幕来源'
-        }}<select
+        >原始字幕来源<select
           :value="spec.subtitles.sources.join(',')"
           name="delivery-sub-sources"
           @change="spec.subtitles.sources = ($event.target as HTMLSelectElement).value.split(',')"
@@ -95,9 +94,6 @@ function updateLanguages(value: string) {
           @change="toggleTranslation(($event.target as HTMLInputElement).checked)"
         />同时下载自动翻译字幕</label
       >
-      <p v-if="mode === 'selected'" class="muted">
-        此历史任务沿用指定语言要求。关闭自动翻译后，将改为下载原始字幕。
-      </p>
       <template v-if="translate">
         <p class="muted">保留原始字幕，同时获取所选语言的字幕。目标语言已有人工字幕时优先使用。</p>
         <div class="choices">

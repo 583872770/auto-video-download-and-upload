@@ -17,11 +17,12 @@ def register_tasks_routes(context, queue, preflight):
         if active:
             actions = ('download',)
         batch_id = request.args.get('batch_id')
+        compact = request.args.get('compact') == '1'
         return jsonify(**store.page(actions=actions, limit=int(request.args.get('limit', 50)),
                        cursor=request.args.get('cursor'), status='active' if active else request.args.get('status'),
-                       finished_only=request.args.get('view') == 'history',
+                       finished_only=request.args.get('view') == 'history', compact=compact,
                        query=request.args.get('q', '')[:200], batch_id=batch_id, order=request.args.get('order', 'desc')),
-                       counts=store.counts(actions=actions, batch_id=batch_id))
+                       **({} if compact else {'counts': store.counts(actions=actions, batch_id=batch_id)}))
 
     @app.get('/api/batches')
     def download_batches():

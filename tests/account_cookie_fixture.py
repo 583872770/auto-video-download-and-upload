@@ -2,7 +2,7 @@
 
 HTTP helpers exercise real authentication and account uploads. The
 AccountCookieProfiles fixture bypasses HTTP setup for scheduler tests.
-Production CookieProfiles.add and save_legacy stay retired.
+Production credentials are created through account uploads.
 """
 from datetime import datetime, timezone
 import base64
@@ -55,17 +55,17 @@ class AccountCookieProfiles(CookieProfiles):
     def add(self, name, data, filename='cookies.txt'):
         return self.seed(name, data)
 
-    def save_legacy(self, data):
+    def seed_default(self, data):
+        parse_youtube_cookie_file(data)
         with self.store.connect() as db:
-            old = db.execute(select(cookie_profiles.c.id).where(cookie_profiles.c.scope == self.scope,
-                cookie_profiles.c.id == 'legacy')).first()
-            if old:
-                parse_youtube_cookie_file(data)
+            existing = db.execute(select(cookie_profiles.c.id).where(
+                cookie_profiles.c.scope == self.scope, cookie_profiles.c.id == 'd'*32)).scalar_one_or_none()
+            if existing:
                 claim(db, self.scope, credential_keys(data))
                 db.execute(cookie_profiles.update().where(cookie_profiles.c.scope == self.scope,
-                    cookie_profiles.c.id == 'legacy').values(content=data.decode('utf-8-sig'), deleted=0))
-                return
-        return self.seed('Legacy fixture', data, identity='legacy')
+                    cookie_profiles.c.id == existing).values(content=data.decode('utf-8-sig')))
+                return dict(id=existing)
+        return self.seed('Default fixture', data, identity='d'*32)
 
     def seed(self, name, data, *, identity=None):
         if not name or len(name) > 80 or any(ord(c) < 32 for c in name):

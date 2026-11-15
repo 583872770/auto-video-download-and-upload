@@ -20,7 +20,7 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
         mysql.MySQLFixture.setUp(self)
         self.first = TaskStore(self.root / 'a', self.store.db.url)
         self.second = TaskStore(self.root / 'b', self.store.db.url)
-        self.config = {'download_method':'bergung', 'worker_count':8,
+        self.config = {'download_methods': ['bergung'], 'worker_count':8,
             'download_channels':[contract.channel('bergung', transfer_limit=1),
                                  contract.channel('alias'), contract.channel('other','independent')]}
 
@@ -31,7 +31,7 @@ class MySQLChannelSchedulerTests(mysql.MySQLFixture, contract.AdmissionTests):
             db.execute(tasks.update().where(tasks.c.id.in_([job['id'] for job in jobs])).values(
                 status='running', worker_id=self.first.owner, lease_until=time.time() + 120))
         def transfer(job):
-            scheduler = ChannelScheduler(self.first, {'download_method': 'yt_dlp'}, job['id'])
+            scheduler = ChannelScheduler(self.first, {'download_methods': ['yt_dlp']}, job['id'])
             for _ in range(5):
                 with scheduler.permit(scheduler.channels[0], 'transfer', timeout=10):
                     time.sleep(.005)

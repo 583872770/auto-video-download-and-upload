@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import random
-import re
 import time
 from functools import lru_cache
 
@@ -50,10 +49,9 @@ DENIED_COOLDOWN = 15 * 60
 def halt_message(state, *, previous=False):
     """Describe persisted admission state without reasserting a fresh source error."""
     cause = {'account_rate_limit': 'YouTube 明确提示账号被限流',
-             'http_429': 'HTTP 429（请求过多）',
+             'request_rate_limit': 'HTTP 429（请求过多）',
              'authentication_required': '登录检查未通过或需要额外验证',
-             'verification_required': '源站要求额外验证'}.get(
-                 state.get('halt_kind'), '旧记录未区分限流与登录验证')
+             'verification_required': '源站要求额外验证'}[state['halt_kind']]
     if previous:
         # The gate is checked before reserving an account or yielding to yt-dlp.
         # Historical causes remain in status metadata; this is a local refusal.
@@ -88,9 +86,8 @@ def credential_key(data):
 def account_group_key(name, data):
     """Return a durable local group for repeated exports of one account."""
     label = ' '.join(str(name or '').split())
-    label = re.sub(r'\s*[·•]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*$', '', label).strip()
-    generic = {'cookies.txt', 'cookie.txt', '原有 cookie（上传 / 浏览器登录）'}
-    if label and label.casefold() not in generic and not label.startswith('浏览器登录 '):
+    generic = {'cookies.txt', 'cookie.txt'}
+    if label and label.casefold() not in generic:
         return 'named:' + hashlib.sha256(label.casefold().encode('utf-8')).hexdigest()
     return 'credential:' + credential_key(data)
 
@@ -101,7 +98,7 @@ def session_view(identity, name, state, config, stamp, *, pacing=None):
     starts, budget_until = start_budget(config, state, stamp)
     return dict(id=identity, name=name, state='manual' if state.get('halted') else 'cooldown' if cooling else 'recovery' if recovery else 'ready',
         halted=bool(state.get('halted')), halt_kind=state.get('halt_kind'), halted_at=state.get('halted_at'),
-        halt_incident_id=state.get('halt_revision') or (state.get('halt_decision') or {}).get('incident_id'),
+        halt_incident_id=state.get('halt_revision'),
         active=int(state.get('active', 0)), next_start_at=next_account_start(config, state, budget_until),
         last_finished_at=state.get('last_finished_at', 0), rest_until=task_rest_until(config, state),
         hourly_used=sum(s > stamp - 3600 for s in starts), daily_used=len(starts), budget_until=budget_until,
@@ -315,8 +312,7 @@ class CookiePool:
             return False
         def clear(db, stamp):
             state = self.router._state(db, scope)
-            if (not state.get('halted') or (state.get('halt_revision') or
-                    (state.get('halt_decision') or {}).get('incident_id')) != incident_id
+            if (not state.get('halted') or state.get('halt_revision') != incident_id
                     or checked_at < state.get('halted_at', 0)):
                 return False
             state.update(halted=False, halt_kind=None, halted_at=None, halt_decision=None, halt_revision=None)
@@ -621,7 +617,7 @@ class CookiePool:
                 state['first_success'] = state.get('first_success') or stamp
                 state['successes'] = state.get('successes', 0) + 1
                 if state['streak'] >= STABLE_SUCCESSES and stamp - state['first_success'] >= STABLE_WINDOW:
-                    # Keep the legacy warmup marker; session_limit() applies
+                    # Keep the current warmup ceiling; session_limit() applies
                     # the current per-session configuration after warmup.
                     state['limit'] = 2
                 previous_interval = int(state.get('interval', 60))

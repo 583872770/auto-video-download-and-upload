@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from playwright.async_api import Error as BrowserError
 
-from webapp.email_codes import (EmailInbox, InboxUnavailable, MAX_PAGE_BYTES, ORIGIN,
-                               email_inbox, read_inbox, supported_source)
+from webapp.email_codes import (EmailInbox, InboxUnavailable, InboxRejected, MAX_PAGE_BYTES, ORIGIN,
+                               email_inbox, read_inbox, safe_url, supported_source)
 from scripts.login_youtube import GoogleSignIn
 
 
@@ -27,12 +27,23 @@ def inbox(*messages, email=EMAIL):
 
 
 class InboxParsingTests(unittest.TestCase):
-    def test_supported_provider_upgrades_http_and_rejects_other_hosts(self):
+    def test_supported_provider_http_https_and_rejects_other_hosts(self):
         for value in ('http://fbvjdjcf.asia/', 'https://fbvjdjcf.asia/', 'https://fbvjdjcf.asia/inbox?sid=ignored'):
             self.assertTrue(supported_source(value))
+            self.assertEqual(safe_url(value), value)
         for value in ('http://127.0.0.1/', 'https://fbvjdjcf.asia.evil/', 'https://evil@fbvjdjcf.asia/',
                       'https://fbvjdjcf.asia:8443/', 'https://fbvjdjcf.asia/admin', None):
             self.assertFalse(supported_source(value))
+            with self.assertRaises(InboxUnavailable):
+                safe_url(value)
+
+    def test_provider_blacklist_is_explicit_without_leaking_page_data(self):
+        with self.assertRaises(InboxRejected) as caught:
+            read_inbox('<div class="notice err">该邮箱已加入黑名单，当前禁止登录。'
+                       + EMAIL + ' private-session</div>', EMAIL, time.time())
+        self.assertIn('黑名单', str(caught.exception))
+        self.assertNotIn(EMAIL, str(caught.exception))
+        self.assertNotIn('private-session', str(caught.exception))
 
     def test_cloudflare_protected_heading_and_google_sender_are_decoded(self):
         raw = bytes([41]) + bytes(c ^ 41 for c in EMAIL.encode())
@@ -100,20 +111,35 @@ class InboxNetworkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.get.await_count, 1)
         redirect.dispose.assert_awaited_once()
 
+    async def test_canonical_redirect_is_followed_before_posting_mailbox(self):
+        request = MagicMock()
+        request.get = AsyncMock(side_effect=[
+            response(status=301, headers={'location': 'https://fbvjdjcf.asia/'}),
+            response('<form action="/login?lang=zh"></form>'),
+            response(inbox()),
+        ])
+        request.post = AsyncMock(return_value=response(inbox()))
+        client = EmailInbox(request, EMAIL)
+        await client.open()
+        request.post.assert_awaited_once_with('https://fbvjdjcf.asia/login?lang=zh',
+                                             form={'email': EMAIL}, max_redirects=0)
+        self.assertEqual(client.refresh, 'https://fbvjdjcf.asia/inbox?sid=fixture-private-session&refresh=1')
+        self.assertEqual(request.get.await_count, 3)
+
     async def test_old_code_baseline_cadence_and_new_code_once(self):
         client = EmailInbox(None, EMAIL)
-        client.fetch = AsyncMock(side_effect=[inbox(mail()), inbox(mail()), inbox(mail(), mail('654321')),
+        client.fetch = AsyncMock(side_effect=['<form></form>', inbox(mail()), inbox(mail()), inbox(mail(), mail('654321')),
                                               inbox(mail(), mail('654321'))])
         with patch('webapp.email_codes.time.monotonic', return_value=100):
             await client.open()
             self.assertIsNone(await client.poll())
-        self.assertEqual(client.fetch.await_count, 2)
+            self.assertEqual(client.fetch.await_count, 3)
         with patch('webapp.email_codes.time.monotonic', return_value=130):
             self.assertEqual(await client.poll(), '654321')
             self.assertIsNone(await client.poll())
         with patch('webapp.email_codes.time.monotonic', return_value=160):
             self.assertIsNone(await client.poll())
-        self.assertEqual(client.fetch.await_count, 4)
+        self.assertEqual(client.fetch.await_count, 5)
 
     async def test_multiple_new_codes_fail_instead_of_guessing(self):
         client = EmailInbox(None, EMAIL)
@@ -122,12 +148,34 @@ class InboxNetworkTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(InboxUnavailable):
             await client.poll()
 
-    async def test_manual_or_unsupported_source_opens_no_mailbox(self):
+    async def test_manual_login_opens_no_mailbox(self):
         driver = MagicMock()
-        for credentials in (None, {'email': EMAIL, 'code_url': 'https://example.test/'}):
-            async with email_inbox(driver, credentials, {}, MagicMock()) as client:
-                self.assertIsNone(client)
+        async with email_inbox(driver, None, {}, MagicMock()) as client:
+            self.assertIsNone(client)
         driver.request.new_context.assert_not_called()
+
+    async def test_all_accounts_use_shared_provider_regardless_saved_url(self):
+        for saved in ({}, {'code_url': ''}, {'code_url': 'https://example.test/'}):
+            driver, request = MagicMock(), MagicMock()
+            request.dispose = AsyncMock()
+            driver.request.new_context = AsyncMock(return_value=request)
+            with patch('webapp.email_codes.EmailInbox.open', AsyncMock()) as opened:
+                async with email_inbox(driver, {'email': EMAIL, **saved}, {}, MagicMock()) as client:
+                    self.assertEqual(client.email, EMAIL)
+                    opened.assert_awaited_once()
+            request.dispose.assert_awaited_once()
+
+    async def test_blacklist_reason_survives_preparation_and_google_handoff(self):
+        driver, request, report = MagicMock(), MagicMock(), MagicMock()
+        request.dispose = AsyncMock()
+        driver.request.new_context = AsyncMock(return_value=request)
+        with patch('webapp.email_codes.EmailInbox.open', AsyncMock(side_effect=InboxRejected('接码网站拒绝此邮箱：黑名单。'))):
+            async with email_inbox(driver, {'email': EMAIL}, {}, report) as client:
+                assistant = GoogleSignIn({'email': EMAIL, 'password': 'secret'}, report, inbox=client)
+                await assistant.choose_email(MagicMock())
+                self.assertTrue(assistant.stopped)
+                self.assertIn('黑名单', report.call_args.args[1])
+        request.dispose.assert_awaited_once()
 
     async def test_cancellation_disposes_request_context(self):
         driver, request = MagicMock(), MagicMock()

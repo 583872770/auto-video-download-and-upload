@@ -262,16 +262,6 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.control('beta', 'start', job)
         self.assert_job_state(job, 'queued', True)
 
-    def test_legacy_executor_can_continue_scoped_peers_paused_job(self):
-        job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')
-        self.control('alpha', 'start', job)
-        self.a.claim('alpha-owner')
-        self.control('alpha', 'pause')
-        with self.manager.connect() as db:
-            self.manager.fleet.activate(db)
-            db.execute(download_lists.update().where(download_lists.c.id == job).values(released=1))
-        self.assert_job_state(job, 'running', True)
-        self.assertEqual(self.b.claim('beta-owner')['batch_id'], job)
 
     def test_stopped_executor_does_not_look_enabled(self):
         job = self.create()
@@ -323,12 +313,6 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertFalse(self.b.fleet.row()['paused'])
         self.assertIsNone(self.manager.fleet.policy(active=True))
 
-    def test_legacy_list_is_adopted_before_scoped_execution(self):
-        a = self.create()
-        with self.manager.connect() as db:
-            db.execute(job_profiles.delete().where(job_profiles.c.id == a))
-        self.control('alpha', 'start', a)
-        self.assertEqual(self.a.claim('alpha-owner')['batch_id'], a)
 
     def test_selected_job_can_start_while_its_video_file_is_importing(self):
         self.store = self.manager
@@ -353,6 +337,26 @@ class WorkbenchFleetTests(unittest.TestCase):
         cards = {row['id']: row for row in self.client.get('/api/instances').json['items']}
         self.assertEqual(cards['alpha']['selected_job']['id'], a)
         self.assertEqual(cards['beta']['selected_job']['id'], b)
+
+    def test_account_pending_counts_use_the_executors_selected_job(self):
+        a, b = self.pair()
+        self.a.claim('alpha-owner')
+
+        def check(alpha, beta):
+            cards = {item['id']: item for item in self.client.get('/api/instances').json['items']}
+            self.assertEqual(cards['alpha']['concurrency']['pending_tasks'], alpha)
+            self.assertEqual(cards['beta']['concurrency']['pending_tasks'], beta)
+            response = self.apps['alpha'].test_client().get('/api/status', headers={'X-Instance-ID': 'alpha'})
+            self.assertEqual(response.status_code, 200, response.json)
+            self.assertEqual(response.json['concurrency']['pending_tasks'], alpha)
+
+        check(2, 3)
+        with self.manager.connect() as db:
+            db.execute(settings.update().where(settings.c.key == 'workbench_job:alpha').values(value=b))
+        check(3, 3)
+        with self.manager.connect() as db:
+            db.execute(job_profiles.update().where(job_profiles.c.id == b).values(deleted=1))
+        check(0, 0)
 
     def test_download_worker_only_sees_its_selected_batch(self):
         a, b = self.pair()

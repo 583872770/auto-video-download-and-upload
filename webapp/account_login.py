@@ -24,7 +24,7 @@ def prepare(store, base, config, identity, data, actor):
             password = saved.get('password')
             if not password:
                 raise ValueError('此账号尚未保存密码，请使用手动登录或先保存密码。')
-            credentials = {'email': row['email'], 'password': password, 'code_url': saved.get('code_url', '')}
+            credentials = {'email': row['email'], 'password': password}
         if not row['instance_id']:
             row['version'] += 1
             db.execute(youtube_accounts.update().where(youtube_accounts.c.id == identity).values(

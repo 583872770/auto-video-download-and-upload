@@ -13,7 +13,6 @@ from sqlalchemy import create_engine, inspect, select
 
 from webapp.disk_budget import file_lock
 from webapp.local_processing import local_processing
-from webapp.migrations import _completed_file_times
 from webapp.progress_cache import ProgressCache
 from webapp.read_cache import ReadCache
 
@@ -155,35 +154,7 @@ class SmoothnessTests(unittest.TestCase):
         self.assertEqual(cache.health()['counters']['error_mget'], 1)
         self.assertEqual(cache.health()['counters']['backoff_mget'], 1)
 
-    def test_completed_time_schema_is_idempotent_without_backfilling_test_data(self):
-        engine = create_engine('sqlite://')
-        self.addCleanup(engine.dispose)
-        from webapp.database import deliveries, test_files
-        with engine.begin() as db:
-            for table in (deliveries, test_files):
-                db.exec_driver_sql(f'CREATE TABLE {table.name} (id TEXT PRIMARY KEY, seq INTEGER, session_id TEXT, created_at TEXT)')
-                db.exec_driver_sql(f'INSERT INTO {table.name} VALUES (?, ?, ?, ?)', ('a', 1, 's', '2026-11-06T08:00:00+08:00'))
-                db.exec_driver_sql(f'INSERT INTO {table.name} VALUES (?, ?, ?, ?)', ('b', 2, 's', 'invalid'))
-        _completed_file_times(engine)
-        _completed_file_times(engine)
-        for table in (deliveries, test_files):
-            with engine.connect() as db:
-                result = dict(db.execute(select(table.c.id, table.c.created_epoch)).all())
-            self.assertEqual(result, {'a': None, 'b': None})
-            self.assertTrue(any(index['name'].endswith('_time') for index in inspect(engine).get_indexes(table.name)))
 
-    def test_media_time_schema_does_not_invent_completion_times_for_existing_rows(self):
-        from webapp.database import media
-        from webapp.migrations import _media_download_times
-        engine = create_engine('sqlite://')
-        self.addCleanup(engine.dispose)
-        with engine.begin() as db:
-            db.exec_driver_sql(f'CREATE TABLE {media.name} (id TEXT PRIMARY KEY, modified DOUBLE)')
-            db.exec_driver_sql(f"INSERT INTO {media.name} VALUES ('fixture', 1234.5)")
-        _media_download_times(engine)
-        _media_download_times(engine)
-        with engine.connect() as db:
-            self.assertEqual(db.exec_driver_sql(f'SELECT modified, downloaded_at FROM {media.name}').one(), (1234.5, 0))
 
     def test_current_runtime_log_filter_keeps_multiline_and_excludes_old_errors(self):
         from webapp.diagnostics import read_runtime_logs

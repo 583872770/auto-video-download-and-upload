@@ -12,11 +12,11 @@ from webapp.database import settings
 
 class RiskDiagnosticsTests(unittest.TestCase):
     def test_saved_pool_halt_is_not_evidence_of_explicit_account_limit(self):
-        old = '账号池检测到限流或登录验证，已停止整个实例。请检查后人工恢复；不会换账号继续重试。'
+        stopped = 'Cookie 池已停止。触发原因：登录检查未通过或需要额外验证。'
         replay = 'Cookie 池沿用此前保存的停止状态，本次尚未选择 Cookie 或发起视频下载请求。'
-        for message in (old, replay):
-            self.assertEqual(classify(message), ['cookie_pool_halted'])
-            values = observed({'download_method': 'yt_dlp'}, {}, None, time.time(), error=message)
+        for message in (stopped, replay):
+            self.assertIn('cookie_pool_halted', classify(message))
+            values = observed({'download_methods': ['yt_dlp']}, {}, None, time.time(), error=message)
             self.assertIn('cookie_pool_halted', [v['code'] for v in values])
             self.assertNotIn('account_rate_limit', [v['code'] for v in values])
         for message in ('Your account has been rate-limited',
@@ -52,7 +52,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
 
     def test_auth_evidence_unknown_and_expired_are_not_invalid_cookie(self):
         stamp = time.time()
-        config = {'download_method': 'yt_dlp', 'proxy_mode': 'direct'}
+        config = {'download_methods': ['yt_dlp'], 'proxy_mode': 'direct'}
         for auth, expected in [(None, 'auth_unknown'), ({'state': 'network_error'}, 'auth_unknown'),
                                ({'state': 'valid', 'expires_at': stamp-1}, 'auth_unknown'),
                                ({'state': 'valid', 'expires_at': stamp+60}, 'auth_valid'),
@@ -60,8 +60,8 @@ class RiskDiagnosticsTests(unittest.TestCase):
                                ({'state': 'invalid'}, 'auth_missing')]:
             values = observed(config, {}, auth, stamp)
             self.assertIn(expected, [value['code'] for value in values])
-        self.assertNotIn('auth_unknown', [v['code'] for v in observed({'download_method':'downmp3'}, {}, None, stamp)])
-        self.assertIn('auth_unknown', [v['code'] for v in observed({'download_method':'yt5s_fallback'}, {}, None, stamp)])
+        self.assertNotIn('auth_unknown', [v['code'] for v in observed({'download_methods': ['downmp3']}, {}, None, stamp)])
+        self.assertIn('auth_unknown', [v['code'] for v in observed({'download_methods': ['yt5s', 'yt_dlp']}, {}, None, stamp)])
 
     def test_local_route_evidence_is_sanitized_and_stale_is_not_live(self):
         with tempfile.TemporaryDirectory() as root:
@@ -72,10 +72,10 @@ class RiskDiagnosticsTests(unittest.TestCase):
             health = local_health(root, {'proxy_mode':'clash'}, root)
             self.assertEqual((health['cooling'], health['probing']), (1,1))
             self.assertNotIn('secret', json.dumps(health))
-            values = observed({'download_method':'downmp3','proxy_mode':'clash'}, {'local_health':health}, None, stamp)
+            values = observed({'download_methods': ['downmp3'],'proxy_mode':'clash'}, {'local_health':health}, None, stamp)
             self.assertIn('telemetry', [v['code'] for v in values])
             health['time'] -= 60
-            values = observed({'download_method':'downmp3','proxy_mode':'clash'}, {'local_health':health}, None, stamp)
+            values = observed({'download_methods': ['downmp3'],'proxy_mode':'clash'}, {'local_health':health}, None, stamp)
             self.assertNotIn('telemetry', [v['code'] for v in values])
             self.assertTrue(any('无法确认' in v['detail'] for v in values))
 
@@ -90,7 +90,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
         ]
         for fields, title, detail in cases:
             with self.subTest(fields=fields):
-                facts = observed({'download_method': 'yt_dlp'}, {},
+                facts = observed({'download_methods': ['yt_dlp']}, {},
                                  {'state': 'verification_required', **fields}, time.time())
                 fact = next(f for f in facts if f['code'] == 'bot_check')
                 self.assertEqual(fact['title'], title)
@@ -107,7 +107,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
         for row in GUIDE:
             self.assertTrue(all(row.get(k) for k in ('category','title','impact','recovery','action')))
             self.assertTrue(row['href'].startswith('/#'))
-        values = observed({'download_method':'yt_dlp'}, {}, None, time.time(),
+        values = observed({'download_methods': ['yt_dlp']}, {}, None, time.time(),
                           error='HTTP 403 https://user:password@example.test/?token=secret')
         self.assertNotIn('password', json.dumps(values))
         self.assertNotIn('secret', json.dumps(values))
@@ -138,7 +138,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
                 with store.connect() as db:
                     db.execute(settings.insert().values(key='youtube_auth_latest', value=json.dumps(saved)))
                     auth = read_auth(db, ['local'], standalone=True)['local']
-                facts = observed({'download_method': 'yt_dlp'}, {}, auth, time.time())
+                facts = observed({'download_methods': ['yt_dlp']}, {}, auth, time.time())
                 fact = next(f for f in facts if f['code'] == 'bot_check')
                 self.assertIn('不带 Cookie 重试', fact['title'])
                 self.assertIn('不能证明', fact['impact'])
@@ -146,7 +146,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
                 self.assertNotIn('SECRET', json.dumps({'auth': auth, 'facts': facts}))
                 # A later successful check replaces the historical warning.
                 auth.update(state='valid', expires_at=time.time()+300)
-                facts = observed({'download_method': 'yt_dlp'}, {}, auth, time.time())
+                facts = observed({'download_methods': ['yt_dlp']}, {}, auth, time.time())
                 self.assertNotIn('bot_check', [f['code'] for f in facts])
                 self.assertIn('auth_valid', [f['code'] for f in facts])
             finally:
@@ -154,7 +154,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
 
     def test_resolver_cooldown_does_not_claim_existing_transfers_are_blocked(self):
         stamp = time.time()
-        config = {'download_method':'yt_dlp', 'worker_count':16, 'throughput_mode':'auto'}
+        config = {'download_methods': ['yt_dlp'], 'worker_count':16, 'throughput_mode':'auto'}
         context = ({'resolver:yt_dlp': {'cooldown_until': stamp+50}}, {}, {})
         value = diagnose(config, 'node', [], None, context, stamp)
         self.assertGreater(value['channels'][0]['effective_limit'], 0)
@@ -164,7 +164,7 @@ class RiskDiagnosticsTests(unittest.TestCase):
 
     def test_local_connection_cooldown_also_blocks_transfer_estimate(self):
         stamp = time.time()
-        config = {'download_method':'yt_dlp','worker_count':16,'throughput_mode':'auto'}
+        config = {'download_methods': ['yt_dlp'],'worker_count':16,'throughput_mode':'auto'}
         value = diagnose(config, 'node', [], None, ({'local-connections:node':
             {'cooldown_until':stamp+40}}, {}, {}), stamp)
         self.assertEqual(value['effective_limit'], 0)

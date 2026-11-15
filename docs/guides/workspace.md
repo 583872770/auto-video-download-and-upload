@@ -45,4 +45,4 @@
 - 文件缺项：在任务详情核对逐类型交付状态，补交或明确接受来源缺失。
 - 视频失败：在任务详情或执行日志查看已记录错误和实际安排的重试，不把建议重试等同于已排队。
 
-验证入口为 `scripts/verify/verify_workspace.py`、`verify_selected_execution.py` 和 `verify_jobs.py`。历史页面原型只作设计参考，实际入口以本手册和运行页面为准。
+验证入口为 `scripts/verify/verify_frontend_workspace_ui.py`、`verify_frontend_execution_ui.py` 和 `verify_frontend_workspace_ui.py`。历史页面原型只作设计参考，实际入口以本手册和运行页面为准。

@@ -12,9 +12,6 @@ class CookieService:
     def cookie_update_busy(self):
         return self.context.store.download_connection_busy()
 
-    def install_cookie(self, data):
-        raise ValueError('请先新增或导入账号，再在该账号下更新 Cookie。')
-
     def install_browser_cookie(self, data, *, account_name=None, account=None):
         if not account:
             raise ValueError('请从账号清单选择账号登录。')
@@ -57,22 +54,6 @@ class CookieService:
         with self.context.settings_lock:
             config, base = self.context.settings()
             profiles = CookieProfiles(base, self.context.store)
-            # Repair installations created before first-upload auto-activation:
-            # a saved profile with no selected path is safe to make active.
-            if not config.get('youtube_cookie'):
-                saved = profiles.items()
-                from webapp.cookie_binding import CookieBindingConflict
-                for item in saved:
-                    try:
-                        target = profiles.require(item['id'])
-                    except CookieBindingConflict:
-                        continue  # Keep legacy conflicts visible for removal/export.
-                    config['youtube_cookie'] = target.relative_to(base).as_posix()
-                    config['youtube_cookie_pool'] = []
-                    self.context.dependencies.save_settings(self.context.config_path, config)
-                    self.context.sync_runtime(config, base)
-                    self.context.youtube_auth.invalidate()
-                    break
             items = profiles.items(config.get('youtube_cookie', ''))
             for item in items:
                 item['auth'] = self.context.youtube_auth.profile_status(item['id'], base)
@@ -165,9 +146,17 @@ class CookieService:
                 if self.cookie_update_busy():
                     raise LoginBusy('请先停止当前实例并等待全部下载结束，再删除正在使用的 Cookie。')
                 if item['active']:
-                    replacement = next((value for value in items if value['id'] != identity), None)
-                    config['youtube_cookie'] = (profiles.require(replacement['id']).relative_to(base).as_posix()
-                                                if replacement else '')
+                    config['youtube_cookie'] = ''
+                    for candidate in items:
+                        if candidate['id'] == identity:
+                            continue
+                        try:
+                            target = profiles.require(candidate['id'])
+                        except ValueError:
+                            continue
+                        replacement = candidate
+                        config['youtube_cookie'] = target.relative_to(base).as_posix()
+                        break
                 if pooled:
                     remaining_pool = [value for value in config['youtube_cookie_pool'] if value != identity]
                     config['youtube_cookie_pool'] = remaining_pool if len(remaining_pool) >= 2 else []

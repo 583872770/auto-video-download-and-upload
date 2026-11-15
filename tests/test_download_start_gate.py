@@ -134,7 +134,7 @@ class DownloadStartGateTests(unittest.TestCase):
         cookie = b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tTEST_SECRET\n'
         ids = [profiles.add(str(i), cookie.replace(b'TEST_SECRET', str(i).encode()))['id']
                for i in range(3)]
-        config = {'download_method': 'yt_dlp', 'youtube_cookie_pool': ids,
+        config = {'download_methods': ['yt_dlp'], 'youtube_cookie_pool': ids,
                   'youtube_start_interval': 120, 'youtube_cookie_session_limit': 1,
                   'youtube_cookie_pool_start_interval': 5, 'storage_mode': 'test',
                   'path': str(self.root / 'videos'), 'min_free_gb': 0,

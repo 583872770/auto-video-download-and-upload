@@ -1,4 +1,4 @@
-﻿"""Disposable downloads must never delete or archive permanent media."""
+"""Disposable downloads must never delete or archive permanent media."""
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import http.server

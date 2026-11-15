@@ -13,14 +13,11 @@ from webapp.database import reservations, rotations, settings, tasks, workers
 
 class TaskLeases:
     def _locked(self, statement, *, skip=False):
-        # MySQL 5.7 waits for the row lock, then rechecks the queued predicate.
-        # Claim transactions commit before downloads start, so only dispatch
-        # waits; workers still download concurrently without duplicate claims.
         return statement if self.db.sqlite else statement.with_for_update(
             skip_locked=skip and self.db.supports_skip_locked)
 
     def claim(self, worker_id=None, actions=None, exclude=None, lease_seconds=60):
-        # A blocking 5.7 locking scan can deadlock with a transaction changing
+        # A locking scan can deadlock with a transaction changing
         # the queue's status index. InnoDB rolls back the losing transaction;
         # retry the entire claim (including counters), never just its SELECT.
         for attempt in range(5):
@@ -37,7 +34,7 @@ class TaskLeases:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             stamp = self.fleet.clock(db) if self.fleet else time.time()
-            if self.fleet or self.single:
+            if self.fleet:
                 # Admission allocates slots under this exclusive lock. Taking a
                 # shared lock first makes concurrent MySQL claims deadlock when
                 # they both upgrade to the exclusive admission lock below.
@@ -45,14 +42,8 @@ class TaskLeases:
             mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
             if self.fleet and mode != 'true':
                 return None
-            if self.fleet:
-                from webapp.modes import single_state
-                if (single_state(self.directory) or {}).get('status') == 'requested':
-                    return None  # Freeze local claims until the requested restart.
             if not self.fleet and mode is not None:
-                from webapp.modes import mode_key
-                if mode != mode_key(self.single):
-                    return None
+                return None  # A registered fleet requires fenced instance ownership.
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
             if self.fleet:
                 statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
@@ -290,8 +281,7 @@ class TaskLeases:
                 lease_until=None, worker_id=None, **extra))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
-            self.statistics.transition(db, row, outcome, error,
-                fallback_used=bool(progress.get('fallback_used') or (result or {}).get('fallback_used')))
+            self.statistics.transition(db, row, outcome, error)
             if not retry and row['action'] == 'download':
                 self.lists.outcome(db, row, outcome)
                 if self.fleet:

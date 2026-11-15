@@ -28,16 +28,11 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('/static/app.js', response.text)
         self.assertIn('/static/frontend/main.js', response.text)
 
-    def test_unbuilt_source_uses_compatible_settings(self):
-        with patch('webapp.frontend.assets', return_value=None):
-            response = self.client.get('/settings')
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.location, '/#settings')
 
     def test_business_pages_share_authenticated_shell_without_legacy_scripts(self):
         self.setup_admin()
         bundle = dict(script='frontend/main.js', styles=[], preload=[])
-        for path in ('/', '/jobs', '/jobs/' + 'a' * 32, '/delivery-files', '/workbench', '/media', '/logs',
+        for path in ('/', '/jobs', '/jobs/' + 'a' * 32, '/workbench', '/media', '/logs',
                      '/accounts', '/instances', '/statistics', '/proxy', '/deployment'):
             with self.subTest(path=path):
                 self.assertEqual(self.app.test_client().get(path).location, '/login')
@@ -68,21 +63,13 @@ class FrontendTests(unittest.TestCase):
             for key in ('mysql_host', 'mysql_password', 'redis_url'):
                 self.assertNotIn(f'name="{key}"', response.text)
 
-    def test_unbuilt_business_pages_keep_source_only_compatibility(self):
-        with patch('webapp.frontend.assets', return_value=None):
-            self.assertIn('/static/jobs.js', self.client.get('/jobs').text)
-            self.assertIn('/static/delivery_files.js', self.client.get('/delivery-files').text)
-            response = self.client.get('/jobs/' + 'a' * 32 + '?tab=settings')
-            self.assertEqual(response.location, '/jobs?tab=settings#' + 'a' * 32)
-            self.assertEqual(self.client.get('/jobs/not-a-task').status_code, 404)
-            for page, view in (('workbench', 'overview'), ('media', 'media'), ('logs', 'tasks')):
-                self.assertEqual(self.client.get('/' + page + '?instance_id=test').location,
-                                 '/?instance_id=test#' + view)
 
     def test_manifest_resolves_shared_styles_and_preloads_once(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / 'frontend' / '.vite'
-            self.assertIsNone(assets(directory))
+            from werkzeug.exceptions import ServiceUnavailable
+            with self.assertRaises(ServiceUnavailable):
+                assets(directory)
             root.mkdir(parents=True)
             (root / 'manifest.json').write_text(json.dumps({
                 'src/main.ts': {'file':'assets/main.js','imports':['_vue.js'],'css':['assets/main.css']},

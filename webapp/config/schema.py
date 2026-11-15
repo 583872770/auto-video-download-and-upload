@@ -7,13 +7,18 @@ Domain and cross-field validation remains with the relevant service.
 """
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Callable
+
+
+def default_download_methods():
+    return ['yt_dlp']
 
 
 @dataclass(frozen=True)
 class Setting:
     # Defaults are immutable scalars; mutable collections use a fresh factory.
     default: str | int | bool | None = ''
-    factory: type[list] | None = None
+    factory: Callable[[], list] | None = None
     limits: tuple[int, int] | None = None
     scope: str = 'local'
     download: bool = True
@@ -38,7 +43,7 @@ class Setting:
 
     @property
     def value_type(self):
-        return self.factory or type(self.default)
+        return list if self.factory is not None else type(self.default)
 
     def default_value(self):
         return self.factory() if self.factory is not None else self.default
@@ -63,10 +68,9 @@ SETTINGS = MappingProxyType({
     'max_log_mb': Setting(2, limits=(1, 1000), persist_runtime=True),
     'shard_downloads': Setting(True),
     'storage_mode': Setting('local', scope='policy', persist_runtime=True),
-    'download_method': Setting('yt_dlp', scope='policy', persist_runtime=True, pipeline_key=True),
     'yt5s_quality': Setting('best', scope='policy'),
     'yt5s_browser_count': Setting(2, limits=(1, 16), resource_override=True, persist_runtime=True),
-    'download_methods': Setting(None, scope='policy', persist_runtime=True, pipeline_key=True, custom=True),
+    'download_methods': Setting(factory=default_download_methods, scope='policy', persist_runtime=True, pipeline_key=True, custom=True),
     'fragment_concurrency': Setting(4, limits=(1, 16), scope='policy', persist_runtime=True, pipeline_key=True),
     'throughput_mode': Setting('manual', persist_runtime=True),
     'bandwidth_mbps': Setting(0, limits=(0, 100000), persist_runtime=True),
@@ -135,7 +139,7 @@ def default_settings(*, family=None):
             if family is None or spec.family == family}
 
 
-# Compatibility projections; existing import paths re-export these names.
+# Consumer projections from the shared setting definitions.
 DEFAULTS = default_settings()
 DOWNLOAD_FIELDS = {key for key, spec in SETTINGS.items() if spec.download}
 INTEGER_FIELDS = {key: spec.limits for key, spec in SETTINGS.items() if spec.limits is not None}
@@ -152,12 +156,3 @@ OSS_FIELDS = set(OSS_DEFAULTS)
 OSS_INTEGER_FIELDS = {key: INTEGER_FIELDS[key] for key in OSS_DEFAULTS if key in INTEGER_FIELDS}
 OSS_SECRETS = {key for key, spec in SETTINGS.items() if spec.secret}
 PACING_FIELDS = {key for key, spec in SETTINGS.items() if spec.family == 'pacing'}
-
-RETIRED_FIELDS = frozenset({'builtin_connection_limit', 'subtitle_mode', 'subtitle_languages'})
-
-
-def discard_retired_settings(config):
-    """Ignore keys still sent by cached frontends or old task snapshots, in place."""
-    for key in RETIRED_FIELDS:
-        config.pop(key, None)
-    return config

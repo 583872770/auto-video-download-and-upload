@@ -3,7 +3,7 @@ import base64
 import json
 import time
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, union_all
 
 from webapp.database import batches, counters, download_lists, tasks, job_imports
 from webapp.repositories.task_codec import LIST_FIELDS
@@ -15,10 +15,19 @@ class TaskQueries:
             value = self.decode(db.execute(select(tasks).where(tasks.c.id == task_id)).mappings().first(), private, db)
             return value
 
-    def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False):
+    def page(self, *, limit=50, cursor=None, actions=None, status=None, query='', batch_id=None, order='desc', finished_only=False, compact=False):
         if not 1 <= limit <= 100:
             raise ValueError('每页条数必须在 1 到 100 之间。')
-        statement = select(*LIST_FIELDS)
+        if compact:
+            stage = case((func.json_valid(tasks.c.progress), func.json_extract(tasks.c.progress, '$.stage')))
+            if self.db.mysql:
+                stage = func.json_unquote(stage)
+            fields = [tasks.c[name] for name in ('id', 'seq', 'action', 'status', 'title', 'video_id',
+                'instance_id', 'created_at', 'started_at', 'finished_at')]
+            fields += [func.substr(tasks.c.error, 1, 250).label('error'), stage.label('stage')]
+        else:
+            fields = LIST_FIELDS
+        statement = select(*fields)
         if actions:
             statement = statement.where(tasks.c.action.in_(actions))
         if finished_only:
@@ -65,13 +74,46 @@ class TaskQueries:
                                              tasks.c.id.startswith(escaped, escape='\\'),
                                              tasks.c.title.startswith(escaped, escape='\\')))
         with self.connect() as db:
-            rows = db.execute(statement.order_by(*ordering).limit(limit + 1)).mappings().all()
+            if finished_only:
+                states = {'succeeded', 'failed', 'interrupted'}
+                if status:
+                    states &= set(statuses)
+                candidates_query = statement
+                if self.db.mysql and not query and not batch_id:
+                    # Skewed status/action statistics can make MySQL choose a
+                    # queue index and sort thousands of rows for LIMIT 51.
+                    # Search and batch filters retain their selective indexes.
+                    candidates_query = candidates_query.with_hint(
+                        tasks, 'FORCE INDEX (ix_tasks_history_order)', dialect_name='mysql')
+                branches = [candidates_query.with_only_columns(tasks.c.id, tasks.c.seq, finished).where(
+                    tasks.c.status == state).order_by(*ordering).limit(limit + 1).subquery()
+                    for state in sorted(states)]
+                # Each status reads at most one page from its ordered index.
+                # Only the small candidate set is merged, before fetching rows
+                # with result/progress/error text by primary key.
+                candidates = union_all(*(select(branch) for branch in branches)).subquery() if branches else None
+                ids = [] if candidates is None else db.execute(select(candidates.c.id).order_by(
+                    candidates.c.finished_at.asc() if order == 'asc' else candidates.c.finished_at.desc(),
+                    candidates.c.seq.asc() if order == 'asc' else candidates.c.seq.desc()).limit(limit + 1)).scalars().all()
+                records = {row['id']: row for row in db.execute(select(*fields).where(tasks.c.id.in_(ids))).mappings()} if ids else {}
+                rows = [records[identity] for identity in ids if identity in records]
+            else:
+                rows = db.execute(statement.order_by(*ordering).limit(limit + 1)).mappings().all()
             next_cursor = None
             if len(rows) > limit:
                 last = rows[limit - 1]
                 next_cursor = ('h.' + base64.urlsafe_b64encode(json.dumps([last['finished_at'], last['seq']]).encode()).decode()
                                if finished_only else str(last['seq']))
-            return {'items': self.decode_many(rows[:limit]),
+            if compact:
+                items = []
+                for row in rows[:limit]:
+                    item = dict(row)
+                    stage = item.pop('stage')
+                    item['progress'] = {'stage': stage} if stage and stage != 'null' else None
+                    items.append(item)
+            else:
+                items = self.decode_many(rows[:limit])
+            return {'items': items,
                     'next_cursor': next_cursor}
 
     def list(self, limit=100, actions=None):

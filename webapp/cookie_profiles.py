@@ -8,7 +8,7 @@ from sqlalchemy import select
 from Utils.config import resolve_path
 from webapp.database import (cookie_profiles as table, cookie_bindings, youtube_account_cookies,
     youtube_accounts, youtube_profile_auth)
-from webapp.cookie_binding import claim, credential_keys, CookieBindingConflict
+from webapp.cookie_binding import credential_keys, CookieBindingConflict
 
 
 class CookieProfiles:
@@ -22,8 +22,6 @@ class CookieProfiles:
         return store.fleet.id if store.fleet else hashlib.sha256(str(Path(base).resolve()).encode()).hexdigest()
 
     def path(self, identity):
-        if identity == 'legacy':
-            return self.base / 'Cookies' / 'youtube.txt'
         if not isinstance(identity, str) or not re.fullmatch(r'[a-f0-9]{32}', identity):
             raise ValueError('Cookie 配置不存在。')
         return self.directory / (identity + '.txt')
@@ -53,9 +51,6 @@ class CookieProfiles:
     def add(self, name, data, filename='cookies.txt'):
         raise ValueError('请先新增或导入账号，再从该账号登录或更新 Cookie。')
 
-    def save_legacy(self, data):
-        raise ValueError('不再支持无账号 Cookie，请从账号管理更新凭据。')
-
     def export(self, identity):
         """Read the saved credential without touching its disposable cache."""
         self.path(identity)  # Validate the profile ID, never accept a file path.
@@ -77,12 +72,7 @@ class CookieProfiles:
                 self._where(identity) & (table.c.deleted == 0) & self._account_link())).scalar_one_or_none()
         if content is None:
             raise ValueError('Cookie 配置不存在。')
-        try:
-            self.bind(content.encode('utf-8'))
-        except CookieBindingConflict:
-            raise
-        except ValueError:
-            pass  # Preserve historical/expired caches for management; execution validates them.
+        self.check_binding(content.encode('utf-8'))
         return self._cache(identity, content)
 
     def _cache(self, identity, content):
@@ -105,8 +95,7 @@ class CookieProfiles:
     def pool_members(self, identities, *, strict=True):
         """Read live membership and immutable ownership in two bulk queries.
 
-        Never cache execution authorization. Only historical, previously unbound
-        credentials need a claim/write; normal status polling remains read-only.
+        Never cache execution authorization or create ownership while reading.
         """
         identities = list(dict.fromkeys(identities))
         members, unavailable = [], []
@@ -132,10 +121,7 @@ class CookieProfiles:
             for identity, values in keys_by_id.items():
                 try:
                     if any(owners.get(key) != self.scope for key in values):
-                        # claim() handles the concurrent first-use race and gives
-                        # the usual, actionable binding-conflict explanation.
-                        with db.begin_nested():
-                            claim(db, self.scope, values)
+                        raise CookieBindingConflict('Cookie 归属记录不匹配，请在账号管理中重新上传。')
                     members.append(rows[identity])
                 except CookieBindingConflict:
                     if strict:
@@ -155,31 +141,31 @@ class CookieProfiles:
         if not value:
             return
         target = resolve_path(self.base, value).resolve()
-        if target == self.path('legacy').resolve():
-            identity = 'legacy'
-        elif target.parent == self.directory.resolve() and re.fullmatch(r'[a-f0-9]{32}', target.stem):
+        if target.parent == self.directory.resolve() and re.fullmatch(r'[a-f0-9]{32}', target.stem):
             identity = target.stem
         else:
             raise ValueError('请使用账号管理中已登录账号的 Cookie，不支持独立 Cookie 路径。')
         self.require(identity)
 
-    def bind(self, data):
+    def check_binding(self, data):
         keys = credential_keys(data)
         with self.store.connect() as db:
-            claim(db, self.scope, keys)
+            owners = dict(db.execute(select(cookie_bindings.c.credential, cookie_bindings.c.scope).where(
+                cookie_bindings.c.credential.in_(keys))).all())
+        if any(owners.get(key) != self.scope for key in keys):
+            raise CookieBindingConflict('Cookie 归属记录不匹配，请在账号管理中重新上传。')
 
     def delete(self, identity):
-        # Conflicting historical profiles must still be removable/exportable.
+        # Export and deletion do not authorize use of the credential.
         target = self.path(identity)
         self.export(identity)  # Validate a live scoped record, without using it.
         # Remove caches before committing the tombstone. If cleanup fails, the
         # database still owns the credentials and can restore the selected file.
         target.unlink(missing_ok=True)
-        if identity != 'legacy':
-            target.with_suffix('.json').unlink(missing_ok=True)
+        target.with_suffix('.json').unlink(missing_ok=True)
         from webapp.account_library import AccountLibrary
         with AccountLibrary(self.store, self.base).transaction() as db:
-            # Tombstone prevents any leftover cache being re-imported after a crash.
+            # Keep the account/profile identity while revoking the credential.
             db.execute(table.update().where(self._where(identity)).values(deleted=1, content=''))
             account_ids = select(youtube_account_cookies.c.account_id).where(
                 youtube_account_cookies.c.instance_id == self.scope, youtube_account_cookies.c.profile_id == identity)

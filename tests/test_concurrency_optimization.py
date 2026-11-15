@@ -21,7 +21,7 @@ class MetricTests(unittest.TestCase):
     def test_parallel_progress_counts_and_publications_remain_consistent(self):
         with tempfile.TemporaryDirectory() as root:
             meter = DownloadMeter(root)
-            meter.begin(registry({'download_method': 'yt_dlp'})[0])
+            meter.begin(registry({'download_methods': ['yt_dlp']})[0])
             def update(stream):
                 for size in range(1, 61):
                     meter.hook({'filename': str(stream), 'downloaded_bytes': size})
@@ -72,7 +72,7 @@ class TransactionTests(unittest.TestCase):
                 job = store.create('download', {'base': root, 'urls': ['https://youtu.be/jNQXAC9IVRw']})
                 with store.connect() as db:
                     db.execute(tasks.update().where(tasks.c.id == job['id']).values(status='running', worker_id=store.owner, lease_until=time.time()+60))
-                scheduler = ChannelScheduler(store, {'download_method': 'yt_dlp'}, job['id'])
+                scheduler = ChannelScheduler(store, {'download_methods': ['yt_dlp']}, job['id'])
                 admit = scheduler._admit
                 calls = []
                 def deadlock(db, stamp, requirements):
@@ -124,11 +124,10 @@ class BudgetAndPolicyTests(unittest.TestCase):
     def test_explicit_channel_limits_and_delivery_owned_subtitles(self):
         from webapp.settings import validate_settings
         from webapp.downloader import build_ydl_options
-        config = {'builtin_transfer_limit':16,'builtin_connection_limit':32,'builtin_resolver_limit':6}
+        config = {'builtin_transfer_limit':16,'builtin_resolver_limit':6}
         validate_settings(config)
         channel = registry(config)[0]
         self.assertEqual((channel.transfer_limit, channel.connection_limit, channel.resolver_limit), (16,None,6))
-        self.assertNotIn('builtin_connection_limit', config)
         self.assertIsNone(registry({'scheduler_mode':'auto','builtin_transfer_limit':0})[0].transfer_limit)
         with tempfile.TemporaryDirectory() as root:
             self.assertFalse(build_ydl_options(config, root)['writesubtitles'])

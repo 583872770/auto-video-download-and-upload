@@ -78,7 +78,7 @@ def resolve(url, config, base, on_stage=None):
     from webapp.settings import validate_method_urls
     from webapp.store import source_identity
 
-    validate_method_urls({**config, 'download_method': 'downmp3'}, [url])
+    validate_method_urls({**config, 'download_methods': ['downmp3']}, [url])
     video_id, _ = source_identity(url)
     # The API accepts a numeric target, not "best"; its highest supported
     # video target is currently 1080p. The source may have a lower resolution.

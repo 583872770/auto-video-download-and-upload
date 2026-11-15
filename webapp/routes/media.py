@@ -6,6 +6,7 @@ from Utils.paths import io_path
 from webapp.media import VIDEO_SUFFIXES
 from webapp.helpers import get_body, json_result
 from webapp.delivery.listing import page as artifact_page
+from webapp import media_groups
 
 
 def register_media_routes(context, media_library):
@@ -53,6 +54,22 @@ def register_media_routes(context, media_library):
                   'subtitle': by_kind.get('subtitle', 0)}
         return jsonify(media=media_page, artifacts=artifacts, directory=str(root),
                        counts=counts, indexing=media_page['indexing'])
+
+    @app.get('/api/media/groups')
+    def grouped_media():
+        config, base = settings()
+        root = Path(io_path(video_directory(config, base))).resolve()
+        result = media_groups.page(catalog, root, query=request.args.get('q', ''),
+            kind=request.args.get('type', 'all'), cursor=request.args.get('cursor'),
+            limit=int(request.args.get('limit', 24)))
+        return jsonify(**result, directory=str(root), indexing=catalog.root_status(root))
+
+    @app.get('/api/media/group-files')
+    def grouped_media_files():
+        config, base = settings()
+        root = Path(io_path(video_directory(config, base))).resolve()
+        return jsonify(media_groups.group_files(catalog, root, key=request.args.get('key', ''),
+            cursor=request.args.get('cursor'), limit=int(request.args.get('limit', 50))))
 
     @app.post('/api/media/reindex')
     def reindex_media():

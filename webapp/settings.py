@@ -11,7 +11,6 @@ from webapp.config.settings import (
     DOWNLOAD_FIELDS,
     INTEGER_FIELDS,
     TEXT_FIELDS,
-    discard_retired_settings,
 )
 
-__all__ = ('YOUTUBE_PREFIX', 'PROVIDERS', 'urls_from', 'download_methods', 'validate_settings', 'validate_method_urls', 'save_settings', 'DEFAULTS', 'DOWNLOAD_FIELDS', 'INTEGER_FIELDS', 'TEXT_FIELDS', 'discard_retired_settings')
+__all__ = ('YOUTUBE_PREFIX', 'PROVIDERS', 'urls_from', 'download_methods', 'validate_settings', 'validate_method_urls', 'save_settings', 'DEFAULTS', 'DOWNLOAD_FIELDS', 'INTEGER_FIELDS', 'TEXT_FIELDS')

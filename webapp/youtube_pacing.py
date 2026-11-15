@@ -42,12 +42,8 @@ def summary(config, state, stamp):
     reason = state.get('interval_reason_code')
     if minimum >= state.get('interval', 60):
         reason = 'configured_minimum'
-    elif not reason:
-        # Older persisted states predate reason tracking; describe only the
-        # history they actually contain, without mistaking a wait for a cause.
-        reason = ('account_limit' if state.get('last_limit_at') else
-                  'adaptive_backoff' if interval > 60 else
-                  'stable_success' if interval < 60 else 'initial')
+    else:
+        reason = reason or 'initial'
     explanations = {
         'configured_minimum': '当前间隔受已设置的最小间隔约束。',
         'previous_minimum': '此前提高过最小间隔，当前保留该间隔；稳定完成后逐步缩短。',
@@ -95,7 +91,7 @@ class YouTubePacing:
                 pass
 
     def _states(self, db, stamp, channel):
-        legacy = self.router._state(db, 'quota:' + channel.quota_group)
+        quota_state = self.router._state(db, 'quota:' + channel.quota_group)
         rows = []
         for scope in self.scopes:
             state = self.router._state(db, scope)
@@ -104,13 +100,13 @@ class YouTubePacing:
                 state.update(interval=max(60, floor), clean_since=stamp, clean_successes=0,
                              interval_reason_code='initial')
             # Also adopt newer limits recorded while adaptive mode was disabled.
-            last_limit = legacy.get('last_throttle_at', 0)
-            if (legacy.get('last_throttle_kind') == 'account' and last_limit > stamp - DAY
+            last_limit = quota_state.get('last_throttle_at', 0)
+            if (quota_state.get('last_throttle_kind') == 'account' and last_limit > stamp - DAY
                     and last_limit > state.get('last_limit_at', 0)):
                 state.update(interval=max(120, floor, state['interval']), last_limit_at=last_limit,
                              interval_reason_code='account_limit',
                              strikes=max(1, state.get('strikes', 0)),
-                             cooldown_until=max(state.get('cooldown_until', 0), legacy.get('cooldown_until', 0)),
+                             cooldown_until=max(state.get('cooldown_until', 0), quota_state.get('cooldown_until', 0)),
                              clean_since=stamp, clean_successes=0, last_adjust_at=stamp)
             if floor > state['interval']:
                 state['interval_reason_code'] = 'previous_minimum'

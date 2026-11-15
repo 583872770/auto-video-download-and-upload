@@ -10,7 +10,7 @@ from webapp.throughput import policy_key
 
 class ConcurrencyDiagnosticsTests(unittest.TestCase):
     def setUp(self):
-        self.config = {'download_method': 'yt_dlp', 'worker_count': 16,
+        self.config = {'download_methods': ['yt_dlp'], 'worker_count': 16,
                        'fragment_concurrency': 4, 'download_connection_limit': 32, 'builtin_transfer_limit': 8}
         self.stamp = time.time()
 

@@ -168,6 +168,8 @@ const blockers: Record<string, string> = {
       :fresh="fresh"
       :time="capacity.time"
       :now="now"
+      :pending="capacity.pending_tasks"
+      :paused="capacity.paused"
     />
   </section>
 </template>

@@ -1,4 +1,4 @@
-"""Compatibility TaskStore facade composed from explicit repository contracts."""
+"""TaskStore facade composed from explicit repository contracts."""
 import json
 import os
 import socket
@@ -25,8 +25,6 @@ class TaskStore(TaskCodec, TaskWrites, TaskQueries, QueueControl, TaskLeases, Ta
         from webapp.progress_cache import ProgressCache
         self.progress_cache = ProgressCache(self.db.url)
         self._progress_checkpoints = {}
-        from webapp.modes import single_state
-        self.single = single_state(self.directory)
         runtime = self.directory / 'fleet-runtime.json'
         if runtime.is_file():
             from webapp.fleet import Fleet

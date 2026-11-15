@@ -20,7 +20,7 @@ class MediaCatalog:
 
     def root_key(self, root):
         path = str(Path(root).resolve())
-        identity = self.store.fleet.id if self.store.fleet else (self.store.single or {}).get('instance_id')
+        identity = self.store.fleet.id if self.store.fleet else None
         return f'@{identity}|{path}' if identity else path
 
     @staticmethod
@@ -111,9 +111,8 @@ class MediaCatalog:
             row = db.execute(select(roots).where(roots.c.root == self.root_key(root))).mappings().first()
             return dict(row) if row else {'count': 0, 'bytes': 0, 'last_indexed': None, 'scanned': 0}
 
-    def page(self, root, *, limit=24, cursor=None, query='', exhausted=False, exclude_delivery=False):
-        if not 1 <= limit <= 100:
-            raise ValueError('每页素材条数必须在 1 到 100 之间。')
+    def selection(self, root, *, query='', exclude_delivery=False):
+        """Scope indexed files without scanning disk or repeating delivery outputs."""
         statement = select(media).where(media.c.root == self.root_key(root))
         if exclude_delivery:
             local_id = self.store.fleet.id if self.store.fleet else 'local'
@@ -125,6 +124,12 @@ class MediaCatalog:
             escaped = query.casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
             statement = statement.where(or_(media.c.search_title.contains(escaped, escape='\\'),
                                            media.c.name.contains(query, autoescape=True), media.c.video_id == query))
+        return statement
+
+    def page(self, root, *, limit=24, cursor=None, query='', exhausted=False, exclude_delivery=False):
+        if not 1 <= limit <= 100:
+            raise ValueError('每页素材条数必须在 1 到 100 之间。')
+        statement = self.selection(root, query=query, exclude_delivery=exclude_delivery)
         count_statement = statement.with_only_columns(func.count()).select_from(media)
         if cursor:
             try:

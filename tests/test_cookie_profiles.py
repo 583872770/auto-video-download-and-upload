@@ -143,8 +143,6 @@ class CookieProfileTests(unittest.TestCase):
         self.assertEqual(pool['execution_limit'], 64)
         self.assertEqual(pool['accounts'][0]['configured_limit'], 2)
         self.assertEqual(pool['accounts'][0]['limit'], 1)
-        with patch('webapp.frontend.assets', return_value=None):
-            self.assertIn('name="youtube_cookie_session_limit"', self.client.get('/').text)
 
     def test_database_restores_deleted_cache_and_metadata(self):
         from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
@@ -241,31 +239,31 @@ class CookieProfileTests(unittest.TestCase):
         self.assertEqual([(item['id'], item['active']) for item in
                           self.client.get('/api/youtube/cookies').json['items']], [(first, True)])
 
-    def test_delete_current_selects_first_remaining_including_legacy(self):
-        legacy = self.root / 'Cookies/youtube.txt'
-        legacy.parent.mkdir()
+    def test_delete_current_selects_first_remaining_account(self):
+        legacy = self.root / ('Cookies/profiles/' + 'd'*32 + '.txt')
+        legacy.parent.mkdir(parents=True)
         legacy.write_bytes(COOKIE)
         from tests.account_cookie_fixture import AccountCookieProfiles
-        AccountCookieProfiles(self.root,self.store).save_legacy(COOKIE)
+        AccountCookieProfiles(self.root,self.store).seed_default(COOKIE)
         first = self.add().json['item']['id']
         second = self.add('Account B').json['item']['id']
         self.action('select', first)
         response = self.action('delete', first)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json['cookie_path'], 'Cookies/youtube.txt')
-        response = self.action('delete', 'legacy')
+        self.assertEqual(response.json['cookie_path'], 'Cookies/profiles/' + 'd'*32 + '.txt')
+        response = self.action('delete', 'dddddddddddddddddddddddddddddddd')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['cookie_path'], f'Cookies/profiles/{second}.txt')
         self.assertFalse(legacy.exists())
         self.assertEqual([item['id'] for item in self.client.get('/api/youtube/cookies').json['items']], [second])
 
-    def test_unassociated_legacy_file_is_not_listed_or_selected(self):
-        legacy=self.root/'Cookies/youtube.txt'
-        legacy.parent.mkdir()
+    def test_unassociated_cache_file_is_not_listed_or_selected(self):
+        legacy=self.root / ('Cookies/profiles/' + 'd'*32 + '.txt')
+        legacy.parent.mkdir(parents=True)
         legacy.write_bytes(COOKIE)
         listed=self.client.get('/api/youtube/cookies').json
         self.assertEqual(listed['items'],[])
-        self.assertEqual(self.action('delete','legacy').status_code,400)
+        self.assertEqual(self.action('delete','dddddddddddddddddddddddddddddddd').status_code,400)
 
     def test_delete_current_clears_stale_login_but_preserves_pause_and_block(self):
         first = self.add().json['item']['id']
@@ -285,8 +283,17 @@ class CookieProfileTests(unittest.TestCase):
         self.replace_content(second, COOKIE.replace(b'\t0\tSID', b'\t1\tSID'))
         response = self.action('delete', first)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json['cookie_path'], f'Cookies/profiles/{second}.txt')
+        self.assertEqual(response.json['cookie_path'], '')
         self.assertEqual(self.client.get('/api/youtube/cookies').json['items'][0]['id'], second)
+
+    def test_delete_current_skips_expired_replacement_and_selects_valid_profile(self):
+        first = self.add().json['item']['id']
+        second = self.add('Expired').json['item']['id']
+        third = self.add('Valid').json['item']['id']
+        self.replace_content(second, COOKIE.replace(b'\t0\tSID', b'\t1\tSID'))
+        response = self.action('delete', first)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json['cookie_path'], f'Cookies/profiles/{third}.txt')
 
     def test_delete_current_failure_preserves_database_config_and_runtime(self):
         first = self.add().json['item']['id']
@@ -389,17 +396,6 @@ class CookieProfileTests(unittest.TestCase):
         self.assertEqual(auth.block_reason(), reason)
         self.assertTrue(self.store.download_queue()['paused'])
 
-    def test_legacy_preserved_and_selectable(self):
-        legacy = self.root / 'Cookies/youtube.txt'
-        legacy.parent.mkdir()
-        legacy.write_bytes(COOKIE)
-        from tests.account_cookie_fixture import AccountCookieProfiles
-        AccountCookieProfiles(self.root,self.store).save_legacy(COOKIE)
-        identity = self.add().json['item']['id']
-        self.assertEqual(legacy.read_bytes(), COOKIE)
-        self.assertEqual(self.action('select', identity).status_code, 200)
-        self.assertEqual(self.action('select', 'legacy').status_code, 200)
-        self.assertEqual(yaml.safe_load(self.config.read_text())['youtube_cookie'], 'Cookies/youtube.txt')
 
     def test_invalid_upload_and_path_escape_do_not_change_config(self):
         original = self.config.read_bytes()
@@ -426,8 +422,8 @@ class CookieProfileTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), original)
 
     def test_csrf_and_instance_rpc_allowlist(self):
-        self.assertEqual(self.client.post('/api/youtube/cookies/select', json={'id': 'legacy'}).status_code, 403)
-        self.assertEqual(self.client.post('/api/youtube/cookies/check', json={'id': 'legacy'}).status_code, 403)
+        self.assertEqual(self.client.post('/api/youtube/cookies/select', json={'id': 'dddddddddddddddddddddddddddddddd'}).status_code, 403)
+        self.assertEqual(self.client.post('/api/youtube/cookies/check', json={'id': 'dddddddddddddddddddddddddddddddd'}).status_code, 403)
         for path in ('/api/youtube/cookies', '/api/youtube/cookies/select', '/api/youtube/cookies/delete', '/api/youtube/cookies/check'):
             self.assertIn('POST', LOCAL_RPC_METHODS[path])
 
@@ -490,7 +486,8 @@ class CookieProfileTests(unittest.TestCase):
         pool = CookiePool(self.store, config, self.root, None)
         def halt(db, stamp):
             pool.router._state(db, pool.global_scope)
-            pool.router._save(db, pool.global_scope, {'halted': True})
+            pool.router._save(db, pool.global_scope, {
+                'halted': True, 'halted_at': stamp, 'halt_kind': 'authentication_required'})
         pool.router.transaction_call(halt)
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Not logged in')):
             response = self.client.post('/api/youtube/cookies/pool/recover', json={}, headers=self.headers)

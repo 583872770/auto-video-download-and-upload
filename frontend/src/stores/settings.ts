@@ -24,13 +24,7 @@ export const useSettings = defineStore('settings', () => {
   const issues = ref<Partial<Record<ConfigKey, string>>>({});
   const patch = computed(() => changes(baseline.value, draft.value));
   const dirty = computed(() => Object.keys(patch.value).length > 0);
-  const providers = computed<Provider[]>(
-    () =>
-      draft.value.download_methods ||
-      (draft.value.download_method === 'yt5s_fallback'
-        ? ['yt5s', 'yt_dlp']
-        : [draft.value.download_method as Provider]),
-  );
+  const providers = computed<Provider[]>(() => draft.value.download_methods);
 
   function accept(response: ConfigResponse) {
     const config = { ...structuredClone(defaultConfig), ...response.config };

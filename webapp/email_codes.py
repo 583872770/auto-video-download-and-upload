@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 from playwright.async_api import Error as BrowserError
 
 
-ORIGIN = 'https://fbvjdjcf.asia'
+ORIGIN = 'http://fbvjdjcf.asia'
 MAX_PAGE_BYTES = 512 * 1024
 POLL_SECONDS = 30
 WAIT_SECONDS = 180
@@ -19,6 +19,11 @@ WAIT_SECONDS = 180
 class InboxUnavailable(ValueError):
     def __init__(self):
         super().__init__('邮件接码暂不可用，请在浏览器中手动填写验证码。')
+
+
+class InboxRejected(InboxUnavailable):
+    def __init__(self, message):
+        ValueError.__init__(self, message)
 
 
 def supported_source(value):
@@ -34,10 +39,7 @@ def supported_source(value):
 
 def safe_url(value):
     """Session URLs stay in memory; redirects may never leave the provider."""
-    address = urlsplit(value)
-    if (address.scheme != 'https' or address.hostname != 'fbvjdjcf.asia'
-            or address.port not in (None, 443) or address.username or address.password
-            or address.path not in ('/', '/login', '/inbox')):
+    if not supported_source(value):
         raise InboxUnavailable()
     return value
 
@@ -104,11 +106,15 @@ class InboxHTML(HTMLParser):
         self.stack[-1].children.append(value)
 
 
-def read_inbox(body, email, since):
+def read_inbox(body, email, since, *, base_url=ORIGIN):
     """Return known codes, fresh unambiguous Google codes, and a refresh URL."""
     if len(body.encode('utf-8')) > MAX_PAGE_BYTES:
         raise InboxUnavailable()
     nodes = list(InboxHTML(body).root.walk())
+    # Report only recognized provider errors; raw HTML may contain inbox secrets.
+    notices = ' '.join(node.text() for node in nodes if node.has_class('err'))
+    if '该邮箱已加入黑名单' in notices:
+        raise InboxRejected('接码网站拒绝此邮箱：该邮箱已加入黑名单，需联系接码网站解除后重试。')
     headings = ' '.join(node.text() for node in nodes if node.tag in ('h1', 'h2')).lower()
     if email.lower() not in headings:
         raise InboxUnavailable()
@@ -150,7 +156,7 @@ def read_inbox(body, email, since):
     # An unknown layout must not turn every six-digit page number into a code.
     if not any(node.has_class('mail-card', 'verify-row', 'verify-empty') for node in nodes):
         raise InboxUnavailable()
-    return known, set(candidates), safe_url(urljoin(ORIGIN, refresh))
+    return known, set(candidates), safe_url(urljoin(base_url, refresh))
 
 
 class EmailInbox:
@@ -160,6 +166,7 @@ class EmailInbox:
         self.known, self.refresh = set(), None
         self.last_poll = None
         self.error = None
+        self.page_url = ORIGIN + '/'
 
     async def fetch(self, url, *, form=None):
         for _ in range(4):
@@ -183,17 +190,21 @@ class EmailInbox:
                 raw = await response.body()
                 if len(raw) > MAX_PAGE_BYTES:
                     raise InboxUnavailable()
+                self.page_url = url
                 return raw.decode('utf-8', errors='replace')
             finally:
                 await response.dispose()
         raise InboxUnavailable()
 
     async def open(self):
-        body = await self.fetch(ORIGIN + '/login?lang=zh', form={'email': self.email})
-        known, _, self.refresh = read_inbox(body, self.email, self.since)
+        # Follow the provider's canonical URL before posting: an HTTP 301/302
+        # turns a POST into a GET and would discard the mailbox form.
+        await self.fetch(ORIGIN + '/')
+        body = await self.fetch(safe_url(urljoin(self.page_url, '/login?lang=zh')), form={'email': self.email})
+        known, _, self.refresh = read_inbox(body, self.email, self.since, base_url=self.page_url)
         # Populate the baseline from a real refresh before Google can send mail.
         body = await self.fetch(self.refresh)
-        refreshed, _, self.refresh = read_inbox(body, self.email, self.since)
+        refreshed, _, self.refresh = read_inbox(body, self.email, self.since, base_url=self.page_url)
         self.known = known | refreshed
         self.last_poll = time.monotonic()
 
@@ -204,7 +215,7 @@ class EmailInbox:
             return None
         self.last_poll = time.monotonic()
         body = await self.fetch(self.refresh)
-        known, candidates, self.refresh = read_inbox(body, self.email, self.since)
+        known, candidates, self.refresh = read_inbox(body, self.email, self.since, base_url=self.page_url)
         fresh = candidates - self.known
         self.known.update(known)
         if len(fresh) > 1:
@@ -214,7 +225,7 @@ class EmailInbox:
 
 @asynccontextmanager
 async def email_inbox(driver, credentials, config, report):
-    if not credentials or not supported_source(credentials.get('code_url')):
+    if not credentials:
         yield None
         return
     options = {'timeout': 10000, 'ignore_https_errors': False}
@@ -229,6 +240,10 @@ async def email_inbox(driver, credentials, config, report):
             inbox = EmailInbox(request, credentials['email'])
             await inbox.open()
             report('starting', '邮件接码已准备好，已记录并排除已有验证码。')
+        except InboxRejected as error:
+            if inbox:
+                inbox.error = str(error)
+            report('starting', str(error) + ' 邮箱、密码仍会自动填写，邮件验证需要手动接管。')
         except (BrowserError, ValueError):
             # Browser/network errors can contain the private inbox session URL.
             if inbox:

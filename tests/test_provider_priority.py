@@ -154,7 +154,7 @@ class ProviderPriorityTests(unittest.TestCase):
             response = self.client.put('/api/config', json={'download_methods': methods}, headers=self.headers)
             self.assertEqual(response.status_code, 400, response.json)
             self.assertEqual(self.config.read_bytes(), before)
-        self.assertEqual(download_methods({'download_method': 'yt5s_fallback'}), ['yt5s', 'yt_dlp'])
+        self.assertEqual(download_methods({'download_methods': ['yt5s', 'yt_dlp']}), ['yt5s', 'yt_dlp'])
 
     def test_preflight_checks_only_selected_dependencies_and_cookie(self):
         self.save(['downmp3', 'yt5s'])

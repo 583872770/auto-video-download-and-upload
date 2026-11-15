@@ -227,7 +227,7 @@ class ThroughputController:
         requested = (max(1, min(MAX_TRANSFERS, int(cookie_capacity['capacity']))) if pooled else
                      max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1)))))
         browser_requested = max(1, min(16, int(config.get('yt5s_browser_count', 2))))
-        browser_methods = {'yt5s', 'yt1d', 'bergung'} & set(config.get('download_methods') or [config.get('download_method', 'yt_dlp')])
+        browser_methods = {'yt5s', 'yt1d', 'bergung'} & set(config.get('download_methods', ['yt_dlp']))
         browser_ceiling = min(browser_requested, max(1, math.floor(resources['cpu_cores'] * .75)),
                               max(1, int(resources['memory_total'] * .3 / (384 * MIB)))) if browser_methods else 1
         same = self.state and self.state['policy'] == policy_key(config)

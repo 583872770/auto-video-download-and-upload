@@ -149,27 +149,28 @@ def main():
             subtitle = fixture.root / 'caption.srt'
             subtitle.write_text('1\n00:00:00,000 --> 00:00:01,000\n<script>window.__unsafeSubtitle = true</script>\n',encoding='utf-8')
             with fixture.store.connect() as db:
-                for index in range(51):
-                    db.execute(delivery_artifacts.insert().values(id=f'{index:064x}',seq=index+1,job_id=identity,task_id='f'*32,video_id='npNnbj46_ik',title=f'字幕 {index:02d}',kind='subtitle',language='en',variant='0'*64,path=str(subtitle),size=subtitle.stat().st_size,instance_id='local',storage='local',object_key='',available=1,test_mode=0,created_at='2026-11-13T00:00:00'))
+                for index in range(25):
+                    db.execute(delivery_artifacts.insert().values(id=f'{index:064x}',seq=index+1,job_id=identity,task_id='f'*32,video_id=f'{index:011d}',title=f'字幕 {index:02d}',kind='subtitle',language='en',variant='0'*64,path=str(subtitle),size=subtitle.stat().st_size,instance_id='local',storage='local',object_key='',available=1,test_mode=0,created_at='2026-11-13T00:00:00'))
             page.goto(base + '/media')
-            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
+            expect(page.locator('#asset-table tbody tr')).to_have_count(24)
             page.locator('#media-next').click()
             expect(page.locator('#asset-table tbody tr')).to_have_count(1)
             page.locator('#media-prev').click()
-            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
+            expect(page.locator('#asset-table tbody tr')).to_have_count(24)
+            page.get_by_role('button', name='查看文件', exact=True).first.click()
             page.locator('[data-preview]').first.click()
             expect(page.locator('dialog pre')).to_contain_text('<script>window.__unsafeSubtitle')
             assert page.evaluate('window.__unsafeSubtitle') is None
             page.get_by_role('button',name='关闭对话框',exact=True).click()
-            content = page.request.get(base + '/api/delivery/files/' + f'{50:064x}',headers={'Range':'bytes=0-9'})
+            content = page.request.get(base + '/api/delivery/files/' + f'{24:064x}',headers={'Range':'bytes=0-9'})
             assert content.status == 206 and len(content.body()) == 10
             page.get_by_role('textbox',name='搜索素材',exact=True).fill('absent')
             page.get_by_role('button',name='查询',exact=True).click()
-            expect(page.locator('#asset-table')).to_contain_text('暂无符合条件的资产')
+            expect(page.locator('#asset-table')).to_contain_text('暂无符合条件的素材')
             expect(page.locator('#media-next')).to_be_disabled()
             page.get_by_role('textbox',name='搜索素材',exact=True).fill('')
             page.get_by_role('button',name='查询',exact=True).click()
-            expect(page.locator('#asset-table tbody tr')).to_have_count(50)
+            expect(page.locator('#asset-table tbody tr')).to_have_count(24)
             for width in (1440,768,390):
                 page.set_viewport_size({'width':width,'height':1000})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'overflow {width}'

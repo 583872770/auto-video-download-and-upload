@@ -104,17 +104,8 @@ def main():
             page.unroute('**/api/config')
             persist()
 
-            # Global defaults do not submit instance drafts or carry instance headers.
+            # Abandoning instance drafts stays inside the current settings page.
             field('oss_prefix').fill('instance-draft')
-            tab('新任务交付默认').click()
-            page.get_by_role('button',name='四项全选',exact=True).click()
-            with page.expect_request(lambda request: '/api/delivery/defaults' in request.url and request.method == 'PUT') as submitted:
-                page.get_by_role('button',name='保存新任务默认要求',exact=True).click()
-            assert 'x-instance-id' not in submitted.value.headers
-            expect(page.get_by_role('status').filter(has_text='新任务默认要求已保存')).to_be_visible()
-            tab('文件保存').click()
-            expect(field('oss_prefix')).to_have_value('instance-draft')
-            expect(save).to_be_enabled()
             page.locator('.savebar').get_by_role('button',name='放弃修改').click()
             page.get_by_role('button',name='放弃并继续').click()
             expect(page.locator('.el-overlay')).to_have_count(0)
@@ -142,8 +133,8 @@ def main():
                 route.fulfill(response=response,body=re.sub(r'"fleetEnabled": false','"fleetEnabled": true',response.text()))
             page.route('**/settings',frontend_bootstrap)
             page.route('**/api/instances?compact=1',lambda route: route.fulfill(json={'instance_id':'a','items':[
-                {'id':'a','name':'实例 A','role':'worker','online':True},
-                {'id':'b','name':'实例 B','role':'worker','online':True}]}))
+                {'id':'a','name':'实例 A','role':'hybrid','online':True},
+                {'id':'b','name':'实例 B','role':'hybrid','online':True}]}))
             def scoped_config(route):
                 identity = route.request.headers.get('x-instance-id')
                 route.fulfill(json={**original,'config':{**original['config'],'oss_prefix':'instance-' + str(identity)}})
@@ -172,15 +163,6 @@ def main():
             expect(reader_page.locator('[name=oss_endpoint]')).to_be_disabled()
             expect(reader_page.locator('.savebar').get_by_role('button',name='保存设置',exact=True)).to_be_disabled()
             readonly.close()
-            # Old root hashes now land in the Vue workbench.
-            legacy = browser.new_context()
-            legacy.add_cookies([dict(name=cookie_name,value=fixture.client.get_cookie(cookie_name).value,url=url)])
-            legacy_page = legacy.new_page()
-            legacy_page.on('pageerror',lambda error: errors.append(str(error)))
-            legacy_page.goto(url + '/#overview')
-            expect(legacy_page.get_by_role('heading',name='下载工作台',exact=True)).to_be_visible()
-            expect(legacy_page.get_by_role('link',name='系统设置',exact=True)).to_have_attribute('href','/settings')
-            legacy.close()
             browser.close()
         assert not errors, errors
         print(json.dumps({'ok':True,'screenshots':str(output),'browser_errors':errors},ensure_ascii=False))

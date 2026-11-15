@@ -1,4 +1,4 @@
-﻿"""Selected-mode accounting remains exact across retries, fallback and upgrades."""
+"""Actual-provider accounting remains exact across retries and fallback."""
 from concurrent.futures import ThreadPoolExecutor
 import csv
 from io import StringIO
@@ -49,8 +49,9 @@ class MethodStatisticsContract:
         self.job(download_methods=['yt_dlp', 'downmp3'], scheduler_mode='auto')
         job = self.claim()
         self.store.release(job['id'], self.store.owner, 'no available route', delay=0)
-        self.assertTrue(all(row['attempted'] == 0 for row in self.methods().values()
-                            if row['method'] != 'unknown'))
+        rows = self.methods()
+        self.assertEqual(set(rows), {'yt_dlp', 'yt5s', 'downmp3', 'yt1d', 'bergung'})
+        self.assertTrue(all(row['attempted'] == 0 for row in rows.values()))
 
     def test_automatic_retry_preflight_failure_preserves_previous_provider_history(self):
         self.job(download_methods=['yt_dlp', 'downmp3'], scheduler_mode='auto')
@@ -63,12 +64,12 @@ class MethodStatisticsContract:
         self.assertEqual(self.methods()['downmp3'], before)
 
     def test_start_configuration_groups_three_modes_and_test_sizes_without_double_counting(self):
-        for index, method in enumerate(('yt_dlp', 'yt5s', 'yt5s_fallback')):
-            self.job(f'{index:011d}', download_method=method, storage_mode='test' if index == 2 else 'local')
+        for index, method in enumerate(('yt_dlp', 'yt5s', ('yt5s', 'yt_dlp'))):
+            self.job(f'{index:011d}', download_methods=list(method) if isinstance(method, tuple) else [method], storage_mode='test' if index == 2 else 'local')
         from webapp.settings import DEFAULTS
         jobs = []
-        for method in ('yt_dlp', 'yt5s', 'yt5s_fallback'):
-            self.store.set_download_settings({**DEFAULTS, 'download_method': method},
+        for method in ('yt_dlp', 'yt5s', ('yt5s', 'yt_dlp')):
+            self.store.set_download_settings({**DEFAULTS, 'download_methods': list(method) if isinstance(method, tuple) else [method]},
                                              self.root, self.store.directory / 'clash')
             jobs.append(self.claim())
         identity = jobs[0]['payload']['download_session_id']
@@ -99,7 +100,7 @@ class MethodStatisticsContract:
         self.assertEqual(self.overview()['summary']['file_bytes'], 303)
 
     def test_fallback_retries_release_and_failure_count_each_task_once(self):
-        self.job(download_method='yt5s_fallback')
+        self.job(download_methods=['yt5s', 'yt_dlp'])
         job = self.claim()
         identity = job['payload']['download_session_id']
         self.store.statistics.methods.fallback(job['id'])
@@ -125,7 +126,7 @@ class MethodStatisticsContract:
         self.assertEqual(row['success_rate'], 0)
 
     def test_pause_resume_attributes_completed_files_to_new_session(self):
-        self.job(download_method='yt5s')
+        self.job(download_methods=['yt5s'])
         first = self.claim()
         old_id = first['payload']['download_session_id']
         path = self.final_file(size=1234)
@@ -149,7 +150,7 @@ class MethodStatisticsContract:
 
     def test_recovery_and_parallel_completion_preserve_counters(self):
         for index in range(4):
-            self.job(f'{index:011d}', download_method='yt5s_fallback')
+            self.job(f'{index:011d}', download_methods=['yt5s', 'yt_dlp'])
         jobs = [self.claim() for _ in range(4)]
         identity = jobs[0]['payload']['download_session_id']
         with self.store.connect() as db:
@@ -172,8 +173,8 @@ class MethodStatisticsContract:
         self.assertEqual((row['attempted'], row['running'], row['succeeded'], row['fallback_tasks']), (4, 0, 4, 4))
 
     def test_customer_filter_and_csv_exports_keep_method_numbers_exact(self):
-        for index, (method, label) in enumerate([('yt_dlp', '客户 A'), ('yt5s', '客户 B'), ('yt5s_fallback', '客户 A')]):
-            self.job(f'{index:011d}', download_method=method)
+        for index, (method, label) in enumerate([('yt_dlp', '客户 A'), ('yt5s', '客户 B'), (('yt5s', 'yt_dlp'), '客户 A')]):
+            self.job(f'{index:011d}', download_methods=list(method) if isinstance(method, tuple) else [method])
             job = self.claim()
             identity = job['payload']['download_session_id']
             self.store.statistics.update(identity, {'label': label})
@@ -197,28 +198,9 @@ class MethodStatisticsContract:
         self.assertIn(str(size), response.data.decode('utf-8-sig'))
         self.assertEqual(self.methods(identity)['yt5s']['file_bytes_exact'], str(size))
 
-    def test_old_schema_creates_new_tables_without_reclassifying_historical_bytes(self):
-        self.job()
-        job = self.claim()
-        identity = job['payload']['download_session_id']
-        self.store.statistics.record_file(job['id'], self.final_file(size=999))
-        self.store.statistics.record_file(job['id'], self.final_file('test.mp4', 777), test_mode=True)
-        self.store.finish(job['id'], result={}, worker_id=self.store.owner)
-        before = self.overview()['summary']
-        method_tasks.drop(self.store.db.engine)
-        method_totals.drop(self.store.db.engine)
-        with self.store.connect() as db:
-            db.execute(settings.delete().where(settings.c.key == 'download_method_statistics_since'))
-        self.store.db.initialize()
-        self.store.db.initialize()
-        rows = self.methods(identity)
-        self.assertEqual((rows['unknown']['file_bytes'], rows['unknown']['test_file_bytes'], rows['unknown']['succeeded']), (999, 777, 1))
-        self.assertEqual(sum(rows[method]['attempted'] for method in ('yt_dlp', 'yt5s')), 0)
-        self.assertEqual(self.overview()['summary'], before)
-        self.assertTrue(self.overview()['method_tracking_since'])
 
     def test_overview_and_method_export_read_only_small_aggregates(self):
-        self.job(download_method='yt5s')
+        self.job(download_methods=['yt5s'])
         self.claim()
         statements = []
 

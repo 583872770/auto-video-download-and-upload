@@ -1,4 +1,4 @@
-"""Check MySQL index DDL offline, including the MySQL 5.7 schema copy."""
+"""Check MySQL index DDL offline, for the current MySQL 8.4 schema."""
 import unittest
 from types import SimpleNamespace
 
@@ -6,7 +6,8 @@ from sqlalchemy import Text, LargeBinary
 from sqlalchemy.dialects.mysql import dialect
 from sqlalchemy.schema import CreateIndex
 
-from webapp.database import Database
+from tests.test_mysql import StandaloneMySQLFixture
+from webapp.database import Database, SchemaMismatch
 
 
 class MySQLSchemaTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class MySQLSchemaTests(unittest.TestCase):
         return database.schema(), mysql
 
     def test_text_and_blob_indexes_have_mysql_prefixes(self):
-        for version in ((5, 7, 44), (8, 0, 20), (8, 4, 0)):
+        for version in ((8, 4, 0),):
             schema, mysql = self.schema(version)
             for table in schema.tables.values():
                 for index in table.indexes:
@@ -32,13 +33,47 @@ class MySQLSchemaTests(unittest.TestCase):
                                 self.assertGreater(length, 0, ddl)
                                 self.assertIn(f'{column.name}({length})', ddl)
 
-    def test_finished_time_index_ddl_for_new_and_existing_tables(self):
-        for version in ((5, 7, 44), (8, 0, 20), (8, 4, 0)):
+    def test_finished_time_index_ddl(self):
+        for version in ((8, 4, 0),):
             with self.subTest(version=version):
                 schema, mysql = self.schema(version)
                 index = next(index for index in schema.tables['tasks'].indexes
                              if index.name == 'ix_tasks_finished_time')
-                # Both create_all for a new table and initialize's explicit
-                # index.create for an existing table compile this statement.
                 self.assertEqual(str(CreateIndex(index).compile(dialect=mysql)),
-                                 'CREATE INDEX ix_tasks_finished_time ON tasks (finished_at(40), seq)')
+                                 'CREATE INDEX ix_tasks_finished_time ON tasks (finished_at, seq)')
+
+
+class MySQLCurrentSchemaTests(StandaloneMySQLFixture, unittest.TestCase):
+    def test_reopen_accepts_reflected_current_types_and_index_prefixes(self):
+        self.store.db.initialize()
+
+    def test_reduced_lease_precision_is_rejected(self):
+        with self.store.db.engine.begin() as db:
+            db.exec_driver_sql('ALTER TABLE tasks MODIFY lease_until FLOAT NULL')
+        with self.assertRaisesRegex(SchemaMismatch, 'tasks.lease_until'):
+            self.store.db.initialize()
+
+    def test_reduced_sequence_range_is_rejected(self):
+        with self.store.db.engine.begin() as db:
+            db.exec_driver_sql('ALTER TABLE tasks MODIFY seq INT NOT NULL')
+        with self.assertRaisesRegex(SchemaMismatch, 'tasks.seq'):
+            self.store.db.initialize()
+
+    def test_short_json_storage_is_rejected(self):
+        with self.store.db.engine.begin() as db:
+            db.exec_driver_sql('ALTER TABLE tasks MODIFY payload TEXT NOT NULL')
+        with self.assertRaisesRegex(SchemaMismatch, 'tasks.payload'):
+            self.store.db.initialize()
+
+    def test_case_insensitive_identifiers_are_rejected(self):
+        with self.store.db.engine.begin() as db:
+            db.exec_driver_sql('ALTER TABLE download_archive CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci')
+        with self.assertRaisesRegex(SchemaMismatch, 'download_archive'):
+            self.store.db.initialize()
+
+    def test_wrong_index_prefix_is_rejected(self):
+        with self.store.db.engine.begin() as db:
+            db.exec_driver_sql('DROP INDEX ix_tasks_title_prefix ON tasks')
+            db.exec_driver_sql('CREATE INDEX ix_tasks_title_prefix ON tasks (title(100))')
+        with self.assertRaisesRegex(SchemaMismatch, 'ix_tasks_title_prefix'):
+            self.store.db.initialize()

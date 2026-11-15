@@ -1,4 +1,4 @@
-﻿"""Container bootstrap must preserve credentials and persistent user settings."""
+"""Container bootstrap must preserve credentials and persistent user settings."""
 import importlib.util
 import errno
 import hashlib

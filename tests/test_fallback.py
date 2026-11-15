@@ -1,4 +1,4 @@
-﻿"""Automatic provider fallback, lossless preflight and delivered byte accounting."""
+"""Automatic provider fallback, lossless preflight and delivered byte accounting."""
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -26,18 +26,18 @@ class FallbackContract:
     method = test_yt5s.Yt5sTests.method
 
     def cookie(self):
-        self.method('yt5s_fallback')
+        self.method(['yt5s', 'yt_dlp'])
         response = self.client.put('/api/config', json={'youtube_cookie_usage': 'always'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         AuthContract.cookie(self)
 
     def payload(self, **config):
-        return {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s_fallback',
-                           'youtube_cookie': 'Cookies/youtube.txt', 'youtube_cookie_usage': 'always', **config},
+        return {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_methods': ['yt5s', 'yt_dlp'],
+                           'youtube_cookie': 'Cookies/profiles/dddddddddddddddddddddddddddddddd.txt', 'youtube_cookie_usage': 'always', **config},
                 'base': str(self.root), 'urls': [VIDEO]}
 
     def test_selection_and_preflight_for_new_batch_import_and_resume(self):
-        self.method('yt5s_fallback')
+        self.method(['yt5s', 'yt_dlp'])
         self.assertNotIn('value="yt5s_fallback"', self.client.get('/').text)
         self.assertEqual(self.client.get('/api/config').json['config']['download_methods'], ['yt5s', 'yt_dlp'])
         self.cookie()
@@ -55,7 +55,7 @@ class FallbackContract:
         self.assertEqual(response.status_code, 200, response.json)
         self.assertFalse(self.store.downloads_paused())
         self.assertEqual(self.store.download_queue()['queued'], 2)
-        self.method('yt5s_fallback')
+        self.method(['yt5s', 'yt_dlp'])
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture expired')):
             response = self.client.post('/api/downloads/import', headers=self.headers,
                 data={'file': (BytesIO(b'npNnbj46_ik\n'), 'videos.txt')})
@@ -65,7 +65,7 @@ class FallbackContract:
     def test_bulk_import_defers_preflight_and_provider_selection(self):
         from webapp.bulk import run_import
 
-        self.method('yt5s_fallback')
+        self.method(['yt5s', 'yt_dlp'])
         self.cookie()
         with patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture verified')) as check:
             response = self.client.post('/api/downloads/import', headers=self.headers,
@@ -79,7 +79,7 @@ class FallbackContract:
             self.assertNotIn('config', self.store.get(task['id'], private=True)['payload'])
 
     def test_missing_tools_or_browser_blocks_batch_import_and_resume(self):
-        self.method('yt5s_fallback')
+        self.method(['yt5s', 'yt_dlp'])
         for failure in (DownloadEnvironmentRequired('missing FFmpeg'), BrowserEnvironmentRequired('missing display')):
             with self.subTest(error=type(failure)), patch('app.require_fallback_environment', side_effect=failure), \
                     patch('webapp.youtube_auth.probe') as check:
@@ -107,7 +107,7 @@ class FallbackContract:
                 require_fallback_environment({'js_runtimes': {}}, self.root)
         for url in ('https://example.test/video.mp4', 'https://www.youtube.com/playlist?list=PLfixture'):
             with self.assertRaises(ValueError):
-                validate_method_urls({'download_method': 'yt5s_fallback'}, [url])
+                validate_method_urls({'download_methods': ['yt5s', 'yt_dlp']}, [url])
 
     def test_worker_preflight_pauses_without_attempts_or_provider_calls(self):
         self.cookie()
@@ -156,7 +156,7 @@ class FallbackContract:
 
     def test_parse_and_transfer_errors_fallback_once_with_isolated_cookie_jar(self):
         self.cookie()
-        original = (self.root / 'Cookies/youtube.txt').read_bytes()
+        original = (self.root / 'Cookies/profiles/dddddddddddddddddddddddddddddddd.txt').read_bytes()
         for transfer in (False, True):
             values, sessions = [], []
 
@@ -164,7 +164,7 @@ class FallbackContract:
                 self.assertEqual(urls, [VIDEO])
                 cookie = Path(downloader.params['cookiefile'])
                 sessions.append(cookie)
-                self.assertNotEqual(cookie, self.root / 'Cookies/youtube.txt')
+                self.assertNotEqual(cookie, self.root / 'Cookies/profiles/dddddddddddddddddddddddddddddddd.txt')
                 self.assertEqual(downloader.params['proxy'], '')
                 self.assertFalse(downloader.params['continuedl'])
                 return 0
@@ -181,7 +181,7 @@ class FallbackContract:
             self.assertEqual(len(sessions), 1)
             self.assertFalse(sessions[0].exists())
             self.assertTrue(any(value.get('stage') == 'switching_provider' for value in values))
-        self.assertEqual((self.root / 'Cookies/youtube.txt').read_bytes(), original)
+        self.assertEqual((self.root / 'Cookies/profiles/dddddddddddddddddddddddddddddddd.txt').read_bytes(), original)
 
     def test_fallback_reuses_worker_node_and_rotation_without_counting_twice(self):
         self.cookie()

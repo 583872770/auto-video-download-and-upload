@@ -71,11 +71,7 @@ def target_tracks(info, languages):
 
 
 def caption_plan(info, config):
-    mode = config.get('mode', 'selected')
-    if mode == 'selected':
-        available = select_tracks(info, config['languages'], config['sources'])
-        required = config['languages'] if config['language_policy'] == 'all_selected' else list(available)
-        return available, required
+    mode = config['mode']
     available = original_tracks(info, config['sources'])
     original = list(available)
     if mode == 'original_and_translated':

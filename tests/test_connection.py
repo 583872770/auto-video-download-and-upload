@@ -1,4 +1,4 @@
-﻿"""Apply connection changes to large paused queues without rewriting jobs."""
+"""Apply connection changes to large paused queues without rewriting jobs."""
 from copy import deepcopy
 from io import BytesIO
 import time
@@ -17,8 +17,8 @@ from web_worker import execute
 
 class ConnectionContract:
     def old_task(self):
-        self.client.put('/api/config', json={'download_method': 'yt5s', 'yt5s_quality': '360'}, headers=self.headers)
-        payload = {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s',
+        self.client.put('/api/config', json={'download_methods': ['yt5s'], 'yt5s_quality': '360'}, headers=self.headers)
+        payload = {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_methods': ['yt5s'],
                               'yt5s_quality': '360', 'youtube_cookie': 'Cookies/original.txt'},
                    'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']}
         return self.store.create('download', payload), payload
@@ -34,10 +34,6 @@ class ConnectionContract:
 
     def test_requires_csrf_pause_drained_queue_and_idle_login(self):
         # Explicitly verify the source-template fallback; built routes use Vue.
-        with patch('webapp.frontend.assets', return_value=None):
-            page = self.client.get('/').text
-        self.assertIn('id="clash-apply-connection"', page)
-        self.assertIn('检查当前连接</button>', page)
         self.assertEqual(self.client.post('/api/downloads/connection').status_code, 403)
         task, old = self.old_task()
         self.assertTrue(self.client.get('/api/clash').json['connection_apply_locked'])
@@ -87,7 +83,7 @@ class ConnectionContract:
         reopened = TaskStore(self.store.directory)
         effective = reopened.effective_download_payload(task['id'], old)
         self.assertEqual(effective['config']['proxy_mode'], 'clash')
-        self.assertEqual(effective['config']['download_method'], 'yt5s')
+        self.assertEqual(effective['config']['download_methods'], ['yt5s'])
         self.assertEqual(effective['clash'], {'directory': clash['directory']})
         self.assertEqual(effective['urls'], old['urls'])
         self.assertEqual(old, before)
@@ -137,13 +133,13 @@ class ConnectionContract:
         used = run.call_args.args[1]
         self.assertEqual(used['config']['proxy_mode'], 'clash')
         self.assertEqual(used['clash'], {'directory': clash['directory']})
-        self.assertEqual(used['config']['download_method'], 'yt5s')
+        self.assertEqual(used['config']['download_methods'], ['yt5s'])
         # A prior connection check must never override the current page config.
-        first = {**old, 'config': {**old['config'], 'download_method': 'yt_dlp'}}
+        first = {**old, 'config': {**old['config'], 'download_methods': ['yt_dlp']}}
         with self.store.connect() as db:
             packed = self.store._pack(db, first)
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(payload=packed))
-        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_method': 'yt_dlp',
+        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_methods': ['yt_dlp'],
                                                              'youtube_cookie_usage': 'always'},
                                         headers=self.headers).status_code, 200)
         with patch('webapp.youtube_auth.YouTubeAuth.require', return_value={}) as auth:

@@ -208,31 +208,3 @@ class AccountRecoveryPolicyTests(unittest.TestCase):
         pool.router.outcome(pool.router.channels[0], success=False, error=error)
         state = pool.router.snapshot(['channel:yt_dlp'])[0]['channel:yt_dlp']
         self.assertFalse(state.get('cooldown_until'))
-
-    def test_frontend_shows_manual_account_as_waiting_and_explains_recovery(self):
-        program = r'''
-const fs = require('fs'), vm = require('vm'), assert = require('node:assert/strict');
-global.document = {getElementById:()=>null,addEventListener:()=>{}};
-global.setInterval = ()=>{};
-global.escapeHTML = value => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-vm.runInThisContext(fs.readFileSync('static/risks.js','utf8'));
-vm.runInThisContext(fs.readFileSync('static/concurrency.js','utf8'));
-vm.runInThisContext(fs.readFileSync('static/cookie_recovery.js','utf8'));
-const session = {id:'a',name:'<img src=x>',state:'manual',halt_kind:'authentication_required'};
-const pool = {sessions:[session],manual_sessions:1,available_sessions:1};
-const html = cookieAccountNoticesHTML(pool,Date.now()/1000);
-assert(html.includes('需人工处理'));
-assert(html.includes('检测登录'));
-assert(!html.includes('低频恢复中'));
-assert(!html.includes('<img'));
-const status = cookieFilterStates({...session,known:true,reasons:[{code:'account_halted'}],tasks:[]},true);
-assert.equal(status.health,'manual');
-assert(status.stages.has('waiting'));
-assert(!status.stages.has('idle'));
-const detail = cookieRecoveryProgressHTML(session,{},true);
-assert(detail.includes('新检测通过后恢复该账号'));
-assert(!detail.includes('成功进度'));
-'''
-        result = subprocess.run(['node', '-e', program], capture_output=True, text=True, encoding='utf-8')
-        self.assertEqual(result.returncode, 0, result.stderr)
-

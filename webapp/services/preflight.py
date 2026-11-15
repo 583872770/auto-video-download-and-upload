@@ -29,7 +29,7 @@ class DownloadPreflight:
             return None
         if config.get('youtube_cookie_pool') and not force:
             # Each admitted account is checked by its worker. The selected
-            # legacy/default Cookie may be cooling while other accounts work.
+            # The selected Cookie may be cooling while other accounts work.
             return None
         # In on-demand mode public videos start anonymously.  The worker will
         # retry once with the selected Cookie only when yt-dlp reports that
@@ -101,7 +101,7 @@ class DownloadPreflight:
     def job_preflight(self, config, base):
         if self.context.fleet and self.context.fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             rpc = self.context.dependencies.rpc
-            nodes = [node for node in self.context.fleet.list()['items'] if node['role'] in ('worker', 'hybrid') and node['online'] and not node['paused']]
+            nodes = [node for node in self.context.fleet.list()['items'] if node['role'] == 'hybrid' and node['online'] and not node['paused']]
             warnings = []
             if not nodes:
                 return ['任务已开始，等待在线且启用的下载实例。']

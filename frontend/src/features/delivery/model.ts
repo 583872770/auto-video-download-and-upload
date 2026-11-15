@@ -6,7 +6,7 @@ export interface DeliverySpec {
   audio: { format: string };
   av: { container: string };
   subtitles: {
-    mode?: 'original' | 'original_and_translated' | 'selected';
+    mode: 'original' | 'original_and_translated';
     languages: string[];
     format: string;
     sources: string[];

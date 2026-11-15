@@ -87,7 +87,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual((evidence.phase,evidence.http_status),('transfer',429))
         self.assertGreaterEqual(caught.exception.retry_after,2390)
         self.assertEqual(self.hits,['/limited.vtt'])
-        router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
+        router=ChannelScheduler(self.store,{'download_methods': ['yt_dlp']},task['id'])
         states,_,stamp=router.snapshot(['upstream:youtube-origin','channel:yt_dlp'])
         for scope in ('upstream:youtube-origin','channel:yt_dlp'):
             self.assertGreaterEqual(states[scope]['cooldown_until'],stamp+2390)
@@ -98,7 +98,7 @@ class DeliveryTests(unittest.TestCase):
         from webapp.throughput import PipelineBusy
         self.create(['subtitle'])
         task=self.store.claim(self.store.owner)
-        router=ChannelScheduler(self.store,{'download_method':'yt_dlp'},task['id'])
+        router=ChannelScheduler(self.store,{'download_methods': ['yt_dlp']},task['id'])
         router.outcome(router.channels[0],success=False,error=RuntimeError('HTTP Error 429'),phase='transfer')
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
             with self.assertRaises(PipelineBusy):
@@ -285,14 +285,14 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/'+job+'/artifacts').json['items'],[])
 
     def test_language_policy_and_delivery_filter_without_task_filter(self):
-        job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr'],'language_policy':'all_selected'}})
+        job=self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated','languages':['en','fr'],'language_policy':'all_selected'}})
         task,result=self.execute()
         self.assertEqual(result['delivery_status'],'review')
         rows=self.client.get('/api/jobs/'+job+'/videos?delivery_status=review').json['items']
         self.assertEqual(len(rows),1)
         self.assertEqual({(r['language'],r['status']) for r in rows[0]['delivery']['requirements']},{('en','done'),('fr','missing')})
         self.assertEqual(self.client.get('/api/jobs/'+job+'/videos?delivery_status=complete').json['items'],[])
-        job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr'],'language_policy':'available_selected','format':'vtt'}})
+        job=self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated','languages':['en','fr'],'language_policy':'available_selected','format':'vtt'}})
         _,result=self.execute();self.assertEqual(result['delivery_status'],'complete')
         self.assertEqual(self.hits.count('/video.mp4'),0)
 
@@ -308,6 +308,63 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(self.client.get('/api/jobs/'+job+'/artifacts').json['items'][0]['content_url'])
         with self.store.connect() as db:
             self.assertTrue(db.execute(select(delivery_artifacts.c.path).where(delivery_artifacts.c.job_id==job)).scalar_one().endswith('.mkv'))
+
+    def test_file_organization_setting_applies_to_video_audio_and_each_subtitle(self):
+        for sharded in (True,False):
+            with self.subTest(shard_downloads=sharded):
+                response=self.client.put('/api/config',json={'shard_downloads':sharded},headers=self.headers)
+                self.assertEqual(response.status_code,200,response.json)
+                job=self.create(KINDS,{'subtitles':{'mode':'original'}})
+                info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
+                task,result=self.execute(info)
+                self.assertEqual(result['file_count'],5)
+                with self.store.connect() as db:
+                    rows=list(db.execute(select(delivery_artifacts).where(delivery_artifacts.c.job_id==job)).mappings())
+                self.assertEqual({(row['kind'],row['language']) for row in rows},
+                    {('av',''),('video_only',''),('audio_only',''),('subtitle','en'),('subtitle','fr')})
+                paths=[Path(row['path']) for row in rows]
+                self.assertEqual(len(set(paths)),5)
+                self.assertEqual(len({path.parent for path in paths}),1)
+                for path in paths:
+                    relative=path.relative_to(self.root/'videos')
+                    self.assertEqual(relative.parts[:3],('jobs',job,task['id']))
+                    self.assertEqual(len(relative.parts[3]),12)
+                    self.assertEqual(relative.parts[4:-1],('np','npNnbj46_ik') if sharded else ())
+                    self.assertTrue(path.is_file())
+                for row in rows:
+                    with self.client.get('/api/delivery/files/'+row['id']) as response:
+                        self.assertEqual(response.status_code,200)
+
+    def test_sharded_oss_retry_preserves_video_directory_and_object_key(self):
+        from Utils.oss_storage import OSSStorage,OSSUploadError
+        from web_worker import execute
+        response=self.client.put('/api/config',json={'storage_mode':'oss','shard_downloads':True,
+            'oss_endpoint':'https://oss-cn-hangzhou.aliyuncs.com','oss_bucket':'fixture-bucket',
+            'oss_prefix':'exports','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.json)
+        job=self.create(['subtitle']);task=self.store.claim(self.store.owner)
+        uploads=[]
+        def upload(storage,path,key,report):
+            uploads.append((Path(path),key))
+            if len(uploads)==1:
+                raise OSSUploadError('fixture upload failure')
+        with patch('oss2.Bucket'),patch.object(OSSStorage,'_upload',autospec=True,side_effect=upload), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            with self.assertRaises(OSSUploadError):
+                execute('download',task['payload'],store=self.store,task_id=task['id'])
+            self.retry_failed(job,task);self.hits.clear()
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
+                self.execute();extract.assert_not_called()
+        self.assertEqual(self.hits,[])
+        self.assertEqual(len(uploads),2)
+        self.assertEqual(uploads[0],uploads[1])
+        path,key=uploads[1]
+        self.assertEqual(path.parent.parts[-2:],('np','npNnbj46_ik'))
+        self.assertEqual(key,f'exports/jobs/{job}/{task["id"]}/np/npNnbj46_ik/{path.name}')
+        with self.store.connect() as db:
+            row=db.execute(select(delivery_artifacts).where(delivery_artifacts.c.job_id==job)).mappings().one()
+        self.assertEqual((row['path'],row['object_key'],row['available']),(str(path),key,1))
+        self.assertEqual(row['subtitle_source'],'manual')
 
     def retry_failed(self,job,task):
         self.store.finish(task['id'],error='interrupted',worker_id=self.store.owner)
@@ -420,20 +477,6 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(failure_evidence(caught.exception).kind,kind)
             self.store.finish(task['id'],error=message,worker_id=self.store.owner)
 
-    def test_started_legacy_item_requires_explicit_latest_adoption(self):
-        response=self.client.post('/api/jobs',json={'customer':'Legacy','name':'Legacy','urls':'npNnbj46_ik'},headers=self.headers)
-        job=response.json['id']
-        from webapp.database import download_lists
-        with self.store.connect() as db:db.execute(download_lists.update().where(download_lists.c.id==job).values(released=1))
-        task=self.store.claim(self.store.owner)
-        self.store.finish(task['id'],error='legacy failure',worker_id=self.store.owner)
-        version=self.client.get('/api/jobs/'+job).json['edit_version']
-        self.client.put('/api/jobs/'+job,json={'edit_version':version,'delivery':{'outputs':['audio_only']}},headers=self.headers)
-        from webapp.delivery.artifacts import pin
-        with self.store.connect() as db:self.assertIsNone(pin(self.store,db,task['id'],job))
-        response=self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']],'use_latest':True},headers=self.headers)
-        self.assertEqual(response.status_code,202,response.json)
-        _,result=self.execute();self.assertEqual(result['delivery_status'],'complete')
 
     def test_rejected_cookie_warning_stops_before_anonymous_fallback(self):
         from types import SimpleNamespace
@@ -462,20 +505,6 @@ class DeliveryTests(unittest.TestCase):
 
 
 class ContractValidationTests(unittest.TestCase):
-    def test_default_original_mode_and_legacy_contract_identity(self):
-        default=normalize()
-        self.assertEqual(default['subtitles']['mode'],'original')
-        self.assertEqual(normalize({'subtitles':{'mode':'original','languages':[]}})['subtitles']['languages'],[])
-        legacy=normalize({'subtitles':{'languages':['en','zh-Hans']}})
-        self.assertNotIn('mode',legacy['subtitles'])
-        self.assertEqual(normalize(legacy),legacy)
-        from webapp.delivery.contracts import digest
-        old_variant=digest({'kind':'subtitle','options':{'format':'srt','sources':['manual','automatic']}})
-        self.assertEqual(variant(legacy,'subtitle'),old_variant)
-        self.assertNotEqual(variant(default,'subtitle'),old_variant)
-        for invalid in ({'mode':'unknown'}, {'mode':'original_and_translated','languages':[]}):
-            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
-                normalize({'subtitles':invalid})
 
     def test_invalid_or_empty_requirements_rejected(self):
         for invalid in ({'outputs':[]},{'outputs':['other']},{'outputs':[{}]},{'subtitles':{'languages':['../en']}},{'video':{'max_height':True}}):
@@ -508,17 +537,3 @@ class DeliveryFleetTests(unittest.TestCase):
     from tests import test_fleet as fleet_tests
     setUp=fleet_tests.FleetTests.setUp
     setup_fleet=fleet_tests.FleetTests.setup_fleet
-
-    def test_older_registered_executor_blocks_new_contract(self):
-        from webapp.database import instances
-        with self.manager.connect() as db:
-            config=json.loads(db.execute(select(instances.c.config).where(instances.c.id=='beta')).scalar_one())
-            config.pop('delivery_schema_version',None)
-            db.execute(instances.update().where(instances.c.id=='beta').values(config=json.dumps(config),heartbeat=0))
-        response=self.client.post('/api/jobs',json={'customer':'A','name':'B','delivery':{'outputs':['subtitle']}},headers=self.headers)
-        self.assertEqual(response.status_code,409,response.json)
-        self.assertIn('beta',response.json['error'])
-        config['delivery_schema_version']=1
-        with self.manager.connect() as db:db.execute(instances.update().where(instances.c.id=='beta').values(config=json.dumps(config)))
-        response=self.client.post('/api/jobs',json={'customer':'A','name':'B','delivery':{'outputs':['subtitle']}},headers=self.headers)
-        self.assertEqual(response.status_code,201,response.json)

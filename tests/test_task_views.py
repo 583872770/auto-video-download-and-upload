@@ -63,6 +63,29 @@ class TaskViewContract:
         self.assertEqual(self.client.get('/api/tasks?view=active').json['items'], [])
         self.assertEqual(self.store.get(queued['id'])['status'], 'queued')
 
+    def test_compact_records_keep_list_fields_and_load_full_details_separately(self):
+        task = self.create()
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id == task['id']).values(
+                progress='{"stage":"completed","large_diagnostics":"' + 'x' * 100000 + '"}'))
+        self.store.finish(task['id'], result={'message': 'detail only', 'files': ['large'] * 5000})
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id == task['id']).values(error='e' * 2000))
+            row = db.execute(tasks.select().where(tasks.c.id == task['id'])).mappings().one()
+            self.assertNotIn('finished_order', row)
+        response = self.client.get('/api/tasks?scope=download&view=history&compact=1').json
+        self.assertNotIn('counts', response)
+        item = response['items'][0]
+        self.assertEqual(item['id'], task['id'])
+        self.assertEqual(item['progress'], {'stage': 'completed'})
+        self.assertEqual(len(item['error']), 250)
+        for field in ('payload', 'result', 'finished_order', 'worker_id'):
+            self.assertNotIn(field, item)
+        detail = self.client.get('/api/tasks/' + task['id']).json
+        self.assertEqual(detail['result']['message'], 'detail only')
+        self.assertEqual(len(detail['error']), 2000)
+        self.assertNotIn('finished_order', detail)
+
     def test_history_orders_by_completion_with_stable_time_ties_and_keyset_pages(self):
         with patch('webapp.store.now', return_value='2026-10-23T08:00:00+08:00'):
             first, second, third, fourth = [self.create() for _ in range(4)]

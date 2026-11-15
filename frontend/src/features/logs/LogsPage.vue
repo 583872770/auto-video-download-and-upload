@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { storeToRefs } from 'pinia';
 import { api } from '../../api';
 import { usePolling } from '../../composables/polling';
 import { useResource } from '../../composables/resource';
 import TaskLog from '../../components/TaskLog.vue';
 import { videoStates, type Page } from '../jobs/contracts';
-import { stageLabel, type RuntimeTask } from '../workbench/contracts';
-const query = ref(''),
-  status = ref(''),
-  view = ref('history');
-const cursor = ref<string | null>(null),
-  history = ref<Array<string | null>>([]);
-const resource = useResource<Page<RuntimeTask>>(),
-  selected = ref<RuntimeTask>();
+import { stageLabel } from '../workbench/contracts';
+import { useExecutionRecords, type ExecutionRecord } from '../../stores/executionRecords';
+const records = useExecutionRecords();
+const { status, view, cursor, history } = storeToRefs(records);
+const query = ref(records.query);
+const resource = useResource<Page<ExecutionRecord>>(),
+  selected = ref<ExecutionRecord>();
+resource.data.value = records.cached();
 const actions: Record<string, string> = {
   download: '视频下载',
   check: '环境检查',
@@ -23,17 +24,30 @@ const actions: Record<string, string> = {
 async function refresh(signal?: AbortSignal) {
   const params = new URLSearchParams({
     scope: 'download',
+    compact: '1',
     view: view.value,
     status: status.value,
-    q: query.value,
+    q: records.query,
     limit: '50',
   });
   if (cursor.value) params.set('cursor', cursor.value);
-  await resource.load((signal) => api.request('/api/tasks?' + params, { signal }), signal);
+  const key = records.key();
+  await resource.load(async (signal) => {
+    const value = await api.request<Page<ExecutionRecord>>('/api/tasks?' + params, { signal });
+    signal.throwIfAborted();
+    records.remember(key, value);
+    return value;
+  }, signal);
+}
+function restore() {
+  resource.clear();
+  resource.data.value = records.cached();
 }
 function filter() {
+  records.query = query.value;
   cursor.value = null;
   history.value = [];
+  restore();
   void refresh();
 }
 function page(next: boolean) {
@@ -41,12 +55,16 @@ function page(next: boolean) {
     history.value.push(cursor.value);
     cursor.value = resource.data.value.next_cursor;
   } else if (!next) cursor.value = history.value.pop() || null;
+  restore();
   void refresh();
 }
+onMounted(() => {
+  if (cursor.value) void refresh();
+});
 usePolling(
   computed(() => !cursor.value && !selected.value),
   refresh,
-  10000,
+  computed(() => (view.value === 'history' ? 20000 : 10000)),
 );
 </script>
 <template>
@@ -80,11 +98,15 @@ usePolling(
             {{ label }}
           </option></select
         ><button :disabled="resource.loading.value">查询</button>
+        <button type="button" :disabled="resource.loading.value" @click="refresh()">
+          刷新列表
+        </button>
       </form>
       <p v-if="resource.error.value" class="form-error" role="alert">
         {{ resource.error.value }} <button @click="refresh()">重试</button>
       </p>
       <p v-if="resource.loading.value && !resource.data.value" role="status">正在读取执行记录…</p>
+      <p v-else-if="resource.loading.value" class="cell-note" role="status">正在更新列表…</p>
       <div class="table-scroll">
         <table id="execution-records">
           <thead>
@@ -147,7 +169,7 @@ usePolling(
       :task="selected"
       @close="
         selected = undefined;
-        refresh();
+        if (cursor) refresh();
       "
     />
   </main>

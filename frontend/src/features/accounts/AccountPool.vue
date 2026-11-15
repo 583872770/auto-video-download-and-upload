@@ -166,11 +166,7 @@ async function save(members: boolean) {
     if (!config.value) throw new Error('请先重新读取配置。');
     if (members && enabled.value && ids.value.length < 2)
       throw new Error('启用账号池至少需要两份 Cookie。');
-    if (
-      members &&
-      enabled.value &&
-      (config.value.download_methods || [config.value.download_method]).some((p) => p !== 'yt_dlp')
-    )
+    if (members && enabled.value && config.value.download_methods.some((p) => p !== 'yt_dlp'))
       throw new Error('账号池仅支持单独使用 yt-dlp，请先保存下载策略。');
     const body: Record<string, unknown> = members
       ? { youtube_cookie_pool: enabled.value ? [...ids.value] : [] }

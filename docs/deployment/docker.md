@@ -42,7 +42,7 @@ MySQL 8.4 数据持久化到 `mysql_data` 卷。首次初始化时 root 和应�
 cp .env.remote.example .env
 ```
 
-填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`REDIS_URL`。MySQL 支持 5.7.9+ 和 8.x，不支持 MariaDB。主机字段只填写域名或 IP，不带协议和端口。
+填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`REDIS_URL`。MySQL 要求 8.4 或更新版本，不支持 MariaDB。主机字段只填写域名或 IP，不带协议和端口。
 
 ```dotenv
 MYSQL_HOST=mysql.example.com

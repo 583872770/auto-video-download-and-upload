@@ -6,7 +6,7 @@ import unittest
 from sqlalchemy import select
 
 from scripts.migrate_mysql import counts, pristine_target
-from webapp.database import BOOTSTRAP_SETTINGS, Database, cookie_bindings, schema_migrations, settings
+from webapp.database import BOOTSTRAP_SETTINGS, Database, cookie_bindings, settings
 
 
 class MigrationDestinationTests(unittest.TestCase):
@@ -22,7 +22,6 @@ class MigrationDestinationTests(unittest.TestCase):
             self.assertTrue(pristine_target(db))
             self.assertEqual(counts(db), before)
             self.assertEqual(before[settings.name], len(BOOTSTRAP_SETTINGS))
-            self.assertGreater(before[schema_migrations.name], 0)
 
     def test_custom_settings_are_rejected_and_preserved(self):
         with self.database.engine.begin() as db:
@@ -47,20 +46,7 @@ class MigrationDestinationTests(unittest.TestCase):
             db.execute(settings.delete().where(settings.c.key == 'download_statistics_active:local'))
             self.assertFalse(pristine_target(db))
 
-    def test_account_alias_history_is_not_mistaken_for_empty_metadata(self):
-        with self.database.engine.begin() as db:
-            for value in ('{"node-a":{"old":"current"}}', '[]', 'invalid'):
-                with self.subTest(value=value):
-                    db.execute(settings.update().where(
-                        settings.c.key == 'youtube_account_cookie_aliases').values(value=value))
-                    self.assertFalse(pristine_target(db))
-                    self.assertEqual(db.execute(select(settings.c.value).where(
-                        settings.c.key == 'youtube_account_cookie_aliases')).scalar_one(), value)
 
-    def test_unknown_schema_version_is_rejected(self):
-        with self.database.engine.begin() as db:
-            db.execute(schema_migrations.insert().values(version='future-unknown', applied_at='2026-11-08'))
-            self.assertFalse(pristine_target(db))
 
     def test_cookie_ownership_data_is_not_mistaken_for_bootstrap(self):
         with self.database.engine.begin() as db:

@@ -160,7 +160,7 @@ def runner(args):
                 youtube_task_rest_interval=0, youtube_cookie_pool_start_interval=args.shared_interval,
                 youtube_cookie_session_limit=1,
                 youtube_hourly_start_limit=5000, youtube_daily_start_limit=5000,
-                min_free_gb=0, download_method='yt_dlp', download_methods=['yt_dlp'],
+                min_free_gb=0, download_methods=['yt_dlp'],
                 storage_mode='test')
             fleet = Fleet(store, 'hybrid', identity=f'capacity-{index:02}', name=f'capacity-{index:02}')
             fleet.initialize(config, base, base / 'clash')

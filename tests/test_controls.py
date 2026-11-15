@@ -1,4 +1,4 @@
-﻿"""Durable stop/resume, owner fencing and actual partial-file resumption."""
+"""Durable stop/resume, owner fencing and actual partial-file resumption."""
 from concurrent.futures import ThreadPoolExecutor
 import http.server
 from pathlib import Path

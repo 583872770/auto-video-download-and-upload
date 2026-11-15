@@ -22,7 +22,7 @@
 
 ## 启动
 
-所有机器填写相同的远程 MySQL 连接参数，推荐 MySQL 8.x，仍兼容 MySQL 5.7.9+。每台机器保留独立的 config.yaml、状态目录、Cookie、Mihomo、浏览器及视频目录。
+所有机器填写相同的远程 MySQL 连接参数，要求 MySQL 8.4 或更新版本。每台机器保留独立的 config.yaml、状态目录、Cookie、Mihomo、浏览器及视频目录。
 
 推荐各机器统一启动命令：
 
@@ -85,7 +85,6 @@ docker compose -f compose.remote.yaml up -d --build
 
 实例离线以最后一次心跳后的 45 秒为界。容器重建时 hostname 会变化，容器内 PID 也可能重复，不能仅靠本机 PID 判断旧容器是否仍在运行。服务启动遇到身份冲突时，会在后台等待旧心跳过期后自动重试一次；设置页和健康检查仍可响应。旧服务若持续上报心跳，重试后会保留冲突保护，并显示冲突实例 ID 和登记主机。
 
-更新原实例时保留原实例 ID 和原状态卷，先停止旧服务；旧版本可在旧服务停止至少 45 秒后，于 `/setup` 点击“保存并启动服务”。新增并行实例时，为它设置独立 ID 和独立状态卷，不要复制旧实例的状态目录或删除原状态卷。部署页保存的配置优先于环境默认值；已有 `deployment.json` 时，应在新实例的 `/setup` 修改并保存实例 ID，仅修改 `.env` 可能仍会沿用原 ID。
 
 ## 页面操作
 
@@ -115,16 +114,16 @@ docker compose -f compose.remote.yaml up -d --build
 
 先暂停下载并停止所有旧 Web/下载进程，备份 MySQL 与各实例状态卷。不要让旧版本与集群版本混跑。
 
-使用原 MySQL 启动所需的一体实例。启动时增加实例表和任务归属字段，原任务、会话及计费账本保留；实例名称、并发和暂停状态可在管理端维护。旧版本没有可靠实例归属的记录保持为空，不伪造归属或历史实例统计。
 
 每个下载实例在素材库执行一次“同步本地文件”，为现有文件建立实例索引。旧素材索引保留但不会混入新的集群索引；实际视频不自动移动。管理端需要保留原导入文件及其状态目录，才能恢复尚未完成的本地导入任务。
 
-旧角色会在启动时自动归一为一体实例，原纯管理端默认暂停领取。已完成旧单机转换时，须先停止原服务并使用原数据库与状态目录升级；服务校验队列归属、身份令牌和旧进程状态后恢复统一调度，下载保持暂停，原转换记录归档到 `single-mode.legacy.json`。任务、素材索引和计费不重建，也不会迁移视频文件。生产数据库的实际升级耗时和 MySQL 5.7 大表加列成本应在停机窗口评估；本项目本地测试不访问你的生产数据库。
 
 ## 验证
 
-本地隔离测试：`python -m unittest tests.test_fleet -v`。它使用临时 SQLite 库，覆盖共享队列的全局/实例并发、策略版本、停止与故障接管、Cookie 上传、文件代理及两个真实下载子进程。页面验证使用 `python scripts/verify_fleet.py`，检查桌面、手机布局和实例切换。
+本地隔离测试：`python -m unittest tests.test_fleet -v`。它使用临时 SQLite 库，覆盖共享队列的全局/实例并发、策略版本、停止与故障接管、Cookie 上传、文件代理及两个真实下载子进程。页面验证使用 `python scripts/verify/verify_frontend_execution_ui.py`，检查桌面、手机布局和实例切换。
 
-一体模式隔离测试：`python -m unittest tests.test_hybrid tests.test_deployment -q`；浏览器验证：`python scripts/verify_fleet.py --hybrid`。覆盖两个一体实例的管理入口、本机默认选择、远程实例切换、资源访问、共享任务与计费、并发领取以及重启策略保留。
+一体模式隔离测试：`python -m unittest tests.test_hybrid tests.test_deployment -q`；浏览器验证：`python scripts/verify/verify_frontend_management_ui.py`。覆盖两个一体实例的管理入口、本机默认选择、远程实例切换、资源访问、共享任务与计费、并发领取以及重启策略保留。
 
 在独立 MySQL 测试服务器上设置 `VIDEO_TEST_MYSQL_URL` 后，可执行 `python -m unittest tests.test_mysql.MySQLFleetTests -v` 复用这些集群用例。该账号需要创建和删除随机测试库的权限；不要使用生产库账号。未设置此环境变量时自动跳过，不连接应用数据库。
+
+开发版本不执行旧单机模式和旧角色转换，表结构要求见[当前数据合同](../development/current-schema.md)。

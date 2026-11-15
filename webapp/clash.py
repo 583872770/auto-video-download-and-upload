@@ -140,16 +140,10 @@ class ClashManager:
             else:
                 self.config = {'secret': secrets.token_urlsafe(32), 'proxy_port': free_port(17890),
                                'control_port': free_port(19090), 'selected': '', 'subscription_url': '', 'updated_at': None,
-                               'worker_ports': {}, 'worker_nodes': {}}
+                               'worker_ports': {}, 'worker_nodes': {}, 'subscriptions': [], 'active_subscription_id': ''}
                 while self.config['control_port'] == self.config['proxy_port']:
                     self.config['control_port'] = free_port(0)
                 self.save()
-            self.migrate_subscriptions()
-        # These fields were added when worker processes moved from one
-        # Mihomo process each to listeners in a shared process.  Keep old
-        # installations readable and migrate them lazily.
-        self.config.setdefault('worker_ports', {})
-        self.config.setdefault('worker_nodes', {})
         self.delays = {}
         delay_file = self.directory / 'delays.json'
         if delay_file.is_file():
@@ -204,34 +198,11 @@ class ClashManager:
     def reload(self):
         # The worker can select another node while Flask keeps this instance alive.
         self.config = json.loads((self.directory / 'settings.json').read_text(encoding='utf-8'))
-        self.config.setdefault('worker_ports', {})
-        self.config.setdefault('worker_nodes', {})
 
     def subscription_file(self, identity):
         if not isinstance(identity, str) or not re.fullmatch(r'[a-f0-9]{32}', identity):
             raise ClashError('请选择有效的已保存订阅。')
         return self.directory / 'subscriptions' / (identity + '.yaml')
-
-    def migrate_subscriptions(self):
-        """Keep the original subscription and node selection on upgrade."""
-        if 'subscriptions' in self.config:
-            return
-        self.config['subscriptions'] = []
-        self.config['active_subscription_id'] = ''
-        if self.config.get('subscription_url'):
-            identity = secrets.token_hex(16)
-            path = self.subscription_file(identity)
-            path.parent.mkdir(exist_ok=True)
-            source = self.directory / 'nodes.yaml'
-            if source.is_file():
-                atomic_text(path, source.read_text(encoding='utf-8'))
-            self.config['subscriptions'].append({
-                'id': identity, 'name': '原有订阅', 'url': self.config['subscription_url'],
-                'node_count': sum(not is_notice(node['name']) for node in self.nodes()),
-                'updated_at': self.config.get('updated_at'),
-                **self.subscription_state()})
-            self.config['active_subscription_id'] = identity
-        self.save()
 
     def subscription_state(self):
         return deepcopy({key: self.config[key] for key in ('selected', 'rotation', 'worker_nodes')
@@ -446,7 +417,6 @@ class ClashManager:
                 raise ClashError('内核进程仍在运行但控制接口不可用，请先停止后再启动。')
             # Prepare all supported slots once.  Changing the download count
             # later never reloads the core or disturbs another active download.
-            self._stop_legacy_workers()
             for slot in range(1, MAX_LISTENERS):
                 self._ensure_worker_port(slot)
             self.save()
@@ -514,17 +484,6 @@ class ClashManager:
             child = _core_children.pop(str(self.directory), None)
             if child is not None:
                 child.poll()
-            self._stop_legacy_workers()
-
-    def _stop_legacy_workers(self):
-        """Retire only verified worker cores left by the old architecture."""
-        directory = self.directory / 'workers'
-        if directory.is_dir():
-            for child in directory.iterdir():
-                if child.is_dir() and child.name.isdigit() and (child / 'settings.json').is_file():
-                    manager = ClashManager(child, binary=self.binary)
-                    if manager.owned_process():
-                        manager.stop()
 
     def import_subscription(self, url='', *, identity=None, name=None, activate=True):
         with self.guard():

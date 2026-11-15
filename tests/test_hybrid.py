@@ -29,7 +29,7 @@ class HybridTests(unittest.TestCase):
             base.mkdir()
             config = base / 'config.yaml'
             config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nworker_count: 2\n'
-                              'min_free_gb: 0\ndownload_method: downmp3\n', encoding='utf-8')
+                              'min_free_gb: 0\ndownload_methods: [downmp3]\n', encoding='utf-8')
             app = create_app(config, base / 'state', start_worker=False, role='hybrid',
                              instance_id=identity, database_url=self.url)
             app.testing = True
@@ -165,7 +165,7 @@ class HybridTests(unittest.TestCase):
         client = self.clients['alpha']
         clash = self.apps['beta'].extensions['clash']
         self.assertEqual(client.get('/api/clash', headers=headers).status_code, 200)
-        self.assertEqual(client.get('/api/youtube/login', headers=headers).status_code, 200)
+        self.assertEqual(client.get('/api/youtube/account-login', headers=headers).status_code, 200)
         for action, value in [('start', {}), ('stop', {}), ('select', {'name': 'Fixture'}),
                               ('delay', {}), ('test', {})]:
             method = {'delay': 'test_delays', 'test': 'test_youtube'}.get(action, action)
@@ -234,7 +234,9 @@ class HybridTests(unittest.TestCase):
             response = self.clients['beta'].post(f'/api/jobs/{identity}/control', json={'action': 'start'},
                                                 headers=self.headers['beta'])
         self.assertEqual(response.status_code, 200, response.json)
+        from webapp.workbench import Workbench
         for store in (self.a, self.b):
+            Workbench(store).control(store.fleet.id, 'start', identity)
             task = store.claim()
             self.assertIsNotNone(task)
             self.assertEqual(task['batch_id'], identity)
@@ -270,7 +272,9 @@ class HybridTests(unittest.TestCase):
         jobs = Jobs(self.a)
         identity = jobs.create({'customer': 'Fixture', 'name': 'Preflight recovery',
                                 'urls': 'npNnbj46_ik', 'price': '0'}, config, self.root / 'alpha')['id']
-        jobs.control(identity, 'start', config, {})
+        from webapp.workbench import Workbench
+        for store in (self.a, self.b):
+            Workbench(store).control(store.fleet.id, 'start', identity)
         with self.a.connect() as db:
             task_id = db.execute(select(tasks.c.id).where(tasks.c.batch_id == identity)).scalar_one()
         return identity, task_id
@@ -314,8 +318,8 @@ class HybridTests(unittest.TestCase):
             drain(self.a.directory)
         task = self.a.get(task_id)
         self.assertEqual((task['status'], task['attempts']), ('queued', 0))
-        self.assertTrue(Jobs(self.a).detail(identity)['desired_running'])
-        self.assertFalse(self.a.downloads_paused())
+        self.assertTrue(Jobs(self.b).detail(identity)['desired_running'])
+        self.assertFalse(self.b.downloads_paused())
         self.assertTrue(self.a.fleet.row()['paused'])
         self.assertFalse(self.b.fleet.row()['paused'])
         self.assertEqual(self.b.claim()['id'], task_id)
@@ -329,12 +333,6 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(restarted.extensions['fleet'].policy()['config']['downmp3_quality'], 'best')
         self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '1080')
 
-    def test_pure_manager_becomes_a_paused_download_node(self):
-        with self.b.connect() as db:
-            db.execute(instances.update().where(instances.c.id == 'beta').values(role='manager', paused=0, heartbeat=0))
-        restarted = create_app(self.root / 'beta/config.yaml', self.b.directory, start_worker=False,
-            role='hybrid', instance_id='beta', database_url=self.url)
-        self.assertTrue(restarted.extensions['fleet'].row()['paused'])
 
 
 if __name__ == '__main__':

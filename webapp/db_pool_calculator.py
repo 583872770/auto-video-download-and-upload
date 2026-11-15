@@ -33,9 +33,7 @@ def target_workers(config):
         return max(1, min(64, sessions * per_session))
     requested = max(1, min(64, int(config.get('worker_count', 1))))
     if config.get('throughput_mode', 'manual') == 'auto':
-        methods = config.get('download_methods') or [config.get('download_method', 'yt_dlp')]
-        if 'yt5s_fallback' in methods:
-            methods = ['yt5s', 'yt_dlp']
+        methods = config.get('download_methods', ['yt_dlp'])
         browsers = min(16, max(1, int(config.get('yt5s_browser_count', 2))))
         preparation = browsers + min(2, browsers) if {'yt5s', 'yt1d', 'bergung'} & set(methods) else 2
         return min(96, requested + preparation)
@@ -52,7 +50,7 @@ def connection_budget(config=None):
     auxiliary = _integer('VIDEO_DB_AUXILIARY_CONNECTIONS', 2 * per_worker, 2 * per_worker)
     main = (_integer('VIDEO_DB_POOL_SIZE', 5, 2), _integer('VIDEO_DB_MAX_OVERFLOW', 2))
     fixed = sum(main) + auxiliary
-    # Engine initialization and legacy callers retain the deployment contract.
+    # Engine initialization uses the deployment connection budget.
     # Runtime callers provide this instance's latest configuration.
     mode = config.get('db_budget_mode', 'auto') if config is not None else 'deployment'
     if mode not in ('auto', 'manual', 'deployment'):

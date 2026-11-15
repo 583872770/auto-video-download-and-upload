@@ -54,8 +54,8 @@ async function commit() {
     :before-close="confirmNavigation"
     @close="emit('close')"
     ><p>
-      每行：邮箱----密码----附加信息----接码网址。可只填前两段，最多 1000 行、1
-      MB。预览不会保存或登录。
+      每行：邮箱----密码----附加信息----接码网址。可只填前两段；自动接码统一使用
+      fbvjdjcf.asia，导入的网址仅作资料保存。最多 1000 行、1 MB。预览不会保存或登录。
     </p>
     <p v-if="op.error.value" class="notice error" role="alert">{{ op.error.value }}</p>
     <form @submit.prevent="inspect">

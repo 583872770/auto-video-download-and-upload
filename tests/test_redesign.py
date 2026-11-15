@@ -8,7 +8,7 @@ from werkzeug.exceptions import Conflict
 
 from tests import test_jobs, test_scale, test_fleet
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.database import download_lists, schema_migrations
+from webapp.database import download_lists
 from webapp.jobs import Jobs
 
 
@@ -52,7 +52,7 @@ class RedesignContract:
         before = self.detail(identity)
         response = self.client.put('/api/statistics/lists/' + identity,
             json=dict(customer='', name='', price='9'), headers=self.headers)
-        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(self.detail(identity), before)
         response = self.save(identity, price='9', edit_version=before['edit_version'])
         self.assertEqual(response.status_code, 200)
@@ -60,7 +60,7 @@ class RedesignContract:
         self.control(identity, 'archive')
         self.assertEqual(self.save(identity, customer='', edit_version=response.json['edit_version']).status_code, 400)
         self.assertEqual(self.client.put('/api/statistics/lists/' + identity,
-            json=dict(customer='', price='1'), headers=self.headers).status_code, 410)
+            json=dict(customer='', price='1'), headers=self.headers).status_code, 404)
 
     def test_stale_forms_preserve_newer_price_and_partial_updates_preserve_notes(self):
         identity = self.create(price='1', note='keep this note')
@@ -73,7 +73,6 @@ class RedesignContract:
         self.assertEqual(self.detail(identity)['price'], '19')
         self.assertEqual(self.detail(identity)['name'], 'List A')
         self.assertEqual(self.detail(identity)['revision'], 1)  # Editing cannot invalidate an import checkpoint.
-        self.assertEqual(self.detail(identity)['policy_version'], 1)
         fresh = self.detail(identity)['edit_version']
         self.control(identity, 'archive')
         self.control(identity, 'unarchive')
@@ -151,30 +150,7 @@ class RedesignContract:
         self.assertEqual(status['blockers'][0]['code'], 'jobs_not_started')
         self.assertEqual(self.client.get('/api/status').json['execution'], status)
 
-    def test_additive_upgrade_preserves_existing_profiles_and_is_repeatable(self):
-        identity = self.create(note='historical note', price='7')
-        with self.store.connect() as db:
-            db.execute(schema_migrations.delete())
-            db.exec_driver_sql('ALTER TABLE job_profiles DROP COLUMN edit_version')
-            db.exec_driver_sql('ALTER TABLE job_profiles DROP COLUMN policy_version')
-        self.store.db.initialize()
-        self.store.db.initialize()
-        detail = self.detail(identity)
-        self.assertEqual((detail['note'], detail['price'], detail['edit_version'], detail['policy_version']),
-            ('historical note', '7', 1, 1))
 
-    def test_upgrade_adds_task_center_indexes_to_existing_tables(self):
-        self.create()
-        names = ('ix_download_lists_released', 'ix_job_profiles_lifecycle')
-        with self.store.connect() as db:
-            db.execute(schema_migrations.delete().where(schema_migrations.c.version == '20261027_task_center_indexes'))
-            for table, name in zip(('download_lists', 'job_profiles'), names):
-                db.exec_driver_sql(f'DROP INDEX {name} ON {table}' if self.store.db.mysql else f'DROP INDEX {name}')
-        self.store.db.initialize()
-        self.store.db.initialize()
-        indexes = {index['name'] for table in ('download_lists', 'job_profiles')
-                   for index in inspect(self.store.db.engine).get_indexes(table)}
-        self.assertTrue(set(names) <= indexes)
 
     def test_summary_rounds_each_job_half_up_like_job_detail(self):
         # 0.015 is not exact in binary floating point; SQL ROUND on SQLite
@@ -236,6 +212,8 @@ class NodeIsolationTests(unittest.TestCase):
         self.assertTrue(response.json['warnings'])
         self.assertTrue(self.detail(identity)['desired_running'])
         self.assertIsNone(self.a.claim(self.a.owner))
+        from webapp.workbench import Workbench
+        Workbench(self.b).control('beta', 'start', identity)
         self.assertEqual(self.b.claim(self.b.owner)['batch_id'], identity)
 
     def test_executor_failure_is_local_and_lease_can_move_to_healthy_node(self):
@@ -243,6 +221,9 @@ class NodeIsolationTests(unittest.TestCase):
         identity = self.create()
         with patch('webapp.fleet_routes.rpc', return_value={'ready':True}):
             self.client.post(f'/api/jobs/{identity}/control', json={'action':'start'}, headers=self.headers)
+        from webapp.workbench import Workbench
+        Workbench(self.a).control('alpha', 'start', identity)
+        Workbench(self.b).control('beta', 'start', identity)
         task = self.a.claim(self.a.owner)
         session_id = task['payload']['download_session_id']
         isolate_download_failure(self.a, 'fixture missing tool')
@@ -264,12 +245,17 @@ class NodeIsolationTests(unittest.TestCase):
 
     def test_no_nodes_retains_running_intent_and_explains_wait(self):
         identity = self.create()
+        self.manager.fleet.control('manager', {'action':'drain'})
         self.a.fleet.control('alpha', {'action':'drain'})
         self.b.fleet.control('beta', {'action':'drain'})
         response = self.client.post(f'/api/jobs/{identity}/control', json={'action':'start'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(response.json['job']['state'], 'waiting')
-        self.assertTrue(response.json['job']['waiting_reason'])
+        from webapp.database import instances
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'manager').values(heartbeat=0))
+        job = self.detail(identity)
+        self.assertEqual(job['state'], 'waiting')
+        self.assertTrue(job['waiting_reason'])
         self.assertTrue(response.json['job']['desired_running'])
 
     def test_stale_health_result_cannot_pause_a_new_boot(self):

@@ -1,4 +1,4 @@
-"""Shared real Mihomo: listener isolation, concurrent startup and legacy upgrade."""
+"""Shared real Mihomo: listener isolation and concurrent startup."""
 import http.server
 import json
 import os
@@ -204,38 +204,6 @@ class SharedMihomoTests(unittest.TestCase):
                     cores.append(process.pid)
         self.assertEqual(cores, [outputs[0]['pid']])
 
-    def test_upgrade_retains_main_core_retires_old_worker_and_preserves_selection(self):
-        # Start a genuine pre-upgrade root and child, using the old runtime shape.
-        legacy = ClashManager(self.manager.directory / 'workers' / '1', binary=BINARY)
-        # Both managers are constructed before either core binds a port. Assign
-        # separate ports so this fixture represents two real legacy cores.
-        from webapp.clash import free_port
-        for key in ('proxy_port', 'control_port'):
-            used = {self.manager.config['proxy_port'], self.manager.config['control_port'],
-                    legacy.config['proxy_port'], legacy.config['control_port']}
-            candidate = free_port(0)
-            while candidate in used:
-                candidate = free_port(0)
-            legacy.config[key] = candidate
-        (legacy.directory / 'nodes.yaml').write_text(yaml.safe_dump({'proxies': self.nodes}), encoding='utf-8')
-        legacy.config['selected'] = 'B'
-        legacy.save()
-        self.addCleanup(legacy.stop)
-        # Persisting the old shape makes start load a core with only mixed-port.
-        for manager in (self.manager, legacy):
-            with patch.object(manager, '_ensure_worker_port'), patch.object(manager, '_stop_legacy_workers'):
-                manager.start()
-            manager.config.pop('listener_layout', None)
-            manager.save()
-        root_pid = self.manager.owned_process().pid
-        self.assertTrue(legacy.running())
-        self.manager.start()
-        self.assertEqual(self.manager.owned_process().pid, root_pid)
-        self.assertFalse(legacy.running())
-        worker = self.manager.for_worker(1)
-        worker.select('B', automatic=True)
-        self.assertEqual(self.route(worker), 'B')
-        self.assertEqual(self.route(self.manager), 'A')
 
     def test_reserved_worker_group_names_cannot_override_local_routing(self):
         node = {**self.nodes[0], 'name': 'download_worker_1'}

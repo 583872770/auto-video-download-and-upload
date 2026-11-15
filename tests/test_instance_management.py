@@ -136,11 +136,11 @@ class InstanceManagementTests(unittest.TestCase):
     def test_timeline_rpc_allowlist_is_read_only_and_scoped(self):
         from webapp.console_auth import rpc_allowed
         app = self.apps['alpha']
-        for identity in ('a' * 32, 'legacy'):
+        for identity in ('a' * 32, 'b' * 32):
             for method in ('GET', 'HEAD', 'POST', 'PUT', 'DELETE'):
                 with app.test_request_context(f'/api/youtube/cookies/{identity}/timeline', method=method):
                     self.assertEqual(rpc_allowed(), method in ('GET', 'HEAD'))
-        for path in ('/api/youtube/cookies/invalid/timeline', '/api/auth/users', '/api/jobs', '/api/deployment'):
+        for path in ('/api/youtube/cookies/legacy/timeline', '/api/youtube/cookies/invalid/timeline', '/api/auth/users', '/api/jobs', '/api/deployment'):
             with app.test_request_context(path):
                 self.assertFalse(rpc_allowed())
 

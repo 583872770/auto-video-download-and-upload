@@ -13,7 +13,7 @@ from flask import request
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 from app import create_app
-from scripts.verify.verify_jobs import QuietHandler
+from scripts.verify.support import QuietHandler
 from webapp.browser import browser_options
 from webapp.database import instances
 from webapp.fleet_routes import rpc as instance_rpc
@@ -26,7 +26,7 @@ def main():
         root = Path(temporary)
         database_url = 'sqlite:///' + (root / 'shared.db').as_posix()
         apps, stores, servers = [], [], []
-        for identity, role in [('alpha', 'hybrid'), ('beta', 'worker')]:
+        for identity, role in [('alpha', 'hybrid'), ('beta', 'hybrid')]:
             config = root / (identity + '.yaml')
             config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nmin_free_gb: 0\ndownload_methods: [downmp3]\n', encoding='utf-8')
             app = create_app(config, root / identity, start_worker=False, role=role,
@@ -130,13 +130,14 @@ def main():
                 expect(page.locator('#execution-records')).to_contain_text('beta')
                 assert page.evaluate('window.__spaToken')==17
                 page.locator('[data-task-log]').first.click()
-                expect(page.locator('#log-content')).to_contain_text('origin beta')
+                page.get_by_text('原始日志（技术排查）', exact=True).click()
+                expect(page.locator('#raw-log-content')).to_contain_text('origin beta')
                 assert page.evaluate('window.__unsafeLog') is None
                 with stores[1].log_path(claimed[1]['id']).open('a',encoding='utf-8') as stream:
                     stream.write('second segment\n')
                 page.get_by_role('button',name='刷新日志',exact=True).click()
-                expect(page.locator('#log-content')).to_contain_text('second segment')
-                assert page.locator('#log-content').inner_text().count('origin beta')==1
+                expect(page.locator('#raw-log-content')).to_contain_text('second segment')
+                assert page.locator('#raw-log-content').inner_text().count('origin beta')==1
                 page.get_by_role('button',name='关闭对话框',exact=True).click()
                 assert all('x-instance-id' not in item.headers for item in global_reads)
 
@@ -149,13 +150,14 @@ def main():
                     Image.new('RGB',(32,18),(30,80,150)).save(path.with_suffix('.png'))
                     apps[1].extensions['media_catalog'].index_file(path,media_root)
                 page.goto(base+'/media?instance_id=beta')
-                expect(page.locator('[data-media]')).to_have_count(24)
+                expect(page.locator('#asset-table tbody tr')).to_have_count(24)
                 page.screenshot(path=str(output/'media-populated.png'),full_page=True,animations='disabled')
                 page.locator('#media-next').click()
-                expect(page.locator('[data-media]')).to_have_count(1)
+                expect(page.locator('#asset-table tbody tr')).to_have_count(1)
                 page.locator('#media-prev').click()
-                expect(page.locator('[data-media]')).to_have_count(24)
-                page.locator('[data-media]').first.click()
+                expect(page.locator('#asset-table tbody tr')).to_have_count(24)
+                page.get_by_role('button', name='查看文件', exact=True).first.click()
+                page.locator('[data-preview]').first.click()
                 player=page.locator('dialog video')
                 expect(player).to_have_attribute('src',re.compile('instance_id=beta'))
                 result=page.request.get(base+player.get_attribute('src'),headers={'Range':'bytes=0-4'})
@@ -171,7 +173,6 @@ def main():
                 page.get_by_role('button',name='确认导入',exact=True).click()
                 expect(page.locator('dialog [role=alert]')).to_contain_text('等待当前任务结束')
                 page.get_by_role('button',name='关闭对话框',exact=True).click()
-                page.get_by_role('button',name='放弃并继续',exact=True).click()
                 expect(page.get_by_role('dialog')).to_have_count(0)
                 # Complete the isolated fixture queue, then exercise a successful multipart import.
                 for pending in stores[0].page(status='running',limit=100)['items']:
@@ -183,7 +184,7 @@ def main():
                 expect(page.get_by_role('dialog')).to_have_count(0)
                 assert (media_root/'imported.mp4').read_bytes()==b'isolated import'
 
-                page.get_by_role('button',name='清空素材库',exact=True).click()
+                page.get_by_role('button',name='清空本地素材',exact=True).click()
                 page.get_by_role('button',name='确认清空',exact=True).click()
                 expect(page.locator('dialog [role=alert]')).to_contain_text('输入“清空”')
                 page.get_by_role('button',name='关闭对话框',exact=True).click()
@@ -192,18 +193,17 @@ def main():
                 alpha_root.mkdir()
                 sentinel=alpha_root/'keep.mp4'
                 sentinel.write_bytes(b'other executor')
-                page.get_by_role('button',name='清空素材库',exact=True).click()
-                page.get_by_label('确认清空素材',exact=True).fill('清空')
+                page.get_by_role('button',name='清空本地素材',exact=True).click()
+                page.get_by_label('确认清空',exact=True).fill('清空')
                 page.get_by_role('button',name='确认清空',exact=True).click()
                 expect(page.locator('dialog [role=alert]')).to_contain_text('暂停全部下载实例')
                 stores[0].fleet.control('alpha',{'action':'drain'})
                 page.get_by_role('button',name='确认清空',exact=True).click()
-                expect(page.locator('#log-content')).to_be_visible()
                 page.get_by_role('button',name='刷新日志',exact=True).click()
-                expect(page.get_by_role('dialog')).to_contain_text('素材库清理完成',timeout=15000)
+                expect(page.get_by_role('dialog')).to_contain_text('素材和关联数据已清空',timeout=15000)
                 page.get_by_role('button',name='关闭对话框',exact=True).click()
                 page.get_by_role('button',name='查询',exact=True).click()
-                expect(page.locator('[data-media]')).to_have_count(0,timeout=10000)
+                expect(page.locator('#asset-table')).to_contain_text('暂无符合条件的素材',timeout=10000)
                 assert sentinel.read_bytes()==b'other executor' and not (media_root/'imported.mp4').exists()
                 for path in ('workbench','media','logs'):
                     page.goto(base+'/'+path+'?instance_id=beta')

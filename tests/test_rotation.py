@@ -1,4 +1,4 @@
-﻿"""Durable rotation counters and real node switching between queued videos."""
+"""Durable rotation counters and real node switching between queued videos."""
 import http.server
 from pathlib import Path
 import re

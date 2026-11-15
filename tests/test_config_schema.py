@@ -12,7 +12,7 @@ import unittest
 import yaml
 
 from webapp.config_schema import (SETTINGS, RUNTIME_FIELDS, PIPELINE_KEY_FIELDS, TEXT_FIELDS,
-                                  RETIRED_FIELDS, Setting, default_settings, discard_retired_settings)
+                                  Setting, default_settings)
 from Utils.oss_storage import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS
 from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
 from webapp.fleet import LOCAL_FIELDS, POLICY_FIELDS, RESOURCE_LIMITS
@@ -60,7 +60,6 @@ class ConfigurationContractTests(unittest.TestCase):
                              'youtube_sleep_preset', 'youtube_cookie_pool'}
         self.assertEqual(TEXT_FIELDS, set(CONTRACT['defaults']) - CONTRACT['integer_fields'].keys()
                          - custom_or_boolean)
-        self.assertFalse(RETIRED_FIELDS & SETTINGS.keys())
         self.assertEqual(default_settings(family='disk'), CONTRACT['disk_defaults'])
         self.assertEqual(default_settings(family='oss'), CONTRACT['oss_defaults'])
 
@@ -127,12 +126,6 @@ class ConfigurationContractTests(unittest.TestCase):
             self.assertEqual(validate_settings(saved), saved)
             self.assertEqual(list(Path(temporary).iterdir()), [path], 'no leftover temporary config')
 
-    def test_retired_field_does_not_return_through_validation(self):
-        config = {'builtin_connection_limit': 1, 'download_connection_limit': '24',
-                  'subtitle_mode': 'required', 'subtitle_languages': {'invalid': 'old value'}}
-        self.assertIs(validate_settings(config), config)
-        self.assertEqual(config, {'download_connection_limit': 24})
-        self.assertIs(discard_retired_settings(config), config)
 
     def test_text_and_switch_validation_keeps_existing_types(self):
         for key in TEXT_FIELDS:

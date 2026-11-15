@@ -174,7 +174,7 @@ class BrowserSettingsTests(unittest.TestCase):
 
     def test_browser_limit_defaults_validation_and_live_queue_configuration(self):
         self.assertEqual(self.client.get('/api/config').json['config']['yt5s_browser_count'], 2)
-        task = self.store.create('download', {'config': {'download_method': 'yt5s'},
+        task = self.store.create('download', {'config': {'download_methods': ['yt5s']},
             'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
         for value in (0, 17, True, 2.5, 'bad'):
             before = self.config.read_bytes()

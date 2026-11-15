@@ -38,7 +38,7 @@ def explain(states, channels, pool, pacing, stamp, *, paused=False, running=0):
         if manual or until > stamp:
             restrictions.append(dict(scope=label, action='halt' if manual else 'cooldown',
                 until=until, manual=manual, phase=(state.get('last_decision', {}).get('failure') or {}).get('phase'),
-                legacy=not bool(state.get('decisions')), reason=state.get('halt_kind') if manual else None))
+                reason=state.get('halt_kind') if manual else None))
             if manual and state.get('halt_decision'):
                 active_halt = state['halt_decision']
                 _incident(incidents, active_halt)

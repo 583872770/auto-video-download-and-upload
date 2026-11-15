@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, func, select, tuple_
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
-from webapp.database import BOOTSTRAP_SETTINGS, Database, metadata, schema_migrations, settings, tasks
+from webapp.database import BOOTSTRAP_SETTINGS, Database, metadata, settings, tasks
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = '_mysql_migration_v1'
@@ -42,7 +42,6 @@ def counts(connection):
 
 def pristine_target(connection):
     """Allow only schema bootstrap rows, never existing business/config data."""
-    from webapp.migrations import STEPS
     values = dict(connection.execute(select(settings.c.key, settings.c.value)).all())
     if values.keys() != BOOTSTRAP_SETTINGS.keys():
         return False
@@ -54,10 +53,7 @@ def pristine_target(connection):
                 return False
         elif values[key] != expected:
             return False
-    versions = set(connection.execute(select(schema_migrations.c.version)).scalars())
-    if versions != {version for version, _ in STEPS}:
-        return False
-    bootstrap = {settings.name, schema_migrations.name}
+    bootstrap = {settings.name}
     return not any(value for name, value in counts(connection).items() if name not in bootstrap)
 
 
@@ -79,6 +75,7 @@ def migrate(source_url, target_url, state, *, chunk_size=500, activate=False):
     if not target.mysql:
         raise ValueError('迁移目标必须是 MySQL。')
     try:
+        target.validate_schema(source)
         with source.connect() as reader, reader.begin():
             if source_url.drivername == 'sqlite':
                 # Python's legacy SQLite transaction mode otherwise starts a
@@ -108,7 +105,8 @@ def migrate(source_url, target_url, state, *, chunk_size=500, activate=False):
                 last = checkpoint.get('last')
                 copied = checkpoint.get('count', 0)
                 while True:
-                    statement = select(table).where(row_filter(table)).order_by(*primary).limit(chunk_size)
+                    statement = select(*(column for column in table.c if column.computed is None)).where(
+                        row_filter(table)).order_by(*primary).limit(chunk_size)
                     if last:
                         statement = statement.where(primary[0] > last[0] if len(primary) == 1 else tuple_(*primary) > tuple_(*last))
                     rows = [dict(row) for row in reader.execute(statement).mappings()]

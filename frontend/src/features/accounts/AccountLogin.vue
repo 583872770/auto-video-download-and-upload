@@ -111,9 +111,9 @@ usePolling(
       />自动填写邮箱、密码并接收邮件验证码</label
     >
     <p class="muted">
-      邮件接码使用资料中的 fbvjdjcf.asia 网址，每 30 秒检查一次，最多等待 3
-      分钟。短信、验证器或图片验证请在浏览器完成。Docker 实例通过该服务器 noVNC
-      远程桌面查看窗口；登录最多等待 10 分钟。
+      所有账号统一使用 http://fbvjdjcf.asia/ 接收邮件验证码，无需逐个配置接码网址。每 30
+      秒检查一次，最多等待 3 分钟。短信、验证器或图片验证请在浏览器完成。Docker 实例通过该服务器
+      noVNC 远程桌面查看窗口；登录最多等待 10 分钟。
     </p>
     <p role="status">{{ status?.message || '正在核对登录状态…' }}</p>
     <p>{{ status?.connection }}</p>

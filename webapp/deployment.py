@@ -21,7 +21,6 @@ from werkzeug.exceptions import HTTPException
 from Utils.runtime import ROOT
 from webapp.deployment_errors import explain_startup_error
 from webapp.fleet import InstanceIdentityConflict
-from webapp.modes import single_state
 from webapp.service_role import normalize_role
 
 
@@ -29,7 +28,7 @@ MYSQL_FIELDS = frozenset({'mysql_host', 'mysql_port', 'mysql_database', 'mysql_u
 
 
 def instance_settings(profile):
-    """Legacy recovery pages never return connection credentials."""
+    """Instance settings never include connection credentials."""
     return {key: value for key, value in profile.items() if key not in MYSQL_FIELDS | {'redis_url'}}
 
 
@@ -103,14 +102,14 @@ def test_mysql(profile):
                                connect_args={'connect_timeout': 5, 'read_timeout': 5, 'write_timeout': 5})
         with engine.connect() as connection:
             connection.execute(text('SELECT 1'))
-            supported = not engine.dialect.is_mariadb and engine.dialect.server_version_info >= (5, 7, 9)
+            supported = not engine.dialect.is_mariadb and engine.dialect.server_version_info >= (8, 4)
     except Exception:
         raise ValueError('MySQL 连接失败，请检查地址、端口、库名、账号密码和数据库访问权限。') from None
     finally:
         if engine is not None:
             engine.dispose()
     if not supported:
-        raise ValueError('请使用 MySQL 5.7.9 或更新版本，推荐 MySQL 8.4。')
+        raise ValueError('请使用 MySQL 8.4 或更新版本，不支持 MariaDB。')
 
 
 def write_profile(path, value):
@@ -171,14 +170,8 @@ class DeploymentGateway:
                 saved = json.loads(self.path.read_text(encoding='utf-8'))
                 if not isinstance(saved, dict):
                     raise ValueError('Invalid saved instance settings')
-                # Ignore credentials saved by older setup pages, even when the
-                # launch configuration is missing. Never reconnect to an old DB.
-                saved = instance_settings(saved)
-                # Older wizards could save 'all' over an existing fleet identity.
-                if isinstance(saved, dict) and saved.get('role') == 'all' and not instance_id and not single_state(self.directory):
-                    state = self.cluster_state()
-                    if state:
-                        saved['instance_id'] = state['instance_id']
+                if MYSQL_FIELDS.intersection(saved) or 'redis_url' in saved:
+                    raise ValueError('Connection credentials belong in the launch configuration')
                 self.profile = validate_profile(saved, self.profile, require_database=False)
             except (ValueError, OSError):
                 self.startup_error = '已保存的部署配置无法读取，请重新配置。'
@@ -304,7 +297,7 @@ class DeploymentGateway:
             return None
         except (ValueError, UnicodeError):
             raise ValueError('本机集群身份记录无效，请保留状态目录并检查 fleet-runtime.json。') from None
-        if (not isinstance(saved, dict) or saved.get('role') not in ('manager', 'worker', 'hybrid')
+        if (not isinstance(saved, dict) or saved.get('role') != 'hybrid'
                 or not isinstance(saved.get('id'), str)
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', saved['id'])):
             raise ValueError('本机集群身份记录无效，请保留状态目录并检查 fleet-runtime.json。')
@@ -313,10 +306,9 @@ class DeploymentGateway:
     def resolve_identity(self, profile):
         profile['role'] = normalize_role(profile.get('role'))
         state = self.cluster_state()
-        single = single_state(self.directory)
         if not profile.get('instance_id'):
-            if state or single:
-                profile['instance_id'] = (state or single)['instance_id']
+            if state:
+                profile['instance_id'] = state['instance_id']
                 return
             try:
                 saved = json.loads((self.directory / 'instance.json').read_text(encoding='utf-8'))
@@ -346,7 +338,7 @@ class DeploymentGateway:
             factory = create_app
         else:
             factory = self.app_factory
-        self.report_startup('正在连接 MySQL 并检查表结构；首次升级可能需要较长时间…')
+        self.report_startup('正在连接 MySQL 并检查表结构；首次初始化可能需要较长时间…')
         app = factory(self.config_path, self.directory, role=profile['role'], instance_id=profile['instance_id'] or None,
                       instance_url=profile['instance_url'], instance_name=profile['instance_name'], database_url=mysql_url(profile),
                       startup_report=self.report_startup)
@@ -404,10 +396,7 @@ class DeploymentGateway:
         @app.get('/setup')
         def page():
             from webapp.frontend import render_workspace
-            workspace = render_workspace(app)
-            if workspace is not None:
-                return workspace
-            return render_template('deployment.html', csrf=session['csrf'], unlocked=bool(session.get('deployment_admin')))
+            return render_workspace(app)
 
         @app.post('/api/deployment/unlock')
         def unlock():

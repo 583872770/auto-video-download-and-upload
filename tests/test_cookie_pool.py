@@ -28,7 +28,7 @@ class CookiePoolTests(unittest.TestCase):
         self.store = TaskStore(self.base / 'state')
         self.profiles = CookieProfiles(self.base, self.store)
         self.ids = [self.profiles.add(str(i), COOKIE.replace(b'TEST_SECRET', str(i).encode()))['id'] for i in range(3)]
-        self.config = {'download_method': 'yt_dlp', 'youtube_cookie_pool': self.ids,
+        self.config = {'download_methods': ['yt_dlp'], 'youtube_cookie_pool': self.ids,
                        'youtube_start_interval': 60, 'worker_count': 3}
 
     def pool(self, config=None):
@@ -333,13 +333,13 @@ class CookiePoolTests(unittest.TestCase):
         with self.pool().assignment() as healthy:
             self.assertNotEqual(healthy['_cookie_pool_selected'], limited_id)
 
-    def test_expired_legacy_halt_is_replayed_without_new_admission_or_throttle(self):
+    def test_persisted_halt_is_replayed_without_new_admission_or_throttle(self):
         pool = self.pool()
         old_stamp = time.time() - 86400
         def halt(db, stamp):
             pool.router._state(db, pool.global_scope)
             gate = {'halted': True, 'halted_at': old_stamp, 'cooldown_until': old_stamp + 3600,
-                    'reason': '账号池检测到限流或登录验证，已停止整个实例。'}
+                    'halt_kind': 'authentication_required'}
             pool.router._save(db, pool.global_scope, gate)
         pool.router.transaction_call(halt)
         before = pool.status()
@@ -347,7 +347,7 @@ class CookiePoolTests(unittest.TestCase):
         with patch.object(pool.router, '_admit', side_effect=AssertionError('Unexpected admission')):
             with self.assertRaises(YouTubeAuthRequired) as caught:
                 with pool.assignment():
-                    self.fail('Historical halt reached the downloader')
+                    self.fail('Persisted halt reached the downloader')
         result = caught.exception.result
         self.assertFalse(caught.exception.retryable)
         self.assertEqual(result['source'], 'cookie_pool_halted')
@@ -357,8 +357,8 @@ class CookiePoolTests(unittest.TestCase):
         after = self.pool().status()
         self.assertEqual({k: v for k, v in after.items() if k != 'capacity_summary'},
                          {k: v for k, v in before.items() if k != 'capacity_summary'})
-        self.assertIsNone(before['halt_kind'])
-        self.assertIn('旧记录未区分', before['reason'])
+        self.assertEqual(before['halt_kind'], 'authentication_required')
+        self.assertIn('登录检查未通过', before['reason'])
         with self.store.connect() as db:
             self.assertEqual(len(db.execute(select(download_permits)).all()), 0)
 

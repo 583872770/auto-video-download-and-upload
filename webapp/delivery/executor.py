@@ -109,7 +109,13 @@ def publish(session, source, kind, language='', *, retained=False, subtitle_sour
     with session.store.connect() as db:
         task = ledger.fenced_run(session.store, db, task_id)
         identity = ledger.artifact_identity(task['batch_id'], task['video_id'], spec, kind, language, session.test_mode)
-    root = source.parent if retained else video_directory(session.config, session.base)
+    subdirectory = Path()
+    if session.config.get('shard_downloads'):
+        video_id = task.get('video_id') or ''
+        if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+            raise LocalDeliveryError('视频 ID 无效，无法按视频 ID 保存交付文件。')
+        subdirectory = Path(video_id[:2]) / video_id
+    root = source.parent if retained else video_directory(session.config, session.base) / subdirectory
     root.mkdir(parents=True, exist_ok=True)
     target = source if retained else root / (identity + '-' + uuid.uuid4().hex + source.suffix)
     verify(source, kind)
@@ -123,9 +129,15 @@ def publish(session, source, kind, language='', *, retained=False, subtitle_sour
         ledger.pending(session.store, task_id, artifact, target)
     if session.oss_mode:
         from Utils.oss_storage import OSSStorage
+        # upload_files uses root-relative names. Keep the same video directory
+        # in the object key even when reusing a file from a previous attempt.
+        storage_config = session.config
+        if subdirectory.parts:
+            storage_config = {**storage_config, '_oss_namespace': '/'.join(filter(None,
+                (storage_config.get('_oss_namespace', ''), subdirectory.as_posix())))}
         session.progress.state.update(stage='uploading_oss', output_kind=kind)
         session.progress.save(force=True)
-        uploaded = OSSStorage(session.config).upload_files([target], root,
+        uploaded = OSSStorage(storage_config).upload_files([target], root,
             lambda value: (session.progress.state.update(value), session.progress.save(force=True)))
         artifact['object_key'] = uploaded[0]['key']
     # Crash recovery carries the same semantic receipt as normal registration.
@@ -198,7 +210,7 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                    format='bestvideo/bestaudio/best', progress_hooks=[progress.hook, session.meter.hook],
                    retries=2, fragment_retries=2, extractor_retries=1, concurrent_fragment_downloads=fragment_budget)
     if not sub_done:
-        translating = spec['subtitles'].get('mode', 'selected') != 'original'
+        translating = spec['subtitles']['mode'] != 'original'
         options = provider_options(options, force_subs=translating)
         # Listing translated variants of author-provided captions is opt-in.
         options['writeautomaticsub'] = spec['subtitles'].get('mode') == 'original_and_translated'

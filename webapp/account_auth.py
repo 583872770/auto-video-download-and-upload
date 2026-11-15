@@ -16,7 +16,7 @@ def publish_profile_auth(store, config, base, result, generation, observed_data)
     identity = config.get('_cookie_pool_selected')
     if not identity:
         path = str(config.get('youtube_cookie') or '').replace('\\', '/')
-        identity = 'legacy' if path.endswith('Cookies/youtube.txt') else Path(path).stem
+        identity = Path(path).stem
     if not identity:
         return
     scope = CookieProfiles.scope_for(base, store)

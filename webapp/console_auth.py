@@ -33,6 +33,8 @@ LOCAL_RPC_METHODS = {
     '/api/disk/runtime-summary': {'GET', 'HEAD'},
     '/api/disk/cleanup': {'POST'},
     '/api/media': {'GET', 'HEAD', 'POST'},
+    '/api/media/groups': {'GET', 'HEAD'},
+    '/api/media/group-files': {'GET', 'HEAD'},
     '/api/media/reindex': {'POST'},
     '/api/media/clear': {'POST'},
     '/api/clash': {'GET', 'HEAD'},
@@ -43,11 +45,8 @@ LOCAL_RPC_METHODS = {
     '/api/clash/rotation': {'POST'},
     '/api/clash/delay': {'POST'},
     '/api/clash/test': {'POST'},
-    '/api/youtube/login': {'GET', 'HEAD', 'POST'},
-    '/api/youtube/login/cancel': {'POST'},
     '/api/youtube/account-login': {'GET', 'HEAD', 'POST'},
     '/api/youtube/account-login/cancel': {'POST'},
-    '/api/youtube/cookie': {'POST'},
     '/api/youtube/cookies': {'GET', 'HEAD', 'POST'},
     '/api/youtube/cookies/export': {'POST'},
     '/api/youtube/cookies/select': {'POST'},
@@ -107,7 +106,7 @@ def rpc_allowed():
     if re.fullmatch(r'/api/tasks/[a-f0-9]{32}/logs', path):
         return method in ('GET', 'HEAD')
 
-    if re.fullmatch(r'/api/youtube/cookies/(?:[a-f0-9]{32}|legacy)/timeline', path):
+    if re.fullmatch(r'/api/youtube/cookies/[a-f0-9]{32}/timeline', path):
         return method in ('GET', 'HEAD')
 
     if path.startswith(('/media/videos/', '/media/covers/')):
@@ -216,12 +215,7 @@ class ConsoleAuth:
         @app.get('/login')
         def console_login_page():
             from webapp.frontend import render_workspace
-            workspace = render_workspace(app)
-            if workspace is not None:
-                return workspace
-            configured, user = self.identity()
-            return render_template('console_login.html', csrf=session['csrf'], configured=configured,
-                current_user=user, bootstrap_path=str(self.key_file))
+            return render_workspace(app)
 
         @app.get('/api/auth/status')
         def console_status():

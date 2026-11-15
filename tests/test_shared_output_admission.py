@@ -36,7 +36,7 @@ class SharedOutputAdmissionTests(unittest.TestCase):
         with store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(
                 status='running', worker_id=store.owner, lease_until=self.now + 86400))
-        config = dict(download_method='yt_dlp', throughput_mode='manual', worker_count=limit,
+        config = dict(download_methods=['yt_dlp'], throughput_mode='manual', worker_count=limit,
                       builtin_transfer_limit=limit, download_connection_limit=limit,
                       youtube_start_interval=11)
         router = ChannelScheduler(store, config, task['id'])

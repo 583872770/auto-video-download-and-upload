@@ -5,130 +5,81 @@ import { bootstrap } from '../../bootstrap';
 import { useInstances } from '../../stores/instances';
 import { useResource } from '../../composables/resource';
 import { usePolling } from '../../composables/polling';
-import { useLeaveGuard, confirmNavigation } from '../../composables/leaveGuard';
+import { confirmNavigation } from '../../composables/leaveGuard';
 import InstancePicker from '../../components/InstancePicker.vue';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import TaskLog from '../../components/TaskLog.vue';
-import ArtifactPreview from '../delivery/ArtifactPreview.vue';
-import MediaPreview from './MediaPreview.vue';
-import { mediaAddress, type MediaItem, type UnifiedMediaPage } from './contracts';
-import { firstMediaPage, nextMediaPage, type MediaPosition } from './pagination';
-import { formatGB } from '../jobs/contracts';
-import { outputLabels, type DeliveryArtifact, type OutputKind } from '../delivery/model';
-import { subtitleDescription } from '../delivery/presentation';
+import MediaGroupFiles from './MediaGroupFiles.vue';
+import {
+  libraryTypeLabels,
+  formatDownloadTime,
+  formatFileSize,
+  type LibraryKind,
+  type MediaGroupsPage,
+} from './contracts';
 
-type AssetFilter = 'all' | 'video' | 'audio' | 'subtitle';
-type AssetKind = 'source_video' | OutputKind;
-interface LibraryAsset {
-  id: string;
-  title: string;
-  size: number;
-  kind: AssetKind;
-  kindLabel: string;
-  origin: string;
-  sourceId: string;
-  downloadedAt?: number | string | null;
-  local?: MediaItem;
-  artifact?: DeliveryArtifact;
-}
+type AssetFilter = 'all' | LibraryKind;
 
 const instances = useInstances(),
   editable = bootstrap().role !== 'viewer';
-const resource = useResource<UnifiedMediaPage>(),
+const resource = useResource<MediaGroupsPage>(),
   ready = ref(false),
   busy = ref(false),
   query = ref(''),
+  activeQuery = ref(''),
   assetFilter = ref<AssetFilter>('all');
-const position = ref(firstMediaPage()),
-  history = ref<MediaPosition[]>([]);
-const preview = ref<MediaItem>(),
-  artifactPreview = ref<DeliveryArtifact>(),
-  dialog = ref<'import' | 'clear'>(),
+const position = ref<string | null>(null),
+  history = ref<(string | null)[]>([]),
+  expanded = ref<string>();
+const dialog = ref<'import' | 'clear'>(),
   confirmation = ref('');
 const video = ref<File>(),
   cover = ref<File>(),
   error = ref(''),
   message = ref('');
 const task = ref<{ id: string; instance_id: string }>();
-const typeLabels: Record<AssetKind, string> = {
-  source_video: '视频素材',
-  av: outputLabels.av,
-  video_only: outputLabels.video_only,
-  audio_only: outputLabels.audio_only,
-  subtitle: outputLabels.subtitle,
-};
-
-const allAssets = computed<LibraryAsset[]>(() => {
-  const local = (resource.data.value?.media.items || []).map((item) => ({
-    id: 'media:' + item.id,
-    title: item.title || item.name,
-    size: item.size,
-    kind: 'source_video' as const,
-    kindLabel: typeLabels.source_video,
-    origin: '本地素材目录',
-    sourceId: item.video_id || item.name,
-    downloadedAt: item.downloaded_at,
-    local: item,
-  }));
-  const outputs = (resource.data.value?.artifacts.items || []).map((item) => ({
-    id: 'artifact:' + item.id,
-    title: item.title || item.video_id,
-    size: item.size,
-    kind: item.kind,
-    kindLabel: typeLabels[item.kind],
-    origin: '任务交付产物',
-    sourceId: item.video_id,
-    downloadedAt: item.created_at,
-    artifact: item,
-  }));
-  return [...local, ...outputs];
-});
-const assets = allAssets;
-const filterCounts = computed(
-  () => resource.data.value?.counts || { all: 0, video: 0, audio: 0, subtitle: 0 },
-);
-const loadedBytes = computed(() => assets.value.reduce((total, item) => total + item.size, 0));
+const kinds = Object.keys(libraryTypeLabels) as LibraryKind[];
+const filters = [
+  { kind: 'all' as const, label: '全部' },
+  ...kinds.map((kind) => ({ kind, label: libraryTypeLabels[kind] })),
+];
+const groups = computed(() => resource.data.value?.items || []);
 
 async function refresh(signal?: AbortSignal) {
   if (!ready.value || busy.value) return;
   const scope = instances.scope();
   const params = new URLSearchParams({
-    q: query.value,
-    media_limit: '24',
-    artifact_limit: '50',
+    q: activeQuery.value,
+    limit: '24',
     type: assetFilter.value,
   });
-  if (position.value.media) params.set('media_cursor', position.value.media);
-  if (position.value.artifacts) params.set('artifact_cursor', position.value.artifacts);
-  if (position.value.mediaExhausted) params.set('media_exhausted', '1');
-  if (position.value.artifactsExhausted) params.set('artifact_exhausted', '1');
+  if (position.value) params.set('cursor', position.value);
   if (instances.selectedId) params.set('instance_id', instances.selectedId);
   await resource.load(
-    (requestSignal) => api.request('/api/media/assets?' + params, { scope, signal: requestSignal }),
+    (requestSignal) => api.request('/api/media/groups?' + params, { scope, signal: requestSignal }),
     signal,
   );
 }
 function filter() {
-  position.value = firstMediaPage();
+  activeQuery.value = query.value;
+  position.value = null;
   history.value = [];
+  expanded.value = undefined;
   void refresh();
 }
 function page(next: boolean) {
-  if (
-    next &&
-    (resource.data.value?.media.next_cursor || resource.data.value?.artifacts.next_cursor)
-  ) {
-    history.value.push({ ...position.value });
-    position.value = nextMediaPage(position.value, resource.data.value!);
+  expanded.value = undefined;
+  if (next && resource.data.value?.next_cursor) {
+    history.value.push(position.value);
+    position.value = resource.data.value.next_cursor;
   } else if (!next) {
-    position.value = history.value.pop() || firstMediaPage();
+    position.value = history.value.pop() || null;
   }
   void refresh();
 }
 function instanceChanged() {
   resource.clear();
-  preview.value = undefined;
-  artifactPreview.value = undefined;
+  expanded.value = undefined;
   task.value = undefined;
   dialog.value = undefined;
   video.value = undefined;
@@ -191,32 +142,15 @@ async function write(action: 'import' | 'clear' | 'reindex') {
     video.value = undefined;
     cover.value = undefined;
     confirmation.value = '';
-    position.value = firstMediaPage();
+    position.value = null;
     history.value = [];
+    expanded.value = undefined;
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     busy.value = false;
     await refresh();
   }
-}
-function selectAsset(asset: LibraryAsset) {
-  if (asset.local) {
-    preview.value = {
-      ...asset.local,
-      instance_id: instances.selectedId || asset.local.instance_id,
-    };
-  } else if (asset.artifact) artifactPreview.value = asset.artifact;
-}
-function assetUrl(asset: LibraryAsset) {
-  return asset.local
-    ? mediaAddress('videos', asset.local.name, instances.selectedId || asset.local.instance_id)
-    : '/api/delivery/files/' + encodeURIComponent(asset.artifact!.id) + '?download=1';
-}
-function formatDownloadTime(value?: number | string | null) {
-  if (value === undefined || value === null || value === '' || value === 0) return '—';
-  const date = new Date(typeof value === 'number' ? value * 1000 : value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN');
 }
 usePolling(
   computed(() => ready.value && !busy.value && !dialog.value),
@@ -230,7 +164,7 @@ usePolling(
       <div>
         <span class="eyebrow">MEDIA LIBRARY</span>
         <h1>素材库</h1>
-        <p>视频、音频、字幕和音视频成品统一查看、预览与下载。</p>
+        <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。</p>
       </div>
       <InstancePicker :disabled="busy || !!dialog" @change="instanceChanged" />
     </div>
@@ -238,35 +172,28 @@ usePolling(
     <p v-if="error && !dialog" class="form-error" role="alert">{{ error }}</p>
     <div class="summary-grid media-summary">
       <div class="card">
-        <small>本地视频</small><strong>{{ resource.data.value?.media.total ?? '—' }}</strong
-        ><small>当前实例已索引</small>
+        <small>视频标题组</small><strong>{{ resource.data.value?.counts.all ?? '—' }}</strong
+        ><small>同一视频的文件归为一组</small>
       </div>
       <div class="card">
-        <small>素材总数</small><strong>{{ resource.data.value?.counts.all ?? '—' }}</strong
-        ><small>视频、音频与字幕</small>
+        <small>文件总数</small><strong>{{ resource.data.value?.file_count ?? '—' }}</strong
+        ><small>每个交付文件分别计数</small>
       </div>
       <div class="card">
-        <small>当前页大小</small><strong>{{ formatGB(loadedBytes) }}</strong
-        ><small>按文件类型合计</small>
+        <small>字幕文件</small><strong>{{ resource.data.value?.subtitle_files ?? '—' }}</strong
+        ><small>包含各语言和字幕来源</small>
       </div>
       <div class="card">
-        <small>交付产物</small
-        ><strong>{{
-          resource.data.value
-            ? Object.values(resource.data.value.artifacts.counts).reduce(
-                (sum, count) => sum + count,
-                0,
-              )
-            : '—'
-        }}</strong
-        ><small>已验证可用文件</small>
+        <small>素材总大小</small
+        ><strong>{{ resource.data.value ? formatFileSize(resource.data.value.size) : '—' }}</strong
+        ><small>当前搜索范围内的全部文件</small>
       </div>
     </div>
     <section class="card library-card">
       <div class="section-heading">
         <div>
-          <h2>全部资产</h2>
-          <p class="cell-note">交付产物与本地素材共用一个清单，按类型快速定位。</p>
+          <h2>已下载内容</h2>
+          <p class="cell-note">一行一个视频，可同时包含多种类型；按标题排序。</p>
         </div>
         <div class="actions">
           <button
@@ -306,26 +233,25 @@ usePolling(
         />
         <button :disabled="busy || resource.loading.value">查询</button>
       </form>
-      <div class="asset-filters" aria-label="资产类型">
+      <div class="asset-filters" aria-label="素材类型筛选">
         <button
-          v-for="item in [
-            ['all', '全部'],
-            ['video', '视频'],
-            ['audio', '音频'],
-            ['subtitle', '字幕'],
-          ] as const"
-          :key="item[0]"
+          v-for="item in filters"
+          :key="item.kind"
           type="button"
-          :class="{ active: assetFilter === item[0] }"
+          :class="{ active: assetFilter === item.kind }"
+          :aria-pressed="assetFilter === item.kind"
           :disabled="busy || resource.loading.value"
           @click="
-            assetFilter = item[0];
+            assetFilter = item.kind;
             filter();
           "
         >
-          {{ item[1] }} <span>{{ filterCounts[item[0]] }}</span>
+          {{ item.label }} <span>{{ resource.data.value?.counts[item.kind] ?? '—' }}</span>
         </button>
       </div>
+      <p class="cell-note filter-hint">
+        标签数量为包含该类型的视频组数；展开后展示该视频的全部文件。
+      </p>
       <p v-if="resource.error.value" class="form-error" role="alert">
         {{ resource.error.value }}
         <button @click="refresh()">重试</button>
@@ -335,58 +261,57 @@ usePolling(
         <table>
           <thead>
             <tr>
-              <th>资产</th>
-              <th>类型</th>
-              <th>来源</th>
-              <th>大小</th>
-              <th>下载时间</th>
+              <th>视频标题</th>
+              <th>已下载类型</th>
+              <th>文件 / 大小</th>
+              <th>最近下载</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="asset in assets" :key="asset.id">
-              <td>
-                <div class="asset-title">
-                  <span class="asset-mark">{{ asset.kindLabel.slice(0, 2) }}</span
-                  ><strong>{{ asset.title }}</strong>
-                </div>
-                <small class="cell-note">{{ asset.sourceId }}</small>
-              </td>
-              <td>
-                <span class="badge">{{ asset.kindLabel }}</span>
-                <small v-if="asset.artifact?.kind === 'subtitle'" class="subtitle-label">
-                  {{ subtitleDescription(asset.artifact) }}
-                </small>
-              </td>
-              <td>
-                {{ asset.origin
-                }}<small v-if="asset.artifact" class="cell-note"
-                  >{{ asset.artifact.storage }} · {{ asset.artifact.instance_id }}</small
-                ><small v-else class="cell-note">{{ instances.name }}</small>
-              </td>
-              <td>
-                {{ formatGB(asset.size)
-                }}<small class="cell-note">{{ asset.size.toLocaleString() }} 字节</small>
-              </td>
-              <td>
-                {{ formatDownloadTime(asset.downloadedAt) }}
-              </td>
-              <td>
-                <div class="actions">
-                  <button :data-preview="asset.id" @click="selectAsset(asset)">
-                    {{
-                      asset.kind === 'audio_only'
-                        ? '试听'
-                        : asset.kind === 'subtitle'
-                          ? '查看'
-                          : '预览'
-                    }}</button
-                  ><a class="text-link" :href="assetUrl(asset)">下载</a>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="resource.data.value && !assets.length">
-              <td colspan="6" class="empty">暂无符合条件的资产。</td>
+            <template v-for="group in groups" :key="group.group_key">
+              <tr class="group-row" :class="{ 'is-expanded': expanded === group.group_key }">
+                <td class="group-title-cell">
+                  <div class="asset-title">
+                    <span class="asset-mark">{{ group.file_count }}</span
+                    ><strong>{{ group.title }}</strong>
+                  </div>
+                  <small class="cell-note source-id">{{ group.video_id || '本地导入素材' }}</small>
+                </td>
+                <td>
+                  <div class="group-types">
+                    <template v-for="kind in kinds" :key="kind">
+                      <span v-if="group.kind_counts[kind]" class="type-chip" :data-kind="kind"
+                        >{{ libraryTypeLabels[kind] }} <b>{{ group.kind_counts[kind] }}</b></span
+                      >
+                    </template>
+                  </div>
+                </td>
+                <td>
+                  <strong class="file-count">{{ group.file_count }} 个文件</strong
+                  ><small class="cell-note">{{ formatFileSize(group.size) }}</small>
+                </td>
+                <td class="group-time">{{ formatDownloadTime(group.downloaded_at) }}</td>
+                <td>
+                  <button
+                    class="expand-button"
+                    :aria-expanded="expanded === group.group_key"
+                    :aria-controls="'group-' + group.group_key"
+                    @click="expanded = expanded === group.group_key ? undefined : group.group_key"
+                  >
+                    {{ expanded === group.group_key ? '收起文件' : '查看文件' }}
+                    <span aria-hidden="true">{{ expanded === group.group_key ? '⌃' : '⌄' }}</span>
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="expanded === group.group_key" class="expanded-row">
+                <td colspan="5" :id="'group-' + group.group_key">
+                  <MediaGroupFiles :key="group.group_key" :group="group" />
+                </td>
+              </tr>
+            </template>
+            <tr v-if="resource.data.value && !groups.length">
+              <td colspan="5" class="empty">暂无符合条件的素材。</td>
             </tr>
           </tbody>
         </table>
@@ -400,30 +325,18 @@ usePolling(
           上一页
         </button>
         <span
-          >第 {{ history.length + 1 }} 页 · 共 {{ filterCounts[assetFilter] }} 条 · 本页
-          {{ assets.length }} 条</span
+          >第 {{ history.length + 1 }} 页 · 共 {{ resource.data.value?.total ?? 0 }} 组 · 本页
+          {{ groups.length }} 组</span
         >
         <button
           id="media-next"
-          :disabled="
-            (!resource.data.value?.media.next_cursor &&
-              !resource.data.value?.artifacts.next_cursor) ||
-            resource.loading.value ||
-            busy
-          "
+          :disabled="!resource.data.value?.next_cursor || resource.loading.value || busy"
           @click="page(true)"
         >
           下一页
         </button>
       </div>
     </section>
-    <MediaPreview v-if="preview" :item="preview" @close="preview = undefined" />
-    <ArtifactPreview
-      v-if="artifactPreview"
-      :key="artifactPreview.id"
-      :artifact="artifactPreview"
-      @close="artifactPreview = undefined"
-    />
     <TaskLog
       v-if="task"
       :key="task.id"
@@ -479,12 +392,93 @@ usePolling(
   </main>
 </template>
 <style scoped>
-.subtitle-label {
-  display: block;
-  margin-top: 5px;
-  max-width: 240px;
-  color: #0f766e;
+.filter-hint {
+  margin: -6px 0 14px;
   font-size: 12px;
-  overflow-wrap: anywhere;
+}
+.group-title-cell {
+  width: 37%;
+  max-width: 440px;
+}
+.asset-title {
+  align-items: flex-start;
+}
+.asset-title strong {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.asset-mark {
+  color: #0f766e;
+  background: #ecfdf5;
+  border: 1px solid #ccfbf1;
+}
+.source-id {
+  margin-left: 43px;
+  margin-top: 5px;
+  font-size: 11px;
+}
+.group-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 300px;
+}
+.type-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.type-chip b {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.type-chip[data-kind='subtitle'] {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.type-chip[data-kind='av'],
+.type-chip[data-kind='video_only'] {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.type-chip[data-kind='audio_only'] {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+.file-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.group-time {
+  color: #64748b;
+  font-size: 12px;
+}
+.expand-button {
+  white-space: nowrap;
+  color: #0f766e;
+  border-color: #a7d8cf;
+  background: #fff;
+  font-size: 12px;
+}
+.expand-button span {
+  margin-left: 7px;
+}
+.group-row.is-expanded > td {
+  background: #f0fdfa;
+  border-bottom-color: #ccfbf1;
+}
+.expanded-row > td {
+  background: #f8fafc;
+  padding: 8px 16px;
 }
 </style>

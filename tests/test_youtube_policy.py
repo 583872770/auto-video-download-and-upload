@@ -30,8 +30,8 @@ class YouTubePolicyTests(unittest.TestCase):
         self.store = TaskStore(self.root / 'state')
         self.addCleanup(self.store.db.engine.dispose)
         from tests.account_cookie_fixture import AccountCookieProfiles
-        AccountCookieProfiles(self.root, self.store).save_legacy(COOKIE)
-        self.cookie_path = 'Cookies/youtube.txt'
+        AccountCookieProfiles(self.root, self.store).seed_default(COOKIE)
+        self.cookie_path = 'Cookies/profiles/' + 'd'*32 + '.txt'
 
     def scheduler(self, store=None):
         store = store or self.store
@@ -39,12 +39,12 @@ class YouTubePolicyTests(unittest.TestCase):
         with store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(
                 status='running', worker_id=store.owner, lease_until=time.time()+3600))
-        return ChannelScheduler(store, {'download_method':'yt_dlp', 'youtube_start_interval':1}, task['id'])
+        return ChannelScheduler(store, {'download_methods': ['yt_dlp'], 'youtube_start_interval':1}, task['id'])
 
     def test_source_only_applies_to_direct_downloads(self):
         config = {'path':'videos', 'proxy_mode':'direct', 'youtube_source_address':'::'}
         self.assertEqual(build_ydl_options(config, self.root)['source_address'], '::')
-        self.assertNotIn('source_address', build_ydl_options({**config,'download_method':'bergung'}, self.root))
+        self.assertNotIn('source_address', build_ydl_options({**config,'download_methods': ['bergung']}, self.root))
         config.update(proxy_mode='manual', proxy='http://127.0.0.1:8080')
         self.assertNotIn('source_address', build_ydl_options(config, self.root))
         for value in ('youtube.com', '127.0.0.1:80', 'invalid'):
@@ -64,7 +64,7 @@ class YouTubePolicyTests(unittest.TestCase):
         self.assertEqual(options['sleep_interval_requests'], .75)
         self.assertEqual((options['sleep_interval'],options['max_sleep_interval']), (10,20))
         self.assertNotIn('sleep_interval_subtitles', options)
-        for updated in ({'youtube_sleep_preset':False}, {'download_method':'bergung'}):
+        for updated in ({'youtube_sleep_preset':False}, {'download_methods': ['bergung']}):
             self.assertNotIn('sleep_interval_requests', build_ydl_options({**config,**updated}, self.root))
         self.assertFalse(validate_settings({'youtube_sleep_preset':'false'})['youtube_sleep_preset'])
         with self.assertRaises(ValueError):
@@ -105,7 +105,7 @@ class YouTubePolicyTests(unittest.TestCase):
                     saved = read_auth(db, ['local'], standalone=True)['local']
                 for key, value in evidence.items():
                     self.assertEqual(saved[key], value)
-                fact = next(f for f in observed({'download_method': 'yt_dlp'}, {}, saved, time.time())
+                fact = next(f for f in observed({'download_methods': ['yt_dlp']}, {}, saved, time.time())
                             if f['code'] == 'bot_check')
                 self.assertIn(title, fact['title'])
 

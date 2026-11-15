@@ -54,10 +54,6 @@ def validate_channels(config):
         if not isinstance(entry, dict):
             raise ValueError('渠道配置包含未知字段。')
         values = dict(entry)
-        # Early Cobalt configurations explicitly selected the browser resolver.
-        # All supported entrances use that resolver; do not invent an API mode.
-        if values.pop('resolver_mode', 'browser') != 'browser':
-            raise ValueError('兼容渠道目前只支持 browser 解析方式。')
         if set(values) - allowed:
             raise ValueError('渠道配置包含未知字段。')
         identity = values.get('id', '')

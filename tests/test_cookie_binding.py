@@ -42,7 +42,7 @@ class CookieBindingTests(unittest.TestCase):
         self.library('alpha').add('A', COOKIE + extra)
         changed = COOKIE.replace(b'PRIVATE_SESSION', b'NEW_SESSION') + extra
         with self.assertRaises(CookieBindingConflict):
-            self.library('beta').save_legacy(changed)
+            self.library('beta').seed_default(changed)
         with self.b.connect() as db:
             self.assertFalse(db.execute(select(cookie_bindings).where(
                 cookie_bindings.c.scope == 'beta')).first())
@@ -70,7 +70,7 @@ class CookieBindingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             second.restore_selected('custom.txt')
         with self.assertRaises(CookieBindingConflict):
-            second.save_legacy(COOKIE)
+            second.seed_default(COOKIE)
         with patch('webapp.youtube_auth.probe') as probe:
             result = self.apps['beta'].extensions['youtube_auth'].check(
                 {'youtube_cookie': 'custom.txt', 'proxy_mode': 'direct'}, self.root / 'beta')
@@ -103,29 +103,6 @@ class CookieBindingTests(unittest.TestCase):
         self.assertFalse(result.exception.retryable)
         self.assertIn('账号', str(result.exception))
 
-    def test_upgrade_removes_historical_credentials_without_accounts(self):
-        from webapp.migrations import _cookie_ownership
-        from webapp.cookie_pool import CookiePool
-        from webapp.youtube_auth import YouTubeAuthRequired
-        with self.a.connect() as db:
-            for node, day in [('alpha', '01'), ('beta', '02')]:
-                db.execute(cookie_profiles.insert().values(scope=node, id='a' * 32, name=node,
-                    content=COOKIE.decode(), created_at=f'2026-11-{day}', deleted=0))
-            # Cross the migration page boundary without changing ownership of
-            # the original credential; same-instance exports share the binding.
-            for number in range(55):
-                db.execute(cookie_profiles.insert().values(scope='alpha', id=f'{number:032x}', name='Historical',
-                    content=COOKIE.decode(), created_at='2026-10-31', deleted=0))
-        _cookie_ownership(self.a.db.engine)
-        _cookie_ownership(self.a.db.engine)  # Resume-safe migration.
-        from webapp.account_migration import upgrade_account_credentials
-        upgrade_account_credentials(self.a.db.engine)
-        self.assertEqual(self.library('alpha').items(),[])
-        self.assertEqual(self.library('beta').items(),[])
-        for node in ('alpha','beta'):
-            with self.assertRaises(ValueError): self.library(node).require('a'*32)
-        with self.a.connect() as db:
-            self.assertTrue(all(r.deleted and not r.content for r in db.execute(select(cookie_profiles))))
 
     def test_saving_foreign_pool_ids_and_custom_credentials_is_rejected(self):
         identity = self.library('alpha').add('A', COOKIE)['id']

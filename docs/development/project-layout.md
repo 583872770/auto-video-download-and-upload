@@ -88,6 +88,6 @@ cd ..
 
 后端变更按影响运行模块导入、`docker/check_startup.py` 和相应业务回归；前端变更检查 JavaScript 与页面行为；部署变更检查 Compose 解析及打包。单纯文档移动检查本地链接、标题锚点、原型路径和仓库引用，无需启动下载或连接生产服务。
 
-前端浏览器回归使用隔离 SQLite 和临时目录：`python scripts/verify/verify_jobs.py` 检查任务生命周期、账单、冲突和权限；`python scripts/verify/verify_frontend_workspace_ui.py` 检查路由、未确认写入重试、部分导入失败、文件分页、字幕预览和手机布局；`python scripts/verify/verify_frontend_execution_ui.py` 检查两个实例的工作台启停、过期返回、慢容量请求、日志来源、素材分页、预览及操作确认；`python scripts/verify/verify_frontend_settings_ui.py` 检查设置保存与实例隔离；`python scripts/verify/verify_frontend_management_ui.py` 检查账号冲突、导入预览、密钥、Cookie 导出、账号池与节奏独立保存、代理、实例、账单、部署和独立恢复页。无需启动真实下载或连接业务数据库。原页面回归通过 `python scripts/verify/verify_source_ui.py scripts/verify/verify_<suite>.py` 显式选择未构建回退模式，独立于构建产物存在与否。
+前端浏览器回归使用隔离 SQLite 和临时目录：`python scripts/verify/verify_frontend_workspace_ui.py` 检查路由、未确认写入重试、部分导入失败、文件分页、字幕预览和手机布局；`python scripts/verify/verify_frontend_execution_ui.py` 检查两个实例的工作台启停、过期返回、慢容量请求、日志来源、素材分页、预览及操作确认；`python scripts/verify/verify_frontend_settings_ui.py` 检查设置保存与实例隔离；`python scripts/verify/verify_frontend_management_ui.py` 检查账号冲突、导入预览、密钥、Cookie 导出、账号池与节奏独立保存、代理、实例、账单、部署和独立恢复页。无需启动真实下载或连接业务数据库。
 
 模块拆分完成后直接维护本手册，不再保留逐批迁移计划和重复验收报告。

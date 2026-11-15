@@ -7,7 +7,8 @@ def assets(static_folder):
     root = Path(static_folder) / 'frontend'
     manifest_path = root / '.vite' / 'manifest.json'
     if not manifest_path.is_file():
-        return None
+        from werkzeug.exceptions import ServiceUnavailable
+        raise ServiceUnavailable('前端资源尚未构建，请在 frontend 目录执行 npm ci 和 npm run build。')
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     entry = manifest['src/main.ts']
     styles, preload, seen = [], [], set()
@@ -31,8 +32,6 @@ def render_workspace(app):
     from flask import g, render_template, session
     from webapp.cobalt_catalog import catalog
     bundle = assets(app.static_folder)
-    if bundle is None:
-        return None
     return render_template('frontend.html', assets=bundle, bootstrap={
         'csrf': session['csrf'], 'fleetEnabled': app.extensions.get('fleet') is not None,
         'role': g.console_user['role'] if getattr(g, 'console_user', None) else 'admin',

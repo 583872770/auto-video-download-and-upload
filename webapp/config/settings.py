@@ -11,8 +11,7 @@ PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': '
 
 import yaml
 from Utils.oss_storage import validate_oss
-from webapp.config.schema import (DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, TEXT_FIELDS,
-                                  discard_retired_settings)
+from webapp.config.schema import (DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, TEXT_FIELDS)
 
 
 def urls_from(value):
@@ -36,11 +35,8 @@ def urls_from(value):
 
 
 def download_methods(config):
-    """Read an ordered provider list, including configurations saved before this UI."""
-    methods = config.get('download_methods')
-    if methods is None:
-        method = config.get('download_method', 'yt_dlp')
-        methods = ['yt5s', 'yt_dlp'] if method == 'yt5s_fallback' else [method]
+    """Read the current ordered provider list."""
+    methods = config.get('download_methods', ['yt_dlp'])
     if (not isinstance(methods, list) or not 1 <= len(methods) <= len(PROVIDERS)
             or any(not isinstance(method, str) or method not in PROVIDERS for method in methods)
             or len(set(methods)) != len(methods)):
@@ -49,15 +45,13 @@ def download_methods(config):
 
 
 def validate_settings(config, *, download_only=False):
-    # Retired settings must not return from saved files or task snapshots.
-    discard_retired_settings(config)
     if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
         raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
     if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):
         raise ValueError('YouTube 请求节奏请选择固定间隔或渐进调速。')
     pool = config.get('youtube_cookie_pool', [])
     if (not isinstance(pool, list) or len(pool) > 50 or
-            any(not isinstance(item, str) or not re.fullmatch(r'(?:[a-f0-9]{32}|legacy)', item) for item in pool) or
+            any(not isinstance(item, str) or not re.fullmatch(r'[a-f0-9]{32}', item) for item in pool) or
             len(set(pool)) != len(pool)):
         raise ValueError('Cookie 账号池必须为不重复的已保存 Cookie ID 列表，最多 50 个。')
     if pool and download_methods(config) != ['yt_dlp']:
@@ -86,8 +80,6 @@ def validate_settings(config, *, download_only=False):
         raise ValueError('吞吐调节请选择手动或自动。')
     if config.get('db_budget_mode', 'auto') not in ('auto', 'manual'):
         raise ValueError('数据库连接预算请选择自动核算或手动指定。')
-    if config.get('download_method', 'yt_dlp') not in (*PROVIDERS, 'yt5s_fallback'):
-        raise ValueError('请选择有效的下载方式。')
     download_methods(config)
     from webapp.channels import validate_channels
     validate_channels(config)

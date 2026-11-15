@@ -205,7 +205,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             'pool_start_interval': cookie_pool_start_interval(config)}
 
 
-def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=(), cookie_profiles=()):
+def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=(), cookie_profiles=(), pending_count=0):
     states, usage, disks = context[:3]
     auto = automatic(config)
     fresh = bool(rate and rate.get('policy') == policy_key(config) and 0 <= stamp - rate.get('time', 0) < 20)
@@ -359,7 +359,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
                              'processing': sum(stages.get(name, 0) for name in
                                  ('processing', 'waiting_processing', 'cleaning', 'uploading_oss'))}}
         worker_status['stages']['preparing'] = max(0, len(progress) - sum(worker_status['stages'].values()))
-    return {'time': stamp, 'online': online, 'paused': bool(paused), 'requested': requested,
+    return {'time': stamp, 'online': online, 'paused': bool(paused), 'pending_tasks': max(0, int(pending_count)), 'requested': requested,
             'mode': 'cookie_pool' if pooled else 'auto' if auto else 'manual', 'sample_fresh': fresh,
             'sample_time': rate.get('time') if rate else None,
             'local_health': (rate or {}).get('risk_local'),

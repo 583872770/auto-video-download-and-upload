@@ -1,10 +1,10 @@
-import { onMounted, onUnmounted, watch, type Ref } from 'vue';
+import { onMounted, onUnmounted, unref, watch, type Ref } from 'vue';
 
 /** One in-flight request per owner. Pause hidden pages and dispose on unmount. */
 export function usePolling(
   active: Ref<boolean>,
   task: (signal: AbortSignal) => Promise<void>,
-  interval = 10000,
+  interval: number | Ref<number> = 10000,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let controller: AbortController | undefined;
@@ -23,7 +23,7 @@ export function usePolling(
     } finally {
       if (controller === current) controller = undefined;
       if (mounted && active.value && !document.hidden)
-        timer = setTimeout(run, Math.min(60000, interval * 2 ** Math.min(failures, 3)));
+        timer = setTimeout(run, Math.min(60000, unref(interval) * 2 ** Math.min(failures, 3)));
     }
   }
   function stop() {

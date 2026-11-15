@@ -417,7 +417,7 @@ def resolve(url, config, base, directory, on_stage=None, *, worker_slot=0, brows
     from webapp.store import source_identity
     from webapp.yt5s_browser import session
 
-    validate_method_urls({**config, 'download_method': 'yt5s'}, [url])
+    validate_method_urls({**config, 'download_methods': ['yt5s']}, [url])
     video_id, _ = source_identity(url)
     proxy = '' if config.get('proxy_mode') == 'direct' else (
         config.get('_resolved_clash_proxy', '') if config.get('proxy_mode') == 'clash' else config.get('proxy', ''))

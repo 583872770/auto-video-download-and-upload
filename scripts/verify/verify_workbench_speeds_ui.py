@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 from app import create_app
-from scripts.verify.verify_jobs import QuietHandler
+from scripts.verify.support import QuietHandler
 from webapp.browser import browser_options
 
 

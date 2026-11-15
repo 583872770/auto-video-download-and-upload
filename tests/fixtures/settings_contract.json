@@ -1,5 +1,5 @@
 {
-  "_comment": "Pre-refactor configuration contract at 81a7849. Update deliberately when settings semantics change.",
+  "_comment": "Current configuration contract. Update deliberately when settings semantics change.",
   "defaults": {
     "path": "videos",
     "dir": "",
@@ -17,10 +17,11 @@
     "max_log_mb": 2,
     "shard_downloads": true,
     "storage_mode": "local",
-    "download_method": "yt_dlp",
     "yt5s_quality": "best",
     "yt5s_browser_count": 2,
-    "download_methods": null,
+    "download_methods": [
+      "yt_dlp"
+    ],
     "fragment_concurrency": 4,
     "throughput_mode": "manual",
     "bandwidth_mbps": 0,
@@ -100,7 +101,6 @@
     "download_attempts",
     "download_channels",
     "download_connection_limit",
-    "download_method",
     "download_methods",
     "downmp3_quality",
     "downmp3_timeout",
@@ -178,89 +178,21 @@
       1,
       16
     ],
-    "downmp3_timeout": [
-      30,
-      1800
-    ],
-    "yt1d_timeout": [
-      30,
-      1800
-    ],
-    "bergung_timeout": [
-      30,
-      1800
-    ],
-    "disk_cache_budget_mb": [
-      1,
-      100000
-    ],
-    "disk_log_budget_mb": [
-      1,
-      100000
-    ],
-    "disk_resume_free_gb": [
-      0,
-      100000
-    ],
-    "disk_failure_log_days": [
-      1,
-      100000
-    ],
-    "disk_min_free_gb": [
-      0,
-      100000
-    ],
-    "disk_success_log_hours": [
-      1,
-      100000
-    ],
-    "disk_test_budget_gb": [
-      1,
-      100000
-    ],
-    "disk_import_budget_mb": [
-      1,
-      100000
-    ],
-    "disk_upload_limit_mb": [
-      1,
-      100000
-    ],
-    "disk_browser_budget_mb": [
-      1,
-      100000
-    ],
-    "disk_budget_gb": [
-      1,
-      100000
-    ],
     "bandwidth_mbps": [
       0,
       100000
     ],
-    "postprocess_limit": [
-      1,
-      8
-    ],
-    "oss_upload_threads": [
-      1,
-      8
-    ],
-    "oss_part_size_mb": [
-      4,
-      64
-    ],
-    "oss_upload_limit": [
-      1,
-      8
-    ],
-    "download_connection_limit": [
-      2,
-      128
+    "db_connection_budget": [
+      8,
+      10000
     ],
     "auto_channel_attempts": [
       1,
       6
+    ],
+    "download_connection_limit": [
+      2,
+      128
     ],
     "builtin_transfer_limit": [
       0,
@@ -276,6 +208,10 @@
     ],
     "youtube_task_rest_interval": [
       0,
+      3600
+    ],
+    "youtube_throttle_cooldown": [
+      30,
       3600
     ],
     "youtube_cookie_session_limit": [
@@ -294,10 +230,6 @@
       0,
       16
     ],
-    "youtube_throttle_cooldown": [
-      30,
-      3600
-    ],
     "youtube_hourly_start_limit": [
       0,
       5000
@@ -306,9 +238,77 @@
       0,
       5000
     ],
-    "db_connection_budget": [
-      8,
-      10000
+    "postprocess_limit": [
+      1,
+      8
+    ],
+    "downmp3_timeout": [
+      30,
+      1800
+    ],
+    "yt1d_timeout": [
+      30,
+      1800
+    ],
+    "bergung_timeout": [
+      30,
+      1800
+    ],
+    "disk_budget_gb": [
+      1,
+      100000
+    ],
+    "disk_test_budget_gb": [
+      1,
+      100000
+    ],
+    "disk_browser_budget_mb": [
+      1,
+      100000
+    ],
+    "disk_log_budget_mb": [
+      1,
+      100000
+    ],
+    "disk_import_budget_mb": [
+      1,
+      100000
+    ],
+    "disk_cache_budget_mb": [
+      1,
+      100000
+    ],
+    "disk_min_free_gb": [
+      0,
+      100000
+    ],
+    "disk_resume_free_gb": [
+      0,
+      100000
+    ],
+    "disk_upload_limit_mb": [
+      1,
+      100000
+    ],
+    "disk_success_log_hours": [
+      1,
+      100000
+    ],
+    "disk_failure_log_days": [
+      1,
+      100000
+    ],
+    "oss_upload_threads": [
+      1,
+      8
+    ],
+    "oss_part_size_mb": [
+      4,
+      64
+    ],
+    "oss_upload_limit": [
+      1,
+      8
     ]
   },
   "policy_fields": [
@@ -320,7 +320,6 @@
     "download_attempts",
     "download_channels",
     "download_format",
-    "download_method",
     "download_methods",
     "downmp3_quality",
     "downmp3_timeout",
@@ -394,13 +393,13 @@
       1,
       64
     ],
-    "yt5s_browser_count": [
-      1,
-      16
-    ],
     "min_free_gb": [
       0,
       10000
+    ],
+    "yt5s_browser_count": [
+      1,
+      16
     ],
     "builtin_transfer_limit": [
       0,
@@ -442,7 +441,6 @@
     "disk_upload_limit_mb",
     "download_channels",
     "download_connection_limit",
-    "download_method",
     "download_methods",
     "fragment_concurrency",
     "log_retention_days",
@@ -468,7 +466,6 @@
     "db_connection_budget",
     "download_channels",
     "download_connection_limit",
-    "download_method",
     "download_methods",
     "fragment_concurrency",
     "scheduler_mode",

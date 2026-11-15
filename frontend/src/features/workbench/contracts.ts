@@ -118,6 +118,8 @@ export interface WorkerControl {
 export interface Capacity extends InstanceStatus {
   concurrency: InstanceStatus['concurrency'] & {
     time: number;
+    pending_tasks: number;
+    paused: boolean;
     sample_time?: number;
     online: boolean;
     mode: string;

@@ -35,4 +35,4 @@ Cookie 池下载进程上限设为 0 时，该项不限制进程数；自动连�
 
 单元及接口测试覆盖自动公式、自定义连接池、两种显式部署上限、预算降低与恢复、无效保存不落盘、多实例切换隔离及配置快照失效。
 
-运行 scripts/verify_database_budget.py 可在临时 SQLite 库和 Chromium 中验证自动/手动切换、保存和重载、错误保留草稿、工作台限制说明与窄屏布局，不访问真实账号或生产数据库。
+运行 scripts/verify/verify_frontend_settings_ui.py 可在临时 SQLite 库和 Chromium 中验证自动/手动切换、保存和重载、错误保留草稿、工作台限制说明与窄屏布局，不访问真实账号或生产数据库。

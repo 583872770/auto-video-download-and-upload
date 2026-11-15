@@ -305,7 +305,7 @@ onMounted(() => op.run(read));
               ><input v-model="form.change_extra" type="checkbox" />修改附加信息（允许清空）</span
             ></label
           ><label
-            >接码网址<input
+            >接码网址（仅作资料保存，自动接码统一使用 fbvjdjcf.asia）<input
               v-model="form.code_url"
               type="url"
               maxlength="4096"

@@ -1,4 +1,4 @@
-﻿"""Positive login evidence, cached preflight and lossless queue blocking."""
+"""Positive login evidence, cached preflight and lossless queue blocking."""
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import json
@@ -115,8 +115,8 @@ class AuthContract:
 
     def cookie(self, content=COOKIE):
         from tests.account_cookie_fixture import AccountCookieProfiles
-        AccountCookieProfiles(self.root,self.store).save_legacy(content)
-        result=self.client.post('/api/youtube/cookies/select',json={'id':'legacy'},headers=self.headers)
+        AccountCookieProfiles(self.root,self.store).seed_default(content)
+        result=self.client.post('/api/youtube/cookies/select',json={'id':'dddddddddddddddddddddddddddddddd'},headers=self.headers)
         self.assertEqual(result.status_code,200,result.json)
         from Utils.config import load_config
         return load_config(self.config)[0]
@@ -138,7 +138,7 @@ class AuthContract:
         self.assertEqual(response.json['auth']['state'], 'not_logged_in')
         from webapp.database import cookie_profiles
         with self.store.connect() as db:
-            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'legacy').values(
+            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'dddddddddddddddddddddddddddddddd').values(
                 content=COOKIE.replace(b'\t0\tSID', b'\t1\tSID').decode()))
         with patch('webapp.youtube_auth.probe') as check:
             response = self.post('/api/youtube/auth/check')

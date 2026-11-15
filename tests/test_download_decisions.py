@@ -31,7 +31,7 @@ class DownloadDecisionTests(unittest.TestCase):
         profiles = CookieProfiles(self.root, self.store)
         identities = [profiles.add(str(i), (f'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-{i}\n').encode())['id']
                       for i in range(2)]
-        self.config = dict(download_method='yt_dlp', youtube_cookie_pool=identities,
+        self.config = dict(download_methods=['yt_dlp'], youtube_cookie_pool=identities,
             youtube_cookie=str(profiles.require(identities[0])), youtube_pacing_mode='adaptive',
             youtube_start_interval=45, youtube_throttle_cooldown=300, worker_count=1)
 
@@ -299,66 +299,3 @@ class DownloadDecisionTests(unittest.TestCase):
         self.assertEqual((saved['status'], saved['attempts']), ('queued', 1))
         self.assertGreaterEqual(saved['available_at'] - time.time(), 718)
         self.assertEqual(saved['progress']['last_failure']['http_status'], 429)
-
-    def test_node_render_explains_legacy_manual_halt_without_fake_http(self):
-        from webapp.decision_diagnostics import explain
-        result = explain({'youtube-cookie-pool:local': {'halted': True, 'cooldown_until': self.now - 1}},
-                         [], None, None, self.now, paused=True)
-        self.assertTrue(result['manual_required'])
-        self.assertEqual(result['history'], [])
-        program = r"""
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
-global.document = {getElementById:()=>null,addEventListener:()=>{}};
-global.setInterval = ()=>{};
-global.escapeHTML = value => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-vm.runInThisContext(fs.readFileSync('static/risks.js','utf8'));
-vm.runInThisContext(fs.readFileSync('static/concurrency.js','utf8'));
-const data = JSON.parse(process.argv[1]);
-const html = decisionExplanationHTML(data, 'main');
-assert(html.includes('历史记录缺少完整触发证据'));
-assert(html.includes('仍需人工检查'));
-assert(!html.includes('HTTP 429'));
-const failure = failureEvidenceHTML({kind:'account_rate_limit',phase:'resolve',source:'youtube',http_status:null,evidence:'message',message:'<img src=x onerror=alert(1)>'});
-assert(failure.includes('HTTP 状态未记录'));
-assert(!failure.includes('<img'));
-const pool = {available_sessions:1,cooling_sessions:1,sessions:[{name:'<img src=x onerror=alert(1)>',state:'cooldown',cooldown_kind:'account_rate_limit',cooldown_until:data.time+3600}]};
-const accounts = cookieAccountNoticesHTML(pool, data.time);
-assert(accounts.includes('其他账号继续调度'));
-assert(accounts.includes('300 秒'));
-assert(accounts.includes('冷却中不发送下载、字幕或登录检测请求'));
-assert(accounts.includes('data-capacity-deadline'));
-assert(!accounts.includes('<img'));
-pool.available_sessions = 0;
-assert(cookieAccountNoticesHTML(pool, data.time).includes('无需手动恢复'));
-assert(cookieAccountNoticesHTML(pool, data.time, false).includes('当前状态待确认'));
-pool.cooling_sessions = 0;
-pool.available_sessions = 1;
-pool.sessions[0] = {name:'Account A',state:'recovery',limit:1,interval:300,recovery_successes:2,cooldown_kind:'account_rate_limit'};
-assert(cookieAccountNoticesHTML(pool, data.time).includes('本轮有效成功 2 次'));
-data.time -= 60;
-assert(decisionExplanationHTML(data, 'main').includes('摘要已过期'));
-"""
-        process = subprocess.run(['node', '-e', program, json.dumps(dict(time=self.now, online=True, decisions=result))],
-                                 capture_output=True, text=True)
-        self.assertEqual(process.returncode, 0, process.stderr)
-
-    def test_node_cookie_status_refresh_preserves_unsaved_pool_selection(self):
-        program = r"""
-const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const live={innerHTML:''},recover={hidden:true};
-global.$=id=>id==='#youtube-cookie-pool-live'?live:recover;
-global.accountAdmin=()=>true;
-global.cookiePoolDraft={ids:['a','b'],enabled:true};
-global.cookieAccountNoticesHTML=summary=>summary.message;
-const source=fs.readFileSync('static/cookie_profiles.js','utf8');
-vm.runInThisContext(source.slice(source.indexOf('function updateCookiePoolLive('),source.indexOf('let cookiePoolPolling')));
-updateCookiePoolLive({pool:{halted:false,capacity_summary:{message:'Account A cooling'}}});
-assert.equal(live.innerHTML,'Account A cooling');
-assert(recover.hidden);
-assert.deepEqual(cookiePoolDraft,{ids:['a','b'],enabled:true});
-updateCookiePoolLive({pool:{halted:true,capacity_summary:{message:'Manual recovery'}}});
-assert(!recover.hidden);
-assert.deepEqual(cookiePoolDraft,{ids:['a','b'],enabled:true});
-"""
-        result = subprocess.run(['node', '-e', program], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)

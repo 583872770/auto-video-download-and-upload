@@ -2,13 +2,11 @@
 from io import BytesIO
 from pathlib import Path
 from flask import g, jsonify, request, send_file
-from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.helpers import get_body, json_result
 
 
 def register_youtube_routes(context, cookies, preflight):
     app = context.app
-    install_cookie = cookies.install_cookie
     media_lock = context.media_lock
     require_login_idle = cookies.require_login_idle
     settings = context.settings
@@ -30,18 +28,16 @@ def register_youtube_routes(context, cookies, preflight):
         return jsonify(auth=result, message=result['message'])
 
     @app.get('/api/youtube/account-login')
-    @app.get('/api/youtube/login')
     def youtube_login_status():
         return jsonify(youtube_login.status())
 
     @app.post('/api/youtube/account-login')
-    @app.post('/api/youtube/login')
     def start_youtube_login():
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
             raise ValueError('请提交 JSON 对象。')
         identity = data.get('account_id')
-        if request.path == '/api/youtube/account-login' and not identity:
+        if not identity:
             raise ValueError('请选择需要登录的账号。')
         actor = None
         if identity:
@@ -55,7 +51,6 @@ def register_youtube_routes(context, cookies, preflight):
         return jsonify(start_browser_login(identity, data, actor)), 202
 
     @app.post('/api/youtube/account-login/cancel')
-    @app.post('/api/youtube/login/cancel')
     def cancel_youtube_login():
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -73,19 +68,6 @@ def register_youtube_routes(context, cookies, preflight):
                 if (status.get('account') or {}).get('account_id') != data['account_id'] or status.get('id') != data.get('session_id'):
                     raise Conflict('登录窗口已变化，请刷新状态；未取消其他登录。')
             return jsonify(youtube_login.cancel())
-
-    @app.post('/api/youtube/cookie')
-    def upload_youtube_cookie():
-        request.max_content_length = 2 * 1024 * 1024
-        uploaded = request.files.get('cookie')
-        if uploaded is None or not uploaded.filename or Path(uploaded.filename).suffix.lower() != '.txt':
-            raise ValueError('请选择 Netscape 格式的 Cookie .txt 文件。')
-        uploaded_data = uploaded.stream.read(1024 * 1024 + 1)
-        parse_youtube_cookie_file(uploaded_data)
-        with media_lock:
-            require_login_idle()
-            install_cookie(uploaded_data)
-        return jsonify(message='YouTube Cookie 已保存，后续下载将自动使用。', cookie_path='Cookies/youtube.txt'), 201
 
     @app.get('/api/youtube/cookies')
     def list_youtube_cookies():

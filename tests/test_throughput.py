@@ -175,7 +175,7 @@ class ResourceFeedbackTests(unittest.TestCase):
             self.assertEqual(runtime_limits(config,self.directory)['transfers'],reduced['transfers'])
 
     def test_unlimited_builtin_uses_instance_capacity_for_group_control(self):
-        config = dict(download_method='yt_dlp', worker_count=40,
+        config = dict(download_methods=['yt_dlp'], worker_count=40,
                       builtin_transfer_limit=0, builtin_resolver_limit=0)
         controller = ThroughputController(self.directory)
         sample = dict(cpu_cores=4, memory_total=8192*MIB, memory_available=4096*MIB,

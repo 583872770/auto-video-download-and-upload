@@ -15,8 +15,7 @@ from webapp.config_schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, D
 from webapp.service_role import normalize_role
 
 ONLINE_SECONDS = 45
-# Recognize peers that have not been upgraded yet; new rows always use hybrid.
-DOWNLOAD_ROLES = ('worker', 'hybrid')
+DOWNLOAD_ROLES = ('hybrid',)
 
 
 class InstanceIdentityConflict(ValueError):
@@ -42,7 +41,6 @@ class Fleet:
             pass
         saved = json.loads(path.read_text(encoding='utf-8'))
         self.id = (identity or os.environ.get('VIDEO_INSTANCE_ID')
-                   or (store.single or {}).get('instance_id')
                    or (store.fleet.id if store.fleet else None) or saved['id'])
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', self.id):
             raise ValueError('VIDEO_INSTANCE_ID 只能包含 1 到 64 位字母、数字、下划线或短横线。')
@@ -77,38 +75,24 @@ class Fleet:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             self.store.db.ensure(db, settings, {'key': 'fleet_budget', 'value': '0'})
             db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).scalar_one()
-            mode = db.execute(select(settings.c.value).where(settings.c.key == 'fleet_enabled')).scalar_one_or_none()
             previous = db.execute(select(instances).where(instances.c.id == self.id)).mappings().first()
             stamp = self.clock(db)
             if previous and previous['heartbeat'] > stamp - ONLINE_SECONDS:
                 import psutil
                 if previous['host'] != socket.gethostname() or psutil.pid_exists(previous['pid']):
                     raise InstanceIdentityConflict(self.id, previous['host'], previous['heartbeat'] + ONLINE_SECONDS - stamp)
-            from webapp.modes import upgrade_unified
-            upgraded = upgrade_unified(self, db, mode, previous)
             self.store.db.ensure(db, settings, {'key': 'fleet_enabled', 'value': 'true'})
             values = {'id': self.id, 'name': self.name[:100], 'role': self.role, 'host': socket.gethostname(),
                       'pid': os.getpid(), 'boot_id': self.boot_id, 'heartbeat': self.clock(db),
                       'url': self.url, 'token': self.token, 'config': previous['config'] if previous else '{}', 'limits': '{}',
                       'paused': int(self.can_download), 'stop_requested': 0, 'error': ''}
             updates = {key: values[key] for key in values if key not in ('id', 'limits', 'paused', 'stop_requested', 'name')}
-            if previous and previous['role'] not in DOWNLOAD_ROLES and self.can_download:
-                updates.update(paused=1, stop_requested=0)
-            if previous:
-                updates['limits'] = json.dumps(self.resource_limits(previous))
-            if upgraded:
-                updates.update(limits='{}', paused=1, stop_requested=0)
             db.execute(self.store.db.upsert(instances, values, ['id'], updates))
         self.save_local(config, base, clash_directory)
         runtime = self.store.directory / 'fleet-runtime.json'
         temporary = runtime.with_suffix('.tmp')
         temporary.write_text(json.dumps({'role': self.role, 'id': self.id, 'boot_id': self.boot_id}), encoding='utf-8')
         temporary.replace(runtime)
-        if self.store.single:
-            # Archive only after the new registry/runtime are durable. A failed
-            # filesystem write can safely retry the same ownership migration.
-            (self.store.directory / 'single-mode.json').replace(self.store.directory / 'single-mode.legacy.json')
-            self.store.single = None
 
     def row(self, db=None):
         if db is None:
@@ -118,7 +102,7 @@ class Fleet:
 
     def save_local(self, config, base, clash_directory):
         from Utils.config import video_directory
-        self.local = {'delivery_schema_version': 1, 'config': dict(config), 'base': str(base), 'clash_directory': str(clash_directory),
+        self.local = {'config': dict(config), 'base': str(base), 'clash_directory': str(clash_directory),
                       'directory': str(video_directory(config, Path(base)).resolve())}
         with self.store.connect() as db:
             previous = json.loads(self.row(db)['config'])
@@ -128,13 +112,11 @@ class Fleet:
                        .values(config=json.dumps(self.local, ensure_ascii=False)))
 
     def resource_limits(self, row=None):
-        """Only resource controls may override the node's saved configuration.
-
-        Older registry rows can contain strategy fields in this object. Merging
-        them blindly makes every successful YAML save read back the old policy.
-        """
+        """Only resource controls may override the node's saved configuration."""
         values = json.loads((self.row() if row is None else row)['limits'])
-        return {key: values[key] for key in RESOURCE_LIMITS if key in values}
+        if not isinstance(values, dict) or set(values) - set(RESOURCE_LIMITS):
+            raise ValueError('实例资源配置包含无效字段，请使用当前结构重新初始化测试数据。')
+        return values
 
     def local_settings(self, db=None):
         row = self.row(db)
@@ -266,6 +248,8 @@ class Fleet:
                     download_lists.c.id.in_(list(selections.values())),
                     ~select(job_profiles.c.id).where(job_profiles.c.id == download_lists.c.id,
                         job_profiles.c.deleted == 1).exists())).mappings()}
+            pending = dict(db.execute(select(counters.c.scope, counters.c.value).where(
+                counters.c.status == 'queued', counters.c.scope.in_(['batch:' + key for key in jobs]))).all())
             for row in rows:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **self.resource_limits(row)}
@@ -319,7 +303,8 @@ class Fleet:
                     item['concurrency'] = diagnose(configs[item['id']], item['id'], by_instance.get(item['id'], []),
                         item['throughput'], context, stamp, global_limit=budget, global_running=sum(counts.values()),
                         paused=item['paused'], online=item['online'], current_tasks=item['current_tasks'],
-                        cookie_profiles=profile_names.get(item['id'], []))
+                        cookie_profiles=profile_names.get(item['id'], []),
+                        pending_count=pending.get('batch:' + (selections.get('workbench_job:' + item['id']) or ''), 0))
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],
                         auths.get(item['id']), stamp, error=item['error'])
                     item['concurrency']['auth_checked_at'] = auths.get(item['id'], {}).get('checked_at')

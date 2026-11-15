@@ -34,7 +34,6 @@ export interface Ledger extends Totals {
   created_at: string;
   deleted: boolean;
   archived: boolean;
-  tracked: boolean;
   amount: string | null;
   price_set: boolean;
   price: string;

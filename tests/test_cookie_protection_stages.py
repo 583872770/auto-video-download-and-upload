@@ -222,36 +222,5 @@ class ProtectionStageIntegrationTests(unittest.TestCase):
         self.assertEqual(view['pacing'], before)
 
 
-@unittest.skipUnless(shutil.which('node'), 'Node.js required for UI rendering check')
-class ProtectionStageRenderingTests(unittest.TestCase):
-    def test_actual_frontend_renders_stage_gates_target_and_legacy_sampling(self):
-        state = dict(interval=120, recovery_interval_floor=120,
-                     protection_stage=dict(interval=120, target=50, started_at=10000, successes=4))
-        active = pacing_progress({'youtube_start_interval': 50}, state, 10899)
-        target = pacing_progress({'youtube_start_interval': 120}, state, 10899)
-        code = r'''
-const assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm');
-const context = vm.createContext({document:{addEventListener(){},getElementById(){return null;}},
-  escapeHTML:s=>String(s), concurrencyCountdown:n=>String(n)});
-vm.runInContext(fs.readFileSync('static/cookie_recovery.js','utf8'),context);
-const render = p=>context.cookieRecoveryProgressHTML({configured_limit:1,pacing:p},{time:10899},true);
-const active = render(DATA.active);
-assert(active.includes('逐档提速观察'));
-assert(active.includes('120 秒降至 105 秒'));
-assert(active.includes('还差 1 次'));
-assert(active.includes('时间门槛还需 1'));
-assert(active.includes('重新计时和计数'));
-const target = render(DATA.target);
-assert(target.includes('已达到设置目标'));
-assert(!target.includes('下一步调整需要同时满足'));
-assert(render(DATA.legacy).includes('尚未开始本档观察'));
-'''
-        legacy = pacing_progress({'youtube_start_interval': 50}, dict(interval=120, recovery_interval_floor=120), 10899)
-        code = code.replace('DATA', json.dumps(dict(active=active, target=target, legacy=legacy)))
-        result = subprocess.run(['node', '-'], input=code, capture_output=True, text=True,
-                                encoding='utf-8', cwd=Path(__file__).resolve().parents[1], timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -1,4 +1,4 @@
-﻿"""Batch normalization, durable per-video progress and independent failures."""
+"""Batch normalization, durable per-video progress and independent failures."""
 import functools
 import http.server
 import json

@@ -10,23 +10,7 @@ export const router = createRouter({
     },
     {
       path: '/',
-      redirect: (to) => ({
-        path:
-          (
-            {
-              '#overview': '/workbench',
-              '#tasks': '/logs',
-              '#statistics': '/statistics',
-              '#accounts': '/accounts',
-              '#instances': '/instances',
-              '#clash': '/proxy',
-              '#deployment': '/deployment',
-              '#settings': '/settings',
-              '#media': '/media',
-            } as Record<string, string>
-          )[to.hash] || '/workbench',
-        query: to.query,
-      }),
+      redirect: (to) => ({ path: '/workbench', query: to.query }),
     },
     {
       path: '/login',
@@ -95,18 +79,12 @@ export const router = createRouter({
       component: () => import('./features/jobs/JobDetail.vue'),
       meta: { title: '任务详情' },
     },
-    {
-      path: '/delivery-files',
-      redirect: (to) => ({ path: '/media', query: to.query }),
-    },
   ],
   scrollBehavior(to, from) {
     return to.path === from.path ? undefined : { top: 0 };
   },
 });
 router.beforeEach(async (to, from) => {
-  if (to.path === '/jobs' && /^#[a-f0-9]{32}$/.test(to.hash))
-    return { name: 'job', params: { id: to.hash.slice(1) }, query: to.query, replace: true };
   if (
     to.path === '/settings' &&
     from.path === '/settings' &&

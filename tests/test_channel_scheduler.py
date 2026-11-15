@@ -40,7 +40,7 @@ class RegistryTests(unittest.TestCase):
             self.assertIsNone(built.task_limit)
             self.assertIsNone(built.resolver_limit)
             self.assertIsNone(group_caps([built])['upstream:' + built.upstream_group])
-        channels = registry(dict(download_method='bergung', builtin_transfer_limit=0,
+        channels = registry(dict(download_methods=['bergung'], builtin_transfer_limit=0,
             builtin_resolver_limit=0, download_channels=[{**channel('alias', 'unverified-media',
                 transfer_limit=3, resolver_limit=2), 'resolver_group': 'bergung', 'quota_group': 'bergung'}]))
         self.assertEqual(group_caps(channels)['upstream:unverified-media'], 3)
@@ -49,25 +49,25 @@ class RegistryTests(unittest.TestCase):
     def test_mysql_decimal_resource_sum_is_normalized_to_integer(self):
         db = Mock()
         db.execute.return_value.scalar_one.return_value = Decimal(2)
-        scheduler = ChannelScheduler(None, {'download_method':'bergung'})
+        scheduler = ChannelScheduler(None, {'download_methods': ['bergung']})
         result = scheduler._active(db, 'upstream:test', time.time())
         self.assertIs(type(result), int)
         self.assertEqual(result, 2)
     def test_alias_is_conservative_and_explicit_groups_can_split(self):
-        channels = registry({'download_method': 'bergung', 'download_channels': [{'id':'alias'}]})
+        channels = registry({'download_methods': ['bergung'], 'download_channels': [{'id':'alias'}]})
         self.assertEqual([item.upstream_group for item in channels], ['unverified-media', 'unverified-media'])
         self.assertEqual(len(group_caps(channels)), 4)
-        independent = registry({'download_method': 'bergung', 'download_channels': [channel('other', 'independent')]})
+        independent = registry({'download_methods': ['bergung'], 'download_channels': [channel('other', 'independent')]})
         self.assertEqual(len(group_caps(independent)), 7)
 
     def test_alias_caps_use_minimum_and_default_override_keeps_other_entrances(self):
         values = [channel('extra', transfer_limit=2), channel('bergung', transfer_limit=6)]
-        channels = registry({'download_method': 'bergung', 'download_channels': values})
+        channels = registry({'download_methods': ['bergung'], 'download_channels': values})
         self.assertEqual([item.id for item in channels], ['bergung', 'extra'])
         self.assertEqual(group_caps(channels)['upstream:bergung'], 2)
 
     def test_configuration_validation_and_yaml_roundtrip(self):
-        config = {'download_method': 'bergung', 'scheduler_mode': 'balanced',
+        config = {'download_methods': ['bergung'], 'scheduler_mode': 'balanced',
                   'download_channels': [channel('bergung')], 'shared_parser': True}
         validate_settings(config)
         import yaml
@@ -80,16 +80,8 @@ class RegistryTests(unittest.TestCase):
                        [channel('yt_dlp')], [channel('alias', site_url='http://example.com')],
                        [channel('alias', transfer_limit=True)], [channel('alias', cookie='secret')]):
             with self.subTest(values=values), self.assertRaises(ValueError):
-                registry({'download_method': 'bergung', 'download_channels': values})
+                registry({'download_methods': ['bergung'], 'download_channels': values})
 
-    def test_builtin_channels_ignore_retired_connection_cap(self):
-        for mode in ('ordered_fallback', 'balanced', 'auto'):
-            for old_limit in (0, 1, 16, 128):
-                config = dict(scheduler_mode=mode, builtin_connection_limit=old_limit)
-                with self.subTest(mode=mode, old_limit=old_limit):
-                    channels = registry(config)
-                    self.assertIsNone(channels[0].connection_limit)
-                    self.assertNotIn('connections:youtube-origin', group_caps(channels))
 
     def test_retry_after_delta_date_and_invalid_values(self):
         self.assertEqual(retry_after('75', 100), 75)
@@ -98,13 +90,6 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(retry_after('nan'))
         self.assertIsNone(retry_after('invalid'))
 
-    def test_legacy_browser_resolver_configuration_is_normalized(self):
-        config = {'download_method': 'bergung', 'download_channels': [channel('alias', resolver_mode='browser')]}
-        validate_settings(config)
-        self.assertNotIn('resolver_mode', config['download_channels'][0])
-        self.assertEqual(registry(config)[1].id, 'alias')
-        with self.assertRaises(ValueError):
-            registry({'download_method': 'bergung', 'download_channels': [channel('alias', resolver_mode='api')]})
 
 
 class AdmissionTests(unittest.TestCase):
@@ -115,7 +100,7 @@ class AdmissionTests(unittest.TestCase):
         url = 'sqlite:///' + (self.root / 'shared.db').as_posix()
         self.first = TaskStore(self.root / 'a', url)
         self.second = TaskStore(self.root / 'b', url)
-        self.config = {'download_method': 'bergung', 'worker_count': 8,
+        self.config = {'download_methods': ['bergung'], 'worker_count': 8,
                        'download_channels': [channel('bergung', transfer_limit=1), channel('alias'), channel('other', 'independent')]}
 
     def scheduler(self, store=None, config=None):
@@ -140,7 +125,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_zero_builtin_limits_admit_above_old_defaults_and_keep_local_budget(self):
         for mode in ('ordered_fallback', 'balanced', 'auto'):
-            config = dict(download_method='yt_dlp', worker_count=40, scheduler_mode=mode,
+            config = dict(download_methods=['yt_dlp'], worker_count=40, scheduler_mode=mode,
                 builtin_transfer_limit=0, builtin_resolver_limit=0, download_connection_limit=34)
             routers = [self.scheduler(config=config) for _ in range(35)]
             with self.subTest(mode=mode), ExitStack() as held:
@@ -157,7 +142,7 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(db.execute(select(download_permits)).all(), [])
 
     def test_unlimited_builtin_retains_shared_peer_cooldown_and_recovery(self):
-        config = dict(download_method='yt_dlp', worker_count=16, builtin_transfer_limit=0,
+        config = dict(download_methods=['yt_dlp'], worker_count=16, builtin_transfer_limit=0,
                       builtin_resolver_limit=0, download_connection_limit=32)
         first, second = self.scheduler(config=config), self.scheduler(config=config)
         scope = 'upstream:youtube-origin'
@@ -179,7 +164,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_builtin_limits_can_be_disabled_independently(self):
         for transfer, resolver, blocked_phase in ((0, 2, 'resolve'), (2, 0, 'transfer')):
-            config = dict(download_method='yt_dlp', worker_count=8,
+            config = dict(download_methods=['yt_dlp'], worker_count=8,
                           builtin_transfer_limit=transfer, builtin_resolver_limit=resolver)
             routers = [self.scheduler(config=config) for _ in range(3)]
             unlimited_phase = 'transfer' if blocked_phase == 'resolve' else 'resolve'
@@ -200,7 +185,7 @@ class AdmissionTests(unittest.TestCase):
                     self.assertEqual(routers[2].blocked_resource, 'quota')
 
     def test_builtin_transfer_skips_legacy_shared_connections_but_keeps_local_cap(self):
-        config = dict(download_method='yt_dlp', worker_count=4, builtin_transfer_limit=4,
+        config = dict(download_methods=['yt_dlp'], worker_count=4, builtin_transfer_limit=4,
                       builtin_connection_limit=1, download_connection_limit=2)
         first, second = self.scheduler(config=config), self.scheduler(config=config)
         with first.transaction() as (db, stamp):
@@ -216,7 +201,7 @@ class AdmissionTests(unittest.TestCase):
             pass
 
     def test_builtin_instances_keep_independent_local_connection_budgets(self):
-        config = dict(download_method='yt_dlp', worker_count=4, builtin_transfer_limit=4,
+        config = dict(download_methods=['yt_dlp'], worker_count=4, builtin_transfer_limit=4,
                       builtin_connection_limit=1, download_connection_limit=2)
         first, second = self.scheduler(config=config), self.scheduler(self.second, config)
         first.instance, second.instance = 'node-a', 'node-b'
@@ -257,7 +242,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_diagnostics_and_admission_agree_at_shared_policy_boundaries(self):
         from webapp.concurrency_diagnostics import diagnose, read_context
-        config = dict(download_method='yt_dlp', worker_count=12, builtin_transfer_limit=8,
+        config = dict(download_methods=['yt_dlp'], worker_count=12, builtin_transfer_limit=8,
                       download_connection_limit=32, fragment_concurrency=4)
         routers = [self.scheduler(config=config) for _ in range(9)]
         stamp = time.time()
@@ -293,7 +278,7 @@ class AdmissionTests(unittest.TestCase):
                     self.assertEqual(db.execute(select(download_permits)).all(), [])
 
     def test_hot_connection_reduction_keeps_holders_and_blocks_new_work(self):
-        config = dict(download_method='yt_dlp', worker_count=8, builtin_transfer_limit=8,
+        config = dict(download_methods=['yt_dlp'], worker_count=8, builtin_transfer_limit=8,
                       download_connection_limit=4)
         first, second = self.scheduler(config=config), self.scheduler(config=config)
         reduced = self.scheduler(config={**config, 'download_connection_limit': 2})

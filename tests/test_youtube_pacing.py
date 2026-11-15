@@ -25,7 +25,7 @@ class YouTubePacingTests(unittest.TestCase):
         self.now = time.time()
         self.cookie = self.root / 'cookie.txt'
         self.cookie.write_bytes(b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-only\n')
-        self.config = dict(download_method='yt_dlp', youtube_cookie=str(self.cookie),
+        self.config = dict(download_methods=['yt_dlp'], youtube_cookie=str(self.cookie),
                            youtube_pacing_mode='adaptive', youtube_start_interval=45,
                            youtube_hourly_start_limit=80, youtube_daily_start_limit=1200)
 

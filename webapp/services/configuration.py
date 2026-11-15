@@ -2,7 +2,6 @@
 from flask import g, has_request_context
 from Utils.config import resolve_path, video_directory
 from webapp.config.settings import DEFAULTS, DOWNLOAD_FIELDS, download_methods, validate_settings
-from webapp.config.schema import discard_retired_settings
 
 
 class ConfigurationService:
@@ -31,8 +30,6 @@ class ConfigurationService:
                        instance_id=self.context.fleet.id if self.context.fleet else None)
 
     def update_config(self, data):
-        # A cached older frontend may still submit this retired field.
-        discard_retired_settings(data)
         if self.context.fleet and self.context.fleet.can_manage and not (has_request_context() and g.fleet_rpc):
             from webapp.services.instances import update_configuration
             selected_id = self.context.dependencies.selected_id
@@ -55,10 +52,6 @@ class ConfigurationService:
             # Blank secret fields mean keep the saved credential. Never send
             # credentials back to the browser to populate password controls.
             config.update({k: v for k, v in data.items() if k not in OSS_SECRETS or v})
-            if 'download_methods' in data:
-                config['download_method'] = download_methods(config)[0]
-            elif 'download_method' in data:
-                config['download_methods'] = None  # Compatibility with old clients/configuration.
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
             from webapp.db_pool_calculator import connection_budget
             connection_budget(config)  # Reject impossible reservations before any persistence.

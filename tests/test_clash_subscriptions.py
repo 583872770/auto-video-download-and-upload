@@ -116,23 +116,6 @@ class SavedSubscriptionTests(unittest.TestCase):
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content, str(path))
 
-    def test_original_subscription_migrates_with_private_cached_nodes_and_selection(self):
-        self.manager.config.update(subscription_url='https://example.test/?PRIVATE_LEGACY',
-                                   selected='Old Node', subscription_id='old-revision')
-        self.manager.config.pop('subscriptions')
-        self.manager.config.pop('active_subscription_id')
-        nodes = {'proxies': [{'name': 'Old Node', 'type': 'http', 'server': 'proxy.test', 'port': 8080}]}
-        (self.manager.directory / 'nodes.yaml').write_text(yaml.safe_dump(nodes), encoding='utf-8')
-        self.manager.save()
-        migrated = ClashManager(self.manager.directory)
-        identity = migrated.config['active_subscription_id']
-        self.assertTrue(identity)
-        self.assertEqual(migrated.config['selected'], 'Old Node')
-        self.assertEqual(migrated.config['subscription_id'], 'old-revision')
-        self.assertEqual(yaml.safe_load(migrated.subscription_file(identity).read_text()), nodes)
-        self.assertEqual(len(ClashManager(self.manager.directory).config['subscriptions']), 1)
-        public = json.dumps(migrated.status())
-        self.assertNotIn('PRIVATE_LEGACY', public)
 
     def test_queue_locks_all_profile_mutations_and_ids_are_validated(self):
         self.fixtures()

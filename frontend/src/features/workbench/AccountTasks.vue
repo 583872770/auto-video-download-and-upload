@@ -2,8 +2,18 @@
 import { computed, ref, watch } from 'vue';
 import { useInstances } from '../../stores/instances';
 import TaskLog from '../../components/TaskLog.vue';
-import { stageLabel, type AccountTask, type RuntimeAccount, type RuntimeSlot } from './contracts';
+import { stageLabel, type AccountTask, type RuntimeAccount } from './contracts';
 import { isWaitingStage, summarizeWaits, taskWait, taskWaitGroups, waitCountdown } from './waits';
+import {
+  accountStates,
+  accountState as classify,
+  accountReasons,
+  accountSpeed,
+  accountNextStep,
+  taskSummary,
+  type AccountState,
+} from './accountState';
+import type { RuntimeSlot, WaitReason } from './contracts';
 
 const props = defineProps<{
   accounts: RuntimeAccount[];
@@ -12,92 +22,23 @@ const props = defineProps<{
   fresh: boolean;
   time: number;
   now: number;
+  pending: number;
+  paused: boolean;
 }>();
 const instances = useInstances();
-function countdown(until?: number) {
-  return waitCountdown(until, props.now, props.fresh);
-}
 const query = ref('');
-const state = ref('');
-const stage = ref('');
+const state = ref<AccountState | ''>('');
 const page = ref(1);
 const pageSize = 8;
 const expanded = ref<string[]>([]);
 const log = ref<{ id: string; instance_id: string }>();
-const modes: Record<string, string> = {
-  ready: '可调度',
-  recovery: '恢复观察',
-  cooldown: '冷却中',
-  manual: '需人工处理',
-  unavailable: '不可用',
-  unknown: '状态待确认',
-};
-const mainStages = [
-  { key: 'downloading', label: '下载中' },
-  { key: 'uploading', label: '上传中' },
-  { key: 'processing', label: '合并中' },
-  { key: 'extracting', label: '解析视频' },
-  { key: 'waiting', label: '等待中' },
-  { key: 'cooldown', label: '冷却中' },
-];
-const downloadingStages = new Set(['downloading']);
-const uploadingStages = new Set(['uploading', 'uploading_oss']);
-const processingStages = new Set(['processing', 'converting', 'cleaning', 'waiting_processing']);
-const extractingStages = new Set([
-  'extracting',
-  'waiting_resolver',
-  'waiting_browser',
-  'waiting_verification',
-  'checking_environment',
-  'checking_login',
-]);
-function taskStageGroup(task: AccountTask) {
-  if (downloadingStages.has(task.stage)) return 'downloading';
-  if (uploadingStages.has(task.stage)) return 'uploading';
-  if (processingStages.has(task.stage)) return 'processing';
-  if (extractingStages.has(task.stage)) return 'extracting';
-  if (isWaitingStage(task.stage)) return 'waiting';
-  return '';
-}
-function taskIsCooldown(task: AccountTask) {
-  const wait = task.wait;
-  return !!wait && (wait.code.includes('cooldown') || wait.label.includes('冷却'));
-}
-function accountIsCooldown(account: RuntimeAccount) {
-  return (
-    accountState(account) === 'cooldown' ||
-    account.tasks.some(taskIsCooldown) ||
-    account.reasons?.some(
-      (reason) => reason.code.includes('cooldown') || reason.label.includes('冷却'),
-    )
-  );
-}
-function accountMatchesFor(account: RuntimeAccount, selectedStage: string) {
-  if (!selectedStage) return true;
-  if (selectedStage === 'cooldown') return accountIsCooldown(account);
-  if (selectedStage === 'waiting') {
-    return (
-      !accountIsCooldown(account) &&
-      (account.tasks.some((task) => taskStageGroup(task) === 'waiting') ||
-        !!account.reasons?.length ||
-        (account.known && account.state !== 'ready' && !account.tasks.length))
-    );
-  }
-  return account.tasks.some((task) => taskStageGroup(task) === selectedStage);
-}
-function accountMatches(account: RuntimeAccount) {
-  return accountMatchesFor(account, stage.value);
-}
-function matches(task: AccountTask) {
-  return (
-    !stage.value ||
-    taskStageGroup(task) === stage.value ||
-    (stage.value === 'cooldown' && taskIsCooldown(task))
-  );
-}
-function accountState(account: RuntimeAccount) {
-  return props.fresh && account.known ? account.state || 'unknown' : 'unknown';
-}
+const modes = Object.fromEntries(accountStates.map((item) => [item.key, item.label]));
+const context = computed(() => ({
+  fresh: props.fresh,
+  now: props.now,
+  pending: props.pending,
+  paused: props.paused,
+}));
 const sessionsById = computed(
   () => new Map(props.sessions.map((session) => [session.id, session])),
 );
@@ -110,35 +51,49 @@ const allAccounts = computed<RuntimeAccount[]>(() => {
       .map((session) => ({ ...session, tasks: [] })),
   ];
 });
-const matchingQuery = computed(() => {
+const views = computed(
+  () =>
+    new Map(
+      allAccounts.value.map((account) => [
+        account.id,
+        {
+          state: classify(account, context.value),
+          stages: taskSummary(account),
+          speed: accountSpeed(account, props.fresh && !!account.known),
+          reasons: accountReasons(account, context.value),
+          next: accountNextStep(account, context.value),
+          waits: taskWaitGroups(account.tasks),
+        },
+      ]),
+    ),
+);
+const searched = computed(() => {
   const needle = query.value.trim().toLowerCase();
   return allAccounts.value.filter(
     (account) => !needle || `${account.name} ${account.email || ''}`.toLowerCase().includes(needle),
   );
 });
-const searched = computed(() =>
-  matchingQuery.value.filter((account) => !state.value || accountState(account) === state.value),
-);
 const counts = computed(() => {
   const result: Record<string, number> = { '': searched.value.length };
   for (const account of searched.value) {
-    for (const item of mainStages) {
-      // Evaluate each tab independently so an account with multiple active
-      // tasks remains visible in every relevant stage.
-      if (accountMatchesFor(account, item.key)) result[item.key] = (result[item.key] || 0) + 1;
-    }
+    const key = accountState(account);
+    result[key] = (result[key] || 0) + 1;
   }
   return result;
 });
 const tabs = computed(() =>
-  [{ key: '', label: '全部任务' }, ...mainStages].map((item) => ({
-    ...item,
-    count: counts.value[item.key] || 0,
-  })),
+  [
+    { key: '', label: '全部账号' },
+    ...accountStates.filter(
+      (item) => item.key !== 'unknown' || counts.value.unknown || state.value === 'unknown',
+    ),
+  ].map((item) => ({ ...item, count: counts.value[item.key] || 0 })),
 );
-const filtered = computed(() => searched.value.filter(accountMatches));
+const filtered = computed(() =>
+  searched.value.filter((account) => !state.value || accountState(account) === state.value),
+);
 const waitingSummary = computed(() =>
-  summarizeWaits(searched.value.flatMap((account) => account.tasks.filter(matches))),
+  summarizeWaits(filtered.value.flatMap((account) => account.tasks)),
 );
 const pages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)));
 const visible = computed(() =>
@@ -150,26 +105,7 @@ const pageNumbers = computed(() => {
   const start = Math.max(1, Math.min(page.value - 2, pages.value - 4));
   return Array.from({ length: Math.min(5, pages.value) }, (_, index) => start + index);
 });
-const totals = computed(() => {
-  const result = { running: 0, waiting: 0, cooldown: 0, idle: 0 };
-  for (const account of matchingQuery.value) {
-    if (!account.known) continue;
-    if (accountState(account) === 'cooldown') {
-      result.cooldown++;
-      continue;
-    }
-    if (account.tasks.some((task) => !isWaitingStage(task.stage))) result.running++;
-    else if (
-      account.tasks.length ||
-      account.reasons?.some((reason) => reason.code !== 'unassigned') ||
-      account.state !== 'ready'
-    )
-      result.waiting++;
-    else result.idle++;
-  }
-  return result;
-});
-watch([query, state, stage], () => {
+watch([query, state], () => {
   page.value = 1;
 });
 watch(pages, (value) => {
@@ -180,7 +116,7 @@ watch(
   () => {
     expanded.value = [];
     log.value = undefined;
-    query.value = state.value = stage.value = '';
+    query.value = state.value = '';
     page.value = 1;
   },
 );
@@ -190,27 +126,31 @@ watch(
     if (!value) log.value = undefined;
   },
 );
-function tasksFor(account: RuntimeAccount) {
-  return account.tasks.filter(matches);
+function accountState(account: RuntimeAccount) {
+  return views.value.get(account.id)!.state;
 }
-const waitsByAccount = computed(
-  () =>
-    new Map(allAccounts.value.map((account) => [account.id, taskWaitGroups(tasksFor(account))])),
-);
-function filterCooldown() {
-  state.value = state.value === 'cooldown' ? '' : 'cooldown';
-  stage.value = '';
+function tasksFor(account: RuntimeAccount) {
+  return account.tasks;
 }
 function stagesFor(account: RuntimeAccount) {
-  return [...new Set(tasksFor(account).map((task) => task.stage))];
+  return views.value.get(account.id)!.stages;
+}
+function waitsFor(account: RuntimeAccount) {
+  return views.value.get(account.id)!.waits;
+}
+function admissionFor(account: RuntimeAccount) {
+  return views.value.get(account.id)!.reasons;
+}
+function nextStep(account: RuntimeAccount) {
+  return views.value.get(account.id)!.next;
+}
+function rateFor(account: RuntimeAccount) {
+  return views.value.get(account.id)!.speed;
 }
 function toggle(id: string) {
   expanded.value = expanded.value.includes(id)
     ? expanded.value.filter((value) => value !== id)
     : [...expanded.value, id];
-}
-function openDetails(id: string) {
-  if (!expanded.value.includes(id)) expanded.value = [...expanded.value, id];
 }
 function openLog(task: AccountTask) {
   if (props.fresh) log.value = { id: task.task_id, instance_id: instances.selectedId };
@@ -226,37 +166,30 @@ function speed(value?: number) {
     : `${(value / 1024 ** 2).toFixed(1)} MB/s`;
 }
 function stageTone(value: string) {
+  if (isWaitingStage(value)) return 'amber';
   if (value === 'downloading') return 'blue';
   if (value === 'extracting') return 'purple';
-  if (value === 'processing' || value === 'uploading_oss') return 'teal';
-  return isWaitingStage(value) ? 'amber' : 'gray';
+  if (['processing', 'converting', 'cleaning', 'uploading', 'uploading_oss'].includes(value))
+    return 'teal';
+  return 'gray';
 }
 function pacing(account: RuntimeAccount) {
   return sessionsById.value.get(account.id)?.pacing || account.pacing;
 }
-function reasons(account: RuntimeAccount): NonNullable<RuntimeAccount['reasons']> {
-  const priority = [
-    'account_halted',
-    'unavailable',
-    'pool_halted',
-    'account_cooldown',
-    'pool_cooldown',
-  ];
-  return [
-    ...taskWaitGroups(tasksFor(account)).map((reason) => ({
-      ...reason,
-      code: 'task_' + reason.code,
-    })),
-    ...(account.reasons || []),
-  ].sort((a, b) => {
-    const rank = (code: string) =>
-      code.startsWith('task_')
-        ? -1
-        : priority.includes(code)
-          ? priority.indexOf(code)
-          : priority.length;
-    return rank(a.code) - rank(b.code);
-  });
+function countdown(until?: number) {
+  return waitCountdown(until, props.now, props.fresh);
+}
+function waitText(reason: WaitReason) {
+  if (!props.fresh) return '等待新鲜采样';
+  if (reason.until) return countdown(reason.until);
+  if (['account_halted', 'unavailable', 'pool_halted'].includes(reason.code)) return '需人工处理';
+  if (reason.code === 'waiting_verification') return '等待验证完成';
+  if (['account_refresh', 'unknown', 'offline'].includes(reason.code)) return '等待状态更新';
+  if (['shared', 'removed'].includes(reason.code)) return '';
+  return '条件恢复后继续';
+}
+function reasons(account: RuntimeAccount): WaitReason[] {
+  return [...waitsFor(account), ...admissionFor(account)];
 }
 const accountLink = computed(
   () =>
@@ -288,67 +221,44 @@ const accountLink = computed(
         aria-label="搜索运行账号"
         placeholder="搜索账号名称或邮箱"
       />
-      <select v-model="state" aria-label="账号运行状态">
-        <option value="">全部账号状态</option>
-        <option v-for="(label, key) in modes" :key="key" :value="key">{{ label }}</option>
-      </select>
-      <div class="account-totals" aria-label="账号状态统计">
-        <span>
-          执行中 <b>{{ fresh ? totals.running : '—' }}</b>
-        </span>
-        <span>
-          等待中 <b>{{ fresh ? totals.waiting : '—' }}</b>
-        </span>
-        <button
-          type="button"
-          class="cooldown-stat"
-          :class="{ active: state === 'cooldown' }"
-          :aria-pressed="state === 'cooldown'"
-          :disabled="!fresh"
-          aria-label="筛选冷却中的账号"
-          title="点击筛选冷却账号，再次点击显示全部状态"
-          @click="filterCooldown"
-        >
-          冷却中 <b>{{ fresh ? totals.cooldown : '—' }}</b>
-        </button>
-        <span>
-          空闲 <b>{{ fresh ? totals.idle : '—' }}</b>
-        </span>
-      </div>
+      <span class="account-count-note">标签按账号计数，每个账号只归入一种状态</span>
     </div>
-    <div class="account-stage-filter" role="group" aria-label="筛选执行阶段">
-      <span class="account-stage-label">执行阶段</span>
+    <p v-if="paused && fresh" class="account-filter-note account-pause" role="status">
+      实例已暂停领取新任务；仍在执行的任务按实际进度展示。
+    </p>
+    <div class="account-stage-filter" role="group" aria-label="筛选账号状态">
+      <span class="account-stage-label">账号状态</span>
       <button
         v-for="tab in tabs"
         :key="tab.key"
         type="button"
         class="account-stage-tab"
-        :class="{ active: stage === tab.key }"
-        :aria-pressed="stage === tab.key"
-        :data-stage="tab.key || 'all'"
-        @click="stage = tab.key"
+        :class="{ active: state === tab.key }"
+        :aria-pressed="state === tab.key"
+        :data-state="tab.key || 'all'"
+        @click="state = tab.key as AccountState | ''"
       >
         {{ tab.label }} <span class="account-stage-count">{{ tab.count }}</span>
       </button>
     </div>
     <p v-if="!fresh" class="account-filter-note">
-      当前状态待确认；阶段与数量为上次记录，恢复进度与传输速度暂不展示。
+      当前采样已失效，账号归入“状态待确认”；下方任务阶段为上次记录。
     </p>
-    <p v-if="stage" class="account-filter-note" aria-live="polite">
-      当前筛选：<b>{{ tabs.find((tab) => tab.key === stage)?.label }}</b
+    <p v-if="state" class="account-filter-note" aria-live="polite">
+      当前筛选：<b>{{ modes[state] }}</b
       >，共 <b>{{ filtered.length }}</b> 个账号。
-      <button type="button" class="account-text-button" @click="stage = ''">清除阶段筛选</button>
+      <button type="button" class="account-text-button" @click="state = ''">显示全部账号</button>
     </p>
     <div v-if="waitingSummary.length" class="account-wait-summary" aria-label="任务等待原因汇总">
       <span>{{ fresh ? '正在等待' : '上次等待记录' }}</span>
       <span v-for="reason in waitingSummary" :key="reason.code" class="account-wait-chip">
-        {{ reason.label }} <b>{{ reason.count }}</b>
+        {{ reason.label }} <b>{{ reason.count }} 个任务</b>
       </span>
       <small>按当前筛选的任务统计</small>
     </div>
     <div class="account-columns" aria-hidden="true">
-      <span>账号 / 状态</span><span>执行阶段</span><span>当前任务</span><span>并发 / 间隔</span
-      ><span>等待 / 恢复</span><span>操作</span>
+      <span>账号 / 状态</span><span>任务阶段 / 数量</span><span>当前任务 / 总速度</span
+      ><span>账号并发 / 间隔</span><span>等待原因 / 接新任务限制</span><span>操作</span>
     </div>
     <div class="account-runtime-list" role="list" aria-label="账号运行列表">
       <article
@@ -357,6 +267,7 @@ const accountLink = computed(
         role="listitem"
         class="account-runtime-item"
         :data-account-id="account.id"
+        :data-account-state="accountState(account)"
       >
         <div class="account-runtime-row">
           <div class="runtime-identity">
@@ -382,49 +293,31 @@ const accountLink = computed(
           </div>
           <div class="runtime-stages" aria-label="执行阶段">
             <span
-              v-for="value in stagesFor(account).slice(0, 2)"
-              :key="value"
+              v-for="value in stagesFor(account)"
+              :key="value.key"
               class="runtime-stage"
-              :class="fresh ? stageTone(value) : 'gray'"
-              >{{ stageLabel(value) }}</span
+              :class="fresh ? value.tone : 'gray'"
+              >{{ value.label }} <b>{{ value.count }}</b></span
             >
-            <button
-              v-if="stagesFor(account).length > 2"
-              type="button"
-              class="account-text-button"
-              @click="openDetails(account.id)"
-            >
-              +{{ stagesFor(account).length - 2 }}
-            </button>
-            <span v-if="!tasksFor(account).length" class="runtime-stage gray">暂无任务</span>
+            <span v-if="!stagesFor(account).length" class="runtime-muted">暂无执行任务</span>
           </div>
           <div class="runtime-task" :class="{ 'is-empty': !tasksFor(account).length }">
             <div class="runtime-task-title" :title="tasksFor(account)[0]?.title">
               {{ tasksFor(account)[0]?.title || '—' }}
             </div>
             <div class="runtime-secondary">
-              <span
-                v-if="
-                  fresh &&
-                  tasksFor(account)[0]?.stage === 'downloading' &&
-                  speed(tasksFor(account)[0]?.speed)
-                "
-                class="runtime-speed"
-                >↓ {{ speed(tasksFor(account)[0]?.speed) }}</span
+              <span v-if="fresh && rateFor(account) != null" class="runtime-speed"
+                >↓ {{ speed(rateFor(account)) }}</span
               >
               <span v-else-if="!tasksFor(account).length">{{
-                !fresh
-                  ? '上次记录无任务'
-                  : accountState(account) === 'ready'
-                    ? '等待分配任务'
-                    : '按账号状态检查'
+                !fresh ? '上次记录无任务' : nextStep(account)
               }}</span>
               <span v-else-if="!fresh">上次任务记录</span>
               <button
                 v-if="tasksFor(account).length > 1"
                 type="button"
                 class="account-text-button"
-                @click="openDetails(account.id)"
+                @click="toggle(account.id)"
               >
                 另 {{ tasksFor(account).length - 1 }} 个任务 ↗
               </button>
@@ -456,12 +349,12 @@ const accountLink = computed(
             <small>间隔 {{ account.interval ?? '—' }} 秒</small>
           </div>
           <div class="runtime-wait" :class="accountState(account)">
-            <template v-if="!fresh || (!account.known && !waitsByAccount.get(account.id)?.length)"
+            <template v-if="accountState(account) === 'unknown'"
               ><span>当前状态待确认</span><small>等待新鲜采样</small></template
             >
-            <template v-else-if="waitsByAccount.get(account.id)?.length || account.reasons?.length">
+            <template v-else-if="waitsFor(account).length || admissionFor(account).length">
               <div
-                v-for="(reason, reasonIndex) in waitsByAccount.get(account.id)"
+                v-for="(reason, reasonIndex) in waitsFor(account)"
                 :key="'task-' + reasonIndex"
                 class="runtime-wait-entry"
                 data-wait-kind="task"
@@ -486,13 +379,13 @@ const accountLink = computed(
                   class="runtime-countdown"
                   :class="{ timed: !!reason.until }"
                   :title="reason.until ? '检查时间 ' + at(reason.until) : undefined"
-                  >{{ countdown(reason.until) }}</small
+                  >{{ waitText(reason) }}</small
                 >
               </div>
-              <div v-if="account.known && account.reasons?.length" class="runtime-account-waits">
+              <div v-if="admissionFor(account).length" class="runtime-account-waits">
                 <small v-if="account.tasks.length" class="runtime-wait-caption">新任务准入</small>
                 <div
-                  v-for="reason in account.reasons"
+                  v-for="reason in admissionFor(account)"
                   :key="reason.code"
                   class="runtime-wait-entry"
                   data-wait-kind="account"
@@ -502,7 +395,7 @@ const accountLink = computed(
                     class="runtime-countdown"
                     :class="{ timed: !!reason.until }"
                     :title="reason.until ? '检查时间 ' + at(reason.until) : undefined"
-                    >{{ countdown(reason.until) }}</small
+                    >{{ waitText(reason) }}</small
                   >
                 </div>
               </div>
@@ -514,9 +407,12 @@ const accountLink = computed(
                 {{ pacing(account)?.success_target }}</small
               ></template
             >
-            <span v-else class="runtime-muted">无等待记录</span>
+            <span v-else class="runtime-muted">{{ nextStep(account) }}</span>
           </div>
           <div class="runtime-actions">
+            <a v-if="accountState(account) === 'attention'" class="text-link" :href="accountLink"
+              >去处理</a
+            >
             <button
               v-if="tasksFor(account)[0]"
               type="button"
@@ -560,9 +456,7 @@ const accountLink = computed(
                 }}<small v-if="taskWait(task)" class="runtime-task-wait">
                   {{ fresh ? '等待：' : '上次等待：' }}{{ taskWait(task)?.label }}
                   <template v-if="taskWait(task)?.detail"> · {{ taskWait(task)?.detail }}</template>
-                  <template v-if="fresh">
-                    · {{ countdown(taskWait(task)?.until) }}</template
-                  > </small
+                  <template v-if="fresh"> · {{ waitText(taskWait(task)!) }}</template> </small
                 ><small>{{
                   fresh
                     ? task.transfer_reserved
@@ -592,7 +486,8 @@ const accountLink = computed(
               <li v-for="(reason, reasonIndex) in reasons(account)" :key="reasonIndex">
                 {{ reason.label }}<small v-if="reason.detail">{{ reason.detail }}</small
                 ><small v-if="fresh"
-                  >{{ countdown(reason.until) }}；到期后仍需满足其他准入条件。</small
+                  >{{ waitText(reason)
+                  }}<template v-if="reason.until">；到期后仍需满足其他准入条件。</template></small
                 >
               </li>
             </ul>
@@ -659,8 +554,9 @@ const accountLink = computed(
         </button>
       </nav>
     </footer>
-    <div v-if="unassigned.length" class="account-unassigned">
-      <h4>尚未关联账号的任务 · {{ unassigned.length }}{{ fresh ? '' : '（上次记录）' }}</h4>
+    <div v-if="pending || unassigned.length" class="account-unassigned">
+      <h4>待分配任务 · {{ pending + unassigned.length }}{{ fresh ? '' : '（上次记录）' }}</h4>
+      <p v-if="pending" class="runtime-muted">队列待领取 {{ pending }} 个；领取后再分配账号。</p>
       <div v-for="task in unassigned" :key="task.task_id" class="runtime-detail-task">
         <span class="runtime-stage" :class="fresh ? stageTone(task.stage) : 'gray'">{{
           stageLabel(task.stage)
@@ -670,7 +566,7 @@ const accountLink = computed(
           <small v-if="taskWait(task)" class="runtime-task-wait">
             {{ fresh ? '等待：' : '上次等待：' }}{{ taskWait(task)?.label }}
             <template v-if="taskWait(task)?.detail"> · {{ taskWait(task)?.detail }}</template>
-            <template v-if="fresh"> · {{ countdown(taskWait(task)?.until) }}</template>
+            <template v-if="fresh"> · {{ waitText(taskWait(task)!) }}</template>
           </small>
         </span>
         <button
@@ -683,7 +579,7 @@ const accountLink = computed(
           日志
         </button>
       </div>
-      <small>阶段标签按关联账号的任务计数，不含以上任务。</small>
+      <small>待分配任务单独统计，不重复计入各账号。</small>
     </div>
     <TaskLog v-if="log" :key="log.id" :task="log" @close="log = undefined" />
   </section>
@@ -749,8 +645,10 @@ const accountLink = computed(
   width: 260px;
   max-width: 100%;
 }
-.account-toolbar select {
-  width: 150px;
+.account-count-note {
+  margin-left: auto;
+  color: #7d8da2;
+  font-size: 10px;
 }
 .account-totals {
   margin-left: auto;
@@ -959,19 +857,18 @@ const accountLink = computed(
   border-radius: 50%;
   background: currentColor;
 }
-.runtime-state.ready {
+.runtime-state.running,
+.runtime-state.idle {
   color: #25856a;
 }
-.runtime-state.recovery,
+.runtime-state.waiting,
 .runtime-state.cooldown,
-.runtime-wait.recovery,
+.runtime-wait.waiting,
 .runtime-wait.cooldown {
   color: #a66f20;
 }
-.runtime-state.manual,
-.runtime-state.unavailable,
-.runtime-wait.manual,
-.runtime-wait.unavailable {
+.runtime-state.attention,
+.runtime-wait.attention {
   color: #c55850;
 }
 .runtime-stages {
@@ -990,6 +887,14 @@ const accountLink = computed(
   color: #64748b;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+.runtime-stage b {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.account-pause {
+  color: #926a29;
+  background: #fff8e9;
 }
 .runtime-stage.blue {
   background: #eff6ff;

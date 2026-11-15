@@ -57,12 +57,12 @@
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_jobs -v
-.\.venv\Scripts\python.exe scripts/verify_jobs.py
+.\.venv\Scripts\python.exe scripts/verify/verify_frontend_workspace_ui.py
 .\.venv\Scripts\python.exe -m unittest tests.test_workbench -v
 .\.venv\Scripts\python.exe scripts/verify/verify_deleted_workbench_ui.py
 .\.venv\Scripts\python.exe scripts/verify_job_states.py
 ```
 
-`test_jobs` 使用临时数据库验证任务、导入、取消、计费和集群隔离。`verify_jobs.py` 启动临时 Web 服务，以 Chromium/Chrome/Edge 检查实际页面和手机布局；不启动真实视频下载，不连接应用数据库。截图位于 `.runtime/cache-archive-20261111/validation/jobs/`。
+`test_jobs` 使用临时数据库验证任务、导入、取消、计费和集群隔离。`verify_frontend_workspace_ui.py` 启动临时 Web 服务，以 Chromium/Chrome/Edge 检查实际页面和手机布局；不启动真实视频下载，不连接应用数据库。截图位于 `.runtime/cache-archive-20261111/validation/jobs/`。
 
 `test_workbench` 同时验证实例独立控制、聚合状态、离线/磁盘等待和批量查询上限。`verify_job_states.py` 通过临时多实例数据库检查列表、详情及自动刷新的“执行中→暂停中→已暂停→已完成”，截图位于 `.runtime/cache-archive-20261111/validation/job-states/`。

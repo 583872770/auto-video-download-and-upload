@@ -40,15 +40,6 @@ def register_delivery(app, store, settings):
             db.execute(store.db.upsert(schema_settings, dict(key='delivery_defaults', value=packed(spec)), ['key']))
         return jsonify(spec=spec)
 
-    @app.get('/delivery-files')
-    def delivery_files_page():
-        from webapp.frontend import render_workspace
-        page = render_workspace(app)
-        if page is not None:
-            return page
-        from flask import render_template, session
-        return render_template('delivery_files.html', csrf=session.get('csrf', ''), service_role='hybrid')
-
     def listing(job=None):
         return jsonify(**artifact_page(store, job=job, kind=request.args.get('kind', ''),
                                        language=request.args.get('language', ''),

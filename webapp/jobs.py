@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import uuid
 
-from flask import Response, abort, jsonify, render_template, request, session, stream_with_context
+from flask import Response, abort, jsonify, request, stream_with_context
 from sqlalchemy import and_, func, or_, select
 from werkzeug.exceptions import Conflict, PreconditionRequired
 
@@ -71,21 +71,14 @@ class Jobs:
         value = profile(self.store, db, identity, lock=True)
         if value:
             return value
+        if data is None:
+            raise ValueError('任务资料不存在，请通过任务中心创建任务。')
         if not db.execute(select(download_lists.c.id).where(download_lists.c.id == identity)).first():
-            raise ValueError('历史批次没有独立账本，请新建任务。')
+            raise ValueError('任务缺少独立账本，请通过任务中心创建任务。')
         values = dict(id=identity, note=(data or {}).get('note', ''),
-            policy='{}',
-            revision=1, edit_version=1, policy_version=1, archived=0, deleted=0,
+            revision=1, edit_version=1, archived=0, deleted=0,
             price_set=int(data is None or data.get('price') not in ('', None)), updated_at=stamp())
         db.execute(job_profiles.insert().values(**values))
-        # Adopt an earlier one-import/one-list batch without losing its import
-        # checkpoint or allowing that old payload to write after a clear.
-        if db.execute(select(imports.c.id).where(imports.c.id==identity)).first():
-            import_id=func.json_extract(tasks.c.payload,'$.import_id')
-            if self.store.db.mysql:
-                import_id=func.json_unquote(import_id)
-            task_id=db.execute(select(tasks.c.id).where(tasks.c.action=='import',import_id==identity).limit(1)).scalar()
-            self.store.db.ensure(db,job_imports,dict(id=identity,job_id=identity,revision=1,task_id=task_id))
         return values
 
     def require(self, db, identity, *, editable=True):
@@ -133,8 +126,6 @@ class Jobs:
                 **({'price': '0'} if 'price' in data and data['price'] in ('', None) else {})})
             self.ensure(db, identity, config, data)
             if 'delivery' in data:
-                from webapp.delivery.contracts import compatible
-                compatible(self.store, db)
                 from webapp.delivery.artifacts import save_contract
                 save_contract(db, identity, data['delivery'])
             ids = self.store.insert_downloads(db, [{'base': str(base), 'scope': 'download',
@@ -195,11 +186,6 @@ class Jobs:
             import_counts = dict(db.execute(select(job_imports.c.job_id, func.count()).join(imports,
                 imports.c.id == job_imports.c.id).where(job_imports.c.job_id.in_(ids), imports.c.finished == 0)
                 .group_by(job_imports.c.job_id)).all())
-            # Earlier imports may not yet have an adopted job_imports row.
-            legacy = db.execute(select(imports.c.id).where(imports.c.id.in_(ids), imports.c.finished == 0,
-                ~select(job_imports.c.id).where(job_imports.c.id == imports.c.id).exists())).scalars()
-            for identity in legacy:
-                import_counts[identity] = import_counts.get(identity, 0) + 1
             paused, execution = self.execution_context(db, details.values())
             from webapp.delivery.artifacts import describe as delivery_describe
             delivery_info = delivery_describe(db, ids)
@@ -212,7 +198,7 @@ class Jobs:
     def execution_context(self, db, rows):
         """Read job-specific execution intent without changing shared permissions.
 
-        Scoped workbenches bypass the legacy released/global-pause switches.
+        Each instance explicitly selects its job in the workbench.
         Load the small instance snapshot once for the whole page, rather than
         scanning video tasks or issuing a query for every job.
         """
@@ -230,9 +216,7 @@ class Jobs:
         nodes = db.execute(select(instances.c.id, instances.c.paused, instances.c.stop_requested,
             instances.c.heartbeat).where(instances.c.role.in_(DOWNLOAD_ROLES))).mappings().all()
         choices = dict(db.execute(select(schema_settings.c.key, schema_settings.c.value).where(
-            schema_settings.c.key.in_(['selected_download_job'] + ['workbench_job:' + node['id'] for node in nodes]))).all())
-        selected = choices.get('selected_download_job')
-        legacy = [node for node in nodes if choices.get('workbench_job:' + node['id']) is None]
+            schema_settings.c.key.in_(['workbench_job:' + node['id'] for node in nodes]))).all())
         online_after = self.store.fleet.clock(db) - ONLINE_SECONDS
         blocked = resource_blocks(db, [node['id'] for node in nodes
             if not node['paused'] and not node['stop_requested'] and node['heartbeat'] > online_after])
@@ -240,18 +224,10 @@ class Jobs:
         for row in rows:
             scoped = [node for node in nodes if choices.get('workbench_job:' + node['id']) == row['id']
                       and not node['paused'] and not node['stop_requested']]
-            # Keep the intent of old job controls when a legacy executor exists
-            # (even while it is offline/paused), including a fleet with no nodes.
-            legacy_intent = bool(row['released'] and (legacy or not nodes))
-            legacy_selected = not selected or selected == row['id']
-            candidates = scoped + ([node for node in legacy if not node['paused'] and not node['stop_requested']]
-                                   if legacy_intent and not paused and legacy_selected else [])
-            live = [node for node in candidates if node['heartbeat'] > online_after]
-            desired = bool(scoped or legacy_intent)
+            live = [node for node in scoped if node['heartbeat'] > online_after]
+            desired = bool(scoped)
             reason = ('' if any(node['id'] not in blocked for node in live) else
                       '等待下载实例释放磁盘空间' if live else
-                      '系统已暂停领取' if not scoped and legacy_intent and paused else
-                      '下载实例当前选择了其他任务' if not scoped and legacy_intent and not legacy_selected else
                       '没有在线且启用的下载实例分配到此任务') if desired else ''
             execution[row['id']] = dict(desired_running=desired, waiting_reason=reason)
         return paused, execution
@@ -269,7 +245,7 @@ class Jobs:
             deleted=bool(value and value['deleted']), managed=bool(value),
             price_set=bool(value['price_set']) if value else True, revision=value['revision'] if value else 0,
             edit_version=value['edit_version'] if value else 0,
-            policy_version=value['policy_version'] if value else 0, global_paused=paused, importing=importing,
+            global_paused=paused, importing=importing,
             desired_running=execution['desired_running'])
         result['amount'] = str(charge(result['file_bytes'], result['price'], result['unit'])) if result['price_set'] else None
         result['file_bytes_exact'] = str(result['file_bytes'])
@@ -298,13 +274,13 @@ class Jobs:
             running_videos = [self.store.decode(item) for item in db.execute(select(tasks).where(
                 tasks.c.batch_id==identity,tasks.c.action=='download',tasks.c.status=='running').order_by(tasks.c.seq).limit(16)).mappings()] if details else []
             import_ids = select(job_imports.c.id).where(job_imports.c.job_id == identity)
-            records = db.execute(select(imports).where(or_(imports.c.id.in_(import_ids),imports.c.id==identity)).order_by(imports.c.id).limit(100)).mappings().all() if details else []
+            records = db.execute(select(imports).where(imports.c.id.in_(import_ids)).order_by(imports.c.id).limit(100)).mappings().all() if details else []
             importing = db.execute(select(func.count()).select_from(imports).where(
-                or_(imports.c.id.in_(import_ids),imports.c.id==identity), imports.c.finished == 0)).scalar_one()
+                imports.c.id.in_(import_ids), imports.c.finished == 0)).scalar_one()
             result = self.describe(row, value, counts, paused, execution[identity], importing)
             from webapp.delivery.artifacts import describe as delivery_describe
             result['delivery'] = delivery_describe(db, [identity])[identity]
-            result.update(policy=None, policy_scope='instance',
+            result.update(policy_scope='instance',
                 imports=[dict(record) for record in records], running_videos=running_videos,
                 transfer_speed=sum(float((item.get('progress') or {}).get('speed') or 0)
                     for item in running_videos if (item.get('progress') or {}).get('stage') == 'downloading'))
@@ -335,8 +311,6 @@ class Jobs:
             if 'policy' in data:
                 raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
             if 'delivery' in data:
-                from webapp.delivery.contracts import compatible
-                compatible(self.store, db)
                 from webapp.delivery.artifacts import save_contract
                 if data.get('delivery_scope', 'pending') != 'pending':
                     raise ValueError('修改交付要求只影响尚未开始的来源，已有条目请使用补交。')
@@ -373,8 +347,12 @@ class Jobs:
                     raise ValueError('素材库正在清空，请完成后再开始。')
                 if self.store.fleet:
                     self.store.fleet.activate(db)
+                    db.execute(self.store.db.upsert(schema_settings,
+                        {'key': 'workbench_job:' + self.store.fleet.id, 'value': identity}, ['key']))
+                    db.execute(instances.update().where(instances.c.id == self.store.fleet.id).values(
+                        paused=0, stop_requested=0))
                 if resume:
-                    # Compatibility for explicit legacy system-wide commands.
+                    # Explicitly switch the local execution selection.
                     others = db.execute(select(download_lists.c.id).where(
                         download_lists.c.id != identity, download_lists.c.released == 1)
                         .order_by(download_lists.c.id).with_for_update()).scalars().all()
@@ -453,7 +431,7 @@ class Jobs:
         for key in keys:
             node = key.removeprefix('workbench_job:') if key.startswith('workbench_job:') else 'local'
             if key == 'selected_download_job':
-                # Removing a selection must not release unrelated legacy queues.
+                # Removing a selection must not release unrelated queues.
                 db.execute(schema_settings.update().where(schema_settings.c.key == 'downloads_paused').values(value='true'))
             self.store.statistics.stop_session(db, node)
             self.store.statistics.settle(db, instance_id=node)
@@ -552,24 +530,14 @@ def register_jobs(app, store, settings, preflight):
     @app.get('/jobs')
     def jobs_page():
         from webapp.frontend import render_workspace
-        page = render_workspace(app)
-        if page is not None:
-            return page
-        return render_template('jobs.html', csrf=session.get('csrf',''), service_role=app.extensions['fleet'].role if app.extensions.get('fleet') else 'hybrid')
+        return render_workspace(app)
 
     @app.get('/jobs/<identity>')
     def job_detail_page(identity):
-        import re
-        from flask import redirect
         if not re.fullmatch(r'[a-f0-9]{32}', identity):
             abort(404)
         from webapp.frontend import render_workspace
-        page = render_workspace(app)
-        if page is not None:
-            return page
-        from urllib.parse import urlencode
-        query = '?' + urlencode(request.args) if request.args else ''
-        return redirect('/jobs' + query + '#' + identity)
+        return render_workspace(app)
 
     @app.get('/api/jobs')
     def job_page():

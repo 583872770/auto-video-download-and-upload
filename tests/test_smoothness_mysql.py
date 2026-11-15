@@ -6,7 +6,6 @@ from sqlalchemy import inspect, select
 
 from tests.test_mysql import MySQLFixture
 from webapp.database import deliveries, test_files, tasks
-from webapp.migrations import _completed_file_times
 
 
 class SmoothnessMySQLTests(MySQLFixture, unittest.TestCase):
@@ -26,18 +25,3 @@ class SmoothnessMySQLTests(MySQLFixture, unittest.TestCase):
             self.assertGreater(scans['ix_tasks_batch_seq'], 5800)
             self.assertLessEqual(scans['ix_tasks_batch_ready'], 100)
             print('QUEUE_SCAN_FIXTURE', json.dumps(scans), flush=True)
-
-    def test_time_schema_and_index_creation_are_restartable_without_backfill(self):
-        with self.store.connect() as db:
-            for table in (deliveries, test_files):
-                index_name = next(index.name for index in table.indexes if index.name.endswith('_time'))
-                db.exec_driver_sql(f'ALTER TABLE {table.name} DROP INDEX {index_name}')
-                db.exec_driver_sql(f'ALTER TABLE {table.name} DROP COLUMN created_epoch')
-                db.exec_driver_sql(f"INSERT INTO {table.name} (id,seq,session_id,task_id,title,path,size,created_at) VALUES ('fixture',1,'session','task','','',100,'2026-11-06T08:00:00+08:00')")
-        _completed_file_times(self.store.db.engine)
-        _completed_file_times(self.store.db.engine)
-        for table in (deliveries, test_files):
-            with self.store.connect() as db:
-                value = db.execute(select(table.c.created_epoch).where(table.c.id=='fixture')).scalar_one()
-            self.assertIsNone(value)
-            self.assertTrue(any(index['name'].endswith('_time') for index in inspect(self.store.db.engine).get_indexes(table.name)))

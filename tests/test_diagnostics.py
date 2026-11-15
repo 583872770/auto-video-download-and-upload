@@ -201,7 +201,7 @@ class DiagnosticWebTests(unittest.TestCase):
     def test_failed_attempt_records_phase_retry_and_safe_database_error(self):
         from web_worker import drain
         from webapp.downmp3 import Downmp3Error
-        task = self.store.create('download', {'config': {'download_method': 'downmp3', 'path': 'videos'},
+        task = self.store.create('download', {'config': {'download_methods': ['downmp3'], 'path': 'videos'},
             'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
         def fail(action, payload, report, **kwargs):
             report({'stage': 'requesting_api', 'stage_seconds': {'requesting_api': 3.5}})
@@ -232,7 +232,7 @@ class DiagnosticWebTests(unittest.TestCase):
         from web_worker import drain
         from webapp.downloads import DownloadFailure
 
-        task = self.store.create('download', {'config': {'download_method': 'yt_dlp', 'path': 'videos'},
+        task = self.store.create('download', {'config': {'download_methods': ['yt_dlp'], 'path': 'videos'},
             'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
         def fail(action, payload, report, **kwargs):
             report({'stage': 'downloading'})

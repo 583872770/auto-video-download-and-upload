@@ -43,22 +43,22 @@ class BrowserFailureTests(unittest.TestCase):
                     self.assertNotIn(private, message)
 
 
-class LegacyLoginEndpointTests(unittest.TestCase):
+class AccountLoginEndpointTests(unittest.TestCase):
     setUp = test_web.WebTests.setUp
 
     def test_anonymous_browser_login_is_rejected_before_starting_a_window(self):
-        for route in ('/api/youtube/login','/api/youtube/account-login'):
+        for route in ('/api/youtube/account-login',):
             response=self.client.post(route,headers=self.headers,json={})
             self.assertEqual(response.status_code,400,response.json)
         self.assertFalse(self.app.extensions['youtube_login'].status()['active'])
 
     def test_cancel_requires_account_context(self):
-        for route in ('/api/youtube/login/cancel','/api/youtube/account-login/cancel'):
+        for route in ('/api/youtube/account-login/cancel',):
             response=self.client.post(route,headers=self.headers,json={})
             self.assertEqual(response.status_code,400,response.json)
 
-    def test_legacy_status_remains_readable_and_does_not_expose_credentials(self):
-        response=self.client.get('/api/youtube/login')
+    def test_current_status_is_readable_and_does_not_expose_credentials(self):
+        response=self.client.get('/api/youtube/account-login')
         self.assertEqual(response.status_code,200,response.json)
         self.assertFalse(response.json['active'])
         self.assertNotIn('fixture-only-secret',response.text)

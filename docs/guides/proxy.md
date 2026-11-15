@@ -16,7 +16,7 @@
 
 实现保留 `/api/clash/subscription` 的旧 POST 调用，新增 `save`、`switch`、`delete` 操作。私有元数据位于实例代理目录的 `settings.json`，节点缓存位于 `subscriptions/<id>.yaml`；当前生效配置仍使用 `nodes.yaml`、`runtime.yaml`。更新或切换失败时恢复原设置、缓存及内核运行配置。
 
-验证入口：`tests/test_clash_subscriptions.py` 覆盖保存、缓存切换、回滚、迁移、重启、凭据保护与跨实例隔离；`scripts/verify_clash.py` 使用本地两个代理出口及真实 Mihomo，验证网页操作和实际路由，同时检查桌面及手机布局。
+验证入口：`tests/test_clash_subscriptions.py` 覆盖保存、缓存切换、回滚、重启、凭据保护与跨实例隔离；`scripts/verify/verify_frontend_management_ui.py` 验证当前 Vue 页面；`tests/test_shared_mihomo.py` 使用真实 Mihomo 验证出口隔离和路由。
 
 本轮同时修正 YouTube 检测的错误分类：原来 HTTP 拒绝、限流、超时和证书错误均显示“当前节点无法连通 YouTube”。现在分别显示 HTTP 状态、超时、TLS / 证书或服务端链路异常。该检测从运行服务的实例经过项目代理访问测试地址，与其他设备的浏览器使用的路径可能不同；检测通过也不保证视频下载通过站点验证。本轮未连接用户生产代理，不能据此确定线上那次失败的具体原因。
 

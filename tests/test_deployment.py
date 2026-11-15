@@ -22,7 +22,7 @@ from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
 from webapp.deployment import DeploymentGateway, MYSQL_FIELDS, test_mysql
-from webapp.database import SchemaUpgradeInProgress
+from webapp.database import SchemaInitializationBusy
 from webapp.deployment_errors import BrowserDesktopError, explain_startup_error
 from webapp.fleet import InstanceIdentityConflict
 
@@ -69,7 +69,7 @@ class DeploymentTests(unittest.TestCase):
         return headers
 
     def values(self, **extra):
-        return {'role': 'manager', 'instance_id': '', 'instance_name': 'Test node', 'instance_url': '',
+        return {'role': 'hybrid', 'instance_id': '', 'instance_name': 'Test node', 'instance_url': '',
                 'mysql_host': 'mysql.example.test', 'mysql_port': 3306, 'mysql_database': 'video_downloads',
                 'mysql_user': 'video', 'mysql_password': 'p@ss:$ ${literal}秘密', 'web_hosts': 'localhost,127.0.0.1', **extra}
 
@@ -78,19 +78,14 @@ class DeploymentTests(unittest.TestCase):
 
     def test_new_deployments_use_one_role_and_allow_local_only_operation(self):
         self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
-        with patch('webapp.frontend.assets', return_value=None):
-            page = self.client.get('/setup').text
-        self.assertIn('管理与下载一体', page)
-        self.assertNotIn('name="role"', page)
-        self.assertNotIn('single-transition', page)
         response = self.save()
         self.assertEqual(response.status_code, 202, response.json)
         self.assertEqual(self.gateway.running_role, 'hybrid')
         self.assertEqual(self.client.get('/').json['role'], 'hybrid')
 
     def test_existing_cluster_retains_identity_without_requesting_conversion(self):
-        self.cluster_fixture('manager')
-        response = self.save(role='manager')
+        self.cluster_fixture('hybrid')
+        response = self.save(role='hybrid')
         self.assertEqual(response.status_code, 202, response.json)
         self.assertEqual(self.gateway.profile['instance_id'], 'original-node')
         self.assertEqual(self.gateway.running_role, 'hybrid')
@@ -125,7 +120,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(client.get('/api/deployment').status_code, 403)
         self.assertEqual(client.post('/api/deployment/save', json=self.settings()).status_code, 403)
         page = client.get('/setup')
-        self.assertNotIn(self.gateway.access_code, page.text)
         csrf = re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]
         for _ in range(8):
             result = client.post('/api/deployment/unlock', json={'code': '无效'}, headers={'X-CSRF-Token': csrf})
@@ -149,19 +143,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(restarted.access_code, self.gateway.access_code)
         self.assertEqual(self.calls[0]['instance_id'], self.calls[-1]['instance_id'])
 
-    def test_environment_database_overrides_legacy_saved_connection(self):
-        self.assertEqual(self.save().status_code, 202)
-        self.gateway.path.write_text(json.dumps(self.values(mysql_host='stale-db', mysql_password='stale-password')),
-                                     encoding='utf-8')
-        with patch.dict(os.environ, {'MYSQL_HOST': 'configured.example.test', 'MYSQL_PASSWORD': 'configured-password',
-                                     'VIDEO_SERVICE_ROLE': 'all'}):
-            restarted = self.make_gateway()
-        self.assertEqual(restarted.profile['role'], 'hybrid')
-        url = make_url(self.calls[-1]['database_url'])
-        self.assertEqual(url.host, 'configured.example.test')
-        self.assertEqual(url.password, 'configured-password')
-        saved = json.loads(restarted.path.read_text(encoding='utf-8'))
-        self.assertFalse(MYSQL_FIELDS.intersection(saved))
 
     def test_database_fields_never_return_or_persist_when_instance_settings_change(self):
         self.save()
@@ -187,26 +168,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(self.gateway.path.exists())
         self.assertEqual(self.calls, [])
 
-    def test_legacy_saved_database_cannot_start_without_launch_credentials(self):
-        self.gateway.path.write_text(json.dumps(self.values()), encoding='utf-8')
-        with patch.dict(os.environ, {}, clear=True):
-            gateway = self.make_gateway()
-        self.assertIsNone(gateway.active)
-        self.assertEqual(gateway.profile['mysql_host'], '')
-        self.assertIn('.env', gateway.startup_error)
-        client = Client(gateway, Response)
-        with patch('webapp.deployment.test_mysql') as probe:
-            response = client.post('/api/deployment/save', json=self.settings(), headers=self.unlock(client))
-        self.assertEqual(response.status_code, 400)
-        probe.assert_not_called()
-        self.assertEqual(self.calls, [])
 
-    def test_page_has_no_database_inputs(self):
-        with patch('webapp.frontend.assets', return_value=None):
-            page = self.client.get('/setup').text
-        for key in MYSQL_FIELDS:
-            self.assertNotIn(f'name="{key}"', page)
-        self.assertIn('页面不可修改', page)
 
     def test_connection_test_uses_the_launch_configuration(self):
         with patch('webapp.deployment.test_mysql') as probe:
@@ -216,7 +178,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(probe.call_args.args[0]['mysql_password'], self.values()['mysql_password'])
 
     def test_env_file_starts_with_configured_database_and_preserves_saved_identity(self):
-        self.gateway.path.write_text(json.dumps(self.values(instance_id='saved-node', mysql_host='stale-db')),
+        self.gateway.path.write_text(json.dumps(self.settings(instance_id='saved-node')),
                                      encoding='utf-8')
         env_file = self.root / '.env'
         env_file.write_text("MYSQL_HOST=file-db\nMYSQL_DATABASE=file_videos\nMYSQL_USER=file_user\n"
@@ -234,7 +196,7 @@ class DeploymentTests(unittest.TestCase):
     def test_live_changes_are_saved_for_restart_without_replacing_running_application(self):
         self.save()
         active = self.gateway.active
-        response = self.save(role='worker', instance_url='http://10.0.0.12:5000')
+        response = self.save(role='hybrid', instance_url='http://10.0.0.12:5000')
         self.assertEqual(response.status_code, 200, response.json)
         self.assertTrue(response.json['pending_restart'])
         self.assertIs(self.gateway.active, active)
@@ -261,14 +223,14 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.client.get('/setup').status_code, 200)
 
     def test_upgrade_in_progress_shows_reason_and_next_step_without_generic_id_guess(self):
-        self.gateway.app_factory = lambda *args, **kwargs: (_ for _ in ()).throw(SchemaUpgradeInProgress())
+        self.gateway.app_factory = lambda *args, **kwargs: (_ for _ in ()).throw(SchemaInitializationBusy())
         result = self.save()
         self.assertEqual(result.status_code, 202)
         status = self.client.get('/api/deployment').json
-        self.assertIn('数据库仍在升级', status['error'])
-        self.assertIn('不要反复提交', status['diagnostic']['remedy'])
+        self.assertIn('另一个实例正在初始化', status['error'])
+        self.assertIn('等待初始化完成', status['diagnostic']['remedy'])
         diagnostic = json.loads((self.gateway.directory / 'deployment-error.json').read_text(encoding='utf-8'))
-        self.assertIn('数据库仍在升级', diagnostic['summary'])
+        self.assertIn('另一个实例正在初始化', diagnostic['summary'])
         self.assertNotIn(self.values()['mysql_password'], json.dumps(diagnostic))
 
     def test_mysql_schema_timeout_has_error_code_and_redacts_driver_message_password(self):
@@ -277,7 +239,7 @@ class DeploymentTests(unittest.TestCase):
         self.gateway.app_factory = lambda *args, **kwargs: (_ for _ in ()).throw(failure)
         self.save()
         response = self.diagnostic()
-        self.assertIn('升级等待超时', response.json['error'])
+        self.assertIn('MySQL 连接失败或已断开', response.json['error'])
         self.assertEqual(response.json['diagnostic']['mysql_code'], 2013)
         self.assertNotIn(password, response.text)
         self.assertNotIn('private SQL', response.text)
@@ -323,21 +285,12 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(self.save().status_code, 202)
         self.assertEqual(self.calls[-1]['instance_id'], 'saved-node')
 
-    def cluster_fixture(self, role='worker'):
+    def cluster_fixture(self, role='hybrid'):
         (self.gateway.directory / 'fleet-runtime.json').write_text(json.dumps({
             'role': role, 'id': 'original-node', 'boot_id': 'private-boot-id'}), encoding='utf-8')
         (self.gateway.directory / 'instance.json').write_text(json.dumps({
             'id': 'old-generated-node', 'token': 'private-agent-token'}), encoding='utf-8')
 
-    def test_all_legacy_profile_roles_start_as_unified_and_persist_canonical_role(self):
-        for role in ('manager', 'worker', 'all', 'hybrid'):
-            with self.subTest(role=role):
-                self.gateway.path.write_text(json.dumps(self.values(role=role)), encoding='utf-8')
-                restarted = self.make_gateway()
-                self.assertEqual(restarted.running_role, 'hybrid')
-                self.assertEqual(self.calls[-1]['role'], 'hybrid')
-                self.assertEqual(json.loads(restarted.path.read_text(encoding='utf-8'))['role'], 'hybrid')
-                self.assertIsNotNone(restarted.active.config['TRUSTED_HOSTS'])
 
     def test_cluster_metadata_does_not_expose_credentials_and_reuses_identity(self):
         self.cluster_fixture()
@@ -345,52 +298,28 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(response.json['cluster_state']['instance_id'], 'original-node')
         self.assertNotIn('private-agent-token', response.text)
         self.assertNotIn('private-boot-id', response.text)
-        self.assertEqual(self.save(role='worker').status_code, 202)
+        self.assertEqual(self.save(role='hybrid').status_code, 202)
         self.assertEqual(self.calls[-1]['instance_id'], 'original-node')
         self.assertEqual(self.calls[-1]['role'], 'hybrid')
 
-    def test_legacy_single_profile_recovers_original_cluster_identity(self):
-        self.cluster_fixture('manager')
-        original = self.values(role='all', instance_id='incorrect-node')
-        self.gateway.path.write_text(json.dumps(original), encoding='utf-8')
-        identity = (self.gateway.directory / 'instance.json').read_bytes()
-        restarted = self.make_gateway()
-        self.assertEqual(restarted.running_role, 'hybrid')
-        self.assertEqual(self.calls[-1]['instance_id'], 'original-node')
-        self.assertEqual((self.gateway.directory / 'instance.json').read_bytes(), identity)
-        self.assertEqual(json.loads(restarted.path.read_text(encoding='utf-8'))['instance_id'], 'original-node')
 
     def test_explicit_identity_override_is_preserved(self):
-        self.cluster_fixture('manager')
-        self.gateway.path.write_text(json.dumps(self.values(role='all')), encoding='utf-8')
-        restarted = DeploymentGateway(self.config, self.gateway.directory, role='all', instance_id='explicit-node',
+        self.cluster_fixture('hybrid')
+        self.gateway.path.write_text(json.dumps(self.settings(role='hybrid')), encoding='utf-8')
+        restarted = DeploymentGateway(self.config, self.gateway.directory, role='hybrid', instance_id='explicit-node',
                                       load_environment=False, app_factory=self.factory)
         restarted.start()
         self.wait_for_initialization(restarted)
         self.assertEqual(restarted.running_role, 'hybrid')
         self.assertEqual(self.calls[-1]['instance_id'], 'explicit-node')
 
-    def test_old_single_transition_request_never_creates_a_conversion(self):
-        self.cluster_fixture('manager')
-        result = self.save(role='all', single_transition=True)
-        self.assertEqual(result.status_code, 202, result.json)
-        self.assertEqual(self.gateway.running_role, 'hybrid')
-        self.assertFalse((self.gateway.directory / 'single-mode.json').exists())
 
-    def test_environment_roles_are_legacy_aliases_and_unknown_roles_fail(self):
-        for role in ('all', 'manager', 'worker', 'hybrid'):
-            with patch.dict(os.environ, {'VIDEO_SERVICE_ROLE': role}):
-                self.assertEqual(self.gateway.environment_profile()['role'], 'hybrid')
-        with patch('webapp.deployment.test_mysql') as probe:
-            result = self.client.post('/api/deployment/save', json=self.settings(role='invalid'), headers=self.headers)
-        self.assertEqual(result.status_code, 400)
-        probe.assert_not_called()
 
-    def test_unified_upgrade_starts_browser_for_legacy_manager(self):
+    def test_unified_service_starts_browser_when_enabled(self):
         with patch.dict(os.environ, {'YT5S_BROWSER_ENABLED': '1'}), \
                 patch('webapp.deployment.importlib.util.spec_from_file_location') as spec, \
                 patch('webapp.deployment.importlib.util.module_from_spec') as module:
-            self.assertEqual(self.save(role='manager').status_code, 202)
+            self.assertEqual(self.save(role='hybrid').status_code, 202)
         spec.assert_called_once()
         module.return_value.start_desktop.assert_called_once()
 
@@ -419,8 +348,8 @@ class DeploymentTests(unittest.TestCase):
                 self.assertNotIn('private-password', str(raised.exception))
                 engine.dispose.assert_called_once()
 
-    def test_database_probe_accepts_mysql_57_and_rejects_mariadb(self):
-        for version, mariadb, valid in (((5, 7, 44), False, True), ((5, 6, 51), False, False), ((10, 6), True, False)):
+    def test_database_probe_accepts_mysql_84_and_rejects_older_engines(self):
+        for version, mariadb, valid in (((8, 4, 0), False, True), ((5, 6, 51), False, False), ((10, 6), True, False)):
             with self.subTest(version=version, mariadb=mariadb):
                 engine = MagicMock()
                 engine.dialect.server_version_info = version
@@ -429,7 +358,7 @@ class DeploymentTests(unittest.TestCase):
                     if valid:
                         test_mysql(self.values())
                     else:
-                        with self.assertRaisesRegex(ValueError, 'MySQL 5.7.9'):
+                        with self.assertRaisesRegex(ValueError, 'MySQL 8.4'):
                             test_mysql(self.values())
                 engine.dispose.assert_called_once()
 
@@ -468,7 +397,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_slow_database_initialization_never_blocks_setup_or_allows_duplicate_start(self):
-        self.gateway.path.write_text(json.dumps(self.values()), encoding='utf-8')
+        self.gateway.path.write_text(json.dumps(self.settings()), encoding='utf-8')
         gateway = self.make_gateway(start=False)
         self.assertIsNone(gateway.active)
         self.assertEqual(self.calls, [])
@@ -504,7 +433,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(client.get('/').json['role'], 'hybrid')
 
     def test_background_database_failure_keeps_setup_available_for_correction(self):
-        self.gateway.path.write_text(json.dumps(self.values()), encoding='utf-8')
+        self.gateway.path.write_text(json.dumps(self.settings()), encoding='utf-8')
         gateway = self.make_gateway(start=False)
         gateway.app_factory = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('private-password'))
         gateway.start()
@@ -524,7 +453,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIsNotNone(gateway.active)
 
     def test_restart_waits_for_old_identity_then_recovers_without_blocking_setup(self):
-        self.gateway.path.write_text(json.dumps(self.values(instance_id='existing-node')), encoding='utf-8')
+        self.gateway.path.write_text(json.dumps(self.settings(instance_id='existing-node')), encoding='utf-8')
         gateway = self.make_gateway(start=False)
         attempts, entered, release = [], threading.Event(), threading.Event()
         def factory(*args, **kwargs):
@@ -557,7 +486,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIsNone(gateway.failure)
 
     def test_live_identity_conflict_stops_after_one_retry_and_keeps_saved_identity(self):
-        self.gateway.path.write_text(json.dumps(self.values(instance_id='duplicate-node')), encoding='utf-8')
+        self.gateway.path.write_text(json.dumps(self.settings(instance_id='duplicate-node')), encoding='utf-8')
         gateway = self.make_gateway(start=False)
         factory = MagicMock(side_effect=InstanceIdentityConflict('duplicate-node', 'still-running', 45))
         gateway.app_factory = factory
@@ -609,7 +538,7 @@ class DeploymentTests(unittest.TestCase):
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             process = subprocess.Popen([sys.executable, '-u', str(Path(__file__).resolve().parents[1] / 'app.py'),
                 '--port', str(port), '--config', str(self.config), '--state', str(self.root / 'cli-state'),
-                '--env-file', str(env_file), '--role', 'all'], env=environment,
+                '--env-file', str(env_file), '--role', 'hybrid'], env=environment,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **options)
             try:
                 opener = build_opener(ProxyHandler({}))

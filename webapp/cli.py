@@ -12,7 +12,7 @@ def main():
     parser.add_argument('--port', default=5000, type=int)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--env-file', type=Path, help='数据库环境文件，默认读取项目目录中的 .env')
-    parser.add_argument('--role', type=normalize_role, metavar='hybrid', help='固定为管理与下载一体；兼容读取旧角色名称')
+    parser.add_argument('--role', type=normalize_role, metavar='hybrid', help='固定为管理与下载一体（hybrid）')
     parser.add_argument('--state', type=Path, help='实例独立状态目录')
     parser.add_argument('--instance-id', help='固定实例 ID，不同实例必须不同')
     parser.add_argument('--instance-url', default='', help='管理端能访问的下载实例地址')

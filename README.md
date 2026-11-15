@@ -30,7 +30,9 @@ docker compose -f compose.local.yaml up -d --build
 
 需要 Python 3.13+、FFmpeg、Node.js 或 Deno。
 
-工作区已统一使用 Vue：任务中心 `/jobs`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、交付文件 `/delivery-files`、系统设置 `/settings`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 和部署 `/deployment`。登录与管理账户使用 `/login`，本机部署恢复使用独立的 `/setup`。首页及旧哈希链接自动进入对应新页面；任务详情使用 `/jobs/<任务编号>`，兼容旧 `/jobs#<任务编号>`。本机运行前需用 Node.js 22.12+ 在 `frontend/` 执行 `npm.cmd ci`、`npm.cmd run build`；Docker 会自动打包。开发监听与验证见[前端开发](docs/development/project-layout.md#前端开发)。未构建时保留原页面回退。
+工作区统一使用 Vue：任务中心 `/jobs`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、系统设置 `/settings`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 和部署 `/deployment`。登录使用 `/login`，本机部署恢复使用 `/setup`，任务详情使用 `/jobs/<任务编号>`。本机运行前需用 Node.js 22.12+ 在 `frontend/` 执行 `npm.cmd ci`、`npm.cmd run build`；Docker 自动打包。未构建时返回构建提示，不运行旧界面。
+
+开发阶段只维护当前结构和配置，不执行旧数据升级，详见[当前数据合同](docs/development/current-schema.md)。
 
 安装后端依赖，在 `.env` 配置数据库和 Redis 后运行：
 

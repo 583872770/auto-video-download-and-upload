@@ -190,7 +190,7 @@ class TaskRunner:
                     roles.discard('regular')
                 if roles:
                     if (self.parser is None and config.get('shared_parser', True)
-                            and 'bergung' in (config.get('download_methods') or [config.get('download_method')])):
+                            and 'bergung' in (config.get('download_methods', ['yt_dlp']))):
                         from webapp.parser_broker import ParserBroker
                         self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
                         self.parser.start()

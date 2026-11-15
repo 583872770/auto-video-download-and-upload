@@ -125,7 +125,7 @@ usePolling(
       </div>
       <p class="muted">
         统计起始于 {{ time(overview.data.value.tracking_since) }}；测试统计起始于
-        {{ time(overview.data.value.test_tracking_since) }}。历史未跟踪记录不补算费用。
+        {{ time(overview.data.value.test_tracking_since) }}。
       </p>
       <button v-if="overview.data.value.active" @click="selected = overview.data.value!.active!.id">
         查看进行中的会话
@@ -146,13 +146,13 @@ usePolling(
           <h2>
             {{ row.name }}
             <small class="muted"
-              >{{ row.customer || '历史未分类' }} ·
+              >{{ row.customer || '未填写客户' }} ·
               {{ row.deleted ? '已删除，保留账本' : row.archived ? '已归档' : '客户任务' }}</small
             >
           </h2>
           <p>
-            累计交付 {{ row.tracked ? gb(row.file_bytes_exact) : '历史未补算' }} ·
-            {{ integer(row.file_count) }} 个文件 · {{ integer(row.file_bytes_exact) }} 字节
+            累计交付 {{ gb(row.file_bytes_exact) }} · {{ integer(row.file_count) }} 个文件 ·
+            {{ integer(row.file_bytes_exact) }} 字节
           </p>
           <p>
             成功 {{ integer(row.succeeded) }} · 失败 {{ integer(row.failed) }} · 测试
@@ -160,12 +160,11 @@ usePolling(
           </p>
           <p>
             预计费用
-            {{ !row.tracked ? '—' : row.amount === null ? '待设置单价' : '¥ ' + row.amount }} ·
+            {{ row.amount === null ? '待设置单价' : '¥ ' + row.amount }} ·
             {{ row.price_set ? row.price + ' 元 / ' + row.unit : '单价待定' }}
           </p>
           <div class="actions">
-            <RouterLink v-if="row.tracked && !row.deleted" :to="'/jobs/' + row.id"
-              >任务详情 / 单价</RouterLink
+            <RouterLink v-if="!row.deleted" :to="'/jobs/' + row.id">任务详情 / 单价</RouterLink
             ><a :href="`/api/statistics/lists/${row.id}/files/export`" download>导出交付 CSV</a
             ><a :href="`/api/statistics/lists/${row.id}/files/export?kind=test`" download
               >导出测试 CSV</a
@@ -216,7 +215,7 @@ usePolling(
           提供方统计起始于
           {{
             time(overview.data.value?.method_tracking_since)
-          }}。按实际处理视频的提供方归类；成功率包含测试成功，历史未分类记录单列。
+          }}。按实际处理视频的提供方归类；成功率包含测试成功。
         </p></template
       >
       <div v-if="tab !== 'methods'" class="pager">

@@ -68,7 +68,7 @@ class AccountLibrary:
         result = {}
         stamp = time.time()
         for row in rows:
-            if row['role'] not in ('worker', 'hybrid'):
+            if row['role'] != 'hybrid':
                 continue
             local = json.loads(row['config'])
             result[row['id']] = {'id': row['id'], 'name': row['name'],
@@ -202,8 +202,7 @@ class AccountLibrary:
                     alias = _key('youtube-account-alias:' + current)
                     db.execute(self.store.db.upsert(download_resources, dict(key=alias,
                         state=json.dumps({'group': group})), ['key']))
-            # Keep the display/group name as well as the ID: pacing historically
-            # groups accounts by this name. Re-login must not evade a cooldown.
+            # Keep the display/group name and ID so re-login retains cooldowns.
             values = dict(scope=scope, id=profile, name=old['name'] if old else row['email'],
                 content=data.decode('utf-8-sig'), deleted=0,
                 created_at=datetime.now(timezone.utc).isoformat())
@@ -229,8 +228,6 @@ class AccountLibrary:
                 node = self.nodes(db).get(row['instance_id'], {})
                 config = node.get('config', {})
                 current = config.get('youtube_cookie', '').replace('\\', '/').rsplit('/', 1)[-1].removesuffix('.txt')
-                if current == 'youtube':
-                    current = 'legacy'
                 if set(bound) & set(config.get('youtube_cookie_pool', [])) or current in bound:
                     raise Conflict('关联 Cookie 仍在账号池或当前使用中，请先停用再删除账号资料。')
                 # Conservative fence: no executor tasks may still retain a Cookie snapshot.
@@ -273,7 +270,7 @@ class AccountLibrary:
             fresh = node.get('online') and 0 <= stamp - rate.get('time', 0) < 20
             pooled = p['id'] in config.get('youtube_cookie_pool', [])
             current = config.get('youtube_cookie', '').replace('\\', '/').rsplit('/', 1)[-1].removesuffix('.txt')
-            active = not config.get('youtube_cookie_pool') and p['id'] == ('legacy' if current == 'youtube' else current)
+            active = not config.get('youtube_cookie_pool') and p['id'] == current
             download = session.get('state', 'unknown') if fresh and session else 'unknown' if pooled or active else 'inactive'
             auth = saved_auth.get((p['scope'], p['id']))
             state, details = 'unchecked', {}

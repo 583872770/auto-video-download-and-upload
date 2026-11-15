@@ -25,8 +25,8 @@ class CookieFallbackTests(unittest.TestCase):
     def account_cookie(self, store):
         from tests.account_cookie_fixture import AccountCookieProfiles
         library = AccountCookieProfiles(self.root, store)
-        library.save_legacy(self.original)
-        self.cookie = library.require('legacy')
+        library.seed_default(self.original)
+        self.cookie = library.require('dddddddddddddddddddddddddddddddd')
         self.payload['config']['youtube_cookie'] = str(self.cookie)
 
     def test_cookie_unavailable_retries_once_without_mutating_uploaded_cookie_or_double_counting(self):
@@ -72,12 +72,13 @@ class CookieFallbackTests(unittest.TestCase):
 
     def test_default_policy_does_not_double_unavailable_requests(self):
         self.payload['config'].pop('youtube_cookie_fallback')
+        self.payload['config']['throughput_mode'] = 'auto'
         calls = []
-        def download(downloader, urls):
+        def extract(downloader, *args, **kwargs):
             calls.append(True)
             downloader.report_error('[youtube] fixture: Video unavailable')
-            return 1
-        with patch.object(yt_dlp.YoutubeDL, 'download', download):
+            return None
+        with patch.object(yt_dlp.YoutubeDL, 'extract_info', extract):
             with self.assertRaisesRegex(RuntimeError, 'Video unavailable') as caught:
                 execute('download', self.payload)
         self.assertEqual(len(calls), 1)

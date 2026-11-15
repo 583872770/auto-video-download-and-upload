@@ -10,7 +10,6 @@ from sqlalchemy.exc import IntegrityError
 from tests import test_account_library as fixtures
 COOKIE = fixtures.COOKIE
 from webapp.account_library import AccountLibrary
-from webapp.account_migration import cleanup_credentials, reconcile_config, upgrade_account_credentials
 from webapp.account_routes import PREFIX
 from webapp.database import (cookie_profiles, youtube_account_cookies as links,
     youtube_profile_auth, youtube_accounts, download_resources)
@@ -79,8 +78,8 @@ class AccountCredentialTests(unittest.TestCase):
     def test_legacy_entrypoints_cannot_create_orphan_credentials(self):
         for route in ('/api/youtube/cookie', '/api/youtube/cookies'):
             response = self.client.post(route, headers=self.headers, data={'cookie': (io.BytesIO(COOKIE), 'test.txt')})
-            self.assertEqual(response.status_code, 400, response.json)
-        self.assertEqual(self.client.post('/api/youtube/login', headers=self.headers, json={}).status_code, 400)
+            self.assertEqual(response.status_code, 404 if route.endswith('/cookie') else 400, response.json)
+        self.assertEqual(self.client.post('/api/youtube/account-login', headers=self.headers, json={}).status_code, 400)
         with self.store.connect() as db:
             self.assertFalse(db.execute(select(cookie_profiles)).first())
 
@@ -131,57 +130,7 @@ class AccountCredentialTests(unittest.TestCase):
                 db.execute(links.insert().values(instance_id=self.scope, profile_id='f'*32,
                     account_id=identity, confirmed_by='test', created_at=1))
 
-    def test_cleanup_keeps_latest_cookie_erases_orphan_and_is_repeatable(self):
-        identity = self.add(instance_id=self.scope)
-        old = self.upload(identity).json['profile_id']
-        latest, orphan = 'a'*32, 'b'*32
-        with self.store.db.engine.begin() as db:
-            db.exec_driver_sql('DROP INDEX uq_youtube_account_cookie')
-            db.execute(cookie_profiles.insert(), [dict(scope=self.scope, id=p, name=p,
-                content=COOKIE.decode(), created_at='2026-11-13', deleted=0) for p in (latest, orphan)])
-            db.execute(links.insert().values(instance_id=self.scope, profile_id=latest, account_id=identity,
-                confirmed_by='test', created_at=9999999999))
-            result = cleanup_credentials(db)
-        self.assertEqual(set(result['removed']), {(self.scope, old), (self.scope, orphan)})
-        config = {'youtube_cookie_pool': [old, latest, orphan], 'youtube_cookie': f'Cookies/profiles/{old}.txt'}
-        cleaned = reconcile_config(config, {latest}, result['aliases'][self.scope])
-        self.assertEqual(cleaned['youtube_cookie_pool'], [])
-        self.assertTrue(cleaned['youtube_cookie'].endswith(latest+'.txt'))
-        upgrade_account_credentials(self.store.db.engine)
-        with self.store.connect() as db:
-            again = cleanup_credentials(db)
-            self.assertEqual(again['removed'], [])
-            self.assertEqual(again['removed_links'], 0)
-        self.assertEqual(self.detail(identity)['cookies'][0]['id'], latest)
 
-    def test_startup_upgrade_cleans_orphan_cache_and_reconciles_selection(self):
-        from app import create_app
-        from webapp.database import schema_migrations
-        import yaml
-        identity = self.add(instance_id=self.scope)
-        valid = self.upload(identity).json['profile_id']
-        orphan = 'f'*32
-        directory = self.root/'Cookies/profiles'
-        directory.mkdir(parents=True)
-        (directory/(orphan+'.txt')).write_bytes(COOKIE)
-        with self.store.connect() as db:
-            db.execute(cookie_profiles.insert().values(scope=self.scope, id=orphan, name='orphan',
-                content=COOKIE.decode(), created_at='2026-11-01', deleted=0))
-            db.execute(schema_migrations.delete().where(schema_migrations.c.version=='20261113_account_credentials'))
-        saved = yaml.safe_load(self.config.read_text())
-        saved.update(youtube_cookie_pool=[valid,orphan],youtube_cookie=f'Cookies/profiles/{orphan}.txt')
-        self.config.write_text(yaml.safe_dump(saved),encoding='utf-8')
-        # Database engines are reused within a test process; a fresh production
-        # process initializes the schema before assembling the application.
-        self.store.db.initialize()
-        create_app(self.config, self.root/'state', start_worker=False)
-        after = yaml.safe_load(self.config.read_text())
-        self.assertEqual(after['youtube_cookie_pool'],[])
-        self.assertEqual(after['youtube_cookie'],f'Cookies/profiles/{valid}.txt')
-        self.assertFalse((directory/(orphan+'.txt')).exists())
-        with self.store.connect() as db:
-            row = db.execute(select(cookie_profiles).where(cookie_profiles.c.id==orphan)).mappings().one()
-            self.assertEqual((row['deleted'],row['content']),(1,''))
 
 
 if __name__ == '__main__':

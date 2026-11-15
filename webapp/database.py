@@ -19,8 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def schema_token(url):
     """Only a supervisor using these exact schema sources can skip child DDL."""
     digest = hashlib.sha256(url.encode('utf-8'))
-    for path in (Path(__file__), Path(__file__).with_name('migrations.py')):
-        digest.update(path.read_bytes())
+    digest.update(Path(__file__).read_bytes())
     return digest.hexdigest()
 # MySQL FLOAT loses seconds at Unix-epoch magnitudes; leases and media cursors
 # require double precision. JSON snapshots can exceed MySQL TEXT's 64 KiB.
@@ -31,7 +30,7 @@ metadata = MetaData()
 tasks = Table('tasks', metadata,
     Column('id', String(32), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('action', String(32), nullable=False), Column('status', String(24), nullable=False),
-    Column('created_at', Text, nullable=False), Column('started_at', Text), Column('finished_at', Text),
+    Column('created_at', String(40), nullable=False), Column('started_at', String(40)), Column('finished_at', String(40)),
     Column('payload', Text, nullable=False), Column('result', Text), Column('error', Text), Column('progress', Text),
     Column('batch_id', String(32)), Column('video_id', String(256)), Column('source_key', String(128)),
     Column('url', Text), Column('title', Text, nullable=False, default='', server_default=text("('')")),
@@ -45,10 +44,8 @@ Index('ix_tasks_queue', tasks.c.status, tasks.c.available_at, tasks.c.seq)
 Index('ix_tasks_dispatch', tasks.c.action, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_action_seq', tasks.c.action, tasks.c.seq)
 Index('ix_tasks_status_seq', tasks.c.status, tasks.c.seq)
-Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq,
-      mysql_length={'finished_at': 40})
-Index('ix_tasks_status_finished_time', tasks.c.status, tasks.c.finished_at, tasks.c.seq,
-      mysql_length={'finished_at': 40})
+Index('ix_tasks_finished_time', tasks.c.finished_at, tasks.c.seq)
+Index('ix_tasks_history_order', tasks.c.status, tasks.c.finished_at, tasks.c.seq)
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_batch_ready', tasks.c.batch_id, tasks.c.status, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
@@ -56,8 +53,9 @@ Index('ix_tasks_url_prefix', tasks.c.batch_id, tasks.c.url, mysql_length={'url':
 Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)
 Index('ix_tasks_instance_status', tasks.c.instance_id, tasks.c.status, tasks.c.action)
+Index('ix_tasks_instance_lease', tasks.c.instance_id, tasks.c.status, tasks.c.lease_until)
 Index('ix_tasks_target_queue', tasks.c.target_instance_id, tasks.c.status, tasks.c.available_at)
-Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at, mysql_length={'finished_at': 40})
+Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at)
 snapshots = Table('task_snapshots', metadata, Column('id', String(64), primary_key=True), Column('payload', Text, nullable=False))
 counters = Table('task_counters', metadata, Column('scope', String(80), primary_key=True),
                  Column('status', String(24), primary_key=True), Column('value', BigInteger, nullable=False))
@@ -68,10 +66,8 @@ sequences = Table('sequence_counters', metadata, Column('key', String(32), prima
                   Column('value', BigInteger, nullable=False))
 settings = Table('schema_settings', metadata, Column('key', String(128), primary_key=True), Column('value', Text))
 # None denotes the timestamp at database initialization, not a stored NULL.
-# Migration admission shares this definition to distinguish empty schema
-# metadata from a destination containing application data or custom settings.
+# Database copy admission distinguishes bootstrap from application data.
 BOOTSTRAP_SETTINGS = {
-    'youtube_account_cookie_aliases': '{}',
     'downloads_paused': 'false',
     'download_statistics_active:local': '',
     'download_statistics_since': None,
@@ -104,7 +100,6 @@ youtube_account_cookies = Table('youtube_account_cookies', metadata,
     Column('instance_id', String(64), primary_key=True), Column('profile_id', String(32), primary_key=True),
     Column('account_id', String(32), nullable=False), Column('confirmed_by', String(64), nullable=False),
     Column('created_at', Float, nullable=False))
-Index('ix_youtube_account_cookies_account', youtube_account_cookies.c.account_id)
 Index('uq_youtube_account_cookie', youtube_account_cookies.c.account_id, unique=True)
 youtube_account_audit = Table('youtube_account_audit', metadata,
     Column('id', String(32), primary_key=True), Column('account_id', String(32), nullable=False),
@@ -147,7 +142,7 @@ download_permits = Table('download_permits', metadata,
     Column('units', Integer, nullable=False))
 Index('ix_download_permits_resource', download_permits.c.resource)
 batches = Table('batches', metadata, Column('id', String(32), primary_key=True),
-                Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', Text, nullable=False),
+                Column('seq', BigInteger, nullable=False, unique=True), Column('created_at', String(40), nullable=False),
                 Column('name', Text, nullable=False, default='', server_default=text("('')")))
 download_lists = Table('download_lists', metadata,
     Column('id', String(32), primary_key=True), Column('customer', String(200), nullable=False),
@@ -160,17 +155,14 @@ Index('ix_download_lists_released', download_lists.c.released, download_lists.c.
 reservations = Table('download_reservations', metadata, Column('key', String(128), primary_key=True),
                      Column('task_id', String(32), nullable=False))
 archive = Table('download_archive', metadata, Column('key', String(512), primary_key=True),
-                Column('created_at', Text, nullable=False), Column('path', Text))
+                Column('created_at', String(40), nullable=False), Column('path', Text))
 job_profiles = Table('job_profiles', metadata,
     Column('id', String(32), primary_key=True), Column('note', Text, nullable=False),
-    Column('policy', Text, nullable=False), Column('revision', Integer, nullable=False),
+    Column('revision', Integer, nullable=False),
     Column('archived', Integer, nullable=False), Column('deleted', Integer, nullable=False),
     Column('price_set', Integer, nullable=False), Column('updated_at', String(40), nullable=False),
-    Column('edit_version', BigInteger, nullable=False, server_default='1'),
-    Column('policy_version', BigInteger, nullable=False, server_default='1'))
+    Column('edit_version', BigInteger, nullable=False, server_default='1'))
 Index('ix_job_profiles_lifecycle', job_profiles.c.deleted, job_profiles.c.archived, job_profiles.c.id)
-schema_migrations = Table('schema_migrations', metadata,
-    Column('version', String(80), primary_key=True), Column('applied_at', String(40), nullable=False))
 console_users = Table('console_users', metadata,
     Column('username', String(64), primary_key=True), Column('password_hash', String(512), nullable=False),
     Column('role', String(16), nullable=False), Column('enabled', Integer, nullable=False, server_default='1'),
@@ -223,37 +215,36 @@ Index('ix_media_root_title', media.c.root, media.c.search_title,
 roots = Table('media_roots', metadata, Column('root', RootPath, primary_key=True),
               Column('count', BigInteger, nullable=False, server_default='0'),
               Column('bytes', BigInteger, nullable=False, server_default='0'),
-              Column('last_indexed', Text), Column('scan_id', String(32)),
+              Column('last_indexed', String(40)), Column('scan_id', String(32)),
               Column('scanned', BigInteger, nullable=False, server_default='0'))
 
 download_sessions = Table('download_sessions', metadata,
     Column('id', String(32), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
-    Column('started_at', Text, nullable=False), Column('ended_at', Text), Column('stop_requested_at', Text),
+    Column('started_at', String(40), nullable=False), Column('ended_at', String(40)), Column('stop_requested_at', String(40)),
     Column('status', String(24), nullable=False), Column('label', Text, nullable=False),
-    Column('price', String(32), nullable=False), Column('unit', String(8), nullable=False),
     *(Column(name, BigInteger, nullable=False, server_default='0') for name in
       ('attempted', 'running', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'file_count', 'file_bytes')))
 session_tasks = Table('download_session_tasks', metadata,
     Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
     Column('seq', BigInteger, nullable=False), Column('video_id', String(256)), Column('batch_id', String(32)),
-    Column('status', String(24), nullable=False), Column('started_at', Text, nullable=False),
-    Column('finished_at', Text), Column('error', Text))
+    Column('status', String(24), nullable=False), Column('started_at', String(40), nullable=False),
+    Column('finished_at', String(40)), Column('error', Text))
 Index('ix_session_tasks_recent', session_tasks.c.session_id, session_tasks.c.seq)
 Index('ix_session_tasks_status', session_tasks.c.session_id, session_tasks.c.status, session_tasks.c.seq)
 deliveries = Table('download_deliveries', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
-    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('created_at', String(40), nullable=False),
     Column('created_epoch', Float))
 Index('ix_deliveries_session', deliveries.c.session_id, deliveries.c.seq)
 Index('ix_deliveries_task_seq', deliveries.c.task_id, deliveries.c.seq)
 Index('ix_deliveries_time', deliveries.c.session_id, deliveries.c.created_epoch)
 
-# Additive multi-output records. Legacy task queues and ledgers are not rewritten.
+# Multi-output requirements and immutable delivery artifacts.
 delivery_contracts = Table('job_delivery_contracts', metadata,
     Column('job_id', String(32), primary_key=True), Column('version', Integer, primary_key=True),
-    Column('spec', Text, nullable=False), Column('created_at', Text, nullable=False))
+    Column('spec', Text, nullable=False), Column('created_at', String(40), nullable=False))
 delivery_runs = Table('delivery_runs', metadata,
     Column('task_id', String(32), primary_key=True), Column('job_id', String(32), nullable=False),
     Column('version', Integer, nullable=False), Column('spec', Text, nullable=False),
@@ -264,7 +255,7 @@ delivery_requirements = Table('delivery_requirements', metadata,
     Column('kind', String(24), nullable=False), Column('language', String(32), nullable=False),
     Column('variant', String(64), nullable=False), Column('status', String(24), nullable=False),
     Column('error', Text), Column('artifact_id', String(64)), Column('waived_by', String(64)),
-    Column('waived_reason', Text), Column('updated_at', Text, nullable=False))
+    Column('waived_reason', Text), Column('updated_at', String(40), nullable=False))
 delivery_artifacts = Table('delivery_artifacts', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('job_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
@@ -275,7 +266,7 @@ delivery_artifacts = Table('delivery_artifacts', metadata,
     Column('size', BigInteger, nullable=False), Column('instance_id', String(64), nullable=False),
     Column('storage', String(16), nullable=False), Column('object_key', Text),
     Column('available', Integer, nullable=False), Column('test_mode', Integer, nullable=False),
-    Column('created_at', Text, nullable=False))
+    Column('created_at', String(40), nullable=False))
 Index('ix_delivery_artifacts_job_seq', delivery_artifacts.c.job_id, delivery_artifacts.c.seq)
 Index('ix_delivery_artifacts_instance_seq', delivery_artifacts.c.instance_id, delivery_artifacts.c.seq)
 delivery_totals = Table('delivery_totals', metadata,
@@ -284,12 +275,12 @@ delivery_totals = Table('delivery_totals', metadata,
     Column('file_count', BigInteger, nullable=False), Column('file_bytes', BigInteger, nullable=False))
 
 # Separate ledgers keep deleted test files out of delivery billing and avoid
-# altering existing task/delivery tables during upgrades with large queues.
+# mixing test receipts with billable production deliveries.
 test_files = Table('download_test_files', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('session_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),
     Column('video_id', String(256)), Column('title', Text, nullable=False), Column('path', Text, nullable=False),
-    Column('size', BigInteger, nullable=False), Column('created_at', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('created_at', String(40), nullable=False),
     Column('created_epoch', Float))
 Index('ix_test_files_session', test_files.c.session_id, test_files.c.seq)
 Index('ix_test_files_task_seq', test_files.c.task_id, test_files.c.seq)
@@ -326,8 +317,12 @@ _lock = threading.Lock()
 _engines = {}
 
 
-class SchemaUpgradeInProgress(RuntimeError):
-    """Another initializer or an older server-side DDL is still running."""
+class SchemaInitializationBusy(RuntimeError):
+    """Another initializer holds the schema advisory lock."""
+
+
+class SchemaMismatch(ValueError):
+    """An existing database does not implement the current schema."""
 
 
 class Database:
@@ -371,8 +366,8 @@ class Database:
                 try:
                     if self.mysql:
                         with engine.connect():
-                            if engine.dialect.is_mariadb or engine.dialect.server_version_info < (5, 7, 9):
-                                raise ValueError('请使用 MySQL 5.7.9 或更新版本，推荐 MySQL 8.4。')
+                            if engine.dialect.is_mariadb or engine.dialect.server_version_info < (8, 4):
+                                raise ValueError('请使用 MySQL 8.4 或更新版本，不支持 MariaDB。')
                     if not self.mysql or os.environ.get('VIDEO_WORKER_SCHEMA_READY') != schema_token(self.url):
                         self.initialize()
                 except Exception:
@@ -391,27 +386,10 @@ class Database:
 
     @property
     def supports_skip_locked(self):
-        return self.mysql and self.engine.dialect.server_version_info >= (8, 0, 1)
+        return self.mysql
 
     def schema(self):
-        if not self.mysql or self.engine.dialect.server_version_info >= (8, 0, 21):
-            return metadata
-        # Keep shared metadata immutable: this process may open MySQL 5.7, 8.x
-        # and SQLite databases together during a migration or test run.
-        schema = MetaData()
-        for original in metadata.tables.values():
-            table = original.to_metadata(schema)
-            table.dialect_options['mysql'].update(collate='utf8mb4_bin', row_format='DYNAMIC')
-            for column in table.c:
-                if isinstance(column.type.dialect_impl(self.engine.dialect), LONGTEXT):
-                    # 5.7 cannot give TEXT a server default. Python defaults on
-                    # the source columns supply values for application inserts.
-                    column.server_default = None
-            original_indexes = {index.name: index for index in original.indexes}
-            for index in table.indexes:
-                # SQLAlchemy to_metadata does not copy conditional index DDL.
-                index._ddl_if = original_indexes[index.name]._ddl_if
-        return schema
+        return metadata
 
     def insert(self, table):
         return (mysql_insert if self.mysql else sqlite_insert)(table)
@@ -428,7 +406,8 @@ class Database:
         statement = self.insert(table).values(values)
         if updates is None:
             incoming = statement.inserted if self.mysql else statement.excluded
-            updates = {column.name: incoming[column.name] for column in table.c if column.name not in keys}
+            updates = {column.name: incoming[column.name] for column in table.c
+                       if column.name not in keys and column.computed is None}
         if self.mysql:
             return statement.on_duplicate_key_update(updates)
         return statement.on_conflict_do_update(index_elements=keys, set_=updates)
@@ -463,27 +442,18 @@ class Database:
     def initialize(self):
         if not self.mysql:
             return self._initialize_schema(self.engine)
-        # MySQL 5.7 may rebuild a large table for ADD COLUMN. Its DDL connection
-        # needs a separate timeout, while normal download queries stay bounded.
+        # Serialize first-time table creation across instances.
         engine = create_engine(self.url, poolclass=NullPool, hide_parameters=True,
             isolation_level='READ COMMITTED', connect_args={
                 'charset': 'utf8mb4', 'connect_timeout': 10, 'read_timeout': 1800, 'write_timeout': 60})
         lock_name = 'video_schema_' + hashlib.sha256(engine.url.database.encode('utf-8')).hexdigest()[:40]
         try:
             with engine.connect() as guard:
-                self.startup_report('正在检查数据库升级状态…')
+                self.startup_report('正在检查数据库初始化状态…')
                 acquired = guard.execute(text('SELECT GET_LOCK(:name, 10)'), {'name': lock_name}).scalar_one()
                 if acquired != 1:
-                    raise SchemaUpgradeInProgress('另一个实例正在升级数据库。')
+                    raise SchemaInitializationBusy('另一个实例正在初始化数据库。')
                 try:
-                    # Old versions did not take our advisory lock. An ALTER can
-                    # continue on MySQL after that client hit its read timeout.
-                    pending = guard.execute(text("SELECT ID FROM information_schema.PROCESSLIST "
-                        "WHERE DB=DATABASE() AND ID<>CONNECTION_ID() AND LOWER(INFO) REGEXP "
-                        "'^[[:space:]]*(alter[[:space:]]+table|create[[:space:]]+(unique[[:space:]]+)?index)' "
-                        "LIMIT 1")).first()
-                    if pending:
-                        raise SchemaUpgradeInProgress('MySQL 中仍有表结构升级正在执行或等待锁。')
                     self._initialize_schema(engine)
                 finally:
                     try:
@@ -494,73 +464,71 @@ class Database:
         finally:
             engine.dispose()
 
+    def validate_schema(self, engine):
+        """Reject incompatible structures before any DDL or application writes.
+
+        Development databases must use the current schema. Initialization never
+        repairs old tables, backfills history, or deletes existing application data.
+        """
+        inspector = inspect(engine)
+        existing = set(inspector.get_table_names())
+        problems = []
+        for name in sorted(existing - set(metadata.tables)):
+            problems.append(f'{name}：不属于当前结构的表')
+        for table in metadata.tables.values():
+            if table.name not in existing:
+                continue
+            columns = {column['name']: column for column in inspector.get_columns(table.name)}
+            if columns.keys() != set(table.c.keys()):
+                problems.append(f'{table.name}：字段集合不匹配')
+                continue
+            for column in table.c:
+                actual = columns[column.name]
+                expected = column.type.dialect_impl(engine.dialect)
+                actual_type = actual['type'].copy()
+                # MySQL reflection attaches the table's charset/collation to
+                # text types; compare storage independently of those options.
+                for option in ('charset', 'collation'):
+                    if hasattr(actual_type, option):
+                        setattr(actual_type, option, None)
+                if (actual_type.compile(dialect=engine.dialect) != expected.compile(dialect=engine.dialect)
+                        or (engine.dialect.name == 'mysql' and
+                            getattr(actual['type'], 'collation', None) not in (None, 'utf8mb4_0900_bin'))
+                        or bool(actual.get('computed')) != bool(column.computed)
+                        or actual['nullable'] != column.nullable):
+                    problems.append(f'{table.name}.{column.name}：类型或约束不匹配')
+            if inspector.get_pk_constraint(table.name)['constrained_columns'] != [c.name for c in table.primary_key]:
+                problems.append(f'{table.name}：主键不匹配')
+            indexes = {index['name']: index for index in inspector.get_indexes(table.name)}
+            for index in table.indexes:
+                actual = indexes.get(index.name)
+                prefix = index.dialect_options['mysql']['length'] or {}
+                if isinstance(prefix, int):
+                    prefix = {c.name: prefix for c in index.columns}
+                if (not actual or actual['column_names'] != [c.name for c in index.columns]
+                        or bool(actual['unique']) != bool(index.unique)
+                        or (engine.dialect.name == 'mysql' and
+                            actual.get('dialect_options', {}).get('mysql_length', {}) != prefix)):
+                    problems.append(f'{table.name}.{index.name}：索引不匹配')
+            if engine.dialect.name == 'mysql':
+                options = inspector.get_table_options(table.name)
+                if (options.get('mysql_engine', '').lower() != 'innodb'
+                        or options.get('mysql_collate') != 'utf8mb4_0900_bin'):
+                    problems.append(f'{table.name}：需要 InnoDB 和 utf8mb4_0900_bin 排序规则')
+            unique = {tuple(item['column_names']) for item in inspector.get_unique_constraints(table.name)}
+            unique.update(tuple(item['column_names']) for item in indexes.values() if item['unique'])
+            for constraint in table.constraints:
+                if constraint.__class__.__name__ == 'UniqueConstraint' and tuple(c.name for c in constraint.columns) not in unique:
+                    problems.append(f'{table.name}：唯一约束不匹配')
+        if problems:
+            raise SchemaMismatch('数据库结构与当前代码不一致；开发阶段不执行历史升级。'
+                '请备份后使用当前结构重新初始化测试数据库。现有数据未被修改。详情：' + '；'.join(problems[:12]))
+
     def _initialize_schema(self, engine):
-        old = False
-        if inspect(engine).has_table('tasks'):
-            existing_columns = {col['name'] for col in inspect(engine).get_columns('tasks')}
-            additions = [f'ADD COLUMN {key} {sqltype}' for key, sqltype in
-                         {'instance_id': 'VARCHAR(64)', 'target_instance_id': 'VARCHAR(64)',
-                          'policy_version': 'BIGINT'}.items() if key not in existing_columns]
-            with engine.begin() as db:
-                if additions and self.mysql:
-                    self.startup_report('正在升级任务表；MySQL 5.7 大表可能需要数分钟，请等待，不要重复启动…')
-                    db.exec_driver_sql('ALTER TABLE tasks ' + ', '.join(additions))
-                elif additions:
-                    for addition in additions:
-                        db.exec_driver_sql('ALTER TABLE tasks ' + addition)
-        if engine.dialect.name == 'sqlite' and inspect(engine).has_table('tasks'):
-            existing = {col['name'] for col in inspect(engine).get_columns('tasks')}
-            additions = {'seq': 'BIGINT', 'progress': 'TEXT', 'batch_id': 'VARCHAR(32)',
-                         'video_id': 'VARCHAR(256)', 'source_key': 'VARCHAR(128)', 'url': 'TEXT',
-                         'title': "TEXT NOT NULL DEFAULT ''", 'worker_id': 'VARCHAR(128)', 'lease_until': 'FLOAT',
-                         'attempts': 'INTEGER NOT NULL DEFAULT 0', 'max_attempts': 'INTEGER NOT NULL DEFAULT 3',
-                         'logs_pruned': 'INTEGER NOT NULL DEFAULT 0',
-                         'available_at': 'FLOAT NOT NULL DEFAULT 0'}
-            with engine.begin() as db:
-                for key, sqltype in additions.items():
-                    if key not in existing:
-                        db.exec_driver_sql(f'ALTER TABLE tasks ADD COLUMN {key} {sqltype}')
-                if 'seq' not in existing:
-                    db.exec_driver_sql('UPDATE tasks SET seq = rowid')
-                    old = True
-        schema = self.schema()
-        self.startup_report('正在检查数据库表和索引；首次升级期间请等待…')
-        schema.create_all(engine)
-        from webapp.migrations import upgrade
-        upgrade(engine)
-        for index in schema.tables['tasks'].indexes:
-            index.create(engine, checkfirst=True)
+        self.startup_report('正在检查当前数据库表和索引…')
+        self.validate_schema(engine)
+        metadata.create_all(engine)
         with engine.begin() as db:
             stamp = datetime.now().astimezone().isoformat(timespec='seconds')
             for key, value in BOOTSTRAP_SETTINGS.items():
                 self.ensure(db, settings, {'key': key, 'value': stamp if value is None else value})
-        if old:
-            # One-time upgrade only; regular requests never enumerate task history.
-            with engine.begin() as db:
-                maximum = db.exec_driver_sql('SELECT COALESCE(MAX(seq), 0) FROM tasks').scalar_one()
-                self.ensure(db, sequences, {'key': 'task', 'value': maximum})
-                for row in db.exec_driver_sql('SELECT action, status, COUNT(*) AS n FROM tasks GROUP BY action, status').mappings():
-                    self.ensure(db, counters, {'scope': 'action:' + row['action'], 'status': row['status'], 'value': row['n']})
-                from webapp.store import source_identity
-                for row in db.execute(select(tasks)).mappings().yield_per(500):
-                    payload = json.loads(row['payload'])
-                    urls = payload.get('urls') or []
-                    progress = json.loads(row['progress']) if row['progress'] else {}
-                    result = json.loads(row['result']) if row['result'] else {}
-                    video_id, source_key = source_identity(urls[0] if urls else None)
-                    batch_id = payload.get('batch_id')
-                    db.execute(tasks.update().where(tasks.c.id == row['id']).values(
-                        batch_id=batch_id, video_id=video_id, source_key=source_key, url=urls[0] if urls else None,
-                        title=str(progress.get('title') or '').casefold()))
-                    if batch_id:
-                        self.ensure(db, batches, {'id': batch_id, 'seq': self.sequence(db, 'batch'),
-                                                 'created_at': row['created_at'], 'name': ''})
-                        db.execute(self.upsert(counters, dict(scope='batch:' + batch_id, status=row['status'], value=1),
-                                               ['scope', 'status'], {'value': counters.c.value + 1}))
-                    if row['action'] == 'download' and row['status'] not in ('failed', 'interrupted'):
-                        self.ensure(db, reservations, {'key': source_key, 'task_id': row['id']})
-                    if progress.get('rotation_id') and row['status'] in ('succeeded', 'failed') and not result.get('skipped'):
-                        identity = progress['rotation_id']
-                        field = 'failed' if row['status'] == 'failed' else 'succeeded'
-                        self.ensure(db, rotations, {'id': identity, 'succeeded': 0, 'failed': 0})
-                        db.execute(rotations.update().where(rotations.c.id == identity).values({field: rotations.c[field] + 1}))

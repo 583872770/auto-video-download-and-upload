@@ -241,9 +241,6 @@ def register_accounts(app):
         cookie_owner(target, profile)
         from webapp.youtube_cookie_history import list_events
         events = list_events(store, profile, limit=100)
-        if profile == 'legacy':
-            events = [e for e in events if e['metadata'].get('instance_id') == target
-                or not store.fleet and target == library().local_id and e['metadata'].get('instance_id') is None]
         return jsonify(events=events)
 
     @app.post(PREFIX + '/<identity>/upload')

@@ -49,7 +49,7 @@ def register_fleet(app, fleet):
 
     @app.before_request
     def route_resources():
-        if not fleet.can_manage or g.fleet_rpc:
+        if not fleet.can_manage or g.fleet_rpc or request.url_rule is None:
             return None
         path = request.path
         resource = (path.startswith(('/api/media', '/media/', '/api/clash', '/api/youtube', '/api/disk'))

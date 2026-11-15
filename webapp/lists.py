@@ -1,6 +1,5 @@
 """Customer list billing survives pauses; totals are updated with file ledgers."""
 from sqlalchemy import select
-from werkzeug.exceptions import Gone
 
 from webapp.database import batches, counters, download_lists, imports, tasks, deliveries, test_files, job_profiles
 from webapp.statistics import charge, pricing, stamp
@@ -41,7 +40,7 @@ class DownloadLists:
             download_lists.c.name.label('list_name'), imports.c.processed, imports.c.added,
             imports.c.duplicates, imports.c.invalid, imports.c.finished.label('import_finished'),
             job_profiles.c.price_set, job_profiles.c.archived, job_profiles.c.deleted).select_from(
-                batches.outerjoin(download_lists, batches.c.id == download_lists.c.id)
+                batches.join(download_lists, batches.c.id == download_lists.c.id)
                        .outerjoin(imports, batches.c.id == imports.c.id)
                        .outerjoin(job_profiles, batches.c.id == job_profiles.c.id)).order_by(batches.c.seq.desc()).limit(limit + 1)
         if cursor:
@@ -61,7 +60,6 @@ class DownloadLists:
         items = []
         for row in rows[:limit]:
             value = dict(row)
-            value['tracked'] = row['tracking_since'] is not None
             for key in ('file_count', 'file_bytes', 'test_file_count', 'test_file_bytes', 'test_succeeded', 'skipped'):
                 value[key] = int(row[key] or 0)
             state = counts.get(row['id'], {})
@@ -75,9 +73,6 @@ class DownloadLists:
             value['amount'] = str(charge(value['file_bytes'], row['price'] or '0', row['unit'] or 'GB')) if value['price_set'] else None
             items.append(value)
         return dict(items=items, next_cursor=str(rows[limit - 1]['seq']) if len(rows) > limit else None)
-
-    def update(self, identity, data):
-        raise Gone('此编辑入口已停用，请在任务中心修改客户、任务信息和单价。')
 
     def files(self, identity, test=False, cursor=None, limit=1000):
         ledger = test_files if test else deliveries

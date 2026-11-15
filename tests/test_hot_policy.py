@@ -93,34 +93,21 @@ class FleetHotPolicyTests(unittest.TestCase):
         self.assertTrue(self.manager.downloads_paused())
         self.assertIsNone(self.b.claim(self.b.owner))
 
-    def test_legacy_global_policy_no_longer_overrides_instance(self):
-        self.queue(1)
-        self.activate()
-        with self.manager.connect() as db:
-            for key in ('fleet_policy','fleet_active_policy'):
-                db.execute(self.manager.db.upsert(settings, dict(key=key,
-                    value=json.dumps({'version':99,'config':{'storage_mode':'test','downmp3_quality':'1080'}})), ['key']))
-        claimed = self.a.claim(self.a.owner)
-        self.assertEqual(claimed['payload']['config']['downmp3_quality'], '720')
-        self.assertEqual(claimed['payload']['config']['storage_mode'], 'local')
-        self.assertNotEqual(claimed['policy_version'], 99)
 
     def test_same_job_uses_each_instance_policy_and_preserves_billing(self):
-        from webapp.database import job_profiles
         self.save(download_methods=['yt5s','downmp3'], yt5s_quality='720')
         self.save('beta', download_methods=['yt1d','downmp3'], yt1d_quality='1080', storage_mode='test')
         response = self.client.post('/api/jobs', json={'customer':'A','name':'Shared',
             'urls':'npNnbj46_ik\n2Gu7q-KUXCk', 'price':'1'}, headers=self.headers)
         self.assertEqual(response.status_code, 201, response.json)
         identity = response.json['id']
-        # Historical task policies remain stored for compatibility, but never apply.
-        with self.manager.connect() as db:
-            db.execute(job_profiles.update().where(job_profiles.c.id==identity).values(
-                policy=json.dumps({'download_methods':['yt_dlp'],'storage_mode':'local'})))
         with patch('webapp.fleet_routes.rpc', return_value={'ready':True}):
             response = self.client.post(f'/api/jobs/{identity}/control',
                 json={'action':'start','resume_system':True}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
+        from webapp.workbench import Workbench
+        Workbench(self.a).control(self.a.fleet.id, 'start', identity)
+        Workbench(self.b).control(self.b.fleet.id, 'start', identity)
         first, second = self.a.claim(self.a.owner), self.b.claim(self.b.owner)
         self.assertEqual(first['batch_id'], second['batch_id'])
         self.assertEqual(first['payload']['config']['download_methods'], ['yt5s','downmp3'])
@@ -132,7 +119,6 @@ class FleetHotPolicyTests(unittest.TestCase):
         detail = self.client.get('/api/jobs/'+identity).json
         self.assertEqual(detail['file_bytes_exact'], '1000')
         self.assertEqual(detail['test_file_bytes_exact'], '1000')
-        self.assertIsNone(detail['policy'])
         items = {item['id']:item for item in self.client.get('/api/instances').json['items']}
         self.assertEqual(items['alpha']['policy']['download_methods'], ['yt5s','downmp3'])
         self.assertEqual(items['beta']['policy']['storage_mode'], 'test')
@@ -142,7 +128,7 @@ class FleetHotPolicyTests(unittest.TestCase):
         with self.b.connect() as db:
             db.execute(instances.update().where(instances.c.id=='beta').values(heartbeat=0))
         restarted = create_app(self.root/'beta/config.yaml', self.b.directory, start_worker=False,
-            role='worker', instance_id='beta', database_url=self.url)
+            role='hybrid', instance_id='beta', database_url=self.url)
         self.assertEqual(restarted.extensions['fleet'].policy()['config']['yt1d_quality'], '1080')
         self.assertEqual(restarted.extensions['fleet'].policy()['config']['storage_mode'], 'test')
 
@@ -200,7 +186,7 @@ class StandaloneHotPolicyTests(unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
     def test_settings_apply_between_claims_without_restart(self):
-        response = self.client.put('/api/config', json={'download_method': 'downmp3',
+        response = self.client.put('/api/config', json={'download_methods': ['downmp3'],
             'downmp3_quality': '720'}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         for video in ['npNnbj46_ik', '2Gu7q-KUXCk']:

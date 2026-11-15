@@ -1,4 +1,4 @@
-﻿"""Billing follows durable final files, with transactional pause/retry boundaries."""
+"""Billing follows durable final files, with transactional pause/retry boundaries."""
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import http.server
@@ -212,7 +212,8 @@ class StatisticsContract:
         job = self.claim()
         identity = job['payload']['download_session_id']
         current = self.store.statistics.session(identity)
-        self.assertEqual((current['price'], current['unit']), ('12.345678', 'GiB'))
+        self.assertNotIn('price', current)
+        self.assertNotIn('unit', current)
         self.store.statistics.record_file(job['id'], self.final_file(size=1000))
         route = '/api/statistics/sessions/' + identity
         response = self.client.put(route, json={'price': '15000', 'unit': 'GB', 'label': '客户 A · 清单一'}, headers=self.headers)
@@ -269,15 +270,13 @@ class StatisticsContract:
         self.assertFalse(any(any(table in statement for table in ('from tasks', 'from download_deliveries', 'from download_test_files'))
                              for statement in statements))
 
-    def test_customer_filter_and_summary_export_combine_sessions_with_different_rates(self):
-        for video, label, price in [('npNnbj46_ik', '客户 A 清单一', '15000'),
-                                    ('2Gu7q-KUXCk', '客户 B', '90000'), ('WMu6ANTg8mk', '客户 A 清单二', '5000')]:
+    def test_customer_filter_and_summary_export_combine_execution_sessions(self):
+        for video, label in [('npNnbj46_ik', '客户 A 清单一'),
+                             ('2Gu7q-KUXCk', '客户 B'), ('WMu6ANTg8mk', '客户 A 清单二')]:
             self.job(video)
             job = self.claim()
             self.store.statistics.record_file(job['id'], self.final_file(video + '.mp4', 1000))
             self.store.statistics.update(job['payload']['download_session_id'], {'label': label})
-            with self.store.connect() as db:
-                db.execute(download_sessions.update().where(download_sessions.c.id == job['payload']['download_session_id']).values(price=price))
             self.store.finish(job['id'], result={}, worker_id=self.store.owner)
             # Separate customer labels belong to distinct executor sessions.
             self.store.set_downloads_paused(True)
@@ -298,7 +297,7 @@ class StatisticsContract:
         identity = self.claim()['payload']['download_session_id']
         size = 9007199254740993
         with self.store.connect() as db:
-            db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(file_bytes=size, price='2.5'))
+            db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(file_bytes=size))
         data = self.overview()
         self.assertEqual(data['summary']['file_bytes_exact'], str(size))
         self.assertEqual(data['items'][0]['file_bytes_exact'], str(size))
@@ -368,24 +367,15 @@ class StatisticsContract:
         self.assertEqual((data['summary']['test_file_count'], data['summary']['test_file_bytes']), (2, 16000))
         self.assertEqual(len(data['items']), 2)
 
-    def test_test_sizes_preserve_large_totals_and_old_databases_upgrade_without_changing_billing(self):
+    def test_test_sizes_preserve_large_totals_without_session_billing(self):
         self.job()
         job = self.claim()
         identity = job['payload']['download_session_id']
         self.store.statistics.record_file(job['id'], self.final_file(size=1000))
-        self.store.statistics.update(identity, {'label': '历史会话'})
-        with self.store.connect() as db:
-            db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(price='15000'))
-        # Simulate the previous deployed schema, which has billing but no test tables.
-        test_files.drop(self.store.db.engine)
-        test_totals.drop(self.store.db.engine)
-        with self.store.connect() as db:
-            db.execute(settings.delete().where(settings.c.key == 'download_test_statistics_since'))
-        self.store.db.initialize()
-        self.store.db.initialize()
         current = self.store.statistics.session(identity)
         self.assertEqual((current['file_bytes'], current['test_file_bytes'], current['amount']), (1000, 0, None))
-        self.assertEqual(current['price'], '15000')  # Historical columns are retained but no longer used for billing.
+        self.assertNotIn('price', current)
+        self.assertNotIn('unit', current)
         size = 9007199254740993
         with self.store.connect() as db:
             db.execute(test_totals.insert().values(session_id=identity, test_file_count=1, test_file_bytes=size))

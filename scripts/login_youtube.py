@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.async_api import async_playwright, Error as BrowserError, TimeoutError as BrowserTimeoutError
 from webapp.browser import browser_session
-from webapp.email_codes import email_inbox, WAIT_SECONDS
+from webapp.email_codes import email_inbox, InboxRejected, WAIT_SECONDS
 from Utils.config import DEFAULT_CONFIG, load_config
 from Utils.runtime import ROOT, configure_runtime
 from Utils.youtube_login import save_youtube_cookies
@@ -107,7 +107,8 @@ class GoogleSignIn:
 
     async def choose_email(self, page):
         if not self.inbox or self.inbox.error:
-            self.hand_off('邮件接码不可用，请在浏览器窗口选择验证方式并手动完成验证。')
+            reason = self.inbox.error if self.inbox and isinstance(self.inbox.error, str) else '邮件接码不可用。'
+            self.hand_off(reason + ' 请在浏览器窗口选择验证方式并手动完成验证。')
             return
         if self.choice_sent_at is not None:
             if time.monotonic() - self.choice_sent_at >= 15:
@@ -170,7 +171,8 @@ class GoogleSignIn:
                 self.hand_off('邮件验证码未被接受，请在浏览器窗口继续验证；不会自动重复提交。')
             return
         if not self.inbox or self.inbox.error:
-            self.hand_off('邮件接码不可用，请检查账号的接码网址，或在浏览器窗口手动填写验证码。')
+            reason = self.inbox.error if self.inbox and isinstance(self.inbox.error, str) else '邮件接码不可用。'
+            self.hand_off(reason + ' 请在浏览器窗口手动填写验证码。')
             return
         if self.code_started is None:
             self.code_started = time.monotonic()
@@ -184,6 +186,9 @@ class GoogleSignIn:
             return
         try:
             code = await self.inbox.poll()
+        except InboxRejected as error:
+            self.hand_off(str(error) + ' 请在浏览器窗口继续验证。')
+            return
         except (ValueError, BrowserError):
             self.hand_off('邮件接码暂不可用或收到多封待确认邮件，请在浏览器窗口继续验证。')
             return

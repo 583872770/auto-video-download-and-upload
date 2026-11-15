@@ -35,7 +35,7 @@ class QueueControl:
         if db is None:
             with self.connect() as connection:
                 return self.downloads_stopped(connection, lock=lock)
-        if self.fleet and self.workbench_job(db):
+        if self.fleet:
             return bool(self.fleet.row(db)['stop_requested'])
         return self.downloads_paused(db, lock=lock)
 
@@ -43,7 +43,7 @@ class QueueControl:
         if db is None:
             with self.connect() as connection:
                 return self.claims_paused(connection, lock=lock)
-        if self.fleet and self.workbench_job(db):
+        if self.fleet:
             row = self.fleet.row(db)
             return bool(row['paused'] or row['stop_requested'])
         return self.downloads_paused(db, lock=lock)
@@ -54,11 +54,8 @@ class QueueControl:
             own = select(settings.c.value).where(settings.c.key == 'workbench_job:' + self.fleet.id).scalar_subquery()
             valid = select(job_profiles.c.id).where(job_profiles.c.id == tasks.c.batch_id,
                 job_profiles.c.archived == 0, job_profiles.c.deleted == 0).exists()
-            legacy = and_(or_(selected.is_(None), selected == '', tasks.c.batch_id == selected),
-                ~select(download_lists.c.id).where(download_lists.c.id == tasks.c.batch_id,
-                    download_lists.c.released == 0).exists())
-            return or_(tasks.c.action != 'download',
-                and_(own.is_not(None), tasks.c.batch_id == own, valid), and_(own.is_(None), legacy))
+            return or_(tasks.c.action != 'download', tasks.c.batch_id.is_(None),
+                and_(own.is_not(None), tasks.c.batch_id == own, valid))
         return or_(tasks.c.action != 'download', and_(
             or_(selected.is_(None), selected == '', tasks.c.batch_id == selected),
             ~select(download_lists.c.id).where(
@@ -84,7 +81,7 @@ class QueueControl:
             if paused:
                 if self.fleet:
                     from webapp.database import instances
-                    db.execute(instances.update().where(instances.c.role.in_(('worker', 'hybrid')))
+                    db.execute(instances.update().where(instances.c.role == 'hybrid')
                                .values(paused=1, stop_requested=1))
                 self.statistics.stop_all(db)
 
@@ -119,7 +116,7 @@ class QueueControl:
             if self.fleet:
                 from webapp.database import instances
                 if db.execute(select(instances.c.id).where(instances.c.paused == 0,
-                        instances.c.role.in_(('worker', 'hybrid'))).limit(1)).first():
+                        instances.c.role == 'hybrid').limit(1)).first():
                     raise ValueError('请先暂停全部下载实例，再清空素材库。')
             if (not self.fleet and not self.downloads_paused(db)) or self._counts(db, ['action:download']).get('running', 0):
                 raise ValueError('请先暂停全部下载，并等待所有实例的下载任务停止后再清空素材库。')

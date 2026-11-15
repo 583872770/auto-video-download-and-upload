@@ -30,7 +30,7 @@ class Downmp3ResolverTests(unittest.TestCase):
                       'progress_url': 'https://p.savenow.to/api/progress?id=fixture'},
                      {'success': 0, 'progress': 250},
                      {'success': 1, 'progress': 1000, 'download_url': CDN}]
-        config = {'download_method': 'downmp3', 'downmp3_quality': '1080', 'proxy_mode': 'clash',
+        config = {'download_methods': ['downmp3'], 'downmp3_quality': '1080', 'proxy_mode': 'clash',
                   '_resolved_clash_proxy': 'http://127.0.0.1:19001', 'youtube_cookie': 'must-not-be-opened.txt'}
         with patch('webapp.downmp3.build_opener') as opener, \
                 patch('webapp.downmp3.request_json', side_effect=responses) as request, \
@@ -46,7 +46,7 @@ class Downmp3ResolverTests(unittest.TestCase):
         self.assertEqual(parameters['url'], [VIDEO])
         self.assertIn(('waiting_api_conversion', 25), stages)
         self.assertEqual(stages[-1], ('extracting', None))
-        options = build_ydl_options(config, Path('.'))
+        options = build_ydl_options({**config, 'download_method': 'downmp3'}, Path('.'))
         self.assertNotIn('cookiefile', options)
         self.assertFalse(options['writesubtitles'])
         self.assertNotIn('+', options['format'])
@@ -101,25 +101,18 @@ class Downmp3ResolverTests(unittest.TestCase):
                 media_url(value)
         for value in ('https://youtube.com/playlist?list=PLfixture', 'https://example.com/video.mp4'):
             with self.assertRaisesRegex(ValueError, 'downmp3'):
-                validate_method_urls({'download_method': 'downmp3'}, [value])
+                validate_method_urls({'download_methods': ['downmp3']}, [value])
 
 
 class Downmp3WebTests(unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
 
     def select(self, **values):
-        result = self.client.put('/api/config', json={'download_method': 'downmp3', **values}, headers=self.headers)
+        result = self.client.put('/api/config', json={'download_methods': ['downmp3'], **values}, headers=self.headers)
         self.assertEqual(result.status_code, 200, result.json)
 
     def test_page_configuration_queue_import_and_resume_do_not_require_browser_or_cookie(self):
         # Explicitly verify the source-template fallback; built routes use Vue.
-        with patch('webapp.frontend.assets', return_value=None):
-            page = self.client.get('/').text
-        self.assertIn('id="download-method" class="provider-choices"', page)
-        self.assertNotIn('id="settings-download-method"', page)
-        self.assertIn('id="settings-form"', page)
-        self.assertNotIn('id="save-download-strategy"', page)
-        self.assertIn('name="downmp3_quality"', page)
         self.select(downmp3_quality='480', downmp3_timeout='180')
         before = self.config.read_bytes()
         for invalid in ({'downmp3_quality': 'mp3'}, {'downmp3_timeout': 0}, {'downmp3_timeout': 1801}):
@@ -150,7 +143,7 @@ class Downmp3WebTests(unittest.TestCase):
 
     def test_switch_to_four_routes_both_old_and_new_pending_jobs_to_downmp3(self):
         import yt_dlp
-        old = self.store.create('download', {'config': {'download_method': 'yt5s', 'proxy_mode': 'direct',
+        old = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'proxy_mode': 'direct',
                                                        'path': 'videos'},
                                              'base': str(self.root), 'urls': [VIDEO]})
         self.store.set_downloads_paused(True)
@@ -184,12 +177,12 @@ class Downmp3WebTests(unittest.TestCase):
     def test_mode_four_environment_check_only_requires_the_probe_binary(self):
         with patch('webapp.environment.shutil.which', side_effect=lambda name: '/fixture/ffprobe' if name == 'ffprobe' else None), \
                 patch('webapp.environment.importlib.util.find_spec', return_value=True), patch('builtins.print'):
-            result = execute('check', {'config': {'download_method': 'downmp3'}, 'base': str(self.root)})
+            result = execute('check', {'config': {'download_methods': ['downmp3']}, 'base': str(self.root)})
         self.assertEqual(result['message'], '环境检查通过')
 
     def test_provider_http_failures_use_existing_retry_policy(self):
         for retryable, expected in ((True, 'queued'), (False, 'failed')):
-            task = self.store.create('download', {'config': {'download_method': 'downmp3', 'path': 'videos'},
+            task = self.store.create('download', {'config': {'download_methods': ['downmp3'], 'path': 'videos'},
                                                 'base': str(self.root), 'urls': [VIDEO]})
             with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=Downmp3Error('API failure', retryable=retryable)), \
                     patch('builtins.print'), patch('web_worker.traceback.print_exc'):

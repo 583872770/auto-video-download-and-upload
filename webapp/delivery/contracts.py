@@ -36,16 +36,13 @@ def normalize(value=None):
         if not isinstance(supplied, dict) or set(supplied) - set(DEFAULT[group]):
             raise ValueError('交付格式包含不支持的字段。')
         result[group] = {**DEFAULT[group], **supplied}
-        if group == 'subtitles' and 'languages' in supplied and 'mode' not in supplied:
-            # Existing contracts keep their selected-language behavior and hash.
-            result[group].pop('mode')
     video, audio, av, subs = (result[k] for k in ('video', 'audio', 'av', 'subtitles'))
     if type(video['max_height']) is not int or video['max_height'] not in (0, 360, 480, 720, 1080, 1440, 2160, 4320):
         raise ValueError('画质上限无效。')
     if video['container'] not in ('source', 'mp4') or audio['format'] not in ('source', 'mp3') or av['container'] not in ('auto', 'mp4', 'mkv'):
         raise ValueError('交付容器或音频格式无效。')
     languages = subs['languages']
-    if subs.get('mode', 'selected') not in ('original', 'original_and_translated', 'selected'):
+    if subs['mode'] not in ('original', 'original_and_translated'):
         raise ValueError('字幕下载模式无效。')
     if not isinstance(languages, list) or len(languages) > 8 or (not languages and subs.get('mode') != 'original') or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,30}', s) for s in languages):
         raise ValueError('字幕语言需要 1 到 8 个有效语言代码。')
@@ -65,22 +62,9 @@ def variant(spec, kind):
     if kind == 'subtitle':
         options = {k: options[k] for k in ('format', 'sources')}
         # Original-only output must never reuse a prior machine translation.
-        if spec['subtitles'].get('mode') in ('original', 'original_and_translated'):
-            options['mode'] = spec['subtitles']['mode']
+        options['mode'] = spec['subtitles']['mode']
     return digest({'kind': kind, 'options': options})
 
 
 def summary(spec):
     return ' + '.join(LABELS[k] for k in spec['outputs'])
-
-
-def compatible(store, db):
-    """Refuse enabling new requirements while older registered executors exist."""
-    if not store.fleet:
-        return
-    from sqlalchemy import select
-    from webapp.database import instances
-    from werkzeug.exceptions import Conflict
-    for row in db.execute(select(instances.c.config, instances.c.name).where(instances.c.role.in_(('worker', 'hybrid')))).mappings():
-        if json.loads(row['config'] or '{}').get('delivery_schema_version', 0) < 1:
-            raise Conflict('请先更新所有下载实例，再启用多类型交付；旧版本实例：' + row['name'])

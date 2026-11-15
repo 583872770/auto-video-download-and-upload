@@ -386,7 +386,7 @@ class ParallelHttpTests(unittest.TestCase):
         self.assertEqual(transfer_connection_units({'protocol': 'm3u8_native'}, budget), 2)
 
     def test_builtin_fragment_budget_ignores_retired_shared_connection_cap(self):
-        config = dict(download_method='yt_dlp', builtin_connection_limit=1,
+        config = dict(download_methods=['yt_dlp'], builtin_connection_limit=1,
                       fragment_concurrency=8, download_connection_limit=32, worker_count=1)
         self.assertEqual(fragment_connection_budget(config, None, 1), 8)
         self.assertEqual(build_ydl_options(config, Path(self.temp.name))['concurrent_fragment_downloads'], 8)
@@ -417,7 +417,7 @@ class ParallelHttpTests(unittest.TestCase):
                     self.assertTrue(downloader.params['_parallel_http'])
 
                 payload = dict(base=self.temp.name, urls=['https://youtu.be/00000000001'], config={
-                    'download_method': 'yt_dlp', 'path': 'videos', 'throughput_mode': mode,
+                    'download_methods': ['yt_dlp'], 'path': 'videos', 'throughput_mode': mode,
                     'youtube_pacing_mode': 'adaptive', 'youtube_sleep_preset': False,
                     'worker_count': 2, 'fragment_concurrency': 8, 'download_connection_limit': 4})
                 info = dict(id='00000000001', title='fixture', ext='mp4',

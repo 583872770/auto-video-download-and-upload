@@ -80,19 +80,15 @@ class TaskWrites:
             urls = [p['urls'][0] for p in payloads if p.get('batch_id') in managed]
             for offset in range(0, len(urls), 1000):
                 video_ids = [source_identity(url)[0] for url in urls[offset:offset+1000]]
-                # An OR across video/url indexes made MySQL scan and lock most
-                # of the batch. Keep both legacy URL and canonical-ID matches,
-                # using their respective indexes and only restoration fields.
+                # Customer jobs use canonical video IDs. Read only restoration
+                # fields through the video index to keep the lock set bounded.
                 columns = (tasks.c.id, tasks.c.batch_id, tasks.c.video_id, tasks.c.url,
                            tasks.c.action, tasks.c.status, tasks.c.finished_at, tasks.c.attempts)
-                for condition, index_name in (
-                        (tasks.c.video_id.in_(video_ids), 'ix_tasks_video'),
-                        (tasks.c.url.in_(urls[offset:offset+1000]), 'ix_tasks_url_prefix')):
-                    query = select(*columns).where(tasks.c.batch_id.in_(managed),
-                        tasks.c.action == 'download', condition).with_hint(
-                            tasks, 'FORCE INDEX (' + index_name + ')', dialect_name='mysql')
-                    for old in db.execute(query.with_for_update()).mappings():
-                        existing[(old['batch_id'], old['video_id'] or old['url'])] = old
+                query = select(*columns).where(tasks.c.batch_id.in_(managed),
+                    tasks.c.action == 'download', tasks.c.video_id.in_(video_ids)).with_hint(
+                        tasks, 'FORCE INDEX (ix_tasks_video)', dialect_name='mysql')
+                for old in db.execute(query.with_for_update()).mappings():
+                    existing[(old['batch_id'], old['video_id'])] = old
             accepted_payloads = []
             for payload in payloads:
                 key = (payload.get('batch_id'), source_identity(payload['urls'][0])[0] or payload['urls'][0])

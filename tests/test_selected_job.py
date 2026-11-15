@@ -203,6 +203,9 @@ class SelectedJobFleetTests(unittest.TestCase):
             response = self.client.post(f'/api/jobs/{identity}/control',
                 json={'action':'start', 'resume_system':True}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
+        from webapp.workbench import Workbench
+        for store in (self.a, self.b):
+            Workbench(store).control(store.fleet.id, 'start', identity)
 
     def test_shared_selection_and_instance_video_progress_match_across_workers(self):
         a, b = self.create(), self.create('List B', urls='npNnbj46_ik\n2Gu7q-KUXCk')

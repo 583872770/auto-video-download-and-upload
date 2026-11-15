@@ -49,7 +49,7 @@ class DashboardService:
         concurrency = diagnose(config, snapshot['identity'], snapshot['progress'], rate,
             snapshot['context'], stamp, cookie_profiles=snapshot['profiles'], current_tasks=snapshot['current_tasks'],
             global_limit=snapshot['budget'], global_running=snapshot['global_running'],
-            paused=snapshot['paused'])
+            paused=snapshot['paused'], pending_count=snapshot['pending_count'])
         from webapp.risk_diagnostics import observed, local_health
         concurrency['local_health'] = local_health(self.context.store.directory, config, self.context.clash.directory)
         concurrency['local_health']['progress_cache'] = self.context.store.progress_cache.health()
@@ -63,7 +63,6 @@ class DashboardService:
                        execution=self.context.app.extensions['execution_control'].status(queue),
                        connection_busy=self.context.store.download_connection_busy(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
-                       download_method=config.get('download_method', 'yt_dlp'),
                        download_methods=download_methods(config),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 

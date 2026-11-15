@@ -73,7 +73,6 @@ class WebsiteWaitTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(RuntimeError, expected) as error:
                         await probe(args, directory, report, download=False)
                 self.assertNotIn('PRIVATE_TEST_TOKEN', str(error.exception))
-                page.screenshot.assert_not_awaited()
                 self.assertFalse((directory / 'page.png').exists())
                 self.assertGreaterEqual(report['elapsed_seconds'], 0)
                 self.assertIn(report['stage'], report['stage_seconds'])
@@ -179,15 +178,12 @@ class Yt5sTests(unittest.TestCase):
         self.store = self.app.extensions['task_store']
 
     def method(self, value):
-        result = self.client.put('/api/config', json={'download_method': value}, headers=self.headers)
+        result = self.client.put('/api/config', json={'download_methods': value if isinstance(value, list) else [value]}, headers=self.headers)
         self.assertEqual(result.status_code, 200, result.json)
 
     def test_provider_selection_persists_and_method_two_creates_jobs_without_cookie(self):
-        # Explicitly verify the source-template fallback; built routes use Vue.
-        with patch('webapp.frontend.assets', return_value=None):
-            self.assertIn('id="download-method"', self.client.get('/').text)
-        self.assertEqual(self.client.get('/api/config').json['config']['download_method'], 'yt_dlp')
-        self.assertEqual(self.client.put('/api/config', json={'download_method': 'yt5s'}).status_code, 403)
+        self.assertEqual(self.client.get('/api/config').json['config']['download_methods'], ['yt_dlp'])
+        self.assertEqual(self.client.put('/api/config', json={'download_methods': ['yt5s']}).status_code, 403)
         self.method('yt5s')
         with patch.object(self.app.extensions['youtube_auth'], 'require', side_effect=AssertionError('must not use Cookie')):
             created = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik'}, headers=self.headers)
@@ -195,8 +191,8 @@ class Yt5sTests(unittest.TestCase):
         task = self.store.get(created.json['items'][0]['id'], private=True)
         self.assertNotIn('config', task['payload'])
         effective = self.store.effective_download_payload(task['id'], task['payload'])
-        self.assertEqual(effective['config']['download_method'], 'yt5s')
-        self.assertEqual(self.client.get('/api/status').json['download_method'], 'yt5s')
+        self.assertEqual(effective['config']['download_methods'], ['yt5s'])
+        self.assertEqual(self.client.get('/api/status').json['download_methods'], ['yt5s'])
         bad = self.client.post('/api/downloads', json={'urls': 'https://www.youtube.com/playlist?list=PLtest'}, headers=self.headers)
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(self.store.counts()['total'], 1)
@@ -223,7 +219,7 @@ class Yt5sTests(unittest.TestCase):
         auth.assert_called_once()
         self.assertFalse(self.store.downloads_paused())
         # The inverse uses current method two without requiring old method-one Cookie.
-        self.store.create('download', {'config': {'download_method': 'yt_dlp', 'proxy_mode': 'direct'},
+        self.store.create('download', {'config': {'download_methods': ['yt_dlp'], 'proxy_mode': 'direct'},
                                        'base': str(self.root), 'urls': ['https://youtu.be/2Gu7q-KUXCk']})
         first = self.store.page(actions=('download',), status='queued', order='asc')['items'][0]
         self.store.finish(first['id'], result={'message': 'fixture complete'})
@@ -265,7 +261,7 @@ class Yt5sTests(unittest.TestCase):
     def test_worker_missing_browser_pauses_and_requeues_without_failure(self):
         from web_worker import drain
 
-        task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos'},
+        task = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'path': 'videos'},
                                              'base': str(self.root), 'urls': [VIDEO]})
         with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=BrowserEnvironmentRequired('missing browser')):
             drain(self.store.directory)
@@ -286,7 +282,7 @@ class Yt5sTests(unittest.TestCase):
     def test_website_timeout_still_uses_configured_retry_backoff(self):
         from web_worker import drain
 
-        task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos'},
+        task = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'path': 'videos'},
                                              'base': str(self.root), 'urls': [VIDEO]})
         self.store.update_progress(task['id'], {'stage': 'opening_site'})
         with patch('web_worker.os.dup2'), patch('web_worker.execute', side_effect=WebsiteTimeoutError('网站解析超时')):
@@ -302,7 +298,7 @@ class Yt5sTests(unittest.TestCase):
         for status, maximum, expected in ((502, 3, 'queued'), (503, 1, 'failed'), (403, 3, 'failed')):
             with self.subTest(status=status, maximum=maximum):
                 self.client.put('/api/config', json={'download_attempts': maximum}, headers=self.headers)
-                task = self.store.create('download', {'config': {'download_method': 'yt5s', 'path': 'videos',
+                task = self.store.create('download', {'config': {'download_methods': ['yt5s'], 'path': 'videos',
                                                                  'download_attempts': maximum},
                                                      'base': str(self.root), 'urls': [VIDEO]})
                 self.store.update_progress(task['id'], {'stage': 'waiting_verification'})
@@ -343,7 +339,7 @@ class Yt5sTests(unittest.TestCase):
                 'ext': 'mp4', 'extractor': 'youtube', 'extractor_key': 'Youtube',
                 'thumbnail': host + '/cover.jpg', 'webpage_url': VIDEO}
         values = []
-        config = {'path': 'videos', 'proxy_mode': 'direct', 'download_method': 'yt5s',
+        config = {'path': 'videos', 'proxy_mode': 'direct', 'download_methods': ['yt5s'],
                   'shard_downloads': True, 'youtube_cookie': 'must-not-be-opened.txt'}
         payload = {'config': config, 'base': str(self.root), 'urls': [VIDEO]}
         with patch('webapp.yt5s.resolve', return_value=info) as resolver, \

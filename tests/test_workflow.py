@@ -144,8 +144,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('secret', result['message'])
 
     def test_customer_bill_spans_pauses_and_retains_deleted_test_bytes(self):
-        queued = self.enqueue('npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk', customer='=Client A', list_name='List One')
-        self.store.activate_download_lists()
+        from tests.test_jobs import JobTests
+        identity = JobTests.create(self, name='List One', customer='=Client A',
+            urls='npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk')
+        from Utils.config import load_config
+        from webapp.jobs import Jobs
+        Jobs(self.store).control(identity, 'start', load_config(self.config)[0], {})
+        queued = {'batch_id': identity}
         first = self.store.claim(self.store.owner)
         path = self.root / 'first.mp4'
         path.write_bytes(b'a' * 1000)
@@ -164,7 +169,7 @@ class WorkflowTests(unittest.TestCase):
         third = self.store.claim(self.store.owner)
         self.store.finish(third['id'], error='permanent fixture', worker_id=self.store.owner)
         route = '/api/statistics/lists/' + queued['batch_id']
-        self.assertEqual(self.client.put(route, json={'price': '15000'}, headers=self.headers).status_code, 410)
+        self.assertEqual(self.client.put(route, json={'price': '15000'}, headers=self.headers).status_code, 404)
         job_route = '/api/jobs/' + queued['batch_id']
         response = self.client.put(job_route, json={'customer': '=Client A', 'name': 'List One', 'price': '15000',
             'unit': 'GB', 'edit_version': self.client.get(job_route).json['edit_version']}, headers=self.headers)
@@ -181,13 +186,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.client.put(job_route, json={'price': '-1',
             'edit_version': self.client.get(job_route).json['edit_version']}, headers=self.headers).status_code, 400)
 
-    def test_list_pagination_exact_bytes_and_legacy_disclaimer(self):
+    def test_list_pagination_and_exact_bytes_use_current_lists(self):
         identity = self.enqueue()['batch_id']
         with self.store.connect() as db:
             db.execute(download_lists.update().where(download_lists.c.id == identity).values(file_bytes=2**53+1))
-        self.store.create('download', {'urls': ['https://youtu.be/2Gu7q-KUXCk'], 'batch_id': 'legacy'})
+        other = self.enqueue('2Gu7q-KUXCk')['batch_id']
         rows = self.store.lists.page(limit=1)
-        self.assertFalse(rows['items'][0]['tracked'])
+        self.assertEqual(rows['items'][0]['id'], other)
         next_row = self.store.lists.page(rows['next_cursor'], limit=1)['items'][0]
         self.assertEqual(next_row['file_bytes_exact'], str(2**53+1))
         exported = list(csv.reader(StringIO(self.client.get('/api/statistics/lists/export').data.decode('utf-8-sig'))))

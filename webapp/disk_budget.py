@@ -568,7 +568,6 @@ class DiskBudget:
                         failed += 1
             if store:
                 self._clean_imports(store)
-                self._clean_legacy_tests(store, grace)
                 from webapp.maintenance import prune_disk_logs
                 prune_disk_logs(store, self.config, low_space=self._free() < int(self.config['disk_min_free_gb']) * GIB)
                 from sqlalchemy import select
@@ -659,7 +658,7 @@ class DiskBudget:
                         db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
                     result['files_deleted'] = True
                     return result
-                # Older/multi-video compatibility work has no unambiguous whole
+                # A direct download with multiple videos has no unambiguous whole
                 # task completion receipt. Preserve it for inspection.
                 if not task or len(task['payload'].get('urls', [])) != 1 or len(receipts) != 1:
                     continue
@@ -710,27 +709,6 @@ class DiskBudget:
                 path.unlink(missing_ok=True)
             except (OSError, ValueError):
                 continue
-
-    def _clean_legacy_tests(self, store, grace):
-        root = self.directory / 'test-downloads'
-        if not root.is_dir() or root.is_symlink() or root.is_junction():
-            return
-        with self.connect(write=False) as db:
-            owned = {Path(r[0]) for r in db.execute('SELECT path FROM leases')}
-        for path in root.iterdir():
-            if not re.fullmatch('[0-9a-f]{32}', path.name) or not path.is_dir():
-                continue
-            if any(p == path or p.is_relative_to(path) for p in owned):
-                continue
-            task = store.get(path.name)
-            if not task or task['status'] in ('queued', 'running'):
-                continue
-            try:
-                safe_path(path, self.directory)
-                if time.time() - path.stat().st_mtime >= grace:
-                    shutil.rmtree(path)
-            except (OSError, ValueError):
-                pass
 
     def _clean_diagnostics(self, grace):
         for path in (self.directory / 'yt5s').glob('worker-*'):
