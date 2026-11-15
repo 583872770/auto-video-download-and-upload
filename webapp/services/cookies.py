@@ -71,13 +71,14 @@ class CookieService:
                        custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
 
     def check_youtube_cookie_profile(self, identity):
-        with self.context.media_lock, self.context.settings_lock:
-            self.require_login_idle()
-            config, base = self.context.settings()
-            options = {}
-            if config.get('proxy_mode') == 'clash':
-                snapshot = self.context.clash.snapshot()
-                options.update(proxy=snapshot['proxy'], node=snapshot['node'])
+        with self.context.media_lock:
+            with self.context.settings_lock:
+                self.require_login_idle()
+                config, base = self.context.settings()
+                options = {}
+                if config.get('proxy_mode') == 'clash':
+                    snapshot = self.context.clash.snapshot()
+                    options.update(proxy=snapshot['proxy'], node=snapshot['node'])
             result = self.context.youtube_auth.check_profile(identity, config, base, recover=True, **options)
         return dict(auth=result, message=result['message'])
 

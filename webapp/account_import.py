@@ -1,6 +1,5 @@
 """Strict, bounded account import. Parsing errors never contain input secrets."""
 import re
-from urllib.parse import urlsplit
 
 
 def email(value):
@@ -12,26 +11,11 @@ def email(value):
     return value
 
 
-def url(value):
-    if not isinstance(value, str) or len(value) > 4096:
-        raise ValueError('接码网址格式不正确。')
-    value = re.sub(r'^接码网址\s*[:：]\s*', '', value.strip())
-    if not value:
-        return ''
-    try:
-        parts = urlsplit(value)
-        if (parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password
-                or any(ord(c) < 33 for c in value)):
-            raise ValueError
-        parts.port
-    except ValueError:
-        raise ValueError('接码网址只支持有效的 HTTP/HTTPS 地址。') from None
-    return value
-
-
 def secret_fields(data, *, creating=False):
+    if 'code_url' in data:
+        raise ValueError('接码地址固定为 http://fbvjdjcf.asia/，无需为账号设置。')
     result = {}
-    for key in ('password', 'extra', 'code_url'):
+    for key in ('password', 'extra'):
         if key not in data:
             continue
         value = data[key]
@@ -39,7 +23,7 @@ def secret_fields(data, *, creating=False):
             raise ValueError('密码或附加信息过长或格式无效。')
         if key == 'password' and not value:
             continue  # Blank edit password always means keep.
-        result[key] = url(value) if key == 'code_url' else value
+        result[key] = value
     if creating and not result.get('password'):
         raise ValueError('新增账号需要填写密码。')
     return result
@@ -58,8 +42,8 @@ def parse_import(raw):
         entry = {'line': number}
         try:
             parts = line.split('----')
-            if not 2 <= len(parts) <= 4:
-                raise ValueError('字段数量应为 2～4 段，使用四个半角减号分隔。')
+            if not 2 <= len(parts) <= 3:
+                raise ValueError('字段数量应为 2～3 段：邮箱----密码----附加信息；接码地址由系统固定。')
             name = email(parts[0])
             normalized = name.lower()
             if normalized in seen:
@@ -68,8 +52,6 @@ def parse_import(raw):
             values = {'password': parts[1]}
             if len(parts) >= 3:
                 values['extra'] = parts[2]
-            if len(parts) == 4:
-                values['code_url'] = parts[3]
             entry.update(email=name, normalized_email=normalized, secrets=secret_fields(values, creating=True))
         except ValueError as error:
             entry['error'] = str(error)

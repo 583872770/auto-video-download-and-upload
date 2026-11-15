@@ -34,7 +34,7 @@ class AccountLibraryTests(unittest.TestCase):
 
     def add(self, email='sample@example.com', **extra):
         response = self.client.post(PREFIX,headers=self.headers,json={
-            'email':email,'password':' a&!#Secret 123 ','extra':'opaque-test-data','code_url':'http://example.com/',**extra})
+            'email':email,'password':' a&!#Secret 123 ','extra':'opaque-test-data',**extra})
         self.assertEqual(response.status_code,201,response.json)
         return response.json['id']
 
@@ -106,13 +106,23 @@ class AccountLibraryTests(unittest.TestCase):
         self.assertEqual(self.detail(identity)['note'],'')
         self.assertEqual(self.client.post(PREFIX+'/'+identity+'/secrets',headers=self.headers,json={'field':'extra'}).json['value'],'')
 
+    def test_email_code_address_cannot_be_configured_or_read_per_account(self):
+        identity = self.add()
+        response = self.client.patch(PREFIX+'/'+identity, headers=self.headers,
+            json={'version': 1, 'code_url': 'https://example.com/'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('固定', response.json['error'])
+        self.assertEqual(self.detail(identity)['version'], 1)
+        self.assertEqual(self.client.post(PREFIX+'/'+identity+'/secrets', headers=self.headers,
+            json={'field': 'code_url'}).status_code, 400)
+
     def preview(self, text, **extra):
         response = self.client.post(PREFIX+'/import/preview',headers=self.headers,json={'text':text,**extra})
         self.assertEqual(response.status_code,200,response.json)
         return response.json
 
     def test_import_preserves_special_characters_and_preview_masks_secrets(self):
-        raw = '\ufeffone@example.com---- &!# pass ----opaque----接码网址：http://example.com/\r\n\r\ntwo@example.com----second'
+        raw = '\ufeffone@example.com---- &!# pass ----opaque\r\n\r\ntwo@example.com----second'
         preview = self.preview(raw)
         self.assertEqual(preview['errors'],0)
         self.assertNotIn('opaque',json.dumps(preview))

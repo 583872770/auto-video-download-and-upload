@@ -20,6 +20,10 @@ class LoginCancelled(RuntimeError):
     pass
 
 
+class AutomaticLoginNeedsUser(RuntimeError):
+    pass
+
+
 def navigating(error):
     detail = str(error).lower()
     return 'execution context was destroyed' in detail or 'cannot find context' in detail
@@ -45,7 +49,7 @@ async def current_account_name(page):
 
 
 async def login(config, output, *, on_status=None, cancelled=None, timeout_seconds=600,
-                credentials=None, expected_email=None):
+                credentials=None, expected_email=None, automatic_only=False):
     """Use a fresh visible session; cancellation also closes its browser."""
     def report(state, message):
         if on_status:
@@ -56,6 +60,8 @@ async def login(config, output, *, on_status=None, cancelled=None, timeout_secon
             await asyncio.sleep(0.2)
 
     options = {'credentials': credentials, 'expected_email': expected_email} if credentials or expected_email else {}
+    if automatic_only:
+        options['automatic_only'] = True
     operation = asyncio.create_task(_login(config, output, report, **options))
     cancellation = asyncio.create_task(watch_cancel())
     try:
@@ -95,6 +101,7 @@ class GoogleSignIn:
         self.choice_sent_at = None
         self.consent_started = None
         self.consent_sent_at = None
+        self.manual_reason = None
 
     @staticmethod
     def trusted(page):
@@ -138,6 +145,7 @@ class GoogleSignIn:
     def hand_off(self, message):
         self.stopped = True
         self.password = None
+        self.manual_reason = message
         self.report('waiting', message)
 
     async def confirm_email(self, page):
@@ -230,14 +238,18 @@ class GoogleSignIn:
                 return
             challenge = page.locator(self.CHALLENGE).first
             if await challenge.is_visible():
-                self.stopped = True
-                self.password = None
-                self.report('waiting', '需要验证码或二次验证，请在浏览器窗口继续完成登录。')
+                self.hand_off('需要验证码或二次验证，请在浏览器窗口继续完成登录。')
                 return
             # Google serves identifierId as type=text; hidden decoy password
             # inputs must not hide the real field later in the document.
             identifier = page.locator(self.IDENTIFIER).first
             password = page.locator(self.PASSWORD).first
+            if self.email_sent and await identifier.is_visible() and await identifier.get_attribute('aria-invalid') == 'true':
+                self.hand_off('Google 未接受此邮箱账号，请核对账号资料后重新登录。')
+                return
+            if self.password_sent and await password.is_visible() and await password.get_attribute('aria-invalid') == 'true':
+                self.hand_off('Google 未接受账号密码，请核对密码后重新登录；不会重复提交。')
+                return
             if not self.email_sent and await identifier.is_visible():
                 self.email_sent = True
                 if not self.trusted(page):
@@ -258,18 +270,19 @@ class GoogleSignIn:
         except BrowserError as error:
             if navigating(error):
                 return
-            self.stopped = True
-            self.password = None
-            self.report('waiting', '自动填写未完成，请在浏览器窗口继续登录；不会重复提交密码。')
+            self.hand_off('自动填写未完成，请在浏览器窗口继续登录；不会重复提交密码。')
 
 
-async def _login(config, output, report, *, credentials=None, expected_email=None):
+async def _login(config, output, report, *, credentials=None, expected_email=None, automatic_only=False):
     async with async_playwright() as driver:
         async with (
             browser_session(driver, headless=False, proxy_server=config.get('proxy', ''),
                             executable_path=config.get('browser_executable') or None) as context,
             email_inbox(driver, credentials, config, report) as inbox,
         ):
+            if automatic_only and inbox and inbox.error:
+                reason = inbox.error if isinstance(inbox.error, str) else '邮件接码暂不可用，需要检查接码服务。'
+                raise AutomaticLoginNeedsUser(reason)
             page = await context.new_page()
             report('starting', '正在打开 YouTube，请稍候…')
             await page.goto('https://www.youtube.com/', wait_until='commit', timeout=60000)
@@ -295,6 +308,8 @@ async def _login(config, output, report, *, credentials=None, expected_email=Non
                     raise RuntimeError('Google 拒绝自动化浏览器登录；请在正常浏览器手动登录并导出 YouTube 专用 Netscape Cookie。')
                 if assistant:
                     await assistant.advance(page)
+                    if automatic_only and assistant.stopped:
+                        raise AutomaticLoginNeedsUser(assistant.manual_reason or '此账号需要人工完成登录验证。')
                 if expected_email:
                     address = urlsplit(page.url)
                     if address.scheme != 'https' or address.hostname != 'www.youtube.com':

@@ -146,7 +146,7 @@ class AccountLibrary:
             self.record(db, identity, actor, 'update')
 
     def secrets(self, identity, field, actor):
-        if field not in ('password', 'extra', 'code_url'):
+        if field not in ('password', 'extra'):
             raise ValueError('不支持的密钥字段。')
         with self.transaction() as db:
             row = self.get_row(db, identity)
@@ -302,14 +302,16 @@ class AccountLibrary:
     def account_item(row, members, nodes):
         states = {p['auth']['state'] for p in members}
         auth = ('unlinked' if not members else next((s for s in ('valid', 'verification_required', 'not_logged_in',
-            'invalid', 'network_error', 'rate_limited', 'unconfirmed', 'expired', 'unchecked') if s in states), 'unchecked'))
+            'invalid', 'missing', 'network_error', 'rate_limited', 'unconfirmed', 'expired', 'checking', 'unchecked') if s in states), 'unchecked'))
         downloads = {p['download_state'] for p in members}
         download = next((s for s in ('manual', 'cooldown', 'recovery', 'ready', 'unknown') if s in downloads), 'inactive')
+        until = max(((p.get('session') or {}).get('cooldown_until', 0) for p in members), default=0)
         node = nodes.get(row['instance_id'], {})
         return {**row, 'kind':'account', 'instance_name':node.get('name', row['instance_id']),
             'online':bool(node.get('online')), 'cookies':members, 'cookie_count':len(members),
             'valid_count':sum(p['auth']['state']=='valid' for p in members),
-            'auth_state':auth, 'download_state':download}
+            'auth_state':auth, 'download_state':download, 'cooldown_until':until,
+            'cooling': download == 'cooldown' or until > time.time()}
 
     def overview(self, filters):
         """One row per imported/created account; credentials are subordinate.
@@ -351,8 +353,22 @@ class AccountLibrary:
         for row in rows:
             members = sorted(grouped.get(row['id'], []), key=lambda p:(p['created_at'], p['id']))
             items.append(self.account_item(dict(row), members, nodes))
+        def matches(row, status):
+            return {
+                'all': True,
+                'valid': row['auth_state'] == 'valid',
+                'needs_login': row['auth_state'] in {'unlinked', 'not_logged_in', 'invalid', 'missing'},
+                'cooldown': row['cooling'],
+                'attention': row['download_state'] == 'manual' or row['auth_state'] == 'verification_required',
+                'unchecked': row['auth_state'] in {'unchecked', 'expired', 'unconfirmed', 'network_error', 'rate_limited', 'checking'},
+            }.get(status, True)
         auth, download, linked, pooled = (filters.get(k, '') for k in ('auth', 'download', 'linked', 'pooled'))
+        items = [r for r in items if pooled not in ('0', '1')
+                 or any(p['pooled'] for p in r['cookies']) == (pooled == '1')]
+        summary = {key: sum(matches(r, key) for r in items) for key in
+                   ('all', 'valid', 'needs_login', 'cooldown', 'attention', 'unchecked')}
         items = [r for r in items if (not auth or r['auth_state'] == auth)
+            and matches(r, filters.get('status', 'all'))
             and (not download or r['download_state'] == download)
             and (linked != 'account' or r['kind'] == 'account')
             and (linked != 'orphan' or r['kind'] == 'cookie')
@@ -369,7 +385,7 @@ class AccountLibrary:
                 return 0
         items.sort(key=lambda r:(-created_at(r), r['id']))
         total = len(items)
-        return {'items':items[(page-1)*size:page*size], 'total':total, 'page':page, 'size':size,
+        return {'items':items[(page-1)*size:page*size], 'total':total, 'page':page, 'size':size, 'summary':summary,
             'local_instance_id':self.local_id,
             'instances':[{k:r[k] for k in ('id','name','online')} for r in nodes.values()]}
 

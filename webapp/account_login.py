@@ -10,7 +10,11 @@ from webapp.database import youtube_accounts
 def prepare(store, base, config, identity, data, actor):
     lib = AccountLibrary(store, base, config)
     automatic = data.get('automatic', False)
-    if type(automatic) is not bool or type(data.get('version')) is not int:
+    automatic_only = data.get('automatic_only', False)
+    batch_id = data.get('batch_id', '')
+    if (type(automatic) is not bool or type(automatic_only) is not bool
+            or (automatic_only and not automatic) or type(data.get('version')) is not int
+            or not isinstance(batch_id, str) or len(batch_id) > 64):
         raise ValueError('请重新读取账号，并选择登录方式。')
     with lib.transaction() as db:
         row = lib.get_row(db, identity, data['version'])
@@ -32,7 +36,8 @@ def prepare(store, base, config, identity, data, actor):
             lib.record(db, identity, actor, 'bind_for_login')
         lib.record(db, identity, actor, 'browser_login_auto' if automatic else 'browser_login_manual')
         return {'account_id': identity, 'email': row['email'], 'version': row['version'],
-                'instance_id': target, 'actor': actor, 'automatic': automatic}, credentials
+                'instance_id': target, 'actor': actor, 'automatic': automatic,
+                'automatic_only': automatic_only, 'batch_id': batch_id}, credentials
 
 
 def install(store, base, config, data, account, account_name):

@@ -12,7 +12,7 @@ import uuid
 from playwright.async_api import Error as BrowserError
 from werkzeug.exceptions import Conflict, NotFound
 
-from scripts.login_youtube import login, LoginCancelled
+from scripts.login_youtube import login, LoginCancelled, AutomaticLoginNeedsUser
 from web_worker import worker_lock
 from webapp.tasks import now
 
@@ -139,6 +139,8 @@ class YouTubeLogin:
                 options = {}
                 if state.get('account'):
                     options.update(credentials=credentials, expected_email=state['account']['email'])
+                    if state['account'].get('automatic_only'):
+                        options['automatic_only'] = True
                 result = asyncio.run(login(config, output, on_status=report, cancelled=Cancellation(), **options))
                 credentials = None
                 with self.lock:
@@ -152,6 +154,8 @@ class YouTubeLogin:
                 state.update(state='succeeded', message=message or 'YouTube 登录成功，Cookie 已保存，后续下载将自动使用。')
         except LoginCancelled as error:
             state.update(state='cancelled', message=str(error))
+        except AutomaticLoginNeedsUser as error:
+            state.update(state='needs_attention', message=str(error))
         except BrowserError as error:
             # Playwright errors may contain proxy URLs or browser process arguments.
             message = browser_failure_message(error, state['state'])

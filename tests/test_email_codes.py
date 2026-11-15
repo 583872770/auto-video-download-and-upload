@@ -1,5 +1,6 @@
 """Provider isolation, fresh-code selection, pacing and sign-in handoff contracts."""
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import time
 import unittest
@@ -9,7 +10,7 @@ from playwright.async_api import Error as BrowserError
 
 from webapp.email_codes import (EmailInbox, InboxUnavailable, InboxRejected, MAX_PAGE_BYTES, ORIGIN,
                                email_inbox, read_inbox, safe_url, supported_source)
-from scripts.login_youtube import GoogleSignIn
+from scripts.login_youtube import GoogleSignIn, AutomaticLoginNeedsUser, _login
 
 
 EMAIL = 'fixture@example.test'
@@ -324,6 +325,48 @@ class EmailChallengeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(assistant.password)
             self.assertNotIn('private-url-and-session', str(report.call_args_list))
             locator(GoogleSignIn.EMAIL_PIN).fill.assert_not_awaited()
+
+    async def test_rejected_email_or_password_stops_without_resubmitting(self):
+        for field, sent in ((GoogleSignIn.IDENTIFIER, 'email_sent'), (GoogleSignIn.PASSWORD, 'password_sent')):
+            page, locator = self.page('/v3/signin/identifier')
+            assistant, report = self.assistant()
+            setattr(assistant, sent, True)
+            locator(field).is_visible.return_value = True
+            locator(field).get_attribute.return_value = 'true'
+            await assistant.advance(page)
+            self.assertTrue(assistant.stopped)
+            self.assertIn('未接受', assistant.manual_reason)
+            locator(field).fill.assert_not_awaited()
+
+
+class AutomaticBatchLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_inbox_stops_batch_account_before_submitting_google_credentials(self):
+        browser, driver, report = MagicMock(), MagicMock(), MagicMock()
+        browser.new_page = AsyncMock()
+        closed = []
+
+        @asynccontextmanager
+        async def session(*args, **kwargs):
+            try:
+                yield browser
+            finally:
+                closed.append(True)
+
+        @asynccontextmanager
+        async def inbox(*args):
+            yield type('Inbox', (), {'error': '接码网站已将此邮箱加入黑名单。'})()
+
+        driver.__aenter__ = AsyncMock(return_value=MagicMock())
+        driver.__aexit__ = AsyncMock(return_value=False)
+        with patch('scripts.login_youtube.async_playwright', return_value=driver), \
+             patch('scripts.login_youtube.browser_session', session), \
+             patch('scripts.login_youtube.email_inbox', inbox):
+            with self.assertRaisesRegex(AutomaticLoginNeedsUser, '黑名单'):
+                await _login({}, None, report, credentials={'email': EMAIL, 'password': 'private-test-password'},
+                             expected_email=EMAIL, automatic_only=True)
+        browser.new_page.assert_not_awaited()
+        self.assertEqual(closed, [True])
+        self.assertNotIn('private-test-password', str(report.call_args_list))
 
 
 if __name__ == '__main__':

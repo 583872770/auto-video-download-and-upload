@@ -1,5 +1,32 @@
 import type { RuntimeSlot } from '../workbench/contracts';
 export const base = '/api/account-library/youtube';
+export const emailCodeOrigin = 'http://fbvjdjcf.asia/';
+export interface AccountSelection {
+  id: string;
+  email: string;
+  version: number;
+  instance_id: string | null;
+  instance_name?: string;
+}
+export interface AccountBatchRow {
+  id: string;
+  version: number;
+  email: string;
+  instance_id: string;
+  state: string;
+  message: string;
+}
+export interface AccountBatchStatus {
+  id?: string;
+  state: string;
+  active: boolean;
+  total: number;
+  finished: number;
+  message: string;
+  items: AccountBatchRow[];
+  counts: Record<string, number>;
+}
+export type AccountBatchSummary = Omit<AccountBatchStatus, 'items'>;
 export interface Node {
   id: string;
   name: string;
@@ -37,6 +64,8 @@ export interface Account {
   cookie_count: number;
   auth_state: string;
   download_state: string;
+  cooling: boolean;
+  cooldown_until: number;
 }
 export interface Overview {
   items: Account[];
@@ -45,6 +74,7 @@ export interface Overview {
   size: number;
   instances: Node[];
   local_instance_id: string;
+  summary: Record<string, number>;
 }
 export interface CookieEvent {
   occurred_at: number;
