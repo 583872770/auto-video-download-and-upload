@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScopePanel from '../../components/ScopePanel.vue';
 import { computed, nextTick, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../../api';
@@ -132,6 +133,7 @@ function samples(value: string) {
 <template>
   <main class="content" id="detail-view">
     <RouterLink id="back" class="text-link" to="/jobs">← 返回任务中心</RouterLink>
+    <ScopePanel v-if="job" level="task" purpose="operate" :target="job.customer + ' / ' + job.name" description="此页的任务操作与配置作用于该任务，涉及所有承接它的实例。暂停本任务不会暂停实例中的其他任务。" />
     <SystemNotice />
     <p v-if="resource.error.value" role="alert" class="form-error">
       {{ resource.error.value }} <button @click="refresh()">重新读取</button>

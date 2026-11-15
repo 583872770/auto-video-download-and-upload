@@ -44,16 +44,18 @@ def apply_job_scope(store, db, task_id, payload):
     if not value:
         return payload
     config = dict(payload['config'])
-    from Utils.config import video_directory
-    config['_job_media_root'] = str(video_directory(config, payload['base']))
     from webapp.delivery.artifacts import pin
-    delivery = pin(store, db, task_id, value['id'], config.get('storage_mode') == 'test')
+    delivery = pin(store, db, task_id, value['id'])
     if delivery:
+        from webapp.task_storage import FIELDS
+        config = {**{k: v for k, v in config.items() if k not in FIELDS}, **delivery['spec']['storage'],
+                  '_task_storage': True, '_business_job': value['id']}
+        from Utils.config import video_directory
+        config['_job_media_root'] = str(video_directory(config, payload['base']))
         config['_delivery_contract'] = delivery['spec']
         config['_delivery_version'] = delivery['version']
-    # A fresh attempt directory prevents a cancelled, remote executor from
-    # modifying a later attempt's file before it notices its revoked lease.
-    config['dir'] = str(Path(config.get('dir') or '') / 'jobs' / value['id'] / task_id / uuid.uuid4().hex[:12])
+    else:
+        raise ValueError('任务缺少交付与保存配置，请在任务中心设置后执行。')
     return {**payload, 'config': config, '_business_job': value['id']}
 
 
@@ -125,9 +127,8 @@ class Jobs:
             self.store.lists.create(db, identity, {**data, 'list_name': name,
                 **({'price': '0'} if 'price' in data and data['price'] in ('', None) else {})})
             self.ensure(db, identity, config, data)
-            if 'delivery' in data:
-                from webapp.delivery.artifacts import save_contract
-                save_contract(db, identity, data['delivery'])
+            from webapp.delivery.artifacts import save_contract
+            save_contract(db, identity, data.get('delivery', {}))
             ids = self.store.insert_downloads(db, [{'base': str(base), 'scope': 'download',
                 'batch_id': identity, 'urls': [url]} for url in urls])
             event(self.store, db, identity, f'创建任务；新增 {len(ids)} 个视频。')
@@ -312,6 +313,16 @@ class Jobs:
                 raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
             if 'delivery' in data:
                 from webapp.delivery.artifacts import save_contract
+                from webapp.delivery.artifacts import current
+                from webapp.task_storage import normalize as normalize_storage
+                old_contract = current(db, identity)
+                old_storage = old_contract['spec']['storage'] if old_contract else None
+                new_storage = normalize_storage(data['delivery'].get('storage'), old_storage)
+                if old_storage != new_storage:
+                    if self.store._counts(db, ['batch:' + identity]).get('running', 0):
+                        raise Conflict('本任务仍有在途执行，请先暂停领取并等待执行结束后修改保存配置。')
+                    if self.store.media_clear_busy(db):
+                        raise Conflict('素材库正在清空，请完成后再修改任务保存配置。')
                 if data.get('delivery_scope', 'pending') != 'pending':
                     raise ValueError('修改交付要求只影响尚未开始的来源，已有条目请使用补交。')
                 save_contract(db, identity, data['delivery'])

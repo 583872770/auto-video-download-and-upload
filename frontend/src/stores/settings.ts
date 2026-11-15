@@ -77,7 +77,7 @@ export const useSettings = defineStore('settings', () => {
       if (mismatches.length)
         throw new Error('服务器读回值与提交值不一致：' + mismatches.join('、'));
       accept(response);
-      message.value = `「${instances.name}」系统设置已保存。后续领取或重试的视频使用新配置。`;
+      message.value = `「${instances.name}」实例设置已保存。后续领取或重试的视频使用新配置。`;
     } catch (failure) {
       if (scope.isCurrent())
         error.value =

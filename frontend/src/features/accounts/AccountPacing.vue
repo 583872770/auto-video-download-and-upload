@@ -132,7 +132,7 @@ async function save() {
       throw new Error('服务器读回与提交值不同，草稿已保留。');
     config.value = value;
     baseline.value = JSON.stringify(pacing);
-    op.message.value = '请求节奏已保存，用于后续任务；账号冷却保持有效。';
+    op.message.value = `「${instances.name}」请求节奏已保存，作用于本实例的后续任务；账号冷却保持有效。`;
     emit('saved');
   });
 }

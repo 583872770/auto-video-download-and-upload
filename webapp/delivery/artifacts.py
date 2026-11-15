@@ -14,8 +14,12 @@ def current(db, job):
 
 
 def save_contract(db, job, spec):
-    spec = normalize(spec)
     old = current(db, job)
+    from webapp.task_storage import normalize as normalize_storage
+    if not isinstance(spec, dict):
+        raise ValueError('请提交有效的交付要求。')
+    spec = {**spec, 'storage': normalize_storage(spec.get('storage'), old['spec']['storage'] if old else None)}
+    spec = normalize(spec)
     if old and old['spec'] == spec:
         return old
     version = old['version'] + 1 if old else 1
@@ -37,9 +41,11 @@ def state(store, db, run, value):
     db.execute(runs.update().where(runs.c.task_id == run['task_id']).values(status=value))
 
 
-def pin(store, db, task_id, job, test=False, *, force=False):
+def pin(store, db, task_id, job, test=None, *, force=False):
     run = db.execute(select(runs).where(runs.c.task_id == task_id).with_for_update()).mappings().first()
     if run:
+        if test is None:
+            return {'version': run['version'], 'spec': json.loads(run['spec'])}
         if bool(run['test_mode']) != bool(test):
             count(store, db, job, '@' + run['status'], run['test_mode'], -1)
             count(store, db, job, '@pending', test, 1)
@@ -49,6 +55,8 @@ def pin(store, db, task_id, job, test=False, *, force=False):
     contract = current(db, job)
     if not contract:
         return None  # Direct downloads do not have a customer delivery contract.
+    if test is None:
+        test = contract['spec']['storage']['storage_mode'] == 'test'
     db.execute(runs.insert().values(task_id=task_id, job_id=job, version=contract['version'],
         spec=packed(contract['spec']), status='pending', test_mode=int(test)))
     count(store, db, job, '@pending', test, 1)
@@ -152,7 +160,8 @@ def describe(db, jobs):
         return result
     for row in db.execute(select(contracts).where(contracts.c.job_id.in_(jobs)).order_by(contracts.c.version)).mappings():
         spec = json.loads(row['spec'])
-        result[row['job_id']]['contract'] = {'version': row['version'], 'spec': spec, 'summary': summary(spec)}
+        from webapp.task_storage import public_spec
+        result[row['job_id']]['contract'] = {'version': row['version'], 'spec': public_spec(spec), 'summary': summary(spec)}
     for row in db.execute(select(totals).where(totals.c.job_id.in_(jobs))).mappings():
         item = result[row['job_id']]
         if row['kind'].startswith('@'):

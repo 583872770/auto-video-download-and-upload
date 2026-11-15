@@ -166,7 +166,7 @@ usePolling(
         <h1>素材库</h1>
         <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。</p>
       </div>
-      <InstancePicker :disabled="busy || !!dialog" @change="instanceChanged" />
+      <InstancePicker purpose="view" :disabled="busy || !!dialog" @change="instanceChanged" />
     </div>
     <p v-if="message" class="notice" role="status">{{ message }}</p>
     <p v-if="error && !dialog" class="form-error" role="alert">{{ error }}</p>

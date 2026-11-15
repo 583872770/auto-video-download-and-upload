@@ -1,6 +1,12 @@
+import type { ConsoleConfig } from '../../generated/config';
+export type TaskStorage = Pick<ConsoleConfig, 'path' | 'dir' | 'shard_downloads' | 'storage_mode' | 'oss_endpoint' | 'oss_bucket' | 'oss_prefix' | 'oss_access_key_id' | 'oss_access_key_secret' | 'oss_security_token' | 'oss_upload_limit' | 'oss_upload_threads' | 'oss_part_size_mb'>;
+export function defaultStorage(): TaskStorage {
+  return { path: 'videos', dir: '', shard_downloads: true, storage_mode: 'local', oss_endpoint: '', oss_bucket: '', oss_prefix: 'videos', oss_access_key_id: '', oss_access_key_secret: '', oss_security_token: '', oss_upload_limit: 2, oss_upload_threads: 2, oss_part_size_mb: 8 };
+}
 export type OutputKind = 'subtitle' | 'video_only' | 'audio_only' | 'av';
 export interface DeliverySpec {
   schema_version: number;
+  storage: TaskStorage & { oss_access_key_secret_configured?: boolean; oss_security_token_configured?: boolean };
   outputs: OutputKind[];
   video: { max_height: number; container: string };
   audio: { format: string };
@@ -34,6 +40,7 @@ export const deliveryStates: Record<string, string> = {
 export function defaultDelivery(): DeliverySpec {
   return {
     schema_version: 1,
+    storage: defaultStorage(),
     outputs: ['av'],
     video: { max_height: 1080, container: 'source' },
     audio: { format: 'source' },
@@ -49,6 +56,8 @@ export function defaultDelivery(): DeliverySpec {
   };
 }
 export function validateDelivery(spec: DeliverySpec): string {
+  if (!spec.storage.path.trim()) return '请填写本任务的素材根目录。';
+  if (!['local', 'oss', 'test'].includes(spec.storage.storage_mode)) return '请选择有效的文件保存方式。';
   if (!spec.outputs.length || spec.outputs.some((kind) => !(kind in outputLabels)))
     return '请至少选择一种有效交付内容。';
   const languages = spec.subtitles.languages;

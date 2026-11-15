@@ -114,7 +114,7 @@ def publish(session, source, kind, language='', *, retained=False, subtitle_sour
         video_id = task.get('video_id') or ''
         if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
             raise LocalDeliveryError('视频 ID 无效，无法按视频 ID 保存交付文件。')
-        subdirectory = Path(video_id[:2]) / video_id
+        subdirectory = Path(video_id)
     root = source.parent if retained else video_directory(session.config, session.base) / subdirectory
     root.mkdir(parents=True, exist_ok=True)
     target = source if retained else root / (identity + '-' + uuid.uuid4().hex + source.suffix)

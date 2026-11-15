@@ -1,6 +1,6 @@
 import type { ConfigKey } from '../../generated/config';
 
-export type Section = 'storage' | 'download' | 'performance' | 'maintenance' | 'diagnostics';
+export type Section = 'download' | 'performance' | 'maintenance' | 'diagnostics';
 export interface Field {
   key: ConfigKey;
   label: string;
@@ -24,53 +24,6 @@ const field = (key: ConfigKey, label: string, section: Section, help?: string): 
   help,
 });
 export const groups = {
-  local: [
-    field('path', '素材根目录', 'storage', '相对路径以实例的 config.yaml 所在目录为基准。'),
-    field('dir', '子目录（可选）', 'storage'),
-    select('shard_downloads', '文件组织方式', 'storage', [
-      [true, '按视频 ID 分目录（推荐）'],
-      [false, '直接保存到素材目录'],
-    ]),
-  ],
-  oss: [
-    field(
-      'oss_endpoint',
-      'Endpoint',
-      'storage',
-      '填写 Bucket 所在地域的 HTTPS Endpoint，不填写 Bucket 域名。',
-    ),
-    field('oss_bucket', 'Bucket 名称', 'storage'),
-    field(
-      'oss_prefix',
-      '对象前缀（可选）',
-      'storage',
-      '多实例建议使用不同前缀，避免同名文件覆盖。',
-    ),
-    field('oss_access_key_id', 'AccessKey ID', 'storage', '也可由实例环境变量提供。'),
-    {
-      ...field(
-        'oss_access_key_secret',
-        'AccessKey Secret',
-        'storage',
-        '留空保留现有密钥，保存后不回显。',
-      ),
-      password: true,
-    },
-  ],
-  ossAdvanced: [
-    {
-      ...field(
-        'oss_security_token',
-        'STS Security Token（可选）',
-        'storage',
-        '临时凭据到期后需要更新。',
-      ),
-      password: true,
-    },
-    field('oss_upload_limit', '同时上传文件数', 'storage'),
-    field('oss_upload_threads', '每文件上传线程', 'storage'),
-    field('oss_part_size_mb', '分片大小（MiB）', 'storage'),
-  ],
   retry: [
     field(
       'download_attempts',

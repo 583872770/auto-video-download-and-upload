@@ -32,7 +32,7 @@ class Setting:
     def __post_init__(self):
         if type(self.default) not in (str, int, bool, type(None)):
             raise ValueError('Use a factory for mutable configuration defaults.')
-        if self.scope not in ('local', 'policy'):
+        if self.scope not in ('local', 'policy', 'task'):
             raise ValueError('A setting must have exactly one fleet scope.')
         if self.limits is not None:
             low, high = self.limits
@@ -52,8 +52,8 @@ class Setting:
 # A setting's default, range and consumer memberships are declared together.
 # Preserve order: it is also the order used when saving config.yaml.
 SETTINGS = MappingProxyType({
-    'path': Setting('videos'),
-    'dir': Setting(),
+    'path': Setting('videos', scope='task'),
+    'dir': Setting(scope='task'),
     'url': Setting(custom=True),
     'proxy': Setting(),
     'proxy_mode': Setting('manual'),
@@ -66,8 +66,8 @@ SETTINGS = MappingProxyType({
     'min_free_gb': Setting(2, limits=(0, 10000), resource_override=True, persist_runtime=True),
     'log_retention_days': Setting(0, limits=(0, 3650), persist_runtime=True),
     'max_log_mb': Setting(2, limits=(1, 1000), persist_runtime=True),
-    'shard_downloads': Setting(True),
-    'storage_mode': Setting('local', scope='policy', persist_runtime=True),
+    'shard_downloads': Setting(True, scope='task'),
+    'storage_mode': Setting('local', scope='task'),
     'yt5s_quality': Setting('best', scope='policy'),
     'yt5s_browser_count': Setting(2, limits=(1, 16), resource_override=True, persist_runtime=True),
     'download_methods': Setting(factory=default_download_methods, scope='policy', persist_runtime=True, pipeline_key=True, custom=True),
@@ -121,15 +121,15 @@ SETTINGS = MappingProxyType({
     'disk_upload_limit_mb': Setting(256, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_success_log_hours': Setting(6, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_failure_log_days': Setting(7, limits=(1, 100000), family='disk', persist_runtime=True),
-    'oss_endpoint': Setting(family='oss'),
-    'oss_bucket': Setting(family='oss'),
-    'oss_prefix': Setting('videos', family='oss'),
-    'oss_access_key_id': Setting(family='oss'),
-    'oss_access_key_secret': Setting(family='oss', secret=True),
-    'oss_security_token': Setting(family='oss', secret=True),
-    'oss_upload_threads': Setting(2, limits=(1, 8), family='oss'),
-    'oss_part_size_mb': Setting(8, limits=(4, 64), family='oss'),
-    'oss_upload_limit': Setting(2, limits=(1, 8), family='oss'),
+    'oss_endpoint': Setting(family='oss', scope='task'),
+    'oss_bucket': Setting(family='oss', scope='task'),
+    'oss_prefix': Setting('videos', family='oss', scope='task'),
+    'oss_access_key_id': Setting(family='oss', scope='task'),
+    'oss_access_key_secret': Setting(family='oss', secret=True, scope='task'),
+    'oss_security_token': Setting(family='oss', secret=True, scope='task'),
+    'oss_upload_threads': Setting(2, limits=(1, 8), family='oss', scope='task'),
+    'oss_part_size_mb': Setting(8, limits=(4, 64), family='oss', scope='task'),
+    'oss_upload_limit': Setting(2, limits=(1, 8), family='oss', scope='task'),
 })
 
 

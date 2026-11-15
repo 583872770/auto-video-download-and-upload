@@ -10,7 +10,7 @@ import { useInstances } from '../../stores/instances';
 import { useSettings } from '../../stores/settings';
 import { allFields, type Section } from './fields';
 import { validate } from './model';
-import StorageSettings from './StorageSettings.vue';
+import ScopePanel from '../../components/ScopePanel.vue';
 import DownloadSettings from './DownloadSettings.vue';
 import PerformanceSettings from './PerformanceSettings.vue';
 import MaintenanceSettings from './MaintenanceSettings.vue';
@@ -20,13 +20,12 @@ const instances = useInstances(),
 const boot = bootstrap(),
   admin = boot.role === 'admin';
 const sections: Array<[Section, string, string]> = [
-  ['storage', '文件保存', '本地目录与阿里云 OSS'],
   ['download', '下载策略', '下载方式、画质与重试'],
   ['performance', '并发与渠道', '资源预算与渠道调度'],
   ['maintenance', '空间与日志', '空间水位、清理与日志'],
   ['diagnostics', '运行诊断', '工具状态与风险排查'],
 ];
-const section = ref<Section>('storage'),
+const section = ref<Section>('download'),
   switching = ref(false);
 const route = useRoute(),
   router = useRouter();
@@ -36,7 +35,7 @@ const busy = computed(
 const anyDirty = computed(() => settings.dirty);
 function readHash() {
   const key = route.hash.slice(1);
-  section.value = sections.some(([id]) => id === key) ? (key as Section) : 'storage';
+  section.value = sections.some(([id]) => id === key) ? (key as Section) : 'download';
 }
 function show(key: Section) {
   section.value = key;
@@ -61,7 +60,7 @@ async function changeInstance(event: Event) {
   if (id === instances.selectedId || busy.value) return;
   switching.value = true;
   try {
-    if (settings.dirty && !(await confirmDiscard('切换实例会放弃当前实例未保存的系统设置。')))
+    if (settings.dirty && !(await confirmDiscard('切换实例会放弃当前实例未保存的实例设置。')))
       return;
     settings.reset();
     instances.select(id);
@@ -82,7 +81,7 @@ async function save() {
           ? 'download'
           : key === 'download_channels'
             ? 'performance'
-            : 'storage'),
+            : 'download'),
     );
     await nextTick();
     const element = document.querySelector<HTMLElement>(`[name="${key}"]`);
@@ -121,11 +120,12 @@ onMounted(() => {
     <div class="page-heading">
       <div>
         <span class="eyebrow">WORKSPACE SETTINGS</span>
-        <h1>系统设置</h1>
+        <h1>实例设置</h1>
         <p>按用途管理配置，所有分类的修改统一保存到当前实例。</p>
       </div>
-      <label v-if="boot.fleetEnabled" class="instance-picker"
-        >当前实例<select
+      <ScopePanel level="instance" :target="instances.name" description="下载策略、资源预算和空间维护仅作用于此实例。交付与文件保存在任务中心配置。">
+    <label v-if="boot.fleetEnabled" class="instance-picker"
+        >切换实例<select
           aria-label="当前实例"
           :value="instances.selectedId"
           :disabled="busy || !instances.items.length"
@@ -135,7 +135,7 @@ onMounted(() => {
             {{ item.name }}{{ item.online ? '' : '（离线）' }}
           </option>
         </select></label
-      ><span v-else class="badge">当前实例</span>
+      ><span v-else class="badge">当前实例</span></ScopePanel>
     </div>
     <p v-if="!admin" class="notice">当前角色只有查看权限，修改设置需要管理员登录。</p>
     <p v-if="instances.current && !instances.current.online" class="notice">
@@ -173,7 +173,7 @@ onMounted(() => {
           <DiagnosticsSettings v-if="section === 'diagnostics'" :key="instances.epoch" />
           <form v-else novalidate @submit.prevent="save">
             <fieldset :disabled="busy || (!admin && section !== 'maintenance')">
-              <StorageSettings v-if="section === 'storage'" /><DownloadSettings
+              <DownloadSettings
                 v-if="section === 'download'"
               /><PerformanceSettings v-if="section === 'performance'" /><MaintenanceSettings
                 v-if="section === 'maintenance'"
@@ -199,7 +199,7 @@ onMounted(() => {
         :loading="settings.saving"
         :disabled="!settings.loaded || !settings.dirty || busy || !admin"
         @click="save"
-        >保存设置</ElButton
+        >保存到 {{ instances.name }}</ElButton
       >
     </div>
   </footer>

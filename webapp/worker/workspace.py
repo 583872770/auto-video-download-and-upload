@@ -18,7 +18,7 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     config = dict(payload['config'])
     runtime = store.runtime() if store else config
     config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
-    if store and not payload.get('_execution_settings'):
+    if store and not payload.get('_execution_settings') and not payload.get('_business_job'):
         runtime = store.runtime()
         if 'storage_mode' in runtime:
             config['storage_mode'] = runtime['storage_mode']

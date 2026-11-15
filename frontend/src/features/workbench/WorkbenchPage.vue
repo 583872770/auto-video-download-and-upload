@@ -204,8 +204,8 @@ usePolling(
         <h1>下载工作台</h1>
         <p>为当前实例选择客户任务，查看执行容量与实时等待原因。</p>
       </div>
-      <InstancePicker :disabled="busy" @change="instanceChanged" />
     </div>
+    <InstancePicker :disabled="busy" purpose="operate" @change="instanceChanged" />
     <SystemNotice />
     <WorkbenchSpeeds :status="queue" :unavailable="!!workbench.error.value" />
     <p v-if="failure" class="form-error" role="alert">{{ failure }}</p>

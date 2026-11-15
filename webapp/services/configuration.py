@@ -18,15 +18,12 @@ class ConfigurationService:
                 # node's base silently describes a different directory.
                 return dict(rpc(self.context.fleet, selected_id(), '/api/config'))
         config, base = self.context.settings()
-        editable = {key: config.get(key, default) for key, default in DEFAULTS.items()}
+        from webapp.task_storage import FIELDS
+        editable = {key: config.get(key, default) for key, default in DEFAULTS.items() if key not in FIELDS}
         editable['download_methods'] = download_methods(config)
-        from Utils.oss_storage import public_oss_config, OSS_SECRETS
-        editable = public_oss_config(editable)
-        for key in OSS_SECRETS:
-            editable[key + '_configured'] = bool(config.get(key) or config.get(key + '_configured'))
         from webapp.db_pool_calculator import connection_budget
         return dict(config=editable, database_budget=connection_budget(config),
-                       config_path=str(self.context.config_path), media_directory=str(video_directory(config, base)),
+                       config_path=str(self.context.config_path), media_directory='由任务中心的文件保存配置决定',
                        instance_id=self.context.fleet.id if self.context.fleet else None)
 
     def update_config(self, data):
@@ -36,6 +33,9 @@ class ConfigurationService:
             if selected_id() != self.context.fleet.id:
                 return update_configuration(self.context.fleet, data, target=selected_id(),
                                             rpc=self.context.dependencies.rpc)
+        from webapp.task_storage import FIELDS
+        if set(data) & FIELDS:
+            raise ValueError('文件保存配置归属客户任务，请在任务中心修改。')
         if any(key not in DEFAULTS for key in data):
             raise ValueError('包含不支持在页面修改的配置项。')
         with self.context.media_lock, self.context.settings_lock:

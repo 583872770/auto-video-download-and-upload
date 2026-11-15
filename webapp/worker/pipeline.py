@@ -64,8 +64,6 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
     oss_storage = None
     if oss_mode:
         from Utils.oss_storage import OSSStorage
-        if payload.get('_business_job'):
-            config = {**config, '_oss_namespace': 'jobs/' + payload['_business_job'] + '/' + payload['_task_id']}
         oss_storage = OSSStorage(config)
     if store and not payload.get('_execution_settings') and not config.get('_cookie_pool_selected'):
         runtime = store.runtime()

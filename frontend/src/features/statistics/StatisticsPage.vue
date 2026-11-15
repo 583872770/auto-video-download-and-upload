@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScopePanel from '../../components/ScopePanel.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api } from '../../api';
@@ -105,6 +106,7 @@ usePolling(
       </div>
       <button @click="refresh()">刷新</button>
     </div>
+    <ScopePanel level="global" purpose="view" target="全部任务的交付账本" description="汇总所有实例的交付与预计费用。单价、计费单位和交付要求在各自任务中修改。" />
     <p v-if="overview.error.value || ledger.error.value" class="notice error" role="alert">
       {{ overview.error.value || ledger.error.value }}
     </p>

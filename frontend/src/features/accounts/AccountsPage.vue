@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScopePanel from '../../components/ScopePanel.vue';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../../api';
@@ -248,6 +249,7 @@ usePolling(
       <span>{{ tab === 'library' ? '全部实例的账号集中管理' : '按实例配置，作用于后续任务' }}</span>
     </div>
     <template v-if="tab === 'library'">
+      <ScopePanel level="global" purpose="view" :target="filter.instance === 'unbound' ? '尚未分配的账号' : resource.data.value?.instances.find(node => node.id === filter.instance)?.name || '全部实例的账号'" description="实例筛选只改变查看范围。批量操作以勾选账号为准，分配实例时另行指定目标。" />
       <section class="account-filters card">
         <form class="account-search" @submit.prevent="search">
           <label class="search-field"
@@ -259,7 +261,7 @@ usePolling(
               placeholder="搜索邮箱、备注或 Cookie 名称"
           /></label>
           <label
-            ><span>所属实例</span
+            ><span>查看账号所属实例</span
             ><select v-model="filter.instance" aria-label="按绑定实例筛选" @change="search">
               <option value="">全部实例</option>
               <option value="unbound">尚未分配</option>

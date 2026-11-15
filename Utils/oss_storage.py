@@ -18,7 +18,7 @@ class OSSUploadError(RuntimeError):
 
 
 def credentials(config):
-    return tuple(config.get(key) or os.environ.get(env, '') for key, env in (
+    return tuple(config.get(key) or ('' if config.get('_task_storage') else os.environ.get(env, '')) for key, env in (
         ('oss_access_key_id', 'OSS_ACCESS_KEY_ID'),
         ('oss_access_key_secret', 'OSS_ACCESS_KEY_SECRET'),
         ('oss_security_token', 'OSS_SECURITY_TOKEN')))
@@ -52,7 +52,7 @@ def validate_oss(config):
             or any(p in ('.', '..') for p in prefix.split('/'))):
         raise ValueError('OSS 对象前缀不能包含 ..、反斜杠或控制字符，长度不能超过 512 字节。')
     if not all(credentials(config)[:2]):
-        raise ValueError('请填写 OSS AccessKey ID 和 Secret，或设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量。')
+        raise ValueError('请填写 OSS AccessKey ID 和 Secret。')
     config['oss_endpoint'] = endpoint
     config['oss_prefix'] = prefix.strip('/')
     return config
@@ -110,7 +110,7 @@ class OSSStorage:
             state = {}
             status = SimpleNamespace(state=state, save=lambda force=False: report(dict(state)) if report else None)
             guard = local_processing(self.config['_disk_state'], self.config, status, 'oss_upload',
-                size=path.stat().st_size, resource='oss-upload-slots', limit=self.config['oss_upload_limit']) if self.config.get('_disk_state') else nullcontext()
+                size=path.stat().st_size, resource='oss-upload-slots/' + self.config.get('_business_job', 'direct'), limit=self.config['oss_upload_limit']) if self.config.get('_disk_state') else nullcontext()
             with guard:
                 self._upload(path, key, report)
             uploaded.append({'key': key, 'size': path.stat().st_size})

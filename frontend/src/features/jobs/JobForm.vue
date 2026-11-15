@@ -4,6 +4,8 @@ import { api } from '../../api';
 import { ApiError } from '../../api/client';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import DeliverySpecEditor from '../delivery/DeliverySpecEditor.vue';
+import TaskStorageEditor from './TaskStorageEditor.vue';
+import ScopePanel from '../../components/ScopePanel.vue';
 import { defaultDelivery, validateDelivery } from '../delivery/model';
 import { jobEndpoint, type Job } from './contracts';
 const props = defineProps<{ job?: Job; disabled?: boolean }>();
@@ -80,6 +82,7 @@ defineExpose({ dirty, saving });
 </script>
 <template>
   <form :id="job ? 'settings-form' : 'editor-form'" @submit.prevent="save">
+    <ScopePanel v-if="!job" level="task" :target="draft.name || '新建任务'" description="交付内容与文件保存仅作用于此任务。保存规则在有在途执行时锁定，已有文件保留原位置。" />
     <fieldset :disabled="disabled || saving">
       <div v-if="latest" class="notice" data-conflict>
         <p>
@@ -134,6 +137,7 @@ defineExpose({ dirty, saving });
           </div>
         </div>
         <DeliverySpecEditor v-model="draft.delivery" />
+        <TaskStorageEditor v-model="draft.delivery.storage" />
       </section>
       <p v-if="job" class="muted">
         已开始的来源沿用固定要求版本；补交可以显式采用最新要求。交付要求可随时在此任务中调整。

@@ -65,7 +65,7 @@ export const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: () => import('./features/settings/SettingsPage.vue'),
-      meta: { title: '系统设置' },
+      meta: { title: '实例设置' },
     },
     {
       path: '/jobs',

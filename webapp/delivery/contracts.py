@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from webapp.task_storage import defaults as storage_defaults, normalize as normalize_storage
 
 KINDS = ('subtitle', 'video_only', 'audio_only', 'av')
 LABELS = dict(zip(KINDS, ('字幕', '无声视频', '纯音频', '音视频成品')))
@@ -9,7 +10,7 @@ DEFAULT = {'schema_version': 1, 'outputs': ['av'], 'video': {'max_height': 1080,
            'audio': {'format': 'source'}, 'av': {'container': 'auto'},
            'subtitles': {'mode': 'original', 'languages': ['zh-Hans'], 'format': 'srt',
                          'sources': ['manual', 'automatic'], 'language_policy': 'available_selected',
-                         'missing_policy': 'review'}}
+                         'missing_policy': 'review'}, 'storage': storage_defaults()}
 
 
 def packed(value):
@@ -31,6 +32,7 @@ def normalize(value=None):
     if not isinstance(outputs, list) or not outputs or any(k not in KINDS for k in outputs if isinstance(k, str)) or any(not isinstance(k, str) for k in outputs):
         raise ValueError('请至少选择一种有效交付内容。')
     result = {'schema_version': 1, 'outputs': [k for k in KINDS if k in outputs]}
+    result['storage'] = normalize_storage(value.get('storage'))
     for group in ('video', 'audio', 'av', 'subtitles'):
         supplied = value.get(group, {})
         if not isinstance(supplied, dict) or set(supplied) - set(DEFAULT[group]):

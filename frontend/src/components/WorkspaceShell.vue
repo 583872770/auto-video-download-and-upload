@@ -33,7 +33,7 @@ const groups = [
     label: '配置与维护',
     links: [
       { url: '/proxy', label: '网络与代理', icon: 'network' },
-      { url: '/settings', label: '系统设置', icon: 'settings' },
+      { url: '/settings', label: '实例设置', icon: 'settings' },
       { url: '/deployment', label: '部署设置', icon: 'deploy' },
     ],
   },

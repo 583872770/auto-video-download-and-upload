@@ -145,7 +145,8 @@ def save_settings(path, config):
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                          prefix='.web-config-', suffix='.tmp', delete=False) as output:
             temporary = Path(output.name)
-            clean = {key: config.get(key, default) for key, default in DEFAULTS.items()}
+            from webapp.config.schema import SETTINGS
+            clean = {key: config.get(key, default) for key, default in DEFAULTS.items() if SETTINGS[key].scope != 'task'}
             yaml.safe_dump(clean, output, allow_unicode=True, sort_keys=False)
         temporary.replace(path)
     finally:

@@ -23,23 +23,6 @@ def register_delivery(app, store, settings):
             raise ValueError('请提交 JSON 对象。')
         return value
 
-    @app.get('/api/delivery/defaults')
-    def delivery_defaults():
-        from webapp.database import settings as schema_settings
-        with store.connect() as db:
-            raw = db.execute(select(schema_settings.c.value).where(schema_settings.c.key == 'delivery_defaults')).scalar_one_or_none()
-        return jsonify(spec=normalize(json.loads(raw)) if raw else normalize(DEFAULT))
-
-    @app.put('/api/delivery/defaults')
-    def delivery_save_defaults():
-        if not getattr(g, 'console_local_access', False) and (not g.console_user or g.console_user['role'] != 'admin'):
-            abort(403)
-        spec = normalize(body())
-        from webapp.database import settings as schema_settings
-        with store.connect() as db:
-            db.execute(store.db.upsert(schema_settings, dict(key='delivery_defaults', value=packed(spec)), ['key']))
-        return jsonify(spec=spec)
-
     def listing(job=None):
         return jsonify(**artifact_page(store, job=job, kind=request.args.get('kind', ''),
                                        language=request.args.get('language', ''),
@@ -73,8 +56,9 @@ def register_delivery(app, store, settings):
             return remote_content(store.fleet, row['instance_id'])
         if row['storage'] == 'oss':
             from Utils.oss_storage import OSSStorage
-            config, _ = settings()
-            storage = OSSStorage(config)
+            with store.connect() as db:
+                source_run = db.execute(select(runs.c.spec).where(runs.c.task_id == row['task_id'])).scalar_one()
+            storage = OSSStorage({**json.loads(source_run)['storage'], '_task_storage': True})
             size = row['size']
             start, stop = 0, size
             status = 200

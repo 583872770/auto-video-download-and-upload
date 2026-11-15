@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScopePanel from '../../components/ScopePanel.vue';
 import { computed, reactive, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api } from '../../api';
@@ -102,8 +103,9 @@ usePolling(
       {{ resource.error.value || op.error.value }}
     </p>
     <p v-if="op.message.value" class="notice" role="status">{{ op.message.value }}</p>
+    <ScopePanel level="global" purpose="view" target="全部下载实例" description="全局并发约束所有实例；下方实例卡片中的操作仅影响该卡片对应实例。" />
     <form v-if="resource.data.value" class="card toolbar" @submit.prevent="saveLimit">
-      <label
+      <span class="badge">全局配置 · 全部实例共用</span><label
         >全局并发上限<input
           v-model.number="limit"
           type="number"
@@ -112,7 +114,7 @@ usePolling(
           :disabled="!editable"
           required
           @input="limitDirty = true" /></label
-      ><span class="muted">0 表示仅按实例额度执行</span
+      ><span class="muted">全部实例合计的并发上限；0 表示仅按实例额度执行</span
       ><button :disabled="!editable || op.busy.value">保存全局上限</button>
     </form>
     <label>搜索实例<input v-model="query" type="search" placeholder="名称、ID 或主机" /></label>
@@ -128,6 +130,7 @@ usePolling(
           !item.online ? '离线' : item.paused ? (item.running ? '正在停止' : '已停止') : '已启动'
         }}</span>
       </div>
+      <p class="muted">实例操作 · 仅影响 {{ item.name }}</p>
       <p v-if="item.error" class="form-error">{{ item.error }}</p>
       <p>
         {{
@@ -147,7 +150,7 @@ usePolling(
           v-for="[path, label] in [
             ['workbench', '工作台'],
             ['accounts', '账号管理'],
-            ['settings', '系统设置'],
+            ['settings', '实例设置'],
             ['deployment', '部署配置'],
           ]"
           :key="path"
