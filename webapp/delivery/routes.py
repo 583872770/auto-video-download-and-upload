@@ -57,8 +57,8 @@ def register_delivery(app, store, settings):
         if row['storage'] == 'oss':
             from Utils.oss_storage import OSSStorage
             with store.connect() as db:
-                source_run = db.execute(select(runs.c.spec).where(runs.c.task_id == row['task_id'])).scalar_one()
-            storage = OSSStorage({**json.loads(source_run)['storage'], '_task_storage': True})
+                config = ledger.storage_config(db, row)
+            storage = OSSStorage(config)
             size = row['size']
             start, stop = 0, size
             status = 200
@@ -112,7 +112,7 @@ def register_delivery(app, store, settings):
             jobs.require(db, identity)
             contract = ledger.current(db, identity)
             if not contract:
-                raise ValueError('历史任务请先设置交付要求再补交。')
+                raise ValueError('任务缺少交付要求，不能补交。')
             rows = list(db.execute(select(tasks).where(tasks.c.batch_id == identity, tasks.c.id.in_(ids), tasks.c.action == 'download').with_for_update()).mappings())
             if len(rows) != len(set(ids)) or any(r['status'] in ('running', 'removed') for r in rows):
                 raise Conflict('部分来源正在执行、已移除或不属于该客户任务。')
@@ -120,8 +120,10 @@ def register_delivery(app, store, settings):
                 if data.get('use_latest') is True:
                     run = db.execute(select(runs).where(runs.c.task_id == row['id']).with_for_update()).mappings().first()
                     if run:
-                        ledger.state(store, db, run, 'pending')
-                        db.execute(runs.update().where(runs.c.task_id == row['id']).values(version=contract['version'], spec=packed(contract['spec'])))
+                        test = contract['spec']['storage']['storage_mode'] == 'test'
+                        ledger.count(store, db, identity, '@' + run['status'], run['test_mode'], -1)
+                        ledger.count(store, db, identity, '@pending', test, 1)
+                        db.execute(runs.update().where(runs.c.task_id == row['id']).values(version=contract['version'], spec=packed(contract['spec']), status='pending', test_mode=int(test)))
                         db.execute(requirements.delete().where(requirements.c.task_id == row['id']))
                     else:
                         ledger.pin(store, db, row['id'], identity, force=True)

@@ -80,7 +80,8 @@ def ready(session, kind, language=''):
             return True
         if artifact['storage'] == 'oss':
             from Utils.oss_storage import OSSStorage
-            storage = OSSStorage(session.config)
+            with session.store.connect() as db:
+                storage = OSSStorage(ledger.storage_config(db, artifact))
             try:
                 exists = storage.bucket.head_object(artifact['object_key']).content_length == artifact['size']
             except Exception:

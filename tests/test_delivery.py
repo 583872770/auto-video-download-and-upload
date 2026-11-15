@@ -29,6 +29,7 @@ class DeliveryTests(unittest.TestCase):
                                ('audio.m4a',['-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-vn','-c:a','aac'])]:
             subprocess.run(['ffmpeg','-nostdin','-v','error','-y',*arguments,'-t','0.5',str(self.media/name)],check=True,capture_output=True)
         (self.media/'en.vtt').write_text('WEBVTT\n\n00:00:00.000 --> 00:00:00.400\nHello world.\n',encoding='utf-8')
+        self.storage={}
         self.hits=[]
         hits=self.hits
         class Handler(SimpleHTTPRequestHandler):
@@ -54,7 +55,7 @@ class DeliveryTests(unittest.TestCase):
                     formats=formats,subtitles={'en':[{'url':self.url+'/en.vtt','ext':'vtt'}]} if subtitles else {},automatic_captions={})
 
     def create(self,kinds,options=None):
-        spec=normalize({'outputs':list(kinds),'subtitles':{'languages':['en']},**(options or {})})
+        spec=normalize({'outputs':list(kinds),'subtitles':{'languages':['en']},'storage':self.storage,**(options or {})})
         response=self.client.post('/api/jobs',json={'customer':'Delivery client','name':'Outputs','urls':'npNnbj46_ik','delivery':spec},headers=self.headers)
         self.assertEqual(response.status_code,201,response.json)
         identity=response.json['id']
@@ -277,7 +278,7 @@ class DeliveryTests(unittest.TestCase):
         self.execute();self.assertNotIn('/audio.m4a',self.hits);self.assertEqual(self.hits.count('/video.mp4'),1)
 
     def test_test_mode_has_no_formal_files_or_bill(self):
-        self.client.put('/api/config',json={'storage_mode':'test'},headers=self.headers)
+        self.storage={'storage_mode':'test'}
         job=self.create(KINDS);_,result=self.execute()
         self.assertTrue(result['files_deleted']);self.assertEqual(result['file_count'],4)
         detail=self.client.get('/api/jobs/'+job).json
@@ -312,8 +313,7 @@ class DeliveryTests(unittest.TestCase):
     def test_file_organization_setting_applies_to_video_audio_and_each_subtitle(self):
         for sharded in (True,False):
             with self.subTest(shard_downloads=sharded):
-                response=self.client.put('/api/config',json={'shard_downloads':sharded},headers=self.headers)
-                self.assertEqual(response.status_code,200,response.json)
+                self.storage={'shard_downloads':sharded}
                 job=self.create(KINDS,{'subtitles':{'mode':'original'}})
                 info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
                 task,result=self.execute(info)
@@ -327,9 +327,7 @@ class DeliveryTests(unittest.TestCase):
                 self.assertEqual(len({path.parent for path in paths}),1)
                 for path in paths:
                     relative=path.relative_to(self.root/'videos')
-                    self.assertEqual(relative.parts[:3],('jobs',job,task['id']))
-                    self.assertEqual(len(relative.parts[3]),12)
-                    self.assertEqual(relative.parts[4:-1],('np','npNnbj46_ik') if sharded else ())
+                    self.assertEqual(relative.parts[:-1],('npNnbj46_ik',) if sharded else ())
                     self.assertTrue(path.is_file())
                 for row in rows:
                     with self.client.get('/api/delivery/files/'+row['id']) as response:
@@ -338,10 +336,9 @@ class DeliveryTests(unittest.TestCase):
     def test_sharded_oss_retry_preserves_video_directory_and_object_key(self):
         from Utils.oss_storage import OSSStorage,OSSUploadError
         from web_worker import execute
-        response=self.client.put('/api/config',json={'storage_mode':'oss','shard_downloads':True,
+        self.storage={'storage_mode':'oss','shard_downloads':True,
             'oss_endpoint':'https://oss-cn-hangzhou.aliyuncs.com','oss_bucket':'fixture-bucket',
-            'oss_prefix':'exports','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'},headers=self.headers)
-        self.assertEqual(response.status_code,200,response.json)
+            'oss_prefix':'exports','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'}
         job=self.create(['subtitle']);task=self.store.claim(self.store.owner)
         uploads=[]
         def upload(storage,path,key,report):
@@ -359,8 +356,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(uploads),2)
         self.assertEqual(uploads[0],uploads[1])
         path,key=uploads[1]
-        self.assertEqual(path.parent.parts[-2:],('np','npNnbj46_ik'))
-        self.assertEqual(key,f'exports/jobs/{job}/{task["id"]}/np/npNnbj46_ik/{path.name}')
+        self.assertEqual(path.parent.name,'npNnbj46_ik')
+        self.assertEqual(key,f'exports/npNnbj46_ik/{path.name}')
         with self.store.connect() as db:
             row=db.execute(select(delivery_artifacts).where(delivery_artifacts.c.job_id==job)).mappings().one()
         self.assertEqual((row['path'],row['object_key'],row['available']),(str(path),key,1))
@@ -374,9 +371,8 @@ class DeliveryTests(unittest.TestCase):
     def test_upload_failure_reuses_verified_file_without_source_health_penalty(self):
         from Utils.oss_storage import OSSUploadError
         from web_worker import execute
-        response=self.client.put('/api/config',json={'storage_mode':'oss','oss_endpoint':'https://oss-cn-hangzhou.aliyuncs.com',
-            'oss_bucket':'fixture-bucket','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'},headers=self.headers)
-        self.assertEqual(response.status_code,200,response.json)
+        self.storage={'storage_mode':'oss','oss_endpoint':'https://oss-cn-hangzhou.aliyuncs.com',
+            'oss_bucket':'fixture-bucket','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'}
         job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
         cloud=MagicMock();cloud.upload_files.side_effect=OSSUploadError('fixture upload failure')
         with patch('Utils.oss_storage.OSSStorage',return_value=cloud),patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch('webapp.channel_scheduler.ChannelScheduler.outcome') as outcome:
@@ -424,10 +420,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
 
     def test_test_to_formal_mode_never_reuses_deleted_test_output(self):
-        self.client.put('/api/config',json={'storage_mode':'test'},headers=self.headers)
+        self.storage={'storage_mode':'test'}
         job=self.create(['audio_only']);task,_=self.execute()
-        self.client.put('/api/config',json={'storage_mode':'local'},headers=self.headers)
-        self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']]},headers=self.headers)
+        detail=self.client.get('/api/jobs/'+job).json
+        spec=detail['delivery']['contract']['spec'];spec['storage']['storage_mode']='local'
+        response=self.client.put('/api/jobs/'+job,json={'edit_version':detail['edit_version'],'delivery':spec},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.json)
+        self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']],'use_latest':True},headers=self.headers)
         self.hits.clear();self.execute()
         self.assertEqual(self.hits,['/audio.m4a'])
         detail=self.client.get('/api/jobs/'+job).json;self.assertEqual((detail['file_count'],detail['test_file_count']),(1,1))
@@ -448,7 +447,7 @@ class DeliveryTests(unittest.TestCase):
         from web_worker import execute
         from webapp.delivery.executor import recover_test_outputs
         from webapp.delivery.verify import LocalDeliveryError
-        self.client.put('/api/config',json={'storage_mode':'test'},headers=self.headers)
+        self.storage={'storage_mode':'test'}
         for kinds,complete in [(['audio_only'],True),(['audio_only','av'],False)]:
             job=self.create(kinds);task=self.store.claim(self.store.owner)
             with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(self.store.statistics,'record_file',side_effect=LocalDeliveryError('simulated interruption')):
@@ -458,10 +457,10 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(bool(result),complete)
             self.store.finish(task['id'],result=result or {},worker_id=self.store.owner)
 
-    def test_defaults_save_and_stale_contract_edit(self):
+    def test_only_task_defaults_and_stale_contract_edit(self):
         response=self.client.put('/api/delivery/defaults',json={'outputs':['subtitle']},headers=self.headers)
-        self.assertEqual(response.status_code,200,response.json)
-        self.assertEqual(self.client.get('/api/delivery/defaults').json['spec']['outputs'],['subtitle'])
+        self.assertEqual(response.status_code,404,response.json)
+        self.assertEqual(self.client.get('/api/delivery/defaults').status_code,404)
         job=self.create(['av']);old=self.client.get('/api/jobs/'+job).json['edit_version']
         self.assertEqual(self.client.put('/api/jobs/'+job,json={'edit_version':old,'delivery':{'outputs':['subtitle']}},headers=self.headers).status_code,200)
         self.assertEqual(self.client.put('/api/jobs/'+job,json={'edit_version':old,'delivery':{'outputs':['av']}},headers=self.headers).status_code,409)
@@ -527,7 +526,7 @@ class DeliveryPermissionsTests(unittest.TestCase):
         self.assertEqual(reader.post('/api/jobs/unknown/redeliver',json={'ids':['x']},headers=rh).status_code,403)
         self.assertEqual(operator.put('/api/delivery/defaults',json={'outputs':['av']},headers=oh).status_code,403)
         self.assertEqual(self.client.put('/api/delivery/defaults',json={'outputs':['av']}).status_code,403)
-        self.assertEqual(self.client.put('/api/delivery/defaults',json={'outputs':['av']},headers=self.headers).status_code,200)
+        self.assertEqual(self.client.put('/api/delivery/defaults',json={'outputs':['av']},headers=self.headers).status_code,404)
         from webapp.console_auth import rpc_allowed
         for path,method,allowed in [('/api/delivery/files/'+'a'*64,'GET',True),('/api/delivery/files/'+'a'*64,'HEAD',True),('/api/delivery/files/'+'a'*64,'POST',False),('/api/delivery/artifacts','GET',False),('/api/jobs/any/redeliver','POST',False)]:
             with self.app.test_request_context(path,method=method):self.assertEqual(rpc_allowed(),allowed)

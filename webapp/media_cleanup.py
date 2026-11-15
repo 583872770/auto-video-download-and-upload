@@ -7,7 +7,7 @@ import time
 from sqlalchemy import select
 
 from Utils.paths import io_path
-from webapp.database import delivery_artifacts, tasks
+from webapp.database import delivery_artifacts, delivery_runs, delivery_contracts, roots, tasks
 
 
 def validate_clear_root(root, protected=()):
@@ -44,9 +44,19 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
         if db.execute(select(tasks.c.id).where(tasks.c.action.in_(('download', 'import', 'index')),
                 tasks.c.status == 'running').limit(1)).first():
             raise RuntimeError('仍有下载、导入或索引任务运行，请停止后再清空。')
-        artifacts = list(db.execute(select(delivery_artifacts.c.id, delivery_artifacts.c.path,
-            delivery_artifacts.c.storage, delivery_artifacts.c.object_key, delivery_artifacts.c.available).where(
+        artifacts = list(db.execute(select(delivery_artifacts).where(
             delivery_artifacts.c.instance_id == local_id)).mappings())
+        from webapp.delivery.artifacts import storage_config
+        destinations = {a['id']: storage_config(db, a) for a in artifacts if a['storage'] == 'oss'}
+        from Utils.config import video_directory
+        import json
+        used = db.execute(select(delivery_runs.c.spec).join(tasks, tasks.c.id == delivery_runs.c.task_id).where(
+            tasks.c.instance_id == local_id if store.fleet else tasks.c.instance_id.is_(None)).distinct()).scalars()
+        managed_roots = {root, *(Path(catalog.physical_root(key)).resolve() for key in db.execute(select(roots.c.root)).scalars()
+            if (key.startswith('@' + local_id + '|') if store.fleet else not key.startswith('@'))),
+            *(video_directory({**json.loads(raw)['storage']}, base) for raw in used),
+            *(video_directory(value, base) for value in destinations.values())}
+        managed_roots = {validate_clear_root(p, (ROOT, store.directory, *protected)) for p in managed_roots}
     deleted = total_bytes = 0
     failures = []
     removed_cloud = set()
@@ -106,7 +116,8 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
             if not locks.enter_context(file_lock(store.directory / 'disk-locks' / (lease['id'] + '.lock'))):
                 raise RuntimeError('下载工作区仍被占用，请等待执行进程停止后重试。')
         try:
-            remove(root, keep_root=True)
+            for folder in managed_roots:
+                remove(folder, keep_root=True)
             for cache_root in cache_roots:
                 remove(cache_root)
             # Remove an earlier registered output by its exact filename only.
@@ -128,24 +139,36 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
                 failures.append('云端交付记录缺少对象地址，无法确认已清空')
             if cloud:
                 from Utils.oss_storage import OSSStorage
-                storage = OSSStorage(config or store.runtime())
-                for key in dict.fromkeys(a['object_key'] for a in cloud):
+                from webapp.delivery.artifacts import storage_config
+                with store.connect() as db:
+                    others = list(db.execute(select(delivery_artifacts).where(
+                        delivery_artifacts.c.instance_id != local_id,
+                        delivery_artifacts.c.storage == 'oss', delivery_artifacts.c.available == 1)).mappings())
+                    shared = {(v['oss_endpoint'], v['oss_bucket'], other['object_key']) for other in others
+                              for v in [storage_config(db, other)]}
+                removed_targets = set()
+                storages = {}
+                for artifact in cloud:
                     progress()
-                    with store.connect() as db:
-                        shared = db.execute(select(delivery_artifacts.c.id).where(
-                            delivery_artifacts.c.instance_id != local_id,
-                            delivery_artifacts.c.storage == 'oss', delivery_artifacts.c.object_key == key).limit(1)).first()
-                    if shared:
+                    value, key = destinations[artifact['id']], artifact['object_key']
+                    target = (value['oss_endpoint'], value['oss_bucket'], key)
+                    if target in shared:
                         continue
                     try:
-                        storage.bucket.delete_object(key)
-                        if storage.bucket.object_exists(key):
-                            failures.append('云端交付文件仍存在')
-                        else:
-                            removed_cloud.add(key)
+                        if target not in removed_targets:
+                            storage_key = (value['oss_endpoint'], value['oss_bucket'], value['oss_access_key_id'],
+                                           value['oss_access_key_secret'], value['oss_security_token'])
+                            if storage_key not in storages:
+                                storages[storage_key] = OSSStorage(value)
+                            storage = storages[storage_key]
+                            storage.bucket.delete_object(key)
+                            if storage.bucket.object_exists(key):
+                                raise RuntimeError('云端交付文件仍存在')
+                            removed_targets.add(target)
+                        removed_cloud.add(artifact['id'])
                     except Exception:
                         failures.append('云端交付文件删除失败，请检查 OSS 权限或网络')
-            for folder in (root, *cache_roots):
+            for folder in (*managed_roots, *cache_roots):
                 if folder.is_dir():
                     with os.scandir(io_path(folder)) as entries:
                         if any((folder / entry.name).absolute() not in preserved for entry in entries):
@@ -158,11 +181,12 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
                 db.execute('DELETE FROM leases')
                 db.execute('DELETE FROM requirements')
         finally:
-            catalog.reindex(root)
+            for folder in managed_roots:
+                catalog.reindex(folder)
             with store.connect() as db:
                 for artifact in artifacts:
                     if ((artifact['storage'] == 'local' and not Path(artifact['path']).is_file())
-                            or (artifact['storage'] == 'oss' and artifact['object_key'] in removed_cloud)):
+                            or (artifact['storage'] == 'oss' and artifact['id'] in removed_cloud)):
                         db.execute(delivery_artifacts.update().where(
                             delivery_artifacts.c.id == artifact['id']).values(available=0))
     progress(force=True)

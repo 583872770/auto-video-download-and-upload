@@ -1,6 +1,7 @@
 import {
   constraints,
   secretKeys,
+  taskStorageKeys,
   type ConfigKey,
   type ConsoleConfig,
 } from '../../generated/config';
@@ -48,7 +49,7 @@ export function changes(
   if (!baseline) return {};
   const changed: Partial<ConsoleConfig> = {};
   for (const key of Object.keys(baseline) as ConfigKey[]) {
-    if (key.endsWith('_configured')) continue;
+    if (key.endsWith('_configured') || (taskStorageKeys as readonly string[]).includes(key)) continue;
     if (secretKeys.some((secret) => secret === key) && !draft[key]) continue;
     if (canonical(key, draft[key]) !== canonical(key, baseline[key])) {
       Object.assign(changed, { [key]: draft[key] });
@@ -69,7 +70,7 @@ export function unconfirmed(submitted: Partial<ConsoleConfig>, saved: ConsoleCon
 export function validate(config: ConsoleConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   for (const [name, range] of Object.entries(constraints)) {
-    if (!range) continue;
+    if (!range || (taskStorageKeys as readonly string[]).includes(name)) continue;
     const key = name as ConfigKey,
       value = config[key];
     if (
@@ -80,47 +81,6 @@ export function validate(config: ConsoleConfig): ValidationIssue[] {
     ) {
       issues.push({ key, message: `请输入 ${range[0]}～${range[1]} 之间的整数。` });
     }
-  }
-  if (!config.path.trim()) issues.push({ key: 'path', message: '请填写素材根目录。' });
-  if (config.storage_mode === 'oss') {
-    for (const key of ['oss_endpoint', 'oss_bucket'] as const) {
-      if (!config[key].trim()) issues.push({ key, message: '选择 OSS 保存方式后，此项不能为空。' });
-    }
-    if (config.oss_endpoint.trim()) {
-      try {
-        const url = new URL(canonical('oss_endpoint', config.oss_endpoint));
-        if (
-          url.protocol !== 'https:' ||
-          !/^oss-[a-z0-9-]+\.aliyuncs\.com$/.test(url.hostname) ||
-          url.username ||
-          url.password ||
-          url.port ||
-          url.search ||
-          url.hash ||
-          url.pathname !== '/'
-        )
-          throw new Error('invalid');
-      } catch {
-        issues.push({
-          key: 'oss_endpoint',
-          message: '请填写阿里云 OSS 的 HTTPS 地域地址，不带 Bucket、端口或路径。',
-        });
-      }
-    }
-    if (config.oss_bucket && !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(config.oss_bucket))
-      issues.push({
-        key: 'oss_bucket',
-        message: 'Bucket 名称须为 3～63 位小写字母、数字或连字符。',
-      });
-    if (
-      new TextEncoder().encode(config.oss_prefix).length > 512 ||
-      /[\\\x00-\x1f]/.test(config.oss_prefix) ||
-      config.oss_prefix.split('/').some((part) => part === '.' || part === '..')
-    )
-      issues.push({
-        key: 'oss_prefix',
-        message: '前缀不能包含反斜杠、控制字符、. 或 .. 目录，最多 512 字节。',
-      });
   }
   if (config.disk_resume_free_gb < config.disk_min_free_gb) {
     issues.push({ key: 'disk_resume_free_gb', message: '恢复水位不能低于暂停水位。' });

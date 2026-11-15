@@ -102,7 +102,7 @@ class Jobs:
         if not isinstance(data.get('note', ''), str) or len(data.get('note', '')) > 2000:
             raise ValueError('备注最多 2000 个字符。')
         if data.get('policy'):
-            raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
+            raise ValueError('下载策略由执行实例管理，请在实例设置中选择实例后修改。')
         config = {**DEFAULTS, **config}
         if data.get('request_id'):
             try:
@@ -128,6 +128,8 @@ class Jobs:
                 **({'price': '0'} if 'price' in data and data['price'] in ('', None) else {})})
             self.ensure(db, identity, config, data)
             from webapp.delivery.artifacts import save_contract
+            from webapp.task_storage import normalize as normalize_storage, require_edit
+            require_edit(normalize_storage(data.get('delivery', {}).get('storage')))
             save_contract(db, identity, data.get('delivery', {}))
             ids = self.store.insert_downloads(db, [{'base': str(base), 'scope': 'download',
                 'batch_id': identity, 'urls': [url]} for url in urls])
@@ -310,14 +312,18 @@ class Jobs:
             if 'price' in data:
                 values['price_set'] = int(price not in ('', None))
             if 'policy' in data:
-                raise ValueError('下载策略由执行实例管理，请在系统设置中选择实例后修改。')
+                raise ValueError('下载策略由执行实例管理，请在实例设置中选择实例后修改。')
             if 'delivery' in data:
                 from webapp.delivery.artifacts import save_contract
                 from webapp.delivery.artifacts import current
                 from webapp.task_storage import normalize as normalize_storage
                 old_contract = current(db, identity)
                 old_storage = old_contract['spec']['storage'] if old_contract else None
+                if not isinstance(data['delivery'], dict):
+                    raise ValueError('请提交有效的交付要求。')
                 new_storage = normalize_storage(data['delivery'].get('storage'), old_storage)
+                from webapp.task_storage import require_edit
+                require_edit(new_storage, old_storage)
                 if old_storage != new_storage:
                     if self.store._counts(db, ['batch:' + identity]).get('running', 0):
                         raise Conflict('本任务仍有在途执行，请先暂停领取并等待执行结束后修改保存配置。')

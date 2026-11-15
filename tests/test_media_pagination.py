@@ -12,7 +12,7 @@ class MediaPaginationTests(unittest.TestCase):
     def seed(self, count, *, kind='subtitle', instance='local', title='Fixture'):
         with self.store.connect() as db:
             first = self.store.db.sequence(db, 'delivery_artifact', count)
-            rows = [dict(id=f'{seq:064x}', seq=seq, job_id='j' * 32, task_id='t' * 32,
+            rows = [dict(id=f'{seq:064x}', seq=seq, contract_version=1, job_id='j' * 32, task_id='t' * 32,
                 video_id=f'video-{seq}', title=title, kind=kind, language='en', variant='fixture',
                 path=str(self.root / f'{seq}.srt'), size=7, instance_id=instance, storage='local',
                 available=1, test_mode=0, created_at='2026-11-14') for seq in range(first, first + count)]

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { api } from '../../api';
 import { ApiError } from '../../api/client';
+import ScopePanel from '../../components/ScopePanel.vue';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import { useOperation } from '../../composables/operation';
 import { usePolling } from '../../composables/polling';
@@ -142,6 +143,9 @@ const nodeName = (identity?: string | null) =>
     class="account-batch-dialog"
     @close="emit('close')"
   >
+    <ScopePanel :level="mode === 'bind' ? 'instance' : 'global'" purpose="operate"
+      :target="mode === 'bind' ? (target ? nodeName(target) : '请选择目标实例') : `勾选的 ${selected.length} 个账号`"
+      :description="mode === 'bind' ? `仅修改本次勾选的 ${selected.length} 个账号的实例归属，列表筛选不影响操作目标。` : '按各账号的所属实例执行；仅处理本次勾选的账号。'" />
     <div class="batch-intro">
       <strong>{{
         status

@@ -30,6 +30,9 @@ def render():
     lines += ['  oss_access_key_secret_configured?: boolean;',
               '  oss_security_token_configured?: boolean;', '}',
               'export type ConfigKey = keyof ConsoleConfig;',
+              'export const taskStorageKeys = ' + json.dumps([key for key, spec in SETTINGS.items() if spec.scope == 'task']) + ' as const;',
+              'export type TaskStorage = Pick<ConsoleConfig, typeof taskStorageKeys[number]>;',
+              'export const defaultTaskStorage: TaskStorage = ' + json.dumps({key: spec.default_value() for key, spec in SETTINGS.items() if spec.scope == 'task'}, ensure_ascii=False, indent=2) + ';',
               'export const constraints: Partial<Record<ConfigKey, readonly [number, number]>> = ' +
               json.dumps({key: spec.limits for key, spec in SETTINGS.items() if spec.limits},
                          indent=2) + ';',

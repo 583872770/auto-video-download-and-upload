@@ -108,7 +108,7 @@ async function submit(test: boolean) {
         body,
       });
       if (!test) await read();
-      op.message.value = result.message;
+      op.message.value = `「${instances.name}」${result.message}`;
     } catch (error) {
       if (props.setup) await read(false).catch(() => {});
       throw error;
@@ -257,7 +257,7 @@ onMounted(async () => {
           <button type="button" :disabled="op.busy.value || current.starting" @click="submit(true)">
             测试连接</button
           ><button class="primary" :disabled="op.busy.value || current.starting">
-            {{ setup && !current.running ? '保存并启动服务' : '保存部署配置' }}
+            {{ setup && !current.running ? '保存并启动服务' : `保存到 ${instances.name}` }}
           </button>
         </div>
       </form>

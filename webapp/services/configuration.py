@@ -1,6 +1,5 @@
 """ConfigurationService operations independent of route registration."""
 from flask import g, has_request_context
-from Utils.config import resolve_path, video_directory
 from webapp.config.settings import DEFAULTS, DOWNLOAD_FIELDS, download_methods, validate_settings
 
 
@@ -40,18 +39,13 @@ class ConfigurationService:
             raise ValueError('包含不支持在页面修改的配置项。')
         with self.context.media_lock, self.context.settings_lock:
             config, _ = self.context.settings()
-            if any(key in data and data[key] != config.get(key, DEFAULTS[key])
-                   for key in ('path', 'dir', 'storage_mode')) and self.context.store.media_clear_busy():
-                return dict(error='素材库正在清空，完成后再修改保存目录或保存方式。'), 409
+            config = {key: value for key, value in config.items() if key not in FIELDS}
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_cookie', 'youtube_source_address')):
                 self.cookies.require_login_idle()
             if any(key in data and data[key] != config.get(key, DEFAULTS[key]) for key in ('proxy', 'proxy_mode', 'youtube_source_address')):
                 if self.context.store.download_connection_busy():
                     return dict(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
-            from Utils.oss_storage import OSS_SECRETS
-            # Blank secret fields mean keep the saved credential. Never send
-            # credentials back to the browser to populate password controls.
-            config.update({k: v for k, v in data.items() if k not in OSS_SECRETS or v})
+            config.update(data)
             validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
             from webapp.db_pool_calculator import connection_budget
             connection_budget(config)  # Reject impossible reservations before any persistence.

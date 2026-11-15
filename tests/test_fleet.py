@@ -212,7 +212,7 @@ class FleetTests(unittest.TestCase):
                 for index in range(count):
                     seq = self.manager.db.sequence(db, 'delivery_artifact')
                     db.execute(delivery_artifacts.insert().values(
-                        id=f'{seq:064x}', seq=seq, job_id='j' * 32, task_id='t' * 32,
+                        id=f'{seq:064x}', seq=seq, contract_version=1, job_id='j' * 32, task_id='t' * 32,
                         video_id='abcdefghijk', title='Same source across hosts',
                         kind='subtitle', language=['en', 'fr'][index], subtitle_source='manual',
                         variant='fixture', path='/private/caption.srt', size=7,

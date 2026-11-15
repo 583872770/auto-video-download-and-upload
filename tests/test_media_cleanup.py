@@ -57,7 +57,7 @@ class MediaCleanupTests(unittest.TestCase):
             seq = self.store.db.sequence(db, 'delivery_artifact')
             identity = f'{seq:064x}'
             db.execute(delivery_artifacts.insert().values(
-                id=identity, seq=seq, job_id='j' * 32, task_id='t' * 32,
+                id=identity, seq=seq, contract_version=1, job_id='j' * 32, task_id='t' * 32,
                 video_id='fixture', title='Fixture', kind='subtitle', language='en',
                 variant='fixture', path=str(path), size=7, instance_id=instance,
                 storage=storage, object_key='fixture' if storage == 'oss' else None,
@@ -157,7 +157,7 @@ class MediaCleanupTests(unittest.TestCase):
         self.store.archive_add('youtube npNnbj46_ik', str(video))
         with self.store.connect() as db:
             db.execute(delivery_artifacts.insert().values(
-                id='d' * 64, seq=self.store.db.sequence(db, 'delivery_artifact'), job_id=task['id'],
+                id='d' * 64, seq=self.store.db.sequence(db, 'delivery_artifact'), contract_version=1, job_id=task['id'],
                 task_id=task['id'], video_id='npNnbj46_ik', title='Test', kind='audio_only', language='',
                 variant='fixture', path=str(standalone_audio), size=standalone_audio.stat().st_size,
                 instance_id='local', storage='local', object_key=None, available=1, test_mode=0,
@@ -220,7 +220,7 @@ class MediaCleanupTests(unittest.TestCase):
             try:
                 self.assertEqual(self.request_clear().status_code, 409)
                 self.assertEqual(self.client.post('/api/media/reindex', headers=self.headers).status_code, 409)
-                self.assertEqual(self.client.put('/api/config', json={'path': 'other'}, headers=self.headers).status_code, 409)
+                self.assertEqual(self.client.put('/api/config', json={'path': 'other'}, headers=self.headers).status_code, 400)
                 with self.assertRaisesRegex(ValueError, '正在清空'):
                     self.store.activate_download_lists()
                 self.assertIsNone(self.store.claim(actions=('download',)))

@@ -107,10 +107,11 @@ def pending(store, task_id, artifact, path):
     """Retain a verified file for upload retry without issuing a billing receipt."""
     with store.connect() as db:
         task = fenced_run(store, db, task_id)
+        version = db.execute(select(runs.c.version).where(runs.c.task_id == task_id)).scalar_one()
         old = db.execute(select(artifacts.c.id).where(artifacts.c.id == artifact['id'])).first()
         values = dict(path=str(path), size=Path(path).stat().st_size,
                       instance_id=store.fleet.id if store.fleet else 'local',
-                      storage=artifact['storage'], object_key=None, available=0,
+                      storage=artifact['storage'], object_key=None, available=0, contract_version=version,
                       subtitle_source=artifact.get('subtitle_source', ''))
         if old:
             db.execute(artifacts.update().where(artifacts.c.id == artifact['id']).values(**values))
@@ -136,12 +137,14 @@ def receipt(store, db, task, artifact, path, size, *, fresh):
         subtitle_source=artifact.get('subtitle_source', ''),
         path=str(path), size=size, instance_id=task.get('instance_id') or (store.fleet.id if store.fleet else 'local'),
         storage=artifact.get('storage', 'local'), object_key=artifact.get('object_key'), available=1,
+        contract_version=run['version'],
         test_mode=int(run['test_mode']), created_at=stamp())
     old = db.execute(select(artifacts.c.id).where(artifacts.c.id == artifact['id'])).first()
     if old:
         db.execute(artifacts.update().where(artifacts.c.id == artifact['id']).values(
             path=str(path), size=size, available=1, instance_id=values['instance_id'],
             storage=values['storage'], object_key=values['object_key'],
+            contract_version=values['contract_version'],
             subtitle_source=values['subtitle_source']))
     else:
         db.execute(artifacts.insert().values(**values, seq=store.db.sequence(db, 'delivery_artifact')))
@@ -151,6 +154,13 @@ def receipt(store, db, task, artifact, path, size, *, fresh):
     if fresh:
         count(store, db, run['job_id'], artifact['kind'], run['test_mode'], 1, size)
     refresh(store, db, task['id'])
+
+
+def storage_config(db, artifact):
+    """Resolve the immutable destination used to publish this particular file."""
+    raw = db.execute(select(contracts.c.spec).where(contracts.c.job_id == artifact['job_id'],
+        contracts.c.version == artifact['contract_version'])).scalar_one()
+    return {**json.loads(raw)['storage'], '_task_storage': True}
 
 
 def describe(db, jobs):

@@ -166,8 +166,8 @@ usePolling(
         <h1>素材库</h1>
         <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。</p>
       </div>
-      <InstancePicker purpose="view" :disabled="busy || !!dialog" @change="instanceChanged" />
     </div>
+    <InstancePicker purpose="view" description="查看所选实例的全部任务素材；导入与清空也仅作用于此实例。" :disabled="busy || !!dialog" @change="instanceChanged" />
     <p v-if="message" class="notice" role="status">{{ message }}</p>
     <p v-if="error && !dialog" class="form-error" role="alert">{{ error }}</p>
     <div class="summary-grid media-summary">

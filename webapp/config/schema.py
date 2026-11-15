@@ -145,6 +145,7 @@ DOWNLOAD_FIELDS = {key for key, spec in SETTINGS.items() if spec.download}
 INTEGER_FIELDS = {key: spec.limits for key, spec in SETTINGS.items() if spec.limits is not None}
 TEXT_FIELDS = {key for key, spec in SETTINGS.items() if spec.value_type is str and not spec.custom}
 POLICY_FIELDS = {key for key, spec in SETTINGS.items() if spec.scope == 'policy'}
+TASK_FIELDS = {key for key, spec in SETTINGS.items() if spec.scope == 'task'}
 LOCAL_FIELDS = {key for key, spec in SETTINGS.items() if spec.scope == 'local'}
 RESOURCE_LIMITS = {key: spec.limits for key, spec in SETTINGS.items() if spec.resource_override}
 RUNTIME_FIELDS = tuple(key for key, spec in SETTINGS.items() if spec.persist_runtime)

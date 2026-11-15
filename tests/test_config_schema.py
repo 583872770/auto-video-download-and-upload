@@ -15,6 +15,7 @@ from webapp.config_schema import (SETTINGS, RUNTIME_FIELDS, PIPELINE_KEY_FIELDS,
                                   Setting, default_settings)
 from Utils.oss_storage import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS
 from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
+from webapp.config.schema import TASK_FIELDS
 from webapp.fleet import LOCAL_FIELDS, POLICY_FIELDS, RESOURCE_LIMITS
 from webapp.settings import DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, save_settings, validate_settings
 from webapp.throughput import policy_key
@@ -90,7 +91,7 @@ class ConfigurationContractTests(unittest.TestCase):
         self.assertEqual(DISK_FIELDS, set(DISK_DEFAULTS))
         self.assertEqual(OSS_FIELDS, set(OSS_DEFAULTS))
         self.assertFalse(LOCAL_FIELDS & POLICY_FIELDS)
-        self.assertEqual(LOCAL_FIELDS | POLICY_FIELDS, set(DEFAULTS))
+        self.assertEqual(LOCAL_FIELDS | POLICY_FIELDS | TASK_FIELDS, set(DEFAULTS))
 
     def test_integer_validation_preserves_boundaries_coercion_and_rejection(self):
         for key, (low, high) in CONTRACT['integer_fields'].items():
@@ -120,9 +121,9 @@ class ConfigurationContractTests(unittest.TestCase):
                         'builtin_connection_limit': 1, 'unknown': 'ignored'}
             save_settings(path, supplied)
             saved = yaml.safe_load(path.read_text(encoding='utf-8'))
-            self.assertEqual(saved, {**CONTRACT['defaults'], **{key: value for key, value in supplied.items()
-                                                              if key in CONTRACT['defaults']}})
-            self.assertEqual(list(saved), list(CONTRACT['defaults']))
+            expected = {k: supplied.get(k, v) for k, v in CONTRACT['defaults'].items() if k not in TASK_FIELDS}
+            self.assertEqual(saved, expected)
+            self.assertEqual(list(saved), [k for k in CONTRACT['defaults'] if k not in TASK_FIELDS])
             self.assertEqual(validate_settings(saved), saved)
             self.assertEqual(list(Path(temporary).iterdir()), [path], 'no leftover temporary config')
 

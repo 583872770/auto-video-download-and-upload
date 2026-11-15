@@ -13,7 +13,7 @@ class MediaGroupTests(unittest.TestCase):
     def artifact(self, video='abcdefghijk', title='A title', kind='subtitle', language='en', **changes):
         with self.store.connect() as db:
             seq = self.store.db.sequence(db, 'delivery_artifact')
-            row = dict(id=f'{seq:064x}', seq=seq, job_id='j' * 32, task_id='t' * 32,
+            row = dict(id=f'{seq:064x}', seq=seq, contract_version=1, job_id='j' * 32, task_id='t' * 32,
                 video_id=video, title=title, kind=kind, language=language, subtitle_source='manual',
                 variant='fixture', path=str(self.root / f'{seq}.srt'), size=7, instance_id='local',
                 storage='local', available=1, test_mode=0, created_at='2026-11-15T12:00:00+08:00')

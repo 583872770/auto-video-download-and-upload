@@ -140,6 +140,7 @@ async function action(path: string, body: unknown = {}) {
       (path.endsWith('/test')
         ? `YouTube 连接成功 · ${value.ms} ms · ${value.node}`
         : '操作已提交，状态已刷新。');
+    op.message.value = `「${instances.name}」${op.message.value}`;
   });
 }
 async function saveConnection() {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRaw } from 'vue';
+import { bootstrap } from '../../bootstrap';
 import { api } from '../../api';
 import { ApiError } from '../../api/client';
 import { useLeaveGuard } from '../../composables/leaveGuard';
@@ -9,6 +10,7 @@ import ScopePanel from '../../components/ScopePanel.vue';
 import { defaultDelivery, validateDelivery } from '../delivery/model';
 import { jobEndpoint, type Job } from './contracts';
 const props = defineProps<{ job?: Job; disabled?: boolean }>();
+const storageEditable = bootstrap().role === 'admin';
 const emit = defineEmits<{ saved: [id: string]; busy: [value: boolean] }>();
 const draft = ref({
   customer: props.job?.customer || '',
@@ -19,7 +21,6 @@ const draft = ref({
   delivery: props.job?.delivery.contract
     ? structuredClone(toRaw(props.job.delivery.contract.spec))
     : defaultDelivery(),
-  enableDelivery: !props.job || !!props.job.delivery.contract,
 });
 const baseline = ref(JSON.stringify(draft.value)),
   error = ref(''),
@@ -34,20 +35,20 @@ useLeaveGuard(() => ({ dirty: dirty.value, busy: saving.value }));
 async function save() {
   if (saving.value || props.disabled) return;
   error.value = '';
-  if (draft.value.enableDelivery) error.value = validateDelivery(draft.value.delivery);
+  error.value = validateDelivery(draft.value.delivery);
   if (error.value) return;
   saving.value = true;
   emit('busy', true);
   let savedId = '';
   try {
-    const { enableDelivery, delivery, ...fields } = draft.value;
+    const { delivery, ...fields } = draft.value;
     const response = await api.request<{ id: string; edit_version?: number }>(
       props.job ? jobEndpoint(props.job.id) : '/api/jobs',
       {
         method: props.job ? 'PUT' : 'POST',
         body: {
           ...fields,
-          ...(enableDelivery ? { delivery } : {}),
+          delivery,
           ...(props.job ? { edit_version: version.value } : { request_id: requestId }),
         },
       },
@@ -122,14 +123,7 @@ defineExpose({ dirty, saving });
       <p v-if="job" class="notice">
         修改单价或单位会重算本任务全部交付的预计费用。下载策略由执行实例提供。
       </p>
-      <label v-if="job && !job.delivery.contract" class="choice"
-        ><input
-          v-model="draft.enableDelivery"
-          type="checkbox"
-          name="delivery-enable"
-        />为尚未开始的来源启用多类型交付</label
-      >
-      <section v-if="draft.enableDelivery" class="delivery-task-section">
+      <section class="delivery-task-section">
         <div class="section-heading">
           <div>
             <h3>本任务交付内容</h3>
@@ -137,7 +131,8 @@ defineExpose({ dirty, saving });
           </div>
         </div>
         <DeliverySpecEditor v-model="draft.delivery" />
-        <TaskStorageEditor v-model="draft.delivery.storage" />
+        <p v-if="!storageEditable" class="muted">文件保存配置由管理员管理，可在此查看。</p>
+        <fieldset :disabled="!storageEditable || disabled || saving"><TaskStorageEditor v-model="draft.delivery.storage" /></fieldset>
       </section>
       <p v-if="job" class="muted">
         已开始的来源沿用固定要求版本；补交可以显式采用最新要求。交付要求可随时在此任务中调整。

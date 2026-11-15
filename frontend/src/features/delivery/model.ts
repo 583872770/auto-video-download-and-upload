@@ -1,8 +1,6 @@
-import type { ConsoleConfig } from '../../generated/config';
-export type TaskStorage = Pick<ConsoleConfig, 'path' | 'dir' | 'shard_downloads' | 'storage_mode' | 'oss_endpoint' | 'oss_bucket' | 'oss_prefix' | 'oss_access_key_id' | 'oss_access_key_secret' | 'oss_security_token' | 'oss_upload_limit' | 'oss_upload_threads' | 'oss_part_size_mb'>;
-export function defaultStorage(): TaskStorage {
-  return { path: 'videos', dir: '', shard_downloads: true, storage_mode: 'local', oss_endpoint: '', oss_bucket: '', oss_prefix: 'videos', oss_access_key_id: '', oss_access_key_secret: '', oss_security_token: '', oss_upload_limit: 2, oss_upload_threads: 2, oss_part_size_mb: 8 };
-}
+import { defaultTaskStorage, type TaskStorage } from '../../generated/config';
+export type { TaskStorage };
+export function defaultStorage(): TaskStorage { return structuredClone(defaultTaskStorage); }
 export type OutputKind = 'subtitle' | 'video_only' | 'audio_only' | 'av';
 export interface DeliverySpec {
   schema_version: number;
@@ -56,6 +54,8 @@ export function defaultDelivery(): DeliverySpec {
   };
 }
 export function validateDelivery(spec: DeliverySpec): string {
+  const directory = spec.storage.dir.replace(/\\/g, '/');
+  if (/^(?:[A-Za-z]:|\/)/.test(directory) || directory.split('/').some(p => p === '.' || p === '..')) return '任务子目录必须为相对路径，不能包含 . 或 ..。';
   if (!spec.storage.path.trim()) return '请填写本任务的素材根目录。';
   if (!['local', 'oss', 'test'].includes(spec.storage.storage_mode)) return '请选择有效的文件保存方式。';
   if (!spec.outputs.length || spec.outputs.some((kind) => !(kind in outputLabels)))

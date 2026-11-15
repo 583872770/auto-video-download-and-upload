@@ -26,9 +26,9 @@ describe('instance settings drafts', () => {
     request.mockResolvedValueOnce(response());
     const store = useSettings();
     await store.load();
-    store.update('oss_bucket', 'pending');
+    store.update('proxy', 'pending');
     await expect(store.load()).rejects.toThrow('请先保存或放弃');
-    expect(store.draft.oss_bucket).toBe('pending');
+    expect(store.draft.proxy).toBe('pending');
     expect(request).toHaveBeenCalledTimes(1);
   });
   it('serializes nested Vue channel proxies, then accepts the server readback', async () => {
@@ -65,10 +65,10 @@ describe('instance settings drafts', () => {
     request.mockResolvedValueOnce(response());
     const store = useSettings();
     await store.load();
-    store.update('oss_prefix', 'pending');
+    store.update('proxy', 'pending');
     request.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('offline'));
     await store.save();
-    expect(store.draft.oss_prefix).toBe('pending');
+    expect(store.draft.proxy).toBe('pending');
     expect(store.dirty).toBe(true);
     expect(store.error).toContain('已提交');
     expect(request).toHaveBeenCalledTimes(3);

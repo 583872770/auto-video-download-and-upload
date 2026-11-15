@@ -84,6 +84,23 @@ export interface ConsoleConfig {
   oss_security_token_configured?: boolean;
 }
 export type ConfigKey = keyof ConsoleConfig;
+export const taskStorageKeys = ["path", "dir", "shard_downloads", "storage_mode", "oss_endpoint", "oss_bucket", "oss_prefix", "oss_access_key_id", "oss_access_key_secret", "oss_security_token", "oss_upload_threads", "oss_part_size_mb", "oss_upload_limit"] as const;
+export type TaskStorage = Pick<ConsoleConfig, typeof taskStorageKeys[number]>;
+export const defaultTaskStorage: TaskStorage = {
+  "path": "videos",
+  "dir": "",
+  "shard_downloads": true,
+  "storage_mode": "local",
+  "oss_endpoint": "",
+  "oss_bucket": "",
+  "oss_prefix": "videos",
+  "oss_access_key_id": "",
+  "oss_access_key_secret": "",
+  "oss_security_token": "",
+  "oss_upload_threads": 2,
+  "oss_part_size_mb": 8,
+  "oss_upload_limit": 2
+};
 export const constraints: Partial<Record<ConfigKey, readonly [number, number]>> = {
   "worker_count": [
     1,

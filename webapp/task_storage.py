@@ -19,7 +19,7 @@ def normalize(value=None, previous=None):
         value.pop(key + '_configured', None)
     if set(value) - FIELDS:
         raise ValueError('任务保存配置包含不支持的字段。')
-    result = {**defaults(), **value}
+    result = {**defaults(), **(previous or {}), **value}
     for key in SECRETS:
         if not result[key] and previous:
             result[key] = previous.get(key, '')
@@ -58,3 +58,11 @@ def public(value):
 
 def public_spec(spec):
     return {**spec, 'storage': public(spec['storage'])}
+
+
+def require_edit(value, previous=None):
+    from flask import g, has_request_context
+    from werkzeug.exceptions import Forbidden
+    user = getattr(g, 'console_user', None) if has_request_context() else None
+    if user and user['role'] != 'admin' and value != (previous if previous is not None else defaults()):
+        raise Forbidden('文件保存配置需要管理员修改；你仍可编辑本任务的交付要求。')

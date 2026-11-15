@@ -12,11 +12,10 @@ describe('settings contracts', () => {
     };
     baseline.youtube_cookie_pool_worker_limit = 4;
     expect(changes(baseline, draft)).toEqual({
-      shard_downloads: draft.shard_downloads,
       youtube_cookie_pool_worker_limit: 0,
     });
     draft.oss_access_key_secret = 'new-secret';
-    expect(changes(baseline, draft).oss_access_key_secret).toBe('new-secret');
+    expect(changes(baseline, draft).oss_access_key_secret).toBeUndefined();
   });
   it('accepts normalized endpoints and channel field order, detects unsaved fields', () => {
     expect(
@@ -76,8 +75,6 @@ describe('settings contracts', () => {
     };
     expect(validate(invalid).map((issue) => issue.key)).toEqual(
       expect.arrayContaining([
-        'oss_endpoint',
-        'oss_bucket',
         'worker_count',
         'disk_resume_free_gb',
         'download_methods',
