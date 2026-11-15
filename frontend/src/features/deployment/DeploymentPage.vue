@@ -61,6 +61,8 @@ async function read(fill = true) {
   if (!props.setup && value.instance_id && value.instance_id !== scope?.id)
     throw new Error('部署配置返回了其他实例，请检查实例地址。');
   current.value = value;
+  if (!props.setup && value.instance_id)
+    instances.updateNames([{ id: value.instance_id, name: String(value.config.instance_name) }]);
   if (fill) {
     for (const key of Object.keys(form)) delete form[key];
     Object.assign(form, value.config);
@@ -140,7 +142,7 @@ onMounted(async () => {
           {{
             setup
               ? '使用本机独立部署访问码；数据库不可用时也可恢复实例设置。'
-              : '配置保存到所选实例，重启该实例服务后生效。'
+              : '显示名称保存后立即生效；其他部署配置重启所选实例服务后生效。'
           }}
         </p>
       </div>

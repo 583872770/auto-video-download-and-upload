@@ -7,6 +7,7 @@ import { useOperation } from '../../composables/operation';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import { bootstrap } from '../../bootstrap';
+import { useInstances } from '../../stores/instances';
 interface Instance {
   id: string;
   name: string;
@@ -30,6 +31,7 @@ interface Fleet {
   instance_id: string;
 }
 const resource = useResource<Fleet>(),
+  instances = useInstances(),
   op = useOperation(),
   query = ref(''),
   limit = ref(0),
@@ -50,6 +52,7 @@ useLeaveGuard(() => ({ dirty: dirty.value, busy: op.busy.value }));
 async function refresh(signal?: AbortSignal) {
   if (!bootstrap().fleetEnabled) return;
   await resource.load((s) => api.request('/api/instances', { signal: s }), signal);
+  if (resource.data.value) instances.updateNames(resource.data.value.items);
   if (!limitDirty.value && resource.data.value) limit.value = resource.data.value.global_limit;
 }
 async function save(id: string, action?: string) {

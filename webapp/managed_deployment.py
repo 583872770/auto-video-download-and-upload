@@ -74,8 +74,29 @@ def public_profile(profile):
 
 def configuration(gateway, identity):
     with gateway.lock:
-        return dict(**public_profile(gateway.profile), instance_id=identity,
+        return dict(**public_profile(current_profile(gateway)), instance_id=identity,
                     pending_restart=gateway.pending_restart, running=gateway.active is not None)
+
+
+def current_profile(gateway):
+    """The shared registry owns display names; deployment names seed new nodes."""
+    profile = dict(gateway.profile)
+    fleet = gateway.active.extensions.get('fleet') if gateway.active is not None else None
+    if fleet:
+        profile['instance_name'] = fleet.row()['name']
+    return profile
+
+
+def apply_display_name(gateway, profile):
+    fleet = gateway.active.extensions.get('fleet') if gateway.active is not None else None
+    if fleet:
+        fleet.control(fleet.id, {'name': profile['instance_name']})
+
+
+def requires_restart(gateway, profile):
+    return (gateway.running_profile is not None and
+            any(value != gateway.running_profile.get(key) for key, value in profile.items()
+                if key != 'instance_name'))
 
 
 def update(gateway, data):
@@ -84,18 +105,22 @@ def update(gateway, data):
     try:
         if not isinstance(data, dict):
             raise ValueError('请提交有效的部署配置。')
-        if data.get('revision') != revision(gateway.profile):
+        previous = current_profile(gateway)
+        if data.get('revision') != revision(previous):
             raise Conflict('部署配置已被其他页面修改，请重新读取后再保存。')
-        value = validate_managed(data, gateway.profile)
+        value = validate_managed(data, previous)
         gateway.resolve_identity(value)
         test_connections(value)
         try:
             write_profile(gateway.managed_path, dict(version=1, profile=value))
         except OSError:
             raise ValueError('部署配置无法保存，请检查目标实例状态目录的写入权限。') from None
+        apply_display_name(gateway, value)
         gateway.profile = value
-        gateway.pending_restart = value != gateway.running_profile
-        return dict(message='所选实例部署配置已保存；重启该实例服务后生效，当前下载继续使用原连接。',
+        gateway.pending_restart = requires_restart(gateway, value)
+        message = ('实例名称已立即生效；其他部署配置重启该实例服务后生效。' if gateway.pending_restart
+                   else '实例配置已保存，显示名称已立即生效。')
+        return dict(message=message,
                     pending_restart=gateway.pending_restart)
     finally:
         gateway.lock.release()

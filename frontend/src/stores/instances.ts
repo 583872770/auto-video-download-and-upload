@@ -29,8 +29,10 @@ export const useInstances = defineStore('instances', () => {
   }
   function select(id: string) {
     if (id && !items.value.some((item) => item.id === id)) throw new Error('请选择已登记的实例。');
-    selectedId.value = id;
-    epoch.value++;
+    if (selectedId.value !== id) {
+      selectedId.value = id;
+      epoch.value++;
+    }
     try {
       localStorage.setItem(storageKey(), id);
     } catch {
@@ -40,6 +42,12 @@ export const useInstances = defineStore('instances', () => {
     if (id) url.searchParams.set('instance_id', id);
     else url.searchParams.delete('instance_id');
     history.replaceState(history.state, '', url);
+  }
+  function updateNames(values: Pick<InstanceInfo, 'id' | 'name'>[]) {
+    for (const value of values) {
+      const item = items.value.find((item) => item.id === value.id);
+      if (item) item.name = value.name;
+    }
   }
   async function load() {
     if (!bootstrap().fleetEnabled) return;
@@ -70,5 +78,17 @@ export const useInstances = defineStore('instances', () => {
       loading.value = false;
     }
   }
-  return { items, selectedId, epoch, loading, error, current, name, scope, select, load };
+  return {
+    items,
+    selectedId,
+    epoch,
+    loading,
+    error,
+    current,
+    name,
+    scope,
+    select,
+    load,
+    updateNames,
+  };
 });

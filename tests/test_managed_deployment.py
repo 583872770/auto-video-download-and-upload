@@ -86,6 +86,99 @@ class ManagedDeploymentTests(unittest.TestCase):
             from werkzeug.exceptions import Conflict
             with self.assertRaises(Conflict): update(gateway, data)
 
+    def test_name_only_save_updates_every_entry_without_restart_or_other_nodes(self):
+        gateways = self.gateways()
+        clients = self.clients()
+        client, headers = clients['manager']
+        selected = {**headers, 'X-Instance-ID': 'alpha'}
+        original = {key: dict(value.profile) for key, value in gateways.items()}
+        value = client.get('/api/instance-deployment', headers=selected).json
+        with patch('webapp.managed_deployment.test_connections'):
+            response = client.put('/api/instance-deployment', headers=selected,
+                json={**value['config'], 'revision': value['revision'], 'instance_name': '洛杉矶'})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertFalse(response.json['pending_restart'])
+        self.assertIn('立即生效', response.json['message'])
+        for entry, (reader, auth) in clients.items():
+            with self.subTest(entry=entry):
+                for query in ('', '?compact=1', '?poll=1'):
+                    fleet = reader.get('/api/instances' + query, headers=auth).json
+                    names = {item['id']: item['name'] for item in fleet['items']}
+                    self.assertEqual(names, {'manager': 'manager', 'alpha': '洛杉矶', 'beta': 'beta'})
+                config = reader.get('/api/instance-deployment', headers={**auth, 'X-Instance-ID': 'alpha'}).json
+                self.assertEqual(config['config']['instance_name'], '洛杉矶')
+        self.assertEqual(gateways['manager'].profile, original['manager'])
+        self.assertEqual(gateways['beta'].profile, original['beta'])
+        with patch.dict(os.environ, {}, clear=True):
+            restarted = DeploymentGateway(gateways['alpha'].config_path, gateways['alpha'].directory,
+                                          load_environment=False)
+        self.assertEqual(restarted.profile['instance_name'], '洛杉矶')
+
+    def test_instance_card_name_is_also_the_deployment_name_and_invalidates_revision(self):
+        gateways = self.gateways()
+        client, headers = self.clients()['manager']
+        selected = {**headers, 'X-Instance-ID': 'alpha'}
+        before = client.get('/api/instance-deployment', headers=selected).json
+        renamed = client.put('/api/instances/alpha', headers=headers, json={'name': '东京'})
+        self.assertEqual(renamed.status_code, 200, renamed.json)
+        value = client.get('/api/instance-deployment', headers=selected).json
+        self.assertEqual(value['config']['instance_name'], '东京')
+        self.assertNotEqual(value['revision'], before['revision'])
+        with patch('webapp.managed_deployment.test_connections'):
+            stale = client.put('/api/instance-deployment', headers=selected,
+                json={**before['config'], 'revision': before['revision']})
+            self.assertEqual(stale.status_code, 400, stale.json)  # Peer RPC returns validation failures as 400.
+            self.assertIn('已被其他页面修改', stale.json['error'])
+            saved = client.put('/api/instance-deployment', headers=selected,
+                json={**value['config'], 'revision': value['revision']})
+        self.assertEqual(saved.status_code, 200, saved.json)
+        self.assertFalse(saved.json['pending_restart'])
+        self.assertEqual(gateways['alpha'].profile['instance_name'], '东京')
+
+    def test_name_change_does_not_clear_a_pending_connection_restart(self):
+        gateway = self.gateways()['alpha']
+        with patch('webapp.managed_deployment.test_connections'):
+            value = configuration(gateway, 'alpha')
+            update(gateway, {**value['config'], 'revision': value['revision'], 'mysql_port': 3307})
+            value = configuration(gateway, 'alpha')
+            update(gateway, {**value['config'], 'revision': value['revision'], 'instance_name': '洛杉矶'})
+        self.assertTrue(gateway.pending_restart)
+        self.assertEqual(self.apps['alpha'].extensions['fleet'].row()['name'], '洛杉矶')
+
+    def test_recovery_page_also_reads_and_updates_the_live_display_name(self):
+        gateway = self.gateways()['alpha']
+        fleet = self.apps['alpha'].extensions['fleet']
+        fleet.control('alpha', {'name': '东京'})
+        client = gateway.setup.test_client()
+        with client.session_transaction() as session:
+            session.update(deployment_admin=True, csrf='fixture-csrf')
+        value = client.get('/api/deployment').json
+        self.assertEqual(value['config']['instance_name'], '东京')
+        with patch('webapp.deployment.test_mysql'):
+            saved = client.post('/api/deployment/save', headers={'X-CSRF-Token': 'fixture-csrf'},
+                json={**value['config'], 'instance_name': '洛杉矶'})
+        self.assertEqual(saved.status_code, 200, saved.json)
+        self.assertFalse(saved.json['pending_restart'])
+        self.assertEqual(fleet.row()['name'], '洛杉矶')
+
+    def test_recovery_remains_available_when_the_running_database_is_unreachable(self):
+        from sqlalchemy.exc import OperationalError
+        gateway = self.gateways()['alpha']
+        fleet = self.apps['alpha'].extensions['fleet']
+        client = gateway.setup.test_client()
+        with client.session_transaction() as session:
+            session.update(deployment_admin=True, csrf='fixture-csrf')
+        error = OperationalError('fixture', {}, Exception('unreachable'))
+        with patch.object(fleet, 'row', side_effect=error):
+            value = client.get('/api/deployment')
+        self.assertEqual(value.status_code, 200)
+        with patch('webapp.deployment.test_mysql'), patch.object(fleet, 'control', side_effect=error):
+            saved = client.post('/api/deployment/save', headers={'X-CSRF-Token': 'fixture-csrf'},
+                json={**value.json['config'], 'instance_url': 'http://recovered.test:5000'})
+        self.assertEqual(saved.status_code, 200, saved.json)
+        self.assertTrue(saved.json['pending_restart'])
+        self.assertEqual(gateway.profile['instance_url'], 'http://recovered.test:5000')
+
     def test_managed_connection_override_survives_restart_and_is_inherited_by_workers(self):
         gateway = self.gateways()['alpha']
         value = configuration(gateway, 'alpha')

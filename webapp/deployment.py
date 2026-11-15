@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, redirect, render_template, request, session
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 from werkzeug.exceptions import HTTPException
 
@@ -416,7 +417,13 @@ class DeploymentGateway:
 
         @app.get('/api/deployment')
         def configuration():
-            return jsonify(config=instance_settings(self.profile),
+            from webapp.managed_deployment import current_profile
+            # The recovery page must remain usable when the database is down.
+            try:
+                profile = current_profile(self)
+            except SQLAlchemyError:
+                profile = self.profile
+            return jsonify(config=instance_settings(profile),
                            database_configured=all(self.profile.get(key) for key in MYSQL_FIELDS - {'mysql_port'}),
                            cluster_state=self.cluster_state(),
                            running=self.active is not None, running_role=self.running_role,
@@ -452,17 +459,29 @@ class DeploymentGateway:
                 # Persist before starting dispatch threads: a write failure must
                 # never leave a service running with unsaved instance settings.
                 self.persist_profile(value)
+                name_pending = False
+                if was_running:
+                    from webapp.managed_deployment import apply_display_name
+                    try:
+                        apply_display_name(self, value)
+                    except SQLAlchemyError:
+                        # Recovery can save a working connection even if the
+                        # running application can no longer reach its database.
+                        name_pending = True
                 self.profile = value
                 if not was_running:
                     transferred = True
                     self.begin_initialization('配置已保存，连接测试已通过。')
                     return jsonify(message='配置已保存，服务正在后台初始化。',
                                    pending_restart=False, starting=True, role=value['role']), 202
-                self.pending_restart = was_running
+                from webapp.managed_deployment import requires_restart
+                self.pending_restart = name_pending or requires_restart(self, value)
                 self.startup_error = ''
                 self.failure = None
-                return jsonify(message='配置已保存，重启本机服务后生效。',
-                               pending_restart=was_running, role=value['role'])
+                return jsonify(message=('部署配置已保存，重启本机服务后生效；数据库恢复后请重新保存显示名称。' if name_pending else
+                                        '实例名称已立即生效；其他部署配置重启本机服务后生效。'
+                                        if self.pending_restart else '配置已保存，显示名称已立即生效。'),
+                               pending_restart=self.pending_restart, role=value['role'])
             except OSError:
                 return jsonify(error='部署配置无法保存，请检查本机状态目录的写入权限。'), 400
             finally:
