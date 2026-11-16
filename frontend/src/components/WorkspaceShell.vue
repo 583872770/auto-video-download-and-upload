@@ -3,12 +3,14 @@ import { onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { bootstrap } from '../bootstrap';
 import AppIcon from './AppIcon.vue';
+import WorkspaceStatusBar from './WorkspaceStatusBar.vue';
 import { api } from '../api';
 import { confirmNavigation, hasPendingEdits } from '../composables/leaveGuard';
 const route = useRoute(),
   menuOpen = ref(false),
   error = ref(''),
   loggingOut = ref(false);
+const pageVersion = ref(0);
 const groups = [
   {
     label: '日常工作',
@@ -93,32 +95,14 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload));
       @click="menuOpen = false"
     ></button>
     <div class="main" id="main-content" tabindex="-1">
-      <header class="topbar">
-        <div class="actions">
-          <button
-            type="button"
-            class="mobile-menu"
-            aria-label="打开导航"
-            :aria-expanded="menuOpen"
-            @click="menuOpen = !menuOpen"
-          >
-            <AppIcon name="menu" /></button
-          ><span class="breadcrumb"
-            >工作区 <span class="breadcrumb-divider">/</span
-            ><strong>{{ route.meta.title }}</strong></span
-          >
-        </div>
-        <div class="actions">
-          <RouterLink class="console-identity" to="/login"
-            ><span class="user-avatar"><AppIcon name="users" /></span
-            ><span>管理账户</span></RouterLink
-          ><button class="logout-button" type="button" @click="logout">
-            <AppIcon name="logout" /><span>退出登录</span>
-          </button>
-        </div>
-      </header>
+      <WorkspaceStatusBar
+        :menu-open="menuOpen"
+        @menu="menuOpen = !menuOpen"
+        @logout="logout"
+        @refresh-page="pageVersion++"
+      />
       <p v-if="error" class="notice error" role="alert">{{ error }}</p>
-      <slot />
+      <slot :key="pageVersion" />
     </div>
   </div>
 </template>

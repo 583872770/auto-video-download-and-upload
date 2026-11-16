@@ -1,12 +1,14 @@
 """The download workbench controls one executor, with a durable job selection."""
 import math
 import time
+import hashlib
+import json
 
 from flask import jsonify, request
 from sqlalchemy import func, select
 from werkzeug.exceptions import Conflict
 
-from webapp.database import download_lists, instances, job_profiles, settings, tasks
+from webapp.database import download_lists, download_resources, instances, job_profiles, settings, tasks
 from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
 from webapp.jobs import Jobs
 
@@ -24,7 +26,7 @@ def compact_status(value):
         reported = task.get('progress_updated_at') or progress.get('_reported_at')
         changed = progress.get('last_bytes_at')
         rate = progress.get('speed')
-        if ((reported and stamp - reported > 10) or (changed and stamp - changed > 10)
+        if (not reported or stamp - reported > 10 or reported - stamp > 5 or (changed and stamp - changed > 10)
                 or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 0):
             continue
         measured += 1
@@ -34,6 +36,24 @@ def compact_status(value):
         value['job'] = {key: item for key, item in value['job'].items()
                         if key not in ('running_videos', 'imports', 'transfer_speed')}
     return value
+
+
+def account_summary(db, config, rate, identity, active, *, online, paused):
+    """Reuse the account inspector's classification inputs, without probes or credentials."""
+    from webapp.concurrency_diagnostics import cookie_allocation
+    from webapp.throughput import policy_key
+    stamp = time.time()
+    if not config.get('youtube_cookie_pool'):
+        return dict(sample_time=stamp, accounts=[])
+    fresh = bool(rate and rate.get('policy') == policy_key(config)
+                 and 0 <= stamp - rate.get('time', 0) < 20)
+    pool = (rate or {}).get('cookie_pool') if fresh else None
+    scope = 'youtube-cookie-pool:' + identity
+    raw = db.execute(select(download_resources.c.state).where(
+        download_resources.c.key == hashlib.sha256(scope.encode()).hexdigest())).scalar_one_or_none()
+    allocation = cookie_allocation(config, identity, pool, {'occupied': [], 'effective': 10000},
+        ({scope: json.loads(raw) if raw else {}},), stamp, active, [], online=online, paused=paused)
+    return dict(sample_time=(pool or {}).get('sampled_at'), accounts=allocation['accounts'])
 
 
 class Workbench:
@@ -93,9 +113,12 @@ class Workbench:
             row = self.node(identity, db)
             selected = self.selection(db, 'workbench_job:' + identity)
             # Legacy global selections are intentionally not inherited by a new instance.
-            active = self.store.decode_many(db.execute(select(tasks).where(
+            from webapp.repositories.task_codec import LIST_FIELDS
+            active_query = select(*LIST_FIELDS).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
-                tasks.c.status == 'running').order_by(tasks.c.seq).limit(100)).mappings())
+                tasks.c.status == 'running').order_by(tasks.c.seq)
+            active = self.store.decode_many(db.execute(
+                active_query if compact else active_query.limit(100)).mappings())
             running = db.execute(select(func.count()).select_from(tasks).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
                 tasks.c.status == 'running')).scalar_one()
@@ -106,7 +129,14 @@ class Workbench:
             blocked = resource_blocked(self.store, db, identity)
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
-        active = self.decorate_cookie_names(active, None, self.store, scope=identity)
+            accounts = None
+            if compact:
+                local = json.loads(row['config'])
+                config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
+                accounts = account_summary(db, config, local.get('throughput'), identity, active,
+                                           online=online, paused=paused)
+        if not compact:
+            active = self.decorate_cookie_names(active, None, self.store, scope=identity)
         job = self.visible_job(preview or selected, compact=compact)
         if job:
             desired = selected == job['id'] and enabled
@@ -118,7 +148,8 @@ class Workbench:
             job['state'] = self.jobs.execution_state(job)
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
-                    queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session)
+                    queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session,
+                    **({'account_summary': accounts} if compact else {}))
 
     def control(self, identity, action, job_id=None, expected=None):
         if action not in ('start', 'pause', 'stop'):
@@ -200,9 +231,18 @@ def register_workbench(app, store, configuration, preflight):
             active = Workbench.decorate_cookie_names(active, base, store)
             with store.connect() as db:
                 session = store.statistics.current_session(db)
+                accounts = None
+                if compact:
+                    try:
+                        rate = json.loads((store.directory / 'throughput.json').read_text(encoding='utf-8'))
+                    except (OSError, ValueError):
+                        rate = None
+                    accounts = account_summary(db, config, rate, 'local', active,
+                                               online=True, paused=queue['paused'])
             value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
-                queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session)
+                queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
+                **({'account_summary': accounts} if compact else {}))
             return jsonify(compact_status(value) if compact else value)
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403

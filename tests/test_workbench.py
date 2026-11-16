@@ -65,6 +65,41 @@ class WorkbenchFleetTests(unittest.TestCase):
             if encoding == 'identity':
                 self.assertNotIn('Content-Encoding', response.headers)
 
+    def test_header_account_summary_is_scoped_and_uses_fresh_pool_samples_without_probes(self):
+        from webapp.throughput import policy_key
+        stamp = time.time()
+        with self.manager.connect() as db:
+            row = db.execute(select(instances).where(instances.c.id == 'alpha')).mappings().one()
+            local = json.loads(row['config'])
+            local['config']['youtube_cookie_pool'] = ['cool', 'ready']
+            config = {**local['config'], **self.manager.fleet.resource_limits(row)}
+            local['throughput'] = dict(time=stamp, policy=policy_key(config), cookie_pool=dict(
+                known=True, sampled_at=stamp, profiles=[
+                    dict(id='cool', state='cooldown', cooldown_until=stamp + 100),
+                    dict(id='ready', state='ready')]))
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(config=json.dumps(local)))
+        with patch('webapp.cookie_profiles.CookieProfiles.pool_members',
+                   side_effect=AssertionError('header must not read credentials')):
+            alpha = self.client.get('/api/jobs/workbench?compact=1', headers={'X-Instance-ID': 'alpha'}).json
+            beta = self.client.get('/api/jobs/workbench?compact=1', headers={'X-Instance-ID': 'beta'}).json
+        accounts = alpha['account_summary']['accounts']
+        self.assertEqual([a['id'] for a in accounts], ['cool', 'ready'])
+        self.assertTrue(all(a['known'] for a in accounts))
+        self.assertIn('account_cooldown', [r['code'] for r in accounts[0]['reasons']])
+        self.assertEqual(beta['account_summary']['accounts'], [])
+        local['throughput']['time'] = stamp - 25
+        with self.manager.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(config=json.dumps(local)))
+        stale = self.client.get('/api/jobs/workbench?compact=1', headers={'X-Instance-ID': 'alpha'}).json
+        self.assertTrue(all(not a['known'] for a in stale['account_summary']['accounts']))
+
+    def test_compact_speed_requires_a_recent_timestamp(self):
+        from webapp.workbench import compact_status
+        for progress in [dict(stage='downloading', speed=999),
+                         dict(stage='downloading', speed=999, _reported_at=time.time() + 30)]:
+            summary = compact_status(dict(active_tasks=[dict(status='running', progress=progress)]))['transfer_summary']
+            self.assertEqual((summary['measured'], summary['speed']), (0, 0))
+
     def test_instance_poll_includes_fresh_console_startup_outside_snapshot(self):
         from webapp.display_cache import display_cache
         display_cache(self.apps['manager']).cache.ttl = 60

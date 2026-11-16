@@ -85,6 +85,7 @@ export type RuntimeAccount = Partial<RuntimeSlot> & {
   id: string;
   name: string;
   email?: string;
+  shared_with?: string | null;
   tasks: AccountTask[];
   reasons?: WaitReason[];
 };

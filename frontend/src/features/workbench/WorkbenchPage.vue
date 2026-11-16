@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../../api';
 import { bootstrap } from '../../bootstrap';
 import { useInstances } from '../../stores/instances';
+import { useHeaderStatus } from '../../stores/headerStatus';
 import { useResource } from '../../composables/resource';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
@@ -18,12 +19,16 @@ import { formatGB, jobStates, videoStates, type Job, type Page } from '../jobs/c
 const route = useRoute(),
   router = useRouter(),
   instances = useInstances(),
+  headerStatus = useHeaderStatus(),
   editable = bootstrap().role !== 'viewer';
 const ready = ref(false),
-  busy = ref(false),
+  localBusy = ref(false),
   message = ref(''),
   failure = ref('');
-const selection = ref(typeof route.query.job === 'string' ? route.query.job : '');
+const busy = computed(() => localBusy.value || headerStatus.busy);
+const selection = ref(
+  typeof route.query.job === 'string' ? route.query.job : headerStatus.selection,
+);
 const query = ref(''),
   jobs = useResource<Page<Job>>(),
   workbench = useResource<WorkbenchStatus>(),
@@ -137,7 +142,10 @@ async function instanceChanged() {
   }
   lastStarted = undefined;
   ready.value = !bootstrap().fleetEnabled || !!instances.selectedId;
-  if (ready.value) await Promise.all([refresh(), refreshCapacity(), loadJobs()]);
+  if (ready.value) {
+    if (selection.value) headerStatus.choose(selection.value);
+    await Promise.all([refresh(), refreshCapacity(), loadJobs()]);
+  }
 }
 async function clearPreviewLink() {
   if (!new URLSearchParams(location.search).has('job')) return;
@@ -146,9 +154,22 @@ async function clearPreviewLink() {
   await router.replace({ path: route.path, query, hash: route.hash });
 }
 watch(selection, () => {
+  headerStatus.choose(selection.value);
   workbench.clear();
   void refresh();
 });
+watch(
+  () => headerStatus.selection,
+  (value) => {
+    if (ready.value && !busy.value) selection.value = value;
+  },
+);
+watch(
+  () => headerStatus.controlVersion,
+  () => {
+    if (!busy.value) void Promise.all([refresh(), refreshCapacity()]);
+  },
+);
 watch(
   () => route.query.job,
   (value) => {
@@ -159,7 +180,8 @@ async function control(action: 'start' | 'pause' | 'stop') {
   if (!editable || busy.value || !queue.value || (action === 'start' && !canStart.value)) return;
   const scope = instances.scope();
   let started = false;
-  busy.value = true;
+  localBusy.value = true;
+  headerStatus.busy = true;
   failure.value = '';
   message.value = '';
   workbench.clear();
@@ -180,7 +202,9 @@ async function control(action: 'start' | 'pause' | 'stop') {
   } catch (error) {
     failure.value = error instanceof Error ? error.message : String(error);
   } finally {
-    busy.value = false;
+    headerStatus.busy = false;
+    await headerStatus.invalidate();
+    localBusy.value = false;
     if (started) await clearPreviewLink();
     await Promise.all([refresh(), refreshCapacity()]);
   }
