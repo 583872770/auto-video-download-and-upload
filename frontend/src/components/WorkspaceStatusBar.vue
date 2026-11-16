@@ -6,6 +6,7 @@ import { bootstrap } from '../bootstrap';
 import { api } from '../api';
 import { useInstances } from '../stores/instances';
 import { useHeaderStatus } from '../stores/headerStatus';
+import { useNotifications } from '../stores/notifications';
 import { usePolling } from '../composables/polling';
 import { confirmNavigation, useLeaveGuard } from '../composables/leaveGuard';
 import { useResource } from '../composables/resource';
@@ -17,6 +18,7 @@ defineProps<{ menuOpen: boolean }>();
 const emit = defineEmits<{ menu: []; logout: []; refreshPage: [] }>();
 const instances = useInstances(),
   status = useHeaderStatus(),
+  notifications = useNotifications(),
   router = useRouter(),
   route = useRoute();
 const root = ref<HTMLElement>(),
@@ -342,6 +344,24 @@ const powerTitle = computed(
         <strong id="header-cooling">{{ status.cooling ?? '—' }}</strong></span
       >
     </div>
+    <button
+      class="header-notifications"
+      type="button"
+      aria-controls="notification-center"
+      :aria-expanded="notifications.open"
+      :aria-label="
+        notifications.error
+          ? '通知状态读取失败'
+          : `通知，${notifications.globalCounts.action} 项需要处理`
+      "
+      @click="notifications.open ? notifications.close() : notifications.show()"
+    >
+      <AppIcon name="bell" /><span>通知</span><b v-if="notifications.error">!</b>
+      <b v-else-if="notifications.globalCounts.action">{{
+        notifications.globalCounts.action > 99 ? '99+' : notifications.globalCounts.action
+      }}</b>
+      <i v-else-if="notifications.globalCounts.recovering" class="notification-recovery-dot"></i>
+    </button>
     <div class="header-user">
       <RouterLink to="/login">管理账户</RouterLink
       ><button type="button" aria-label="退出登录" @click="emit('logout')">
@@ -356,6 +376,32 @@ const powerTitle = computed(
 </template>
 
 <style scoped>
+.header-notifications {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  min-height: 30px !important;
+  padding: 4px 9px !important;
+  background: #eff4ff !important;
+  border-color: #e7eefc !important;
+  color: #2563eb !important;
+  font-size: 11px !important;
+}
+.header-notifications b {
+  border-radius: 4px;
+  background: #dc4545;
+  color: white;
+  font-size: 10px;
+  padding: 0 4px;
+  line-height: 17px;
+}
+.notification-recovery-dot {
+  width: 6px;
+  height: 6px;
+  background: #d19a48;
+  border-radius: 50%;
+}
 .workspace-statusbar {
   position: sticky;
   top: 0;

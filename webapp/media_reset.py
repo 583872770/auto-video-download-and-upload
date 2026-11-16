@@ -8,7 +8,8 @@ from sqlalchemy import func, or_, select
 from webapp.database import (tasks, counters, snapshots, delivery_artifacts, delivery_requirements,
     delivery_runs, delivery_totals, deliveries, test_files, download_sessions, session_tasks,
     method_tasks, method_totals, provider_tasks, test_totals, download_lists, settings,
-    download_permits, job_removed, job_imports, imports, runtime_hours)
+    download_permits, job_removed, job_imports, imports, runtime_hours, notifications)
+from webapp.notifications import forget_tasks
 from webapp.statistics import COUNTERS, OUTCOMES
 
 
@@ -117,6 +118,7 @@ def reset_records(store, local_id, remove_log):
             for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
                           delivery_requirements, delivery_runs, download_permits, job_removed, job_imports):
                 db.execute(table.delete().where(table.c.task_id.in_(ids)))
+            forget_tasks(store, db, ids)
             db.execute(tasks.delete().where(tasks.c.id.in_(ids)))
             deleted_tasks += len(batch)
             store.progress_cache.discard(ids)
@@ -125,6 +127,7 @@ def reset_records(store, local_id, remove_log):
         orphan_ids = sorted(orphan_ids)
         for start in range(0, len(orphan_ids), 500):
             ids = orphan_ids[start:start + 500]
+            forget_tasks(store, db, ids)
             for table in (session_tasks, deliveries, test_files):
                 session_ids.update(db.execute(select(table.c.session_id).where(table.c.task_id.in_(ids))).scalars())
             for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
@@ -138,6 +141,10 @@ def reset_records(store, local_id, remove_log):
             db.execute(delivery_requirements.update().where(delivery_requirements.c.artifact_id.in_(ids)).values(
                 artifact_id=None, status='missing', error='素材已清空。'))
             db.execute(delivery_artifacts.delete().where(delivery_artifacts.c.id.in_(ids)))
+        history = notifications.delete().where(notifications.c.status == 'resolved')
+        if store.fleet:
+            history = history.where(notifications.c.instance_id == local_id)
+        db.execute(history)
         for identity in session_ids:
             rebuild_session(db, identity)
         for job in jobs:
@@ -164,9 +171,23 @@ def reset_records(store, local_id, remove_log):
                     .group_by(delivery_runs.c.status, delivery_runs.c.test_mode)):
                 db.execute(delivery_totals.insert().values(job_id=job, kind='@' + status,
                     test_mode=test, file_count=count, file_bytes=0))
-        for identity in snapshot_ids - {None}:
-            if not db.execute(select(tasks.c.id).where(tasks.c.payload.contains(identity)).limit(1)).first():
-                db.execute(snapshots.delete().where(snapshots.c.id == identity))
+        snapshot_ids.discard(None)
+        if snapshot_ids:
+            # Unassigned/foreign queues may contain millions of rows. Resolve
+            # exact shared references in one scan instead of one LIKE scan for
+            # every deleted execution's unique configuration snapshot.
+            reference = func.json_extract(tasks.c.payload, '$.snapshot_id')
+            if store.db.mysql:
+                reference = func.json_unquote(reference)
+            referenced = db.execute(select(reference).distinct().execution_options(stream_results=True))
+            try:
+                for identity in referenced.scalars():
+                    snapshot_ids.discard(identity)
+            finally:
+                referenced.close()
+            unused = sorted(snapshot_ids)
+            for start in range(0, len(unused), 500):
+                db.execute(snapshots.delete().where(snapshots.c.id.in_(unused[start:start + 500])))
         db.execute(runtime_hours.delete().where(runtime_hours.c.scope.in_((local_id, 'instance:' + local_id))))
         db.execute(counters.delete().where(counters.c.scope == 'instance:' + local_id))
         db.execute(counters.delete().where(counters.c.value == 0))

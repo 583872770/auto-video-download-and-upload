@@ -56,6 +56,25 @@ Index('ix_tasks_instance_status', tasks.c.instance_id, tasks.c.status, tasks.c.a
 Index('ix_tasks_instance_lease', tasks.c.instance_id, tasks.c.status, tasks.c.lease_until)
 Index('ix_tasks_target_queue', tasks.c.target_instance_id, tasks.c.status, tasks.c.available_at)
 Index('ix_tasks_log_retention', tasks.c.logs_pruned, tasks.c.finished_at)
+
+# Event-maintained incident groups. Reading global notifications never scans tasks.
+notifications = Table('download_notifications', metadata,
+    Column('id', String(64), primary_key=True), Column('instance_id', String(64), nullable=False),
+    Column('job_id', String(32)), Column('code', String(64), nullable=False),
+    Column('status', String(16), nullable=False),
+    Column('active_count', BigInteger, nullable=False), Column('action_count', BigInteger, nullable=False),
+    Column('first_seen', Float, nullable=False), Column('updated_at', Float, nullable=False),
+    Column('resolved_at', Float), Column('detail', Text, nullable=False))
+Index('ix_notifications_status_recent', notifications.c.status, notifications.c.updated_at, notifications.c.id)
+Index('ix_notifications_instance_status', notifications.c.instance_id, notifications.c.status, notifications.c.updated_at)
+Index('ix_notifications_job', notifications.c.job_id, notifications.c.status)
+notification_tasks = Table('download_notification_tasks', metadata,
+    Column('task_id', String(32), primary_key=True), Column('group_id', String(64), nullable=False),
+    Column('state', String(16), nullable=False), Column('first_seen', Float, nullable=False),
+    Column('updated_at', Float, nullable=False), Column('retry_at', Float), Column('escalate_at', Float),
+    Column('detail', Text, nullable=False))
+Index('ix_notification_tasks_group', notification_tasks.c.group_id, notification_tasks.c.updated_at, notification_tasks.c.task_id)
+Index('ix_notification_tasks_escalation', notification_tasks.c.escalate_at, notification_tasks.c.task_id)
 snapshots = Table('task_snapshots', metadata, Column('id', String(64), primary_key=True), Column('payload', Text, nullable=False))
 counters = Table('task_counters', metadata, Column('scope', String(80), primary_key=True),
                  Column('status', String(24), primary_key=True), Column('value', BigInteger, nullable=False))

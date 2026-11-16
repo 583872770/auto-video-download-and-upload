@@ -1,8 +1,9 @@
 """Group pagination must never split a video's languages or hide sibling outputs."""
 import json
+from datetime import datetime
 import unittest
 
-from webapp.database import delivery_artifacts
+from webapp.database import delivery_artifacts, media
 from tests import test_media_cleanup as cleanup_tests
 
 
@@ -95,6 +96,36 @@ class MediaGroupTests(unittest.TestCase):
         # A finished AV file is its own actual output type, not a pure audio file.
         self.artifact(video='avOnly00001', title='AV only', kind='av')
         self.assertEqual(self.groups(type='audio_only')['total'], 1)
+
+    def test_latest_download_orders_mixed_groups_and_files_with_stable_pagination(self):
+        early = '2026-11-15T12:00:00+08:00'
+        later = '2026-11-15T05:00:00+00:00'
+        latest = '2026-11-15T14:00:00+08:00'
+        old = self.artifact(video='old', title='A first alphabetically', created_at=early)
+        self.artifact(video='tie-b', title='B', created_at=later)
+        self.artifact(video='tie-a', title='Z', created_at='2026-11-15T13:00:00+08:00')
+        newest = self.artifact(video='old', title='A first alphabetically', kind='audio_only', created_at=latest)
+        self.write('import.mp4')
+        self.write('import.info.json', json.dumps({'id': 'import', 'title': 'Imported'}).encode())
+        self.catalog.reindex(self.root)
+        imported_at = datetime.fromisoformat('2026-11-15T13:30:00+08:00').timestamp() + .5
+        with self.store.connect() as db:
+            db.execute(media.update().values(downloaded_at=imported_at))
+
+        found, cursor = [], None
+        for _ in range(4):
+            result = self.groups(limit=1, **({'cursor': cursor} if cursor else {}))
+            found.extend(result['items'])
+            cursor = result['next_cursor']
+        self.assertEqual([row['video_id'] for row in found], ['old', 'import', 'tie-a', 'tie-b'])
+        self.assertEqual([row['downloaded_at'] for row in found],
+                         [datetime.fromisoformat(latest).timestamp(), imported_at,
+                          datetime.fromisoformat(later).timestamp(), datetime.fromisoformat(later).timestamp()])
+        self.assertIsNone(cursor)
+        first = self.files(key='video:old', limit=1)
+        second = self.files(key='video:old', limit=1, cursor=first['next_cursor'])
+        self.assertEqual([first['items'][0]['artifact']['id'], second['items'][0]['artifact']['id']], [newest, old])
+        self.assertIsNone(second['next_cursor'])
 
     def test_unavailable_test_and_foreign_files_are_excluded_and_registered_local_is_not_duplicated(self):
         path = self.write('delivered.mp4')

@@ -69,6 +69,9 @@ def refresh(store, db, task_id):
               ('accepted' if 'waived' in rows else 'complete') if rows and all(s in ('done', 'waived') for s in rows) else
               'partial' if 'done' in rows else 'pending')
     state(store, db, run, status)
+    if status in ('complete', 'accepted'):
+        from webapp.notifications import resolve_task
+        resolve_task(store, db, task_id, code='delivery')
     return status
 
 
@@ -85,10 +88,15 @@ def fenced_run(store, db, task_id):
 
 def mark(store, task_id, key, value, error=None):
     with store.connect() as db:
-        fenced_run(store, db, task_id)
+        task = fenced_run(store, db, task_id)
         db.execute(requirements.update().where(requirements.c.task_id == task_id, requirements.c.key == key,
             requirements.c.status != 'waived').values(status=value, error=error, updated_at=stamp()))
-        return refresh(store, db, task_id)
+        status = refresh(store, db, task_id)
+        if value == 'missing':
+            from webapp.notifications import settle_task
+            settle_task(store, db, task, result={'message': error or '来源缺少所选内容。'},
+                        progress=json.loads(task['progress']) if task['progress'] else {})
+        return status
 
 
 def artifact_identity(job, video_id, spec, kind, language='', test=False):

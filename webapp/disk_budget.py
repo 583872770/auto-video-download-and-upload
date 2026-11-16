@@ -17,6 +17,7 @@ import uuid
 import psutil
 
 from webapp.config_schema import DISK_DEFAULTS, DISK_FIELDS
+from webapp.worker.formatting import format_bytes
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
@@ -419,6 +420,11 @@ class DiskBudget:
         value = {'blocked': blocked, 'message': snapshot['message'], 'time': time.time()}
         with store.connect() as db:
             db.execute(store.db.upsert(settings, {'key': 'disk:' + identity, 'value': json.dumps(value)}, ['key']))
+            from webapp.notifications import system_issue
+            system_issue(store, db, identity, 'disk_resource', dict(
+                headline='磁盘保护阻止新任务执行', phase='实例磁盘资源',
+                reason=snapshot['message'] or '临时文件总预算已用尽。',
+                next_step='查看磁盘用量，释放空间或调整预算；恢复后自动继续。') if blocked else None)
         # A local file keeps the independent disk watchdog off the remote DB.
         target = self.directory / 'disk-budget-config.json'
         content = json.dumps({key: self.config[key] for key in DISK_FIELDS})
@@ -463,8 +469,9 @@ class DiskBudget:
             with self.connect() as db:
                 usage, committed = self._usage(db)
                 waiting, free = self._watermark(db)
-                old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
-                previous = old[0] if old else 0
+                old = db.execute('SELECT reserved,measured FROM leases WHERE id=?', (lease.id,)).fetchone()
+                previous = old['reserved'] if old else 0
+                measured = old['measured'] if old else 0
                 required = db.execute('SELECT * FROM requirements WHERE task=?', (lease.task or '',)).fetchone()
                 if not old and lease.task and not required and db.execute('SELECT COUNT(*) FROM requirements').fetchone()[0] >= 10000:
                     raise DiskPressure('磁盘等待记录已达上限，请处理大视频预算后继续。')
@@ -475,24 +482,39 @@ class DiskBudget:
                         needed = max(needed, required['needed'])
                         if required['version'] == self._version() and required['interruptions'] >= 3 and free < required['free'] + GIB:
                             raise DiskPressure('同一磁盘预算下多次空间不足，等待提高预算或释放更多空间。')
-                extra = max(0, needed - previous)
+                # A scan already includes measured bytes in category usage, and
+                # disk free already excludes them. Grow only the unwritten
+                # promise, including when writes have outrun the old reservation.
+                extra = max(0, needed - measured) - max(0, previous - measured)
+                extra = max(0, extra)
                 unused = sum(max(0, row['reserved'] - row['measured']) for row in db.execute('SELECT reserved,measured FROM leases'))
-                if not attempt and extra and free - unused - extra < int(self.config['disk_min_free_gb']) * GIB:
-                    # Release the transaction before refreshing filesystem usage.
-                    continue
                 # Existing reservations can finish below the resume watermark, but
                 # never below the low watermark or by extending an exhausted budget.
                 low = int(self.config['disk_min_free_gb']) * GIB
                 reason = ''
-                if (waiting and not old) or free < low or (extra and free - unused - extra < low):
-                    reason = '磁盘剩余空间不足，等待释放空间。'
+                if free < low:
+                    reason = '磁盘实际剩余空间不足，等待释放空间。'
+                elif waiting and not old:
+                    reason = f'磁盘空间尚未达到恢复水位 {format_bytes(int(self.config["disk_resume_free_gb"]) * GIB)}，新任务等待恢复。'
+                elif extra and free - unused - extra < low:
+                    reason = '磁盘可分配的预留空间不足，等待其他任务释放空间。'
                 elif committed[lease.category] + extra > self.limits[lease.category]:
-                    reason = '本机临时文件分类预算不足，等待空间；大视频可能需要提高预算。'
+                    category = {'test': '测试下载', 'downloads': '下载临时文件', 'cache': '缓存',
+                                'imports': '导入文件', 'browsers': '浏览器', 'logs': '日志'}[lease.category]
+                    reason = (f'本机临时文件分类预算不足（{category}）：已占用及预留 {format_bytes(committed[lease.category])}，'
+                              f'分类上限 {format_bytes(self.limits[lease.category])}；等待空间或提高预算。')
                 elif sum(committed.values()) + extra > int(self.config['disk_budget_gb']) * GIB:
-                    reason = '本机临时文件总预算不足，等待其他执行完成或自动清理。'
+                    reason = (f'本机临时文件总预算不足：已占用及预留 {format_bytes(sum(committed.values()))}，'
+                              f'总上限 {format_bytes(int(self.config["disk_budget_gb"]) * GIB)}；等待其他任务完成或清理。')
                 elif any(usage[key] > maximum for key, maximum in self.limits.items() if key != lease.category):
                     reason = '其他临时文件分类超出预算，等待自动清理。'
+                if reason and not attempt:
+                    # Refresh stale measurements once before interrupting work;
+                    # filesystem scans must never hold the reservation writer.
+                    continue
                 if reason:
+                    reason += (f' 实际剩余 {format_bytes(free)}，现有任务尚未写入的预留 {format_bytes(unused)}，'
+                               f'本次新增预留 {format_bytes(extra)}，最低保留 {format_bytes(low)}。')
                     # Admission waits must not exhaust the interruption count.
                     if old and lease.task:
                         count = required['interruptions'] + 1 if required and required['version'] == self._version() else 1

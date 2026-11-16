@@ -433,10 +433,20 @@ usePolling(
           </thead>
           <tbody>
             <tr v-for="task in queue?.active_tasks" :key="task.id">
-              <td>{{ task.title || task.video_id || task.id }}</td>
+              <td>
+                {{ task.title || task.video_id || task.id }}
+                <p
+                  v-if="task.notification?.missing.length"
+                  class="cell-note"
+                  style="color: #b47b35"
+                >
+                  未完成：{{ task.notification.missing.join('、') }}
+                </p>
+              </td>
               <td>
                 {{ videoStates[task.status] || task.status }} ·
                 {{ stageLabel(task.progress?.stage) }}
+                <p v-if="task.notification" class="cell-note">{{ task.notification.reason }}</p>
               </td>
               <td>
                 {{ task.progress?.percent == null ? '—' : task.progress.percent.toFixed(1) + '%' }}

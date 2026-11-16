@@ -120,6 +120,9 @@ class TaskLeases:
                 values['payload'] = self._pack(db, payload_with_session)
                 row.pop('_previous_download_method', None)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
+            if row['action'] == 'download':
+                from webapp.notifications import retry_task
+                retry_task(self, db, {**row, **values})
             return self.decode({**row, **values}, private=True, db=db)
 
     def heartbeat(self, task_id, worker_id, lease_seconds=60):
@@ -186,6 +189,19 @@ class TaskLeases:
                     db.execute(tasks.update().where(tasks.c.id == task_id).values(progress=json.dumps(progress)))
                 self.statistics.transition(db, row, 'paused', reason)
                 self.statistics.settle(db, instance_id=row.get('instance_id'))
+                if row['action'] == 'download' and '下载进程数量已调整' not in str(reason):
+                    from webapp.notifications import settle_task
+                    live = self.progress_cache.read(row)
+                    progress = live['progress'] if live else json.loads(row['progress']) if row.get('progress') else {}
+                    # A paused executor requires intervention, regardless of a
+                    # task's next queue eligibility timestamp.
+                    if self.fleet:
+                        from webapp.database import instances
+                        paused = db.execute(select(instances.c.paused).where(instances.c.id == self.fleet.id)).scalar_one()
+                    else:
+                        paused = self.downloads_paused(db)
+                    settle_task(self, db, {**row, 'status': 'queued'}, error=reason, progress=progress,
+                        retry_at=(time.time() + delay) if delay and not paused else None, resource=resource)
 
     def update_progress(self, task_id, progress, worker_id=None):
         if worker_id:
@@ -249,6 +265,7 @@ class TaskLeases:
             status = 'queued' if retry else 'failed' if error else 'succeeded'
             live = self.progress_cache.read(row)
             progress = live['progress'] if live else json.loads(row['progress']) if row['progress'] else {}
+            failure_phase = progress.get('stage')
             if progress:
                 progress.update(stage='retrying' if retry else 'failed' if error else
                                 'skipped' if (result or {}).get('skipped') else 'completed', speed=None, eta=None)
@@ -287,6 +304,9 @@ class TaskLeases:
                 if self.fleet:
                     self._counter(db, 'instance:' + self.fleet.id, outcome, 1)
             self.statistics.settle(db, instance_id=row.get('instance_id'))
+            from webapp.notifications import settle_task
+            settle_task(self, db, {**row, 'status': status}, error=error, result=result, progress=progress,
+                        retry_at=settled_stamp + delay if retry else None, phase=failure_phase)
             if not retry:
                 generation = progress.get('rotation_id')
                 if generation and not (result or {}).get('skipped'):
@@ -332,6 +352,10 @@ class TaskLeases:
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + 2 if retry else 0, finished_at=None if retry else self._timestamp(),
                     error='执行进程已退出，等待恢复。' if retry else '执行进程已退出。'))
                 self.statistics.transition(db, row, 'retrying' if retry else 'failed', '执行进程已退出。')
+                from webapp.notifications import settle_task
+                settle_task(self, db, {**row, 'status': status}, error='执行进程已退出，等待恢复。' if retry else '执行进程已退出。',
+                    progress=json.loads(row['progress']) if row['progress'] else {},
+                    retry_at=time.time() + 2 if retry else None)
                 if not retry and not (row['source_key'] or '').startswith('job:'):
                     db.execute(reservations.delete().where(reservations.c.task_id == row['id']))
             for scope in scopes:

@@ -397,6 +397,8 @@ class Jobs:
                 if action == 'delete':
                     self.cancel_downloads(db, identity)
                     self.clear_workbench_selection(db, identity)
+                    from webapp.notifications import resolve_job
+                    resolve_job(self.store, db, identity, removed=True)
                 elif action != 'pause':
                     self.stop_running(db, tasks.c.batch_id == identity)
                 # Pause/drain and stop both end the instance lifecycle session;
@@ -524,6 +526,8 @@ class Jobs:
                 for task in rows:
                     if task['status']=='running':
                         self.store.statistics.transition(db, task, 'paused')
+                    from webapp.notifications import resolve_task
+                    resolve_task(self.store, db, task['id'])
                 removed += len(rows)
             event(self.store, db, identity, f'{"清空" if clear else "移除"}清单：移除 {removed} 个视频；历史交付和费用保留。')
             self.store.statistics.settle(db, instance_id=self.store.fleet.id if self.store.fleet else 'local')

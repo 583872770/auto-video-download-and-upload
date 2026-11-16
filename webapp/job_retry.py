@@ -48,6 +48,8 @@ def requeue_failed(store, db, identity, config):
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(status='queued', attempts=0,
                 error=None, finished_at=None, progress=None, available_at=cursor if spacing else 0,
                 worker_id=None, lease_until=None, payload=store._pack(db, payload), **extra))
+            from webapp.notifications import retry_task
+            retry_task(store, db, task)
             cursor += spacing
             count += 1
     return f'重新入队失败视频：{count} 个；' + (

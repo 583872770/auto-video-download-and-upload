@@ -200,7 +200,7 @@ usePolling(
       <div class="section-heading">
         <div>
           <h2>已下载内容</h2>
-          <p class="cell-note">一行一个视频，可同时包含多种类型；按标题排序。</p>
+          <p class="cell-note">一行一个视频，可同时包含多种类型；按最近下载时间倒序排列。</p>
         </div>
         <div class="actions">
           <button

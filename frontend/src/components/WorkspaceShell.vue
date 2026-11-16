@@ -4,6 +4,7 @@ import { RouterLink, useRoute } from 'vue-router';
 import { bootstrap } from '../bootstrap';
 import AppIcon from './AppIcon.vue';
 import WorkspaceStatusBar from './WorkspaceStatusBar.vue';
+import GlobalNotifications from './GlobalNotifications.vue';
 import { api } from '../api';
 import { confirmNavigation, hasPendingEdits } from '../composables/leaveGuard';
 const route = useRoute(),
@@ -101,6 +102,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload));
         @logout="logout"
         @refresh-page="pageVersion++"
       />
+      <GlobalNotifications />
       <p v-if="error" class="notice error" role="alert">{{ error }}</p>
       <slot :key="pageVersion" />
     </div>

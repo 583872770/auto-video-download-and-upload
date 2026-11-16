@@ -247,6 +247,10 @@ def execution_decision(store, db, identity, *, error=None, stamp=None):
     from webapp.database import download_resources
     stamp = time.time() if stamp is None else stamp
     key = hashlib.sha256(('execution:' + identity).encode()).hexdigest()
+    from webapp.notifications import system_issue
+    system_issue(store, db, identity, 'execution', dict(headline='实例停止领取，需要处理执行条件',
+        phase='执行环境与登录检查', reason=safe_text(str(error))[:1000],
+        next_step='检查账号、实例下载环境与运行日志；处理后重新启动任务。') if error is not None else None)
     if error is not None:
         store.db.ensure(db, download_resources, {'key': key, 'state': '{}'})
     raw = db.execute(select(download_resources.c.state).where(download_resources.c.key == key).with_for_update()).scalar_one_or_none()

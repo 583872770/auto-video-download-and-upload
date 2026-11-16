@@ -450,6 +450,88 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertGreaterEqual(value['committed_bytes'], MIB)
             self.assertLess(value['committed_bytes'], MIB + 65536)
 
+    def _measured_usage(self, budget, lease, amount, **other):
+        # Model one coherent filesystem scan without writing hundreds of MiB.
+        usage = {key: other.get(key, 0) for key in budget.limits}
+        usage[lease.category] = amount
+        with budget.connect() as db:
+            db.execute('UPDATE leases SET measured=? WHERE id=?', (amount, lease.id))
+            budget._set(db, 'usage', {'time': time.time(), 'bytes': usage})
+
+    def test_growth_only_promises_unwritten_bytes_above_the_low_watermark(self):
+        budget = DiskBudget(self.root, {'disk_min_free_gb': 10, 'disk_resume_free_gb': 10})
+        with patch.object(budget, '_free', return_value=12 * GIB):
+            with budget.lease('downloads', reserve=16 * MIB) as lease:
+                self._measured_usage(budget, lease, 288 * MIB)
+                with patch.object(budget, '_free', return_value=10 * GIB + 32 * MIB), \
+                        patch.object(budget, '_refresh_usage'):
+                    budget._reserve(lease, 304 * MIB)
+                    self.assertEqual(lease.reserved, 304 * MIB)
+                    # The remaining 16 MiB promise still protects future writes.
+                    with self.assertRaisesRegex(DiskPressure, '预留空间不足'):
+                        budget._reserve(lease, 336 * MIB)
+                    self.assertEqual(lease.reserved, 304 * MIB)
+
+    def test_growth_does_not_charge_measured_bytes_twice_against_budgets(self):
+        for scope in ('category', 'total'):
+            with self.subTest(scope=scope):
+                budget = DiskBudget(self.root / scope, {'disk_budget_gb': 1,
+                    'disk_import_budget_mb': 320, 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+                with budget.lease('imports', reserve=16 * MIB) as lease:
+                    self._measured_usage(budget, lease, 288 * MIB,
+                                         downloads=720 * MIB if scope == 'total' else 0)
+                    with patch.object(budget, '_refresh_usage'):
+                        budget._reserve(lease, 304 * MIB)
+                        self.assertEqual(lease.reserved, 304 * MIB)
+                        message = '分类预算不足' if scope == 'category' else '总预算不足'
+                        with self.assertRaisesRegex(DiskPressure, message):
+                            budget._reserve(lease, (336 if scope == 'category' else 316) * MIB)
+
+    def test_growth_with_unspent_reservation_still_accounts_for_all_new_bytes(self):
+        budget = DiskBudget(self.root, {'disk_min_free_gb': 10, 'disk_resume_free_gb': 10})
+        with patch.object(budget, '_free', return_value=12 * GIB):
+            with budget.lease('downloads', reserve=32 * MIB) as lease:
+                self._measured_usage(budget, lease, 16 * MIB)
+                with patch.object(budget, '_free', return_value=10 * GIB + 40 * MIB), \
+                        patch.object(budget, '_refresh_usage'):
+                    with self.assertRaisesRegex(DiskPressure, '预留空间不足'):
+                        budget._reserve(lease, 64 * MIB)
+                    budget._reserve(lease, 48 * MIB)
+
+    def test_rejection_refreshes_usage_before_interrupting_an_active_download(self):
+        budget = DiskBudget(self.root, {'disk_min_free_gb': 10, 'disk_resume_free_gb': 10})
+        with patch.object(budget, '_free', return_value=12 * GIB):
+            with budget.lease('imports', reserve=MIB) as lease:
+                # The cached scan predates the write; disk free already reflects it.
+                (lease.path / 'data').write_bytes(b'x' * (2 * MIB))
+                with patch.object(budget, '_free', return_value=10 * GIB + 2 * MIB):
+                    budget._reserve(lease, 3 * MIB)
+                    self.assertEqual(lease.reserved, 3 * MIB)
+
+    def test_budget_rejection_refreshes_files_removed_since_the_cached_scan(self):
+        budget = DiskBudget(self.root, {'disk_import_budget_mb': 2,
+            'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        with budget.lease('imports', reserve=MIB // 2) as lease:
+            stale = lease.path.parent / 'finished-import'
+            stale.write_bytes(b'x' * (MIB + MIB // 4))
+            budget.snapshot(force=True)
+            stale.unlink()
+            budget._reserve(lease, MIB)
+            self.assertEqual(lease.reserved, MIB)
+
+    def test_actual_low_space_and_resume_watermark_remain_distinct(self):
+        budget = DiskBudget(self.root, {'disk_min_free_gb': 10, 'disk_resume_free_gb': 15})
+        with patch.object(budget, '_free', return_value=16 * GIB):
+            with budget.lease('imports', reserve=MIB) as lease:
+                with patch.object(budget, '_free', return_value=9 * GIB):
+                    with self.assertRaisesRegex(DiskPressure, '实际剩余空间不足'):
+                        budget._reserve(lease, MIB)
+                with patch.object(budget, '_free', return_value=12 * GIB):
+                    budget._reserve(lease, MIB)
+                    with self.assertRaisesRegex(DiskPressure, '恢复水位'):
+                        with budget.lease('imports', reserve=MIB):
+                            pass
+
     def test_crashed_owner_is_swept_but_live_owner_is_not(self):
         script = "from webapp.disk_budget import DiskBudget; import os,sys; b=DiskBudget(sys.argv[1],{'disk_min_free_gb':0,'disk_resume_free_gb':0}); l=b.lease('imports'); l.__enter__(); (l.path/'partial').write_bytes(b'x'*100); os._exit(0)"
         subprocess.run([sys.executable, '-c', script, str(self.root)], check=True, timeout=20)
@@ -520,6 +602,20 @@ class DiskBudgetTests(unittest.TestCase):
 
 class DiskWebTests(unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
+
+    def _create_test_download_task(self):
+        """Create a test-mode job using the current task-owned storage scope."""
+        from webapp.jobs import Jobs
+        response = self.client.put('/api/config', json={'disk_min_free_gb': 0,
+            'disk_resume_free_gb': 0}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        response = self.client.post('/api/jobs', json={'customer': 'Disk test', 'name': 'Recovery',
+            'urls': 'npNnbj46_ik', 'delivery': {'storage': {'storage_mode': 'test'}}}, headers=self.headers)
+        self.assertEqual(response.status_code, 201, response.json)
+        identity = response.json['id']
+        Jobs(self.store).control(identity, 'start', self.store.runtime(), {})
+        task = self.client.get(f'/api/jobs/{identity}/videos').json['items'][0]
+        return self.store.get(task['id'], private=True)
 
     @unittest.skipIf(os.name == 'nt', 'requires POSIX filesystem sockets and FIFOs')
     def test_linux_chromium_socket_and_fifo_do_not_break_disk_api_or_admission(self):
@@ -593,12 +689,9 @@ class DiskWebTests(unittest.TestCase):
 
     def test_real_coordination_lock_is_requeued_without_failure_statistics(self):
         from web_worker import drain
-        self.assertEqual(self.client.put('/api/config', json={'storage_mode': 'test', 'disk_min_free_gb': 0,
-            'disk_resume_free_gb': 0}, headers=self.headers).status_code, 200)
+        task = self._create_test_download_task()
         budget = DiskBudget(self.store.directory, self.store.runtime())
         budget.snapshot()
-        task = self.store.create('download', {'config': {'storage_mode': 'test'}, 'base': str(self.root),
-                                            'urls': ['https://youtu.be/npNnbj46_ik']})
         with closing(sqlite3.connect(budget.database)) as locker:
             locker.execute('BEGIN IMMEDIATE')
             with patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03), \
@@ -622,10 +715,7 @@ class DiskWebTests(unittest.TestCase):
 
     def check_completed_file_recovery(self):
         from web_worker import execute
-        self.assertEqual(self.client.put('/api/config', json={'storage_mode':'test','disk_min_free_gb':0,
-            'disk_resume_free_gb':0}, headers=self.headers).status_code, 200)
-        task = self.store.create('download', {'config':{'storage_mode':'test'},'base':str(self.root),
-                                            'urls':['https://youtu.be/npNnbj46_ik']})
+        task = self._create_test_download_task()
         self.store.claim(self.store.owner)
         budget = DiskBudget(self.store.directory, {'disk_min_free_gb':0,'disk_resume_free_gb':0})
         with budget.lease('test', task=task['id']) as lease:
@@ -671,10 +761,7 @@ class DiskWebTests(unittest.TestCase):
 
     def test_pressure_wrapped_by_downloader_remains_resource_wait(self):
         from web_worker import execute
-        self.assertEqual(self.client.put('/api/config', json={'storage_mode':'test','disk_min_free_gb':0,
-            'disk_resume_free_gb':0}, headers=self.headers).status_code, 200)
-        task = self.store.create('download', {'config':{'storage_mode':'test'}, 'base':str(self.root),
-                                            'urls':['https://youtu.be/npNnbj46_ik']})
+        task = self._create_test_download_task()
         task = self.store.claim(self.store.owner)
         def download(action, payload, report, *args):
             try:

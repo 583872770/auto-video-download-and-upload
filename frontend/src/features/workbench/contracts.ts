@@ -1,6 +1,7 @@
 import type { Job, VideoTask } from '../jobs/contracts';
 import type { InstanceStatus } from '../../api/types';
 export interface RuntimeTask extends VideoTask {
+  notification?: import('../notifications/model').NoticeDetail | null;
   action: string;
   created_at: string;
   started_at?: string;

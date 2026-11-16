@@ -1,9 +1,9 @@
 """Page the library by source video, with complete summaries and lazy file lists."""
 import base64
-from datetime import datetime
 import json
+import math
 
-from sqlalchemy import Float, String, and_, case, func, literal, or_, select, union_all
+from sqlalchemy import Float, and_, case, func, literal, literal_column, or_, select, union_all
 
 from webapp.database import delivery_artifacts as artifacts, media
 from webapp.delivery.listing import PUBLIC_FIELDS
@@ -28,6 +28,27 @@ def _encode(values):
     return base64.urlsafe_b64encode(json.dumps(values).encode()).decode()
 
 
+def _position(value):
+    stamp, key = _cursor(value, 2)
+    try:
+        stamp = float(stamp)
+        if not math.isfinite(stamp):
+            raise ValueError()
+    except ValueError:
+        raise ValueError('素材分页游标无效。') from None
+    return stamp, key
+
+
+def _artifact_time(column, sqlite):
+    # Compare imported epoch timestamps and delivery ISO dates on the same UTC
+    # timeline. Numeric offsets work without MySQL timezone tables.
+    if sqlite:
+        return func.strftime('%s', column).cast(Float)
+    utc = func.convert_tz(func.replace(func.substr(column, 1, 19), 'T', ' '),
+                          func.right(column, 6), '+00:00')
+    return func.timestampdiff(literal_column('SECOND'), literal('1970-01-01 00:00:00'), utc)
+
+
 def _scope(catalog, root, query=''):
     """Union only catalog metadata; host paths and object keys never leave SQL."""
     instance = catalog.store.fleet.id if catalog.store.fleet else 'local'
@@ -49,8 +70,8 @@ def _scope(catalog, root, query=''):
             table.c.id, func.substr(title, 1, 512).label('title'), video_id.label('video_id'),
             (literal('source_video') if source == 'media' else table.c.kind).label('kind'),
             table.c.size,
-            (table.c.downloaded_at if source == 'media' else literal(None, Float)).label('local_at'),
-            (literal(None, String) if source == 'media' else table.c.created_at).label('artifact_at'),
+            func.coalesce(table.c.downloaded_at if source == 'media' else
+                _artifact_time(table.c.created_at, catalog.store.db.sqlite), 0).label('downloaded_at'),
             case((matched, 1), else_=0).label('matched'))
 
     return union_all(projection(local, 'media'), projection(delivery, 'artifact')).subquery()
@@ -63,10 +84,8 @@ def page(catalog, root, *, query='', kind='all', cursor=None, limit=24):
         raise ValueError('每页标题组数必须在 1 到 100 之间。')
     files = _scope(catalog, root, query[:200])
     groups = select(files.c.group_key, func.min(files.c.title).label('title'),
-        func.lower(func.min(files.c.title)).label('sort_title'),
         func.max(files.c.video_id).label('video_id'), func.count().label('file_count'),
-        func.sum(files.c.size).label('size'), func.max(files.c.local_at).label('local_at'),
-        func.max(files.c.artifact_at).label('artifact_at'),
+        func.sum(files.c.size).label('size'), func.max(files.c.downloaded_at).label('downloaded_at'),
         *(func.sum(case((files.c.kind == name, 1), else_=0)).label(name) for name in KINDS)
     ).group_by(files.c.group_key).having(func.max(files.c.matched) == 1).subquery()
     statement = select(groups)
@@ -81,21 +100,18 @@ def page(catalog, root, *, query='', kind='all', cursor=None, limit=24):
         ).select_from(groups)).mappings().one()
         total = int(totals[kind])
         if cursor:
-            title, key = _cursor(cursor, 2)
-            statement = statement.where(or_(groups.c.sort_title > title,
-                and_(groups.c.sort_title == title, groups.c.group_key > key)))
+            stamp, key = _position(cursor)
+            statement = statement.where(or_(groups.c.downloaded_at < stamp,
+                and_(groups.c.downloaded_at == stamp, groups.c.group_key > key)))
         results = [dict(row) for row in db.execute(statement.order_by(
-            groups.c.sort_title, groups.c.group_key).limit(limit + 1)).mappings()]
+            groups.c.downloaded_at.desc(), groups.c.group_key).limit(limit + 1)).mappings()]
     items = results[:limit]
-    next_cursor = _encode([items[-1]['sort_title'], items[-1]['group_key']]) if len(results) > limit else None
+    next_cursor = _encode([str(items[-1]['downloaded_at']), items[-1]['group_key']]) if len(results) > limit else None
     for item in items:
         item['size'] = int(item['size'])
         kind_counts = {name: int(item.pop(name)) for name in KINDS}
         item['kind_counts'] = {name: count for name, count in kind_counts.items() if count}
-        item['downloaded_at'] = max(float(item.pop('local_at') or 0),
-            datetime.fromisoformat(item['artifact_at']).timestamp() if item['artifact_at'] else 0) or None
-        item.pop('artifact_at')
-        item.pop('sort_title')
+        item['downloaded_at'] = float(item['downloaded_at']) or None
     return dict(items=items, total=total, next_cursor=next_cursor,
                 counts={name: int(totals[name]) for name in ('all', *KINDS)},
                 file_count=int(totals['file_count']), size=int(totals['size']),
@@ -108,12 +124,14 @@ def group_files(catalog, root, *, key, cursor=None, limit=50):
     if not 1 <= limit <= 100:
         raise ValueError('每页文件条数必须在 1 到 100 之间。')
     files = _scope(catalog, root)
-    statement = select(files.c.file_key, files.c.id).where(files.c.group_key == key)
+    statement = select(files.c.file_key, files.c.id, files.c.downloaded_at).where(files.c.group_key == key)
     with catalog.store.connect() as db:
         total = db.execute(select(func.count()).select_from(statement.subquery())).scalar_one()
         if cursor:
-            statement = statement.where(files.c.file_key > _cursor(cursor, 1)[0])
-        rows = list(db.execute(statement.order_by(files.c.file_key).limit(limit + 1)).mappings())
+            stamp, file_key = _position(cursor)
+            statement = statement.where(or_(files.c.downloaded_at < stamp,
+                and_(files.c.downloaded_at == stamp, files.c.file_key > file_key)))
+        rows = list(db.execute(statement.order_by(files.c.downloaded_at.desc(), files.c.file_key).limit(limit + 1)).mappings())
         selected = rows[:limit]
         local_ids = [row['id'] for row in selected if row['file_key'].startswith('media:')]
         artifact_ids = [row['id'] for row in selected if row['file_key'].startswith('artifact:')]
@@ -135,4 +153,4 @@ def group_files(catalog, root, *, key, cursor=None, limit=50):
             items.append(dict(id=row['file_key'], kind=item['kind'], size=item['size'],
                               downloaded_at=item['created_at'], artifact=item))
     return dict(items=items, total=total,
-                next_cursor=_encode([selected[-1]['file_key']]) if len(rows) > limit else None)
+                next_cursor=_encode([str(selected[-1]['downloaded_at']), selected[-1]['file_key']]) if len(rows) > limit else None)

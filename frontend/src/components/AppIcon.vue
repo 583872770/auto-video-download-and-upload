@@ -18,6 +18,9 @@ const paths: Record<string, string> = {
   logout: 'M9 4H4v16h5m5-4 4-4-4-4m-6 4h12',
   menu: 'M4 6h16M4 12h16M4 18h16',
   check: 'M5 12l4 4L19 6',
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M9 21h6',
+  alert: 'M12 3 2 21h20z M12 9v5m0 3h.01',
+  clock: 'M12 7v5l3 2 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
 };
 </script>
 <template>

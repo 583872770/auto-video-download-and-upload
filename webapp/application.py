@@ -175,6 +175,8 @@ def build_application(import_name, config_path=None, state_dir=None, *, start_wo
     register_youtube_routes(context, cookies, preflight)
     register_media_routes(context, media_library)
     register_tasks_routes(context, queue, preflight)
+    from webapp.notifications import register_notifications
+    register_notifications(app, context.store)
 
     from webapp.clash_routes import register_clash
     register_clash(app, context.clash, context.store, context.media_lock, context.settings_lock,

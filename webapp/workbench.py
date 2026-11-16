@@ -137,6 +137,9 @@ class Workbench:
                                            online=online, paused=paused)
         if not compact:
             active = self.decorate_cookie_names(active, None, self.store, scope=identity)
+            from webapp.notifications import attach_tasks
+            with self.store.connect() as db:
+                active = attach_tasks(db, active)
         job = self.visible_job(preview or selected, compact=compact)
         if job:
             desired = selected == job['id'] and enabled
@@ -229,6 +232,10 @@ def register_workbench(app, store, configuration, preflight):
             queue = store.download_queue()
             active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
             active = Workbench.decorate_cookie_names(active, base, store)
+            if not compact:
+                from webapp.notifications import attach_tasks
+                with store.connect() as db:
+                    active = attach_tasks(db, active)
             with store.connect() as db:
                 session = store.statistics.current_session(db)
                 accounts = None

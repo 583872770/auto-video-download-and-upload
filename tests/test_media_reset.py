@@ -1,5 +1,6 @@
 """Full material reset, idempotent failures, and executor ownership boundaries."""
 from pathlib import Path
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -86,7 +87,7 @@ class MediaResetTests(unittest.TestCase):
         self.assertEqual(len(tasks), 1103)
         reads = []
         def record_read(connection, cursor, statement, parameters, context, many):
-            if statement.lstrip().startswith('SELECT') and 'tasks.payload' in statement and 'FROM tasks' in statement:
+            if statement.lstrip().startswith('SELECT tasks.id, tasks.seq') and 'tasks.payload' in statement:
                 reads.append(statement)
         event.listen(self.store.db.engine, 'before_cursor_execute', record_read)
         try:
@@ -102,6 +103,34 @@ class MediaResetTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(func.count()).select_from(schema.tasks)).scalar_one(), 0)
             self.assertEqual(db.execute(select(func.count()).select_from(schema.reservations)).scalar_one(), 1103)
+
+    def test_snapshot_cleanup_scans_references_once_and_keeps_foreign_shared_snapshot(self):
+        records = [self.store.create('download', {'urls': [f'https://example.test/{n}.mp4'],
+            'config': {'fixture': n}}) for n in range(12)]
+        shared = self.store.create('download', {'urls': ['https://example.test/shared.mp4'],
+            'config': {'fixture': 0}})
+        with self.store.connect() as db:
+            db.execute(schema.tasks.update().where(schema.tasks.c.id.in_([r['id'] for r in records])).values(instance_id='local'))
+            db.execute(schema.tasks.update().where(schema.tasks.c.id == shared['id']).values(instance_id='other'))
+            wanted = json.loads(db.execute(select(schema.tasks.c.payload).where(
+                schema.tasks.c.id == shared['id'])).scalar_one())['snapshot_id']
+        self.store.fleet = SimpleNamespace(id='local')
+        self.addCleanup(setattr, self.store, 'fleet', None)
+        reads = []
+        def record_read(connection, cursor, statement, parameters, context, many):
+            if statement.lstrip().startswith('SELECT') and 'tasks.payload' in statement:
+                reads.append(statement)
+        event.listen(self.store.db.engine, 'before_cursor_execute', record_read)
+        try:
+            clear_media(self.catalog, self.root, base=self.base)
+        finally:
+            event.remove(self.store.db.engine, 'before_cursor_execute', record_read)
+        references = [sql for sql in reads if 'json_extract' in sql.lower()]
+        self.assertEqual(len(references), 1, reads)
+        self.assertFalse(any(' LIKE ' in sql for sql in reads), reads)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute(select(schema.snapshots.c.id)).scalars().all(), [wanted])
+        self.assertEqual(self.store.get(shared['id'], private=True)['payload']['config'], {'fixture': 0})
 
     def test_another_instance_keeps_its_files_history_and_statistics(self):
         job = 'j' * 32
@@ -159,7 +188,7 @@ class MediaResetTests(unittest.TestCase):
         self.artifact(path, storage='oss')
         foreign = self.artifact(path, storage='oss', instance='other')
         with patch('Utils.oss_storage.OSSStorage') as storage:
-            clear_media(self.catalog, self.root)
+            clear_media(self.catalog, self.root, base=self.base)
             storage.return_value.bucket.delete_object.assert_not_called()
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(schema.delivery_artifacts.c.id)).scalars().all(), [foreign])

@@ -130,6 +130,8 @@ def register_delivery(app, store):
                     store._transition(db, row, 'queued')
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status='queued', worker_id=None,
                     lease_until=None, attempts=0, available_at=0, error=None, result=None, finished_at=None))
+                from webapp.notifications import retry_task
+                retry_task(store, db, row)
             event(store, db, identity, f'补交 {len(rows)} 条来源，仅获取缺失产物；要求版本' + ('使用最新。' if data.get('use_latest') is True else '沿用原要求。'))
         return jsonify(queued=len(rows)), 202
 
