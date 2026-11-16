@@ -164,7 +164,9 @@ usePolling(
       <div>
         <span class="eyebrow">MEDIA LIBRARY</span>
         <h1>素材库</h1>
-        <p>按视频标题归集已下载内容，展开查看视频、音频和各语言字幕。保存规则在各自任务中管理。</p>
+        <p>
+          按视频标题归集已下载内容，展开查看视频、音频、各语言字幕、封面和视频信息。保存规则在各自任务中管理。
+        </p>
       </div>
     </div>
     <InstancePicker
@@ -468,6 +470,16 @@ usePolling(
   background: #fffbeb;
   border-color: #fde68a;
   color: #92400e;
+}
+.type-chip[data-kind='thumbnail'] {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+.type-chip[data-kind='metadata'] {
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  color: #0f766e;
 }
 .file-count {
   font-size: 12px;

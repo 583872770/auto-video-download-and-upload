@@ -205,7 +205,8 @@ class DownloadProgress:
             eta = max(0, total - downloaded) / speed
         self.streams[filename] = {'downloaded': downloaded, 'total': total, 'finished': finished,
                                   'rate_samples': samples}
-        formats = [] if self.state.get('output_kind') == 'subtitle' else info.get('requested_formats') or self.formats
+        output_label = {'subtitle': '字幕', 'thumbnail': '封面图', 'metadata': '视频信息'}.get(self.state.get('output_kind'))
+        formats = [] if output_label else info.get('requested_formats') or self.formats
         count = max(len(formats), len(self.streams), 1)
         fraction = min(downloaded / total, 1) if total else 0
         completed = sum(stream['finished'] for stream in self.streams.values())
@@ -216,7 +217,7 @@ class DownloadProgress:
             all_total = total
         if all_total is None and len(self.streams) == count and all(stream['total'] for stream in self.streams.values()):
             all_total = sum(stream['total'] for stream in self.streams.values())
-        format_name = ('字幕' if self.state.get('output_kind') == 'subtitle' else
+        format_name = (output_label if output_label else
                        '音频' if info.get('vcodec') == 'none' else '视频')
         self.state.update(stage='processing' if finished else 'downloading',
                           percent=round(min(percent, 100), 1) if total or finished else None,

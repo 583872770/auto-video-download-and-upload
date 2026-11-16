@@ -32,7 +32,7 @@ class MediaGroupTests(unittest.TestCase):
         return response.json
 
     def test_all_types_and_languages_share_one_source_group_and_same_titles_stay_distinct(self):
-        for kind in ('av', 'video_only', 'audio_only', 'subtitle'):
+        for kind in ('av', 'video_only', 'audio_only', 'subtitle', 'thumbnail', 'metadata'):
             self.artifact(kind=kind)
         self.artifact(language='fr', subtitle_source='original_auto')
         self.artifact(video='otherVideo1')
@@ -41,13 +41,13 @@ class MediaGroupTests(unittest.TestCase):
         self.catalog.reindex(self.root)
         result = self.groups()
         self.assertEqual(result['total'], 2)
-        self.assertEqual(result['file_count'], 7)
+        self.assertEqual(result['file_count'], 9)
         group = next(item for item in result['items'] if item['video_id'] == 'abcdefghijk')
-        self.assertEqual(group['kind_counts'], dict(av=1, video_only=1, audio_only=1, subtitle=2, source_video=1))
-        self.assertEqual(group['file_count'], 6)
-        self.assertEqual(group['size'], 42)
+        self.assertEqual(group['kind_counts'], dict(av=1, video_only=1, audio_only=1, subtitle=2, thumbnail=1, metadata=1, source_video=1))
+        self.assertEqual(group['file_count'], 8)
+        self.assertEqual(group['size'], 56)
         files = self.files()['items']
-        self.assertEqual(len(files), 6)
+        self.assertEqual(len(files), 8)
         subtitles = [item['artifact'] for item in files if item['kind'] == 'subtitle']
         self.assertEqual({(item['language'], item['subtitle_source']) for item in subtitles},
                          {('en', 'manual'), ('fr', 'original_auto')})
@@ -89,7 +89,7 @@ class MediaGroupTests(unittest.TestCase):
         result = self.groups(q='%_', type='audio_only')
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['file_count'], 3)
-        self.assertEqual(result['counts'], dict(all=1, av=1, video_only=0, audio_only=1, subtitle=1, source_video=0))
+        self.assertEqual(result['counts'], dict(all=1, av=1, video_only=0, audio_only=1, subtitle=1, thumbnail=0, metadata=0, source_video=0))
         self.assertEqual(result['items'][0]['kind_counts'], dict(av=1, audio_only=1, subtitle=1))
         self.assertEqual(len(self.files()['items']), 3)
         # A finished AV file is its own actual output type, not a pure audio file.

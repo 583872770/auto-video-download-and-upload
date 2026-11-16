@@ -4,8 +4,8 @@ import json
 import re
 from webapp.task_storage import defaults as storage_defaults, normalize as normalize_storage
 
-KINDS = ('subtitle', 'video_only', 'audio_only', 'av')
-LABELS = dict(zip(KINDS, ('字幕', '无声视频', '纯音频', '音视频成品')))
+KINDS = ('subtitle', 'video_only', 'audio_only', 'av', 'thumbnail', 'metadata')
+LABELS = dict(zip(KINDS, ('字幕', '无声视频', '纯音频', '音视频成品', '封面图', '视频信息')))
 DEFAULT = {'schema_version': 1, 'outputs': ['av'], 'video': {'max_height': 1080, 'container': 'source'},
            'audio': {'format': 'source'}, 'av': {'container': 'auto'},
            'subtitles': {'mode': 'original', 'languages': ['zh-Hans'], 'format': 'srt',
@@ -59,6 +59,8 @@ def normalize(value=None):
 
 def variant(spec, kind):
     # Output selection and contract revision do not alter an existing file's identity.
+    if kind in ('thumbnail', 'metadata'):
+        return digest({'kind': kind, 'schema_version': 1})
     options = spec['subtitles'] if kind == 'subtitle' else spec['audio'] if kind == 'audio_only' else {
         'video': spec['video'], **({'av': spec['av']} if kind == 'av' else {})}
     if kind == 'subtitle':

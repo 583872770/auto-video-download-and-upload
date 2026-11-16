@@ -136,7 +136,7 @@ export function readableLog(raw: string): LogEntry[] {
           );
           break;
         case 'provider_start':
-          add(time, `使用 ${String(record.provider || '下载器')} 读取视频与字幕信息。`);
+          add(time, `使用 ${String(record.provider || '下载器')} 读取来源信息。`);
           break;
         case 'subtitle_selected': {
           subtitle = language(record.language);
@@ -260,7 +260,7 @@ export function readableLog(raw: string): LogEntry[] {
       continue;
     }
     if (text.startsWith('[download] Destination:')) {
-      add(time, subtitle ? `开始下载${subtitle}字幕。` : '开始下载媒体文件。');
+      add(time, subtitle ? `开始下载${subtitle}字幕。` : '开始下载文件。');
       continue;
     }
     const progress = text.match(/^\[download\]\s+([\d.]+)%/);

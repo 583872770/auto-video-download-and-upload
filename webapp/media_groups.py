@@ -9,7 +9,7 @@ from webapp.database import delivery_artifacts as artifacts, media
 from webapp.delivery.listing import PUBLIC_FIELDS
 
 
-KINDS = ('av', 'video_only', 'audio_only', 'subtitle', 'source_video')
+KINDS = ('av', 'video_only', 'audio_only', 'subtitle', 'thumbnail', 'metadata', 'source_video')
 
 
 def _cursor(value, length):

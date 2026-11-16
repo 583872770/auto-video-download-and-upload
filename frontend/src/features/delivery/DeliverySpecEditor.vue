@@ -41,7 +41,7 @@ function updateLanguages(value: string) {
       <button type="button" @click="spec.outputs = ['av']">仅成品</button
       ><button type="button" @click="spec.outputs = ['subtitle']">仅字幕</button
       ><button type="button" @click="spec.outputs = Object.keys(labels) as OutputKind[]">
-        四项全选
+        全部选择
       </button>
     </div>
     <div class="choices">
@@ -51,6 +51,13 @@ function updateLanguages(value: string) {
         }}</label
       >
     </div>
+    <p
+      v-if="spec.outputs.includes('thumbnail') || spec.outputs.includes('metadata')"
+      class="cell-note"
+    >
+      封面图保存来源提供的最佳封面（JPG / PNG / WebP）；视频信息保存为
+      JSON，包含标题、简介、频道、时长等资料。可单独下载，无需勾选视频或音频。
+    </p>
     <p>
       每条来源交付：{{
         spec.outputs.map((key) => labels[key as keyof typeof labels]).join(' + ') ||

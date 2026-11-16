@@ -65,7 +65,7 @@ watch(
       <strong
         >已下载文件 <span>{{ resource.data.value?.total ?? group.file_count }}</span></strong
       >
-      <span class="cell-note">各语言字幕单独列出，可分别查看和下载</span>
+      <span class="cell-note">按类型及字幕语言列出，可分别查看和下载</span>
     </div>
     <p v-if="resource.error.value" class="form-error" role="alert">
       {{ resource.error.value }} <button @click="refresh()">重试</button>
@@ -84,6 +84,12 @@ watch(
             subtitleDescription(file.artifact)
           }}</small>
           <small v-else-if="file.local" class="cell-note local-name">{{ file.local.name }}</small>
+          <small v-else-if="file.kind === 'metadata'" class="cell-note"
+            >JSON · 标题、简介、频道等资料</small
+          >
+          <small v-else-if="file.kind === 'thumbnail'" class="cell-note"
+            >来源封面 · 保留原始图片格式</small
+          >
           <small v-else class="cell-note">独立文件 · 可预览和下载</small>
         </div>
       </div>
@@ -94,7 +100,13 @@ watch(
       <span class="file-time">{{ formatDownloadTime(file.downloaded_at) }}</span>
       <div class="actions file-actions">
         <button :data-preview="file.id" @click="selectFile(file)">
-          {{ file.kind === 'audio_only' ? '试听' : file.kind === 'subtitle' ? '查看' : '预览' }}
+          {{
+            file.kind === 'audio_only'
+              ? '试听'
+              : ['subtitle', 'metadata'].includes(file.kind)
+                ? '查看'
+                : '预览'
+          }}
         </button>
         <a class="text-link" :href="fileUrl(file)">下载</a>
       </div>
@@ -180,6 +192,16 @@ watch(
   background: #fffbeb;
   border-color: #fde68a;
   color: #92400e;
+}
+.file-kind[data-kind='thumbnail'] {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+.file-kind[data-kind='metadata'] {
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  color: #0f766e;
 }
 .file-storage,
 .file-time {

@@ -29,6 +29,8 @@ class DeliveryTests(unittest.TestCase):
                                ('audio.m4a',['-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-vn','-c:a','aac'])]:
             subprocess.run(['ffmpeg','-nostdin','-v','error','-y',*arguments,'-t','0.5',str(self.media/name)],check=True,capture_output=True)
         (self.media/'en.vtt').write_text('WEBVTT\n\n00:00:00.000 --> 00:00:00.400\nHello world.\n',encoding='utf-8')
+        from PIL import Image
+        Image.new('RGB', (320, 180), 'blue').save(self.media/'cover.webp')
         self.storage={}
         self.hits=[]
         hits=self.hits
@@ -52,7 +54,8 @@ class DeliveryTests(unittest.TestCase):
         formats=[dict(format_id='a',url=self.url+'/audio.m4a',ext='m4a',acodec='aac',vcodec='none',protocol='http',http_headers={}),
                  dict(format_id='v',url=self.url+'/video.mp4',ext='mp4',vcodec='h264',acodec='none',height=120,width=160,protocol='http',http_headers={})]
         return dict(id='npNnbj46_ik',title='fixture',extractor='youtube',extractor_key='Youtube',webpage_url='https://www.youtube.com/watch?v=npNnbj46_ik',
-                    formats=formats,subtitles={'en':[{'url':self.url+'/en.vtt','ext':'vtt'}]} if subtitles else {},automatic_captions={})
+                    formats=formats,thumbnails=[{'url':self.url+'/cover.webp'}],
+                    subtitles={'en':[{'url':self.url+'/en.vtt','ext':'vtt'}]} if subtitles else {},automatic_captions={})
 
     def create(self,kinds,options=None):
         spec=normalize({'outputs':list(kinds),'subtitles':{'languages':['en']},'storage':self.storage,**(options or {})})
@@ -238,7 +241,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_all_fifteen_combinations_and_track_reuse(self):
         for length in range(1,5):
-            for kinds in itertools.combinations(KINDS,length):
+            for kinds in itertools.combinations(('subtitle', 'video_only', 'audio_only', 'av'),length):
                 with self.subTest(outputs=kinds):
                     self.hits.clear();job=self.create(kinds)
                     task,result=self.execute()
@@ -254,6 +257,102 @@ class DeliveryTests(unittest.TestCase):
                     for row in files:
                         response=self.client.get(row['content_url']);self.assertEqual(response.status_code,200);response.close()
 
+    def test_cover_and_metadata_use_one_extraction_shared_admission_and_no_media_tools(self):
+        from web_worker import execute
+        from webapp.adapters.execution import ProviderExecution
+        from webapp.channel_scheduler import ChannelScheduler
+        job = self.create(['thumbnail', 'metadata'])
+        task = self.store.claim(self.store.owner)
+        info = self.info()
+        info.update(description='中文简介', channel='测试频道', duration=12.5, tags=['汽车'],
+                    http_headers={'Authorization': 'private-token'}, cookies='private-cookie',
+                    chapters=[dict(title='开场', start_time=0, end_time=12.5, url='secret')])
+        reserve = ProviderExecution.transmitting
+        admitted = []
+        def transmitting(executor, channel, transfer_info, streams):
+            admitted.append((executor.session.progress.state['output_kind'], streams))
+            return reserve(executor, channel, transfer_info, streams)
+        updates = []
+        find_tool = shutil.which
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info) as extract, \
+             patch('webapp.delivery.executor.shutil.which', side_effect=lambda name: None if name in ('ffmpeg', 'ffprobe') else find_tool(name)), \
+             patch.object(ProviderExecution, 'transmitting', transmitting), \
+             patch.object(ChannelScheduler, 'wait_youtube_start', autospec=True) as start:
+            result = execute('download', task['payload'], report_progress=updates.append, store=self.store, task_id=task['id'])
+        self.store.finish(task['id'], result=result, worker_id=self.store.owner)
+        self.assertEqual((extract.call_count, start.call_count), (1, 1))
+        self.assertEqual(admitted, [('thumbnail', 1)])
+        self.assertEqual(self.hits, ['/cover.webp'])
+        self.assertEqual((result['delivery_status'], result['file_count']), ('complete', 2))
+        self.assertTrue(any(p.get('output_kind') == 'thumbnail' and p['stage'] == 'downloading' for p in updates))
+        rows = self.client.get('/api/jobs/' + job + '/artifacts').json['items']
+        for row in rows:
+            with self.client.get(row['content_url']) as response:
+                self.assertEqual(response.status_code, 200)
+                if row['kind'] == 'metadata':
+                    self.assertEqual(response.mimetype, 'application/json')
+                    self.assertEqual(response.json['description'], '中文简介')
+                    self.assertEqual(response.json['chapters'], [dict(title='开场', start_time=0, end_time=12.5)])
+                    for private in ('private-token', 'private-cookie', 'secret', self.url):
+                        self.assertNotIn(private, response.text)
+                else:
+                    self.assertEqual(response.mimetype, 'image/webp')
+            with self.client.get(row['content_url'] + '?download=1') as response:
+                self.assertIn('attachment', response.headers['Content-Disposition'])
+        group = self.client.get('/api/media/groups?type=thumbnail').json
+        self.assertEqual(group['items'][0]['kind_counts'], {'thumbnail': 1, 'metadata': 1})
+        self.assertEqual(group['counts']['metadata'], 1)
+
+    def test_metadata_only_never_downloads_remote_files(self):
+        self.create(['metadata'])
+        _, result = self.execute()
+        self.assertEqual(result['delivery_status'], 'complete')
+        self.assertEqual(self.hits, [])
+
+    def test_cover_falls_back_from_missing_resolution_and_honors_rate_limits(self):
+        self.create(['thumbnail'])
+        info = self.info();info['thumbnails'].append({'url': self.url + '/absent.jpg'})
+        _, result = self.execute(info)
+        self.assertEqual(result['delivery_status'], 'complete')
+        self.assertEqual(self.hits, ['/absent.jpg', '/cover.webp'])
+        from web_worker import execute
+        from webapp.download_policy import failure_evidence
+        job = self.create(['thumbnail'])
+        task = self.store.claim(self.store.owner)
+        info['thumbnails'][-1]['url'] = self.url + '/limited.vtt'
+        self.hits.clear()
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info):
+            with self.assertRaises(RuntimeError) as caught:
+                execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.assertEqual(failure_evidence(caught.exception).http_status, 429)
+        self.assertGreaterEqual(caught.exception.retry_after, 2390)
+        self.assertEqual(self.hits, ['/limited.vtt'])
+        self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'], [])
+
+    def test_missing_cover_is_review_and_invalid_image_is_never_published(self):
+        job = self.create(['thumbnail', 'metadata'])
+        info = self.info();info.pop('thumbnails')
+        _, result = self.execute(info)
+        self.assertEqual((result['delivery_status'], result['file_count']), ('review', 1))
+        self.assertEqual(self.hits, [])
+        self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'][0]['kind'], 'metadata')
+        from web_worker import execute
+        from webapp.delivery.verify import LocalDeliveryError
+        job = self.create(['thumbnail'])
+        info = self.info();info['thumbnails'] = [{'url': self.url + '/en.vtt'}]
+        task = self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info):
+            with self.assertRaises(LocalDeliveryError):
+                execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'], [])
+
+    def test_sidecar_variants_do_not_depend_on_media_or_subtitle_options(self):
+        original = normalize({'outputs': ['thumbnail', 'metadata']})
+        changed = normalize({'outputs': list(KINDS), 'video': {'max_height': 2160},
+                             'audio': {'format': 'mp3'}, 'subtitles': {'format': 'vtt'}})
+        for kind in ('thumbnail', 'metadata'):
+            self.assertEqual(variant(original, kind), variant(changed, kind))
+
     def test_missing_subtitle_keeps_media_and_accepts_explicit_waiver(self):
         job=self.create(['subtitle','av']);task,result=self.execute(self.info(False))
         self.assertEqual(result['delivery_status'],'review');self.assertEqual(result['file_count'],1)
@@ -268,7 +367,7 @@ class DeliveryTests(unittest.TestCase):
         response=self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']]},headers=self.headers)
         self.assertEqual(response.status_code,202,response.json)
         self.execute();after=self.client.get('/api/jobs/'+job).json
-        self.assertEqual(after['file_bytes'],before['file_bytes']);self.assertEqual(after['file_count'],4);self.assertEqual(self.hits,[])
+        self.assertEqual(after['file_bytes'],before['file_bytes']);self.assertEqual(after['file_count'],len(KINDS));self.assertEqual(self.hits,[])
 
     def test_two_tasks_publish_into_independent_directories_and_library_sees_both(self):
         for directory in ('customer-a', 'customer-b'):
@@ -306,9 +405,9 @@ class DeliveryTests(unittest.TestCase):
     def test_test_mode_has_no_formal_files_or_bill(self):
         self.storage={'storage_mode':'test'}
         job=self.create(KINDS);_,result=self.execute()
-        self.assertTrue(result['files_deleted']);self.assertEqual(result['file_count'],4)
+        self.assertTrue(result['files_deleted']);self.assertEqual(result['file_count'],len(KINDS))
         detail=self.client.get('/api/jobs/'+job).json
-        self.assertEqual(detail['file_count'],0);self.assertEqual(detail['test_file_count'],4)
+        self.assertEqual(detail['file_count'],0);self.assertEqual(detail['test_file_count'],len(KINDS))
         self.assertEqual(self.client.get('/api/jobs/'+job+'/artifacts').json['items'],[])
 
     def test_language_policy_and_delivery_filter_without_task_filter(self):
@@ -343,13 +442,13 @@ class DeliveryTests(unittest.TestCase):
                 job=self.create(KINDS,{'subtitles':{'mode':'original'}})
                 info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
                 task,result=self.execute(info)
-                self.assertEqual(result['file_count'],5)
+                self.assertEqual(result['file_count'],7)
                 with self.store.connect() as db:
                     rows=list(db.execute(select(delivery_artifacts).where(delivery_artifacts.c.job_id==job)).mappings())
                 self.assertEqual({(row['kind'],row['language']) for row in rows},
-                    {('av',''),('video_only',''),('audio_only',''),('subtitle','en'),('subtitle','fr')})
+                    {('av',''),('video_only',''),('audio_only',''),('subtitle','en'),('subtitle','fr'),('thumbnail',''),('metadata','')})
                 paths=[Path(row['path']) for row in rows]
-                self.assertEqual(len(set(paths)),5)
+                self.assertEqual(len(set(paths)),7)
                 self.assertEqual(len({path.parent for path in paths}),1)
                 for path in paths:
                     relative=path.relative_to(self.root/'videos')

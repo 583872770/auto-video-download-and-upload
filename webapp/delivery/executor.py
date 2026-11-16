@@ -9,6 +9,7 @@ import uuid
 
 from sqlalchemy import select
 import yt_dlp
+from yt_dlp.networking.exceptions import HTTPError
 from Utils.config import video_directory
 from webapp.downloader import build_ydl_options, download_cookie_session
 from webapp.delivery.contracts import variant
@@ -179,10 +180,10 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
     session.transfer_seconds = 0
     if not session.store or len(addresses) != 1:
         raise RuntimeError('多类型交付需要通过客户任务逐条执行。')
-    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+    spec = session.config['_delivery_contract']
+    if set(spec['outputs']) - {'thumbnail', 'metadata'} and (not shutil.which('ffmpeg') or not shutil.which('ffprobe')):
         from webapp.environment import DownloadEnvironmentRequired
         raise DownloadEnvironmentRequired('多类型交付需要 FFmpeg 和 FFprobe。')
-    spec = session.config['_delivery_contract']
     progress = session.progress
     task_id = session.payload['_task_id']
     keys = {kind: require_key(session, kind) for kind in spec['outputs'] if kind != 'subtitle'}
@@ -237,6 +238,15 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     raise RuntimeError('来源不是可处理的单条媒体。')
                 session.current_video.update(id=info.get('id'), title=info.get('title', ''))
                 progress.state['title'] = info.get('title', '')
+                if 'metadata' in remaining:
+                    from webapp.delivery.metadata import video_metadata
+                    progress.state.update(stage='processing', output_kind='metadata');progress.save(force=True)
+                    output = temporary / 'video.info.json'
+                    output.write_text(json.dumps(video_metadata(info), ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+                    publish(session, output, 'metadata')
+                    print('视频信息已保存：JSON，包含标题、简介、频道等来源资料。', flush=True)
+                if 'thumbnail' in remaining:
+                    thumbnail(executor, channel, info, downloader, temporary, keys['thumbnail'])
                 tracks = {}
                 acquired = {}
                 need_video = any(k in remaining for k in ('video_only', 'av'))
@@ -266,6 +276,8 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     tracks[kind] = path
                     acquired[source_key] = path
                 for kind in remaining:
+                    if kind in ('thumbnail', 'metadata'):
+                        continue
                     inputs = [tracks.get('video_only'), tracks.get('audio_only')] if kind == 'av' else [tracks.get(kind)]
                     if not all(inputs):
                         ledger.mark(session.store, task_id, keys[kind], 'missing', '来源没有符合要求的画面或音轨。')
@@ -290,12 +302,63 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     publish(session, output, kind)
                 if not sub_done:
                     subtitles(executor, channel, info, safe, temporary, caption_session)
-    except yt_dlp.utils.DownloadError as error:
+    except (yt_dlp.utils.DownloadError, HTTPError) as error:
         text = session.failure.message(error).lower()
         if without_cookies and not cookie_retry and not session.config.get('_cookie_pool_selected') and session.config.get('youtube_cookie_usage', 'auto') == 'auto' and session.config.get('youtube_cookie') and not any(s in text for s in ('bot', 'captcha')) and any(s in text for s in ('sign in to', 'login required', 'age-restricted', 'private video')):
             return attempt(executor, channel, addresses, without_cookies=False, cookie_retry=True)
         raise session.failure.as_error(error) from error
     return False
+
+
+def thumbnail(executor, channel, info, downloader, temporary, key):
+    from PIL import Image
+    session = executor.session
+    # yt-dlp orders thumbnails from least to most preferred. Reuse the same
+    # authenticated downloader, request spacing and transfer admission as media.
+    candidates = [item for item in info.get('thumbnails') or []
+                  if isinstance(item, dict) and isinstance(item.get('url'), str)
+                  and item['url'].startswith(('http://', 'https://'))]
+    urls = list(dict.fromkeys(item['url'] for item in reversed(candidates)))
+    if isinstance(info.get('thumbnail'), str) and info['thumbnail'].startswith(('http://', 'https://')) and info['thumbnail'] not in urls:
+        urls.append(info['thumbnail'])
+    if not urls:
+        ledger.mark(session.store, session.payload['_task_id'], key, 'missing', '来源没有可用封面图。')
+        return
+    source = temporary / 'thumbnail.image'
+    transfer_info = dict(id=info['id'], title=info.get('title', ''), url=urls[0],
+                         ext='jpg', protocol='https' if urls[0].startswith('https:') else 'http',
+                         http_headers=info.get('http_headers') or {}, format_id='thumbnail')
+    session.progress.state.update(output_kind='thumbnail', output_language='', stage='downloading')
+    session.progress.save(force=True)
+    with executor.transmitting(channel, transfer_info, 1):
+        for url in urls:
+            transfer_info.update(url=url, protocol='https' if url.startswith('https:') else 'http')
+            try:
+                success, _ = downloader.dl(str(source), transfer_info)
+            except (yt_dlp.utils.DownloadError, HTTPError) as error:
+                if not re.search(r'HTTP Error (404|410)\b', str(error)):
+                    raise
+                # Generated high-resolution URLs can be absent. Try the next
+                # source image; authentication/rate-limit failures still escape.
+                from webapp.downloads import DownloadFailure
+                session.failure = DownloadFailure()
+                if isinstance(error, HTTPError):
+                    error.response.close()
+                print('该规格封面不存在，尝试来源提供的下一张封面。', flush=True)
+                continue
+            if not success:
+                raise RuntimeError('封面图下载失败。')
+            break
+        else:
+            ledger.mark(session.store, session.payload['_task_id'], key, 'missing', '来源提供的封面均已失效。')
+            return
+    verify(source, 'thumbnail')
+    with Image.open(source) as image:
+        extension = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}[image.format]
+    target = source.with_suffix(extension)
+    source.replace(target)
+    publish(session, target, 'thumbnail')
+    print('封面图已保存：来源最佳封面，保留原始图片格式。', flush=True)
 
 
 def subtitles(executor, channel, info, safe, temporary, caption_session):

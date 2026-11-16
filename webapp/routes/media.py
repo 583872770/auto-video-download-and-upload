@@ -32,13 +32,13 @@ def register_media_routes(context, media_library):
         root = Path(io_path(video_directory(config, base))).resolve()
         asset_type = request.args.get('type', 'all')
         kinds = {'all': None, 'video': ('av', 'video_only'), 'audio': ('av', 'audio_only'),
-                 'subtitle': ('subtitle',)}
+                 'subtitle': ('subtitle',), 'thumbnail': ('thumbnail',), 'metadata': ('metadata',)}
         if asset_type not in kinds:
             raise ValueError('请选择有效素材类型。')
         media_page = catalog.page(root, limit=int(request.args.get('media_limit', 24)),
                                   cursor=request.args.get('media_cursor'), query=request.args.get('q', '')[:200],
                                   exclude_delivery=True,
-                                  exhausted=asset_type in ('audio', 'subtitle') or request.args.get('media_exhausted') == '1')
+                                  exhausted=asset_type in ('audio', 'subtitle', 'thumbnail', 'metadata') or request.args.get('media_exhausted') == '1')
         artifacts = artifact_page(store, instance_id=store.fleet.id if store.fleet else 'local',
                                    cursor=request.args.get('artifact_cursor'),
                                    query=request.args.get('q', ''),
@@ -51,7 +51,8 @@ def register_media_routes(context, media_library):
         counts = {'all': media_page['total'] + sum(by_kind.values()),
                   'video': media_page['total'] + by_kind.get('av', 0) + by_kind.get('video_only', 0),
                   'audio': by_kind.get('av', 0) + by_kind.get('audio_only', 0),
-                  'subtitle': by_kind.get('subtitle', 0)}
+                  'subtitle': by_kind.get('subtitle', 0),
+                  'thumbnail': by_kind.get('thumbnail', 0), 'metadata': by_kind.get('metadata', 0)}
         return jsonify(media=media_page, artifacts=artifacts, directory=str(root),
                        counts=counts, indexing=media_page['indexing'])
 

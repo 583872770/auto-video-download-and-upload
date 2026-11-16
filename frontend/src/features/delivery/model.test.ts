@@ -24,4 +24,9 @@ describe('delivery editing contracts', () => {
     expect(formatGB('1000')).toBe('0.000001 GB');
     expect(formatGB('0')).toBe('0.000000 GB');
   });
+  it('allows image and information delivery without media outputs', () => {
+    const spec = defaultDelivery();
+    spec.outputs = ['thumbnail', 'metadata'];
+    expect(validateDelivery(spec)).toBe('');
+  });
 });

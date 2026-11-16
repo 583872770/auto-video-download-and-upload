@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from PIL import Image, UnidentifiedImageError
 
 
 class LocalDeliveryError(RuntimeError):
@@ -23,6 +24,23 @@ def verify(path, kind):
     path = Path(path)
     if not path.is_file() or path.stat().st_size <= 0:
         raise LocalDeliveryError('交付文件不存在或为空。')
+    if kind == 'thumbnail':
+        try:
+            with Image.open(path) as image:
+                if image.format not in ('JPEG', 'PNG', 'WEBP'):
+                    raise ValueError('unsupported image format')
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
+            raise LocalDeliveryError('封面文件不是有效的 JPG、PNG 或 WebP 图片。') from error
+        return
+    if kind == 'metadata':
+        try:
+            info = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(info, dict) or info.get('schema_version') != 1 or not isinstance(info.get('id'), str) or not info['id'] or not isinstance(info.get('title'), str):
+                raise ValueError('invalid metadata')
+        except (ValueError, UnicodeError) as error:
+            raise LocalDeliveryError('视频信息不是有效的 JSON 视频资料。') from error
+        return
     if kind == 'subtitle':
         text = path.read_text(encoding='utf-8-sig')
         if not re.search(r'\d{2}:\d{2}[.,]\d{3}\s+-->\s+(?:\d{2}:)?\d{2}:\d{2}[.,]\d{3}', text):

@@ -25,7 +25,9 @@ def require_fallback_environment(config, base):
 def require_native_environment(config):
     missing = [module for module in ('yt_dlp', 'yt_dlp_ejs')
                if importlib.util.find_spec(module) is None]
-    missing.extend(binary for binary in ('ffmpeg', 'ffprobe') if not shutil.which(binary))
+    outputs = config.get('_delivery_contract', {}).get('outputs')
+    binaries = () if outputs and set(outputs) <= {'thumbnail', 'metadata'} else ('ffmpeg', 'ffprobe')
+    missing.extend(binary for binary in binaries if not shutil.which(binary))
     runtimes = config.get('js_runtimes')
     if runtimes is None:
         ready = shutil.which('deno') or shutil.which('node')

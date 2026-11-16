@@ -3,7 +3,7 @@ export type { TaskStorage };
 export function defaultStorage(): TaskStorage {
   return structuredClone(defaultTaskStorage);
 }
-export type OutputKind = 'subtitle' | 'video_only' | 'audio_only' | 'av';
+export type OutputKind = 'subtitle' | 'video_only' | 'audio_only' | 'av' | 'thumbnail' | 'metadata';
 export interface DeliverySpec {
   schema_version: number;
   storage: TaskStorage & {
@@ -28,6 +28,8 @@ export const outputLabels: Record<OutputKind, string> = {
   video_only: '无声视频',
   audio_only: '纯音频',
   av: '音视频成品',
+  thumbnail: '封面图',
+  metadata: '视频信息',
 };
 export const deliveryStates: Record<string, string> = {
   pending: '待处理',
