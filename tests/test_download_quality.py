@@ -87,4 +87,4 @@ class QualityPolicyTests(unittest.TestCase):
         second = self.store.claim('second-worker')
         self.assertEqual(second['payload']['config']['downmp3_quality'], 'best')
         self.assertEqual(self.store.get(first['id'],private=True)['payload']['config']['downmp3_quality'], '480')
-        self.assertIsNone(self.client.get('/api/jobs/'+identity).json['policy'])
+        self.assertNotIn('policy', self.client.get('/api/jobs/'+identity).json)

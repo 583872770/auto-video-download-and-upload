@@ -39,5 +39,5 @@ requests==2.34.2
 typing_extensions==4.16.0
 urllib3==2.8.0
 websockets==17.2
-yt-dlp==2026.10.26
+yt-dlp==2026.11.15.232800.dev0
 yt-dlp-ejs==0.8.0
