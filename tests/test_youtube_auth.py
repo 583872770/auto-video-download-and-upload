@@ -193,6 +193,9 @@ class AuthContract:
             self.assertEqual(network.call_count, 4)
             with patch('webapp.youtube_auth.time.time', return_value=time.time() + 301):
                 auth.require(config, self.root, proxy='http://127.0.0.1:18888', node='B')
+            self.assertEqual(network.call_count, 4)
+            with patch('webapp.youtube_auth.time.time', return_value=time.time() + 1801):
+                auth.require(config, self.root, proxy='http://127.0.0.1:18888', node='B')
             self.assertEqual(network.call_count, 5)
         public = self.client.get('/api/status').text
         self.assertNotIn('TEST_ONLY_COOKIE_SECRET', public)

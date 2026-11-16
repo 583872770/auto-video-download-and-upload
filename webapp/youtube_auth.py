@@ -367,7 +367,7 @@ class YouTubeAuth:
                         # A failed preflight must never become thousands of failed videos.
                         state, message = 'unconfirmed', '登录检测未完成，请检查网络和 Cookie 文件后重新检测。'
                     checked = time.time()
-                    expiry = min([checked + 300, *[cookie['expires'] for cookie in auth if cookie['expires'] > 0]])
+                    expiry = min([checked + 1800, *[cookie['expires'] for cookie in auth if cookie['expires'] > 0]])
                     result.update(state=state, message=message, checked_at=checked,
                                   expires_at=expiry if state == 'valid' else checked + 15)
                     self._write(key, result)
