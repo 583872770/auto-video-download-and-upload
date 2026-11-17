@@ -15,6 +15,28 @@ TRANSLATED = {'url': ORIGINAL['url'] + '&tlang=zh-Hans', 'ext': 'vtt'}
 
 
 class SubtitleTrackTests(unittest.TestCase):
+    def test_live_chat_is_excluded_from_original_and_translated_caption_plans(self):
+        chat = {'url': 'https://www.youtube.com/watch?v=fixture', 'ext': 'json'}
+        for protocol in ('youtube_live_chat', 'youtube_live_chat_replay'):
+            with self.subTest(protocol=protocol):
+                info = {'subtitles': {'live_chat': [chat], 'en': [ORIGINAL, {**chat, 'protocol': protocol}],
+                    'fr-en': [{**TRANSLATED, 'protocol': protocol}]},
+                    'automatic_captions': {'live_chat': [chat], 'ja': [{**chat, 'protocol': protocol}]}}
+                for mode in ('original', 'original_and_translated'):
+                    config = normalize({'subtitles': {'mode': mode, 'languages': ['fr']}})['subtitles']
+                    available, required = caption_plan(info, config)
+                    self.assertEqual(available, {'en': ([ORIGINAL], None)})
+                    self.assertEqual(required, ['en'] if mode == 'original' else ['en', 'fr'])
+
+    def test_json3_captions_remain_available_when_chat_is_the_only_other_resource(self):
+        caption = {**ORIGINAL, 'ext': 'json3'}
+        info = {'subtitles': {'live_chat': [{'url': ORIGINAL['url'], 'ext': 'json'}]},
+                'automatic_captions': {'en-orig': [caption]}}
+        config = normalize({})['subtitles']
+        self.assertEqual(caption_plan(info, config), ({'en': (None, [caption])}, ['en']))
+        info['automatic_captions'] = {}
+        self.assertEqual(caption_plan(info, config), ({}, []))
+
     def test_original_discovers_languages_and_excludes_all_translated_variants(self):
         japanese = {**ORIGINAL, 'url': ORIGINAL['url'].replace('lang=en', 'lang=ja')}
         synthetic = {**TRANSLATED, 'url': ORIGINAL['url'] + '&tlang=en'}

@@ -363,6 +363,36 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual([row['language'] for row in files],['ja'])
         self.assertEqual(files[0]['subtitle_source'],'original_auto')
 
+    def test_live_chat_is_not_requested_or_registered_as_a_subtitle_requirement(self):
+        job=self.create(['subtitle'])
+        info=self.info()
+        info['subtitles']['live_chat']=[{'url':self.url+'/chat.json','ext':'json',
+                                        'protocol':'youtube_live_chat_replay'}]
+        task,result=self.execute(info)
+        self.assertEqual(result['delivery_status'],'complete')
+        self.assertEqual(self.hits,['/en.vtt'])
+        with self.store.connect() as db:
+            languages=db.execute(select(delivery_requirements.c.language).where(
+                delivery_requirements.c.task_id==task['id'],delivery_requirements.c.kind=='subtitle')).scalars().all()
+        self.assertEqual(languages,['en'])
+        files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
+        self.assertEqual([(row['kind'],row['language']) for row in files],[('subtitle','en')])
+
+    def test_chat_only_video_delivers_media_and_reports_missing_captions(self):
+        job=self.create(['video_only','subtitle'])
+        info=self.info(False)
+        info['subtitles']['live_chat']=[{'url':self.url+'/chat.json','ext':'json',
+                                        'protocol':'youtube_live_chat_replay'}]
+        task,result=self.execute(info)
+        self.assertEqual(result['delivery_status'],'review')
+        self.assertEqual(self.hits,['/video.mp4'])
+        with self.store.connect() as db:
+            missing=db.execute(select(delivery_requirements.c.language,delivery_requirements.c.status).where(
+                delivery_requirements.c.task_id==task['id'],delivery_requirements.c.kind=='subtitle')).all()
+        self.assertEqual(missing,[('','missing')])
+        files=self.client.get('/api/jobs/'+job+'/artifacts').json['items']
+        self.assertEqual([row['kind'] for row in files],['video_only'])
+
     def test_translated_subtitle_source_is_preserved_in_library(self):
         self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated','languages':['fr']}})
         info=self.info(False)

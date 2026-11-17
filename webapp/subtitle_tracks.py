@@ -11,10 +11,19 @@ def translated(track):
     return bool(target and target != query.get('lang', [''])[0])
 
 
+def caption_entries(language, tracks):
+    """yt-dlp also lists live chat as subtitles; it is not a caption track."""
+    if language == 'live_chat':
+        return []
+    return [track for track in tracks or []
+            if track.get('protocol') not in ('youtube_live_chat', 'youtube_live_chat_replay')]
+
+
 def automatic_tracks(captions, language):
     # Keep the requested delivery language; -orig is an extractor alias only.
-    original = [track for track in captions.get(language + '-orig', []) if not translated(track)]
-    exact = captions.get(language) or []
+    original = [track for track in caption_entries(language, captions.get(language + '-orig'))
+                if not translated(track)]
+    exact = caption_entries(language, captions.get(language))
     native = [track for track in exact if not translated(track)]
     return original or native or exact
 
@@ -22,7 +31,8 @@ def automatic_tracks(captions, language):
 def select_tracks(info, languages, sources):
     available = {}
     for language in languages:
-        manual = (info.get('subtitles') or {}).get(language) if 'manual' in sources else None
+        manual = (caption_entries(language, (info.get('subtitles') or {}).get(language)) or None
+                  if 'manual' in sources else None)
         automatic = automatic_tracks(info.get('automatic_captions') or {}, language) if 'automatic' in sources else None
         if manual or automatic:
             available[language] = (manual, automatic)
@@ -34,7 +44,7 @@ def original_tracks(info, sources):
     available = {}
     if 'manual' in sources:
         for language, tracks in (info.get('subtitles') or {}).items():
-            native = [track for track in tracks if not translated(track)]
+            native = [track for track in caption_entries(language, tracks) if not translated(track)]
             if native:
                 available[language] = (native, None)
     if 'automatic' in sources:
@@ -43,7 +53,7 @@ def original_tracks(info, sources):
             language = key.removesuffix('-orig')
             # Translations of manual tracks can use synthetic keys such as en-en.
             native = []
-            for track in tracks:
+            for track in caption_entries(language, tracks):
                 source = parse_qs(urlsplit(track.get('url') or '').query).get('lang', [language])[0]
                 if not translated(track) and source == language:
                     native.append(track)
@@ -63,7 +73,7 @@ def target_tracks(info, languages):
         for key, tracks in (info.get('subtitles') or {}).items():
             if not key.startswith(language + '-'):
                 continue
-            translated_tracks = [track for track in tracks if translated(track)]
+            translated_tracks = [track for track in caption_entries(key, tracks) if translated(track)]
             if translated_tracks:
                 available[language] = (translated_tracks, None)
                 break
