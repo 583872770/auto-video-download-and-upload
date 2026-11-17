@@ -93,7 +93,7 @@ def transfer_allocation(config, identity, channels, caps, context, effective, cu
 
 def cookie_allocation(config, identity, pool, allocation, context, stamp, current_tasks, profiles, *,
                       paused=False, online=True, disk_blocked=False, worker_limit=None, worker_used=None,
-                      worker_protected=False, start_gate=None):
+                      worker_protected=False, start_gate=None, waiting_tasks=(), disk_diagnostic=None):
     """Explain observed admission gates without assigning idle permits to accounts."""
     if not config.get('youtube_cookie_pool'):
         return None
@@ -104,9 +104,10 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
     selected = list(dict.fromkeys(config['youtube_cookie_pool']))
     holders = {p['task_id'] for p in allocation['occupied']}
     grouped, unassigned = {}, []
-    for task in current_tasks:
+    waiting_ids = {task['id'] for task in waiting_tasks}
+    for task in (*current_tasks, *waiting_tasks):
         lease_until = task.get('lease_until', stamp + 1)
-        if lease_until is None or lease_until <= stamp:
+        if task['id'] not in waiting_ids and (lease_until is None or lease_until <= stamp):
             continue
         progress = task.get('progress') or {}
         view = {'task_id': task['id'], 'title': progress.get('title') or task.get('title') or
@@ -141,7 +142,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
         elif paused:
             add('paused', '实例已停止领取新任务')
         if disk_blocked:
-            add('disk', '磁盘空间限制新任务')
+            add('disk', (disk_diagnostic or {}).get('headline') or '磁盘空间限制新任务')
         occupied_workers = len(current_tasks) if worker_used is None else worker_used
         if online and worker_limit and occupied_workers >= worker_limit and not grouped.get(profile_id):
             add('worker_limit', f'本机任务进程 {occupied_workers} / {worker_limit}；' +
@@ -205,7 +206,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
             'pool_start_interval': cookie_pool_start_interval(config)}
 
 
-def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=(), cookie_profiles=(), pending_count=0):
+def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0, paused=False, online=True, current_tasks=(), cookie_profiles=(), pending_count=0, waiting_tasks=()):
     states, usage, disks = context[:3]
     auto = automatic(config)
     fresh = bool(rate and rate.get('policy') == policy_key(config) and 0 <= stamp - rate.get('time', 0) < 20)
@@ -369,6 +370,7 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
             'database_budget': rate.get('database_budget') if fresh else None,
             'cookie_allocation': cookie_allocation(config, identity, cookie_pool, allocation, context, stamp,
                 current_tasks, cookie_profiles, paused=paused, online=online,
+                waiting_tasks=waiting_tasks, disk_diagnostic=disk.get('diagnostic') if disk_fresh else None,
                 disk_blocked=bool(disk_fresh and disk.get('blocked')),
                 worker_limit=int(rate['workers']) if fresh and rate.get('workers') else None,
                 worker_used=len(progress), worker_protected=bool(worker_status and worker_status['resource_limited']),

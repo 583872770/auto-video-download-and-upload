@@ -1,6 +1,9 @@
 export type NoticeState = 'action' | 'recovering' | 'resolved';
 export type NoticeCounts = Record<NoticeState, number>;
 export interface NoticeDetail {
+  disk?: import('../disk/model').DiskDiagnostic;
+  disk_pressure?: import('../disk/model').DiskPressure;
+  recovery?: { freed_bytes: number; recovered_at: number; paused: boolean };
   code: string;
   task_id?: string | null;
   video_id?: string;
@@ -37,6 +40,7 @@ export interface Notification {
   detail: NoticeDetail;
 }
 export interface NoticePage {
+  resource_alerts?: Notification[];
   counts: NoticeCounts;
   global_counts: NoticeCounts;
   items: Notification[];

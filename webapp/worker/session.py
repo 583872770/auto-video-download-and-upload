@@ -28,3 +28,4 @@ class DownloadSession:
     failure_phase: str = 'resolve'
     transfer_seconds: float = 0
     billable_bytes: int = 0
+    local_jobs: list = field(default_factory=list)

@@ -23,19 +23,19 @@ class DatabaseBudgetTests(unittest.TestCase):
         self.sample = dict(cpu_cores=4, memory_total=16384*MIB, memory_available=10000*MIB,
                            cpu_percent=30, io_pressure=0, rx=0)
 
-    def test_auto_reserves_for_target_and_legacy_callers_keep_their_contract(self):
+    def test_auto_reserves_for_target_and_processing_workers(self):
         budget = connection_budget(self.config)
         self.assertEqual((budget['target_workers'], budget['required_total'], budget['total'],
-                          budget['workers'], budget['target_supported']), (21, 53, 53, 21, True))
-        self.assertEqual(connection_budget()['workers'], 18)
+                          budget['workers'], budget['target_supported']), (21, 57, 57, 21, True))
+        self.assertEqual(connection_budget()['workers'], 16)
 
     def test_manual_and_deployment_limits_are_independent_and_visible(self):
         manual = dict(self.config, db_budget_mode='manual', db_connection_budget=48)
-        self.assertEqual(connection_budget(manual)['workers'], 18)
+        self.assertEqual(connection_budget(manual)['workers'], 16)
         with patch.dict(os.environ, {'VIDEO_DB_CONNECTION_BUDGET': '48'}):
             budget = connection_budget(self.config)
             self.assertEqual((budget['requested_total'], budget['total'], budget['deployment_cap'],
-                              budget['workers']), (53, 48, 48, 18))
+                              budget['workers']), (57, 48, 48, 16))
             self.assertFalse(budget['target_supported'])
         with patch.dict(os.environ, {'VIDEO_WORKER_DB_CONNECTION_BUDGET': '32'}):
             budget = connection_budget(self.config)
@@ -48,7 +48,7 @@ class DatabaseBudgetTests(unittest.TestCase):
                       youtube_cookie_session_limit=2)
         self.assertEqual(target_workers(config), 42)
         budget = connection_budget(config)
-        self.assertEqual((budget['target_workers'], budget['total'], budget['workers']), (42, 95, 42))
+        self.assertEqual((budget['target_workers'], budget['total'], budget['workers']), (42, 99, 42))
         with patch.dict(os.environ, {'VIDEO_WORKER_DB_CONNECTION_BUDGET': '48'}):
             limited = connection_budget(config)
             self.assertEqual(limited['workers'], 24)
@@ -77,14 +77,14 @@ class DatabaseBudgetTests(unittest.TestCase):
                                     'VIDEO_WORKER_DB_POOL_SIZE': '3', 'VIDEO_WORKER_DB_MAX_OVERFLOW': '1'}):
             budget = connection_budget(self.config)
             self.assertEqual((budget['main'], budget['auxiliary'], budget['per_worker'],
-                              budget['total'], budget['workers']), ((3, 1), 8, 4, 96, 21))
+                              budget['total'], budget['workers']), ((3, 1), 8, 4, 104, 21))
 
     def test_non_pool_auto_covers_bounded_preparation_and_manual_enforces_budget(self):
         self.assertEqual(target_workers(dict(worker_count=21, throughput_mode='auto')), 23)
         self.assertEqual(target_workers(dict(worker_count=21, throughput_mode='auto',
                                             download_methods=['bergung'], yt5s_browser_count=3)), 26)
         config = dict(worker_count=21, db_budget_mode='manual', db_connection_budget=48)
-        self.assertEqual(runtime_limits(config, self.root)['workers'], 18)
+        self.assertEqual(runtime_limits(config, self.root)['workers'], 16)
 
     def test_live_changes_retire_and_restore_workers_without_restarting_pools(self):
         controller = ThroughputController(self.root)
@@ -92,14 +92,14 @@ class DatabaseBudgetTests(unittest.TestCase):
         manual = dict(self.config, db_budget_mode='manual', db_connection_budget=48)
         with patch.object(controller, 'sample', return_value=self.sample):
             limited = controller.update(manual, cookie_capacity=capacity, force=True)
-            self.assertEqual(limited['workers'], 18)
+            self.assertEqual(limited['workers'], 16)
             self.assertEqual(limited['worker_control']['limit_reasons'], ['database'])
             restored = controller.update(self.config, cookie_capacity=capacity, force=True)
             self.assertEqual(restored['workers'], 21)
             self.assertEqual(runtime_limits(self.config, self.root)['workers'], 21)
             limited_again = controller.update(manual, cookie_capacity=capacity, force=True)
-            self.assertEqual(limited_again['workers'], 18)
-            self.assertEqual(runtime_limits(manual, self.root)['workers'], 18)
+            self.assertEqual(limited_again['workers'], 16)
+            self.assertEqual(runtime_limits(manual, self.root)['workers'], 16)
 
 
 if __name__ == '__main__':

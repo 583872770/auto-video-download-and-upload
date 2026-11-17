@@ -50,6 +50,22 @@ describe('persistent global notifications', () => {
       request.mock.calls.every(([, options]) => !options?.method || options.method === 'GET'),
     ).toBe(true);
   });
+  it('keeps global disk alerts across filters, pagination and failed polls', async () => {
+    const alert = { id: 'disk-node-b', instance_id: 'node-b' } as NoticePage['items'][number];
+    request.mockResolvedValue(page({ resource_alerts: [alert], next_cursor: 'next' }));
+    const store = useNotifications();
+    store.open = true;
+    store.instance = 'node-a';
+    await store.refresh();
+    expect(store.resourceAlerts).toEqual([alert]);
+    await store.refresh(undefined, true);
+    request.mockRejectedValueOnce(new Error('超时'));
+    await store.refresh();
+    expect(store.resourceAlerts).toEqual([alert]);
+    request.mockResolvedValueOnce(page({ resource_alerts: [] }));
+    await store.refresh();
+    expect(store.resourceAlerts).toEqual([]);
+  });
   it('keeps known problems when polling fails instead of replacing them with zero', async () => {
     const store = useNotifications();
     request.mockResolvedValueOnce(page()).mockRejectedValueOnce(new Error('网络读取超时'));

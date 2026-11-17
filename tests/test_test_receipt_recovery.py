@@ -14,9 +14,9 @@ from web_worker import execute
 
 class ReceiptRecoveryContract:
     def retained_attempt(self, *, logical=True):
-        response = self.client.put('/api/config', json={'storage_mode': 'test',
+        response = self.client.put('/api/config', json={
             'disk_min_free_gb': 0, 'disk_resume_free_gb': 0}, headers=self.headers)
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.json)
         task = self.store.create('download', {'config': {'storage_mode': 'test'},
             'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']})
         if logical:

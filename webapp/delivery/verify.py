@@ -1,5 +1,6 @@
 """Inspect streams and subtitle content before publishing an output."""
 import json
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -20,7 +21,7 @@ def inspect(path):
     return {s.get('codec_type') for s in streams}, info
 
 
-def verify(path, kind):
+def verify(path, kind, *, media=None):
     path = Path(path)
     if not path.is_file() or path.stat().st_size <= 0:
         raise LocalDeliveryError('交付文件不存在或为空。')
@@ -46,30 +47,68 @@ def verify(path, kind):
         if not re.search(r'\d{2}:\d{2}[.,]\d{3}\s+-->\s+(?:\d{2}:)?\d{2}:\d{2}[.,]\d{3}', text):
             raise LocalDeliveryError('字幕没有可用的时间轴条目。')
         return
-    types, info = inspect(path)
+    types, info = media if media is not None else inspect(path)
     expected = {'video'} if kind == 'video_only' else {'audio'} if kind == 'audio_only' else {'video', 'audio'}
     if types & {'video', 'audio'} != expected:
         raise LocalDeliveryError('交付文件的画面/音轨与客户要求不一致。')
-    if float(info.get('format', {}).get('duration') or 0) <= 0:
+    try:
+        duration = float(info.get('format', {}).get('duration') or 0)
+    except (ValueError, TypeError):
+        duration = 0
+    if not math.isfinite(duration) or duration <= 0:
         raise LocalDeliveryError('交付文件没有有效时长。')
+    return types, info
 
 
-def convert(inputs, target, kind, *, mp4=False, mp3=False):
+def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
+    """Inspect once; passthrough requires actual streams AND a suitable container."""
+    probes = probes if probes is not None else [inspect(path) for path in inputs]
+    types, info = probes[0]
+    streams = info.get('streams', [])
+    video = next((s.get('codec_name') for s in streams if s.get('codec_type') == 'video'), '')
+    audio = next((s.get('codec_name') for s in streams if s.get('codec_type') == 'audio'), '')
+    containers = set(info.get('format', {}).get('format_name', '').split(','))
+    if kind == 'video_only':
+        ext = '.mp4' if mp4 else Path(inputs[0]).suffix
+        direct = (types == {'video'} and
+                  (not mp4 or bool(containers & {'mp4', 'mov'}) and video in ('h264', 'hevc', 'av1', 'mpeg4')))
+    elif kind == 'audio_only':
+        ext = '.mp3' if mp3 or audio == 'mp3' else '.m4a' if audio in ('aac', 'alac') else '.webm' if audio in ('opus', 'vorbis') else '.mka'
+        suitable = {'mp3'} if ext == '.mp3' else {'mov', 'mp4', 'm4a'} if ext == '.m4a' else {'webm'} if ext == '.webm' else {'matroska'}
+        direct = (types == {'audio'} and bool(containers & suitable)
+                  and (not mp3 or audio == 'mp3'))
+    else:
+        ext = '.mp4' if mp4 else '.mkv'
+        direct = (len(set(map(str, inputs))) == 1 and types == {'video', 'audio'} and
+                  (bool(containers & {'mp4', 'mov'}) and video in ('h264', 'hevc', 'av1', 'mpeg4')
+                   and audio in ('aac', 'alac', 'mp3') if mp4 else bool(containers & {'matroska', 'webm'})))
+    if direct:
+        verify(inputs[0], kind, media=probes[0])
+    codecs = [next((s.get('codec_name') for s in p[1].get('streams', []) if s.get('codec_type') == 'audio'), '') for p in probes]
+    return dict(extension=ext, direct=direct, probes=probes,
+                video_codec=video, audio_codec=codecs[-1] if kind == 'av' else audio)
+
+
+def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
+    media = media or (media_output(inputs, kind, mp4=mp4, mp3=mp3) if kind != 'subtitle' else {})
+    compatible_video = media.get('video_codec') in ('h264', 'hevc', 'av1', 'mpeg4')
+    compatible_audio = media.get('audio_codec') in ('aac', 'alac', 'mp3')
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-y']
     for source in inputs:
         command += ['-i', str(source)]
     if kind == 'subtitle':
         command += ['-map', '0:s:0']
     elif kind == 'video_only':
-        command += ['-map', '0:v:0', '-an', '-c:v', 'libx264' if mp4 else 'copy']
+        command += ['-map', '0:v:0', '-an', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy']
     elif kind == 'audio_only':
-        command += ['-map', '0:a:0', '-vn', '-c:a', 'libmp3lame' if mp3 else 'copy']
+        command += ['-map', '0:a:0', '-vn', '-c:a', 'libmp3lame' if mp3 and media.get('audio_codec') != 'mp3' else 'copy']
     else:
-        command += ['-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264' if mp4 else 'copy',
-                    '-c:a', 'aac' if mp4 else 'copy']
+        command += ['-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
+                    '-c:a', 'aac' if mp4 and not compatible_audio else 'copy']
     if target.suffix == '.mp4':
         command += ['-movflags', '+faststart']
-    result = subprocess.run(command + [str(target)], capture_output=True, timeout=1800)
+    # Keep transcoding bounded on small servers; stream copy ignores this option.
+    result = subprocess.run(command + ['-threads', '1', str(target)], capture_output=True, timeout=1800)
     if result.returncode:
         raise LocalDeliveryError('交付文件转换失败，请检查源轨道、格式与 FFmpeg 环境。')
-    verify(target, kind)
+    return verify(target, kind)

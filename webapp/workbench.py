@@ -111,6 +111,8 @@ class Workbench:
     def status(self, identity, preview=None, *, compact=False):
         with self.store.connect() as db:
             row = self.node(identity, db)
+            from webapp.disk_diagnostics import summary
+            disk_summary = summary(db, identity)
             selected = self.selection(db, 'workbench_job:' + identity)
             # Legacy global selections are intentionally not inherited by a new instance.
             from webapp.repositories.task_codec import LIST_FIELDS
@@ -133,7 +135,10 @@ class Workbench:
             if compact:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
-                accounts = account_summary(db, config, local.get('throughput'), identity, active,
+                from webapp.database import delivery_work
+                local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
+                accounts = account_summary(db, config, local.get('throughput'), identity,
+                                           [task for task in active if task['id'] not in local_ids],
                                            online=online, paused=paused)
         if not compact:
             active = self.decorate_cookie_names(active, None, self.store, scope=identity)
@@ -152,7 +157,7 @@ class Workbench:
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
                     queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session,
-                    **({'account_summary': accounts} if compact else {}))
+                    disk=disk_summary, **({'account_summary': accounts} if compact else {}))
 
     def control(self, identity, action, job_id=None, expected=None):
         if action not in ('start', 'pause', 'stop'):
@@ -238,6 +243,8 @@ def register_workbench(app, store, configuration, preflight):
                     active = attach_tasks(db, active)
             with store.connect() as db:
                 session = store.statistics.current_session(db)
+                from webapp.disk_diagnostics import summary
+                disk_summary = summary(db, 'local')
                 accounts = None
                 if compact:
                     try:
@@ -249,7 +256,7 @@ def register_workbench(app, store, configuration, preflight):
             value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
-                **({'account_summary': accounts} if compact else {}))
+                disk=disk_summary, **({'account_summary': accounts} if compact else {}))
             return jsonify(compact_status(value) if compact else value)
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403

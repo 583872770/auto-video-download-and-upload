@@ -9,6 +9,7 @@ import { useInstances } from '../../stores/instances';
 import { usePolling } from '../../composables/polling';
 import { groups } from './fields';
 import FieldGroup from './FieldGroup.vue';
+import DiskDiagnosis from '../../components/DiskDiagnosis.vue';
 import type { DiskSnapshot, RuntimeSummary } from '../../api/types';
 import { summaryText } from './reports';
 const instances = useInstances();
@@ -94,6 +95,7 @@ async function showReport(kind: 'logs' | 'summary', days = 1) {
       </div>
     </div>
     <p v-if="disk?.message">{{ disk.message }}</p>
+    <DiskDiagnosis v-if="disk?.diagnostic" :diagnostic="disk.diagnostic" expanded />
     <p v-if="text" role="status">{{ text }}</p>
     <div class="actions">
       <ElButton :disabled="busy" @click="refresh().catch(() => {})">刷新空间</ElButton

@@ -138,4 +138,5 @@ def pool_process_limits(config, capacity, memory_total, db_budget):
             'preparation_workers': preparation, 'worker_transfer_capacity': transfer_capacity,
             'memory_worker_cap': memory_cap, 'db_worker_cap': db_budget['workers'],
             'db_connection_budget': db_budget['total'], 'db_main_connections': sum(db_budget['main']),
-            'db_auxiliary_connections': db_budget['auxiliary'], 'db_connections_per_worker': db_budget['per_worker']}
+            'db_auxiliary_connections': db_budget['auxiliary'], 'db_processing_connections': db_budget['processing'],
+            'db_connections_per_worker': db_budget['per_worker']}

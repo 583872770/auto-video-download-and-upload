@@ -117,11 +117,15 @@ def capture_output(stream, writer):
     return thread
 
 
+def worker_name(slot):
+    return f'processing-{abs(slot)-2}' if slot < -1 else 'maintenance' if slot == -1 else str(slot)
+
+
 def runtime_log(directory, slot='supervisor', config=None):
     from pathlib import Path
     from webapp.disk_budget import safe_path, MIB
     from webapp.maintenance import BoundedLog
-    if str(slot) not in {'supervisor', 'maintenance', *(str(number) for number in range(96))}:
+    if str(slot) not in {'supervisor', 'maintenance', *(f'processing-{n}' for n in range(8)), *(str(number) for number in range(96))}:
         raise ValueError('无效的日志进程编号')
     root = Path(directory).resolve()
     path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
@@ -136,7 +140,7 @@ def read_runtime_logs(directory, *, since=None):
     root = Path(directory).resolve()
     sections = []
     # Fixed allowlist and 3 KiB per file: the response is bounded too.
-    for slot in ['supervisor', 'maintenance', *range(96)]:
+    for slot in ['supervisor', 'maintenance', *(f'processing-{n}' for n in range(8)), *range(96)]:
         try:
             path = safe_path(root / 'logs' / 'instance' / f'{slot}.log', root)
             with path.open('rb') as stream:
@@ -170,7 +174,7 @@ def active_task_log(directory, slot, task_id):
     from pathlib import Path
     from webapp.disk_budget import safe_path, process_identity, file_lock
     root = Path(directory).resolve()
-    name = 'maintenance' if slot < 0 else str(slot)
+    name = worker_name(slot)
     path = safe_path(root / 'logs/instance' / f'active-{name}.json', root)
     published = False
     try:
@@ -197,7 +201,7 @@ def active_log_ids(directory):
     from webapp.disk_budget import safe_path, alive
     root = Path(directory).resolve()
     identities = set()
-    for name in ['maintenance', *range(96)]:
+    for name in ['maintenance', *(f'processing-{n}' for n in range(8)), *range(96)]:
         try:
             path = safe_path(root / 'logs/instance' / f'active-{name}.json', root)
             with path.open('rb') as stream:
@@ -216,7 +220,7 @@ def active_log_ids(directory):
 def process_diagnostics(directory, slot):
     global _sink
     previous = _sink
-    _sink = runtime_log(directory, 'maintenance' if slot < 0 else slot)
+    _sink = runtime_log(directory, worker_name(slot))
     try:
         yield
     finally:

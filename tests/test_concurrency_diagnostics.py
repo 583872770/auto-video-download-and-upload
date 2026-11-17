@@ -127,6 +127,7 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         self.config.update(youtube_pacing_mode='adaptive', youtube_start_interval=45)
         value = self.show({'youtube-pacing:instance:node': {
             'interval': 120, 'last_limit_at': self.stamp - 3600,
+            'interval_reason_code': 'account_limit',
             'wait_reason': '等待下一次视频启动'}})
         self.assertEqual(value['youtube_start_interval'], 45)
         pacing = value['youtube_pacing']

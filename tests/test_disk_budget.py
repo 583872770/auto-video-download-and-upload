@@ -410,8 +410,9 @@ class DiskBudgetTests(unittest.TestCase):
         self.assertTrue(lease.preserve)
         self.assertTrue(lease.path.exists())
         with self.budget.connect(write=False) as db:
-            row = db.execute('SELECT children FROM leases WHERE id=?', (lease.id,)).fetchone()
+            row = db.execute('SELECT children,reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
             self.assertEqual(json.loads(row[0]), lease.children)
+            self.assertGreater(row['reserved'], 0, 'unconfirmed writers must keep their space promise')
         with file_lock(self.root / 'disk-locks' / (lease.id + '.lock')) as acquired:
             self.assertTrue(acquired)
 
@@ -590,6 +591,55 @@ class DiskBudgetTests(unittest.TestCase):
         self.assertTrue(lease.path.exists())
         self.assertEqual(result['last_cleanup']['pending_results'], 1)
 
+    def test_retained_partial_files_release_promise_before_retry(self):
+        budget = DiskBudget(self.root, {'disk_import_budget_mb': 4,
+            'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+        with budget.lease('imports', task='partial', reserve=3*MIB) as previous:
+            output = previous.path / 'partial.mp4'
+            output.write_bytes(b'x'*MIB)
+            previous.preserve = True
+        snapshot = budget.snapshot()
+        category = snapshot['categories']['imports']
+        self.assertTrue(output.is_file())
+        self.assertGreaterEqual(category['used_bytes'], MIB)
+        self.assertEqual(category['committed_bytes'], category['used_bytes'])
+        self.assertNotIn('imports', snapshot['active'])
+        with budget.lease('imports', task='partial', reserve=2*MIB):
+            self.assertTrue(output.is_file())
+
+    def test_crashed_receipt_releases_unused_promise_without_deleting_result(self):
+        with self.budget.lease('test', task='crashed', reserve=GIB) as lease:
+            output = lease.path / 'caption.srt'
+            output.write_text('a verified partial result')
+            (lease.path / '.completed-files.json').write_text('[{"path":"caption.srt","size":25}]')
+            lease.preserve = True
+        # Simulate the old owner dying before normal retirement ran.
+        with self.budget.connect() as db:
+            db.execute('UPDATE leases SET reserved=?, measured=0 WHERE id=?', (GIB, lease.id))
+        snapshot = self.budget.cleanup(grace=0)
+        self.assertTrue(output.is_file())
+        self.assertEqual(snapshot['last_cleanup']['pending_results'], 1)
+        self.assertEqual(snapshot['committed_bytes'], snapshot['used_bytes'])
+        with self.budget.connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()[0], 0)
+
+    def test_retained_live_child_keeps_promise_until_it_stops(self):
+        with self.budget.lease('test', reserve=GIB) as lease:
+            lease.preserve = True
+            lease.children = [process_identity()]
+        with self.budget.connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()[0], GIB)
+        self.assertTrue(lease.path.exists())
+
+    def test_retirement_measures_recent_writes_before_releasing_reservation(self):
+        with self.budget.lease('test', reserve=GIB) as lease:
+            before = self.budget.snapshot(force=True)['used_bytes']
+            (lease.path / 'new.mp4').write_bytes(b'x'*MIB)
+            lease.preserve = True
+        after = self.budget.snapshot()
+        self.assertGreaterEqual(after['used_bytes'], before+MIB)
+        self.assertEqual(after['used_bytes'], after['committed_bytes'])
+
     def test_log_writes_stay_bounded_before_task_finishes(self):
         path = self.root / ('a' * 32 + '.log')
         writer = BoundedLog(path, 65536)
@@ -675,6 +725,49 @@ class DiskWebTests(unittest.TestCase):
         totals = self.client.get('/api/statistics').json['summary']
         self.assertEqual(totals['failed'], 0)
 
+    def test_known_disk_wait_is_not_claimed_or_dispatched_until_capacity_fits(self):
+        response=self.client.put('/api/config',json={'disk_budget_gb':2,'disk_test_budget_gb':1,
+            'disk_min_free_gb':0,'disk_resume_free_gb':0},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.json)
+        task=self._create_test_download_task()
+        task=self.store.claim(self.store.owner)
+        config={**self.store.runtime(),'storage_mode':'test'}
+        budget=DiskBudget(self.store.directory,config)
+        with self.assertRaises(DiskPressure) as rejected:
+            with budget.lease('test',task=task['id'],reserve=2*GIB):
+                self.fail('cannot fit')
+        self.store.release(task['id'],self.store.owner,str(rejected.exception),delay=0,
+            resource=True,resource_detail=rejected.exception.detail)
+        for _ in range(3):
+            self.assertIsNone(self.store.claim(self.store.owner,actions=['download']))
+            self.assertNotIn('download',self.store.runnable_counts())
+        self.assertEqual(self.store.get(task['id'])['attempts'],0)
+        check=self.store.create('check',{'config':{},'base':str(self.root)})
+        claimed=self.store.claim(self.store.owner)
+        self.assertEqual(claimed['id'],check['id'],'disk waits must not block auxiliary work')
+        self.store.finish(check['id'],result={},worker_id=self.store.owner)
+        response=self.client.put('/api/config',json={'disk_test_budget_gb':2,'disk_budget_gb':3},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertEqual(self.store.claim(self.store.owner,actions=['download'])['id'],task['id'])
+
+    def test_budget_release_wakes_waiting_task_without_physical_free_change(self):
+        from webapp.database import tasks
+        task=self._create_test_download_task();task=self.store.claim(self.store.owner)
+        config={**self.store.runtime(),'storage_mode':'test'}
+        budget=DiskBudget(self.store.directory,config)
+        with budget.lease('test',reserve=budget.limits['test']-GIB):
+            with budget.connect() as db:
+                db.execute('INSERT OR REPLACE INTO requirements VALUES (?,?,?,?,?)',
+                    (task['id'],budget._version(),2*GIB,4,budget._free()))
+            self.store.release(task['id'],self.store.owner,'waiting for budget',delay=0,resource=True)
+            self.assertIsNone(self.store.claim(self.store.owner,actions=['download']))
+        with patch.object(budget,'_free',return_value=budget._free()):
+            self.assertNotIn(task['id'],budget.blocked_tasks())
+            claimed=self.store.claim(self.store.owner,actions=['download'])
+            self.assertEqual(claimed['id'],task['id'])
+            with budget.lease('test',task=task['id'],reserve=GIB) as lease:
+                self.assertGreaterEqual(lease.reserved,2*GIB,'prior interruptions must not strand a task once budget fits')
+
     def test_worker_handles_pressure_without_provider_failure(self):
         from web_worker import drain
         task = self.store.create('download', {'config':{}, 'base':str(self.root),'urls':['https://youtu.be/npNnbj46_ik']})
@@ -703,6 +796,31 @@ class DiskWebTests(unittest.TestCase):
         self.assertEqual(saved['progress']['stage'], 'disk_wait')
         self.assertIn('协调繁忙', saved['error'])
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
+
+    def test_queued_partial_receipt_and_retry_both_release_crashed_reservation(self):
+        task = self._create_test_download_task()
+        budget = DiskBudget(self.store.directory, {'disk_min_free_gb':0, 'disk_resume_free_gb':0})
+        with budget.lease('test', task=task['id'], reserve=GIB) as lease:
+            output = lease.path / 'caption.srt'
+            output.write_bytes(b'partial completed output')
+            (lease.path / '.completed-files.json').write_text(json.dumps([{
+                'path':str(output), 'size':output.stat().st_size, 'complete':True,
+                'artifact':{'id':'partial'}}]))
+            lease.preserve = True
+        with budget.connect() as db:
+            db.execute('UPDATE leases SET reserved=? WHERE id=?', (GIB, lease.id))
+        snapshot = budget.cleanup(self.store, grace=0)
+        self.assertEqual(snapshot['last_cleanup']['pending_results'], 1)
+        self.assertEqual(snapshot['used_bytes'], snapshot['committed_bytes'])
+        self.assertTrue(output.exists())
+        # A retry must release the crashed promise even before the sweep runs.
+        with budget.connect() as db:
+            db.execute('UPDATE leases SET reserved=? WHERE id=?', (GIB, lease.id))
+        self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.recover_test_outputs', return_value=None):
+            self.assertIsNone(budget.recover_test_result(self.store, task['id']))
+        self.assertTrue(output.exists())
+        self.assertEqual(budget.snapshot()['used_bytes'], budget.snapshot()['committed_bytes'])
 
     def test_completed_file_is_recovered_before_any_new_download(self):
         self.check_completed_file_recovery()

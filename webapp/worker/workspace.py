@@ -8,6 +8,9 @@ from webapp.diagnostics import event
 def execute_task(action, payload, report_progress=None, rotation_completed=None, store=None, worker_slot=0, task_id=None,
             start_ticket=None, *, pipeline):
     _execute = pipeline
+    if store and payload.get('_processing'):
+        from webapp.delivery.processing import run
+        return run(store, task_id, payload['_processing'], report_progress or (lambda value: None), slot=worker_slot)
     if store and action == 'download':
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
@@ -42,7 +45,10 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     def report(value):
         estimate = value.get('total_bytes') or 0
         if workspace.test_mode:
-            lease.check(estimate * (2 if value.get('download_method') == 'yt_dlp' else 1))
+            # Typed delivery reserves conversion peaks in the local pool. Its
+            # acquisition phase stores only the original tracks, without copies.
+            copies = 2 if not config.get('_delivery_contract') and value.get('download_method') == 'yt_dlp' else 1
+            lease.check(estimate * copies)
         else:
             lease.check()
         last_progress.update(value, storage_mode=config.get('storage_mode', 'local'))
@@ -65,7 +71,8 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         prepared = workspace.prepare()
         prepared['_temporary_directory'] = str(lease.path / '_aux')
         prepared['_disk_state'] = str(state)
-        payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path), '_disk_state': str(state)}
+        payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path),
+                   '_disk_lease': lease.id, '_disk_state': str(state)}
         try:
             from webapp.youtube_auth import is_youtube
             if payload.get('_retry_cookie_profile_id') and not prepared.get('youtube_cookie_pool'):
@@ -92,7 +99,7 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                           source_address=selected.get('youtube_source_address', ''), identity_retry=bool(retry_profile))
                     result = _execute(action, {**payload, 'config': selected}, report,
                                       rotation_completed, store, worker_slot)
-                    if not result.get('skipped') and result.get('file_count', 0) > 0:
+                    if not result.get('skipped') and (result.get('file_count', 0) > 0 or result.get('processing_pending')):
                         pool.outcome(selected['_cookie_pool_scope'], None,
                                      admitted_at=selected['_cookie_pool_admitted_at'])
             else:
@@ -107,7 +114,7 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                     if store and task_id and is_youtube(payload['urls']) and activity.get('started'):
                         from webapp.channel_scheduler import ChannelScheduler
                         ChannelScheduler(store, prepared, task_id).finish_youtube_task()
-            if result.get('file_count'):
+            if result.get('file_count') and not result.get('processing_pending'):
                 try:
                     budget.record_video_size(result['file_bytes'] // result['file_count'],
                         merged=result.get('download_method') == 'yt_dlp')
@@ -120,16 +127,25 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                 # The pipeline returned a verified final outcome. A watchdog
                 # observation during its final bookkeeping must not requeue it.
                 lease.error = None
+            if result.get('processing_pending'):
+                lease.preserve = True
+                return result
             if workspace.test_mode:
                 last_progress.update(stage='cleaning', speed=None, eta=None)
                 if report_progress:
                     report_progress(dict(last_progress))
                 cleanup_started = time.monotonic()
         except BaseException:
+            if store:
+                from sqlalchemy import select
+                from webapp.database import delivery_work
+                with store.connect() as db:
+                    lease.preserve = bool(db.execute(select(delivery_work.c.task_id).where(
+                        delivery_work.c.task_id == task_id, delivery_work.c.disk_lease == lease.id)).first())
             receipt = lease.path / '.completed-files.json'
             if workspace.test_mode and receipt.exists() and store:
                 try:
-                    lease.preserve = not budget.receipts_recorded(store, task_id, receipt)
+                    lease.preserve = lease.preserve or not budget.receipts_recorded(store, task_id, receipt)
                 except Exception:
                     lease.preserve = True
             raise

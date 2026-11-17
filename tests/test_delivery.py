@@ -69,13 +69,37 @@ class DeliveryTests(unittest.TestCase):
         return identity
 
     def execute(self,info=None,report=None):
-        from web_worker import execute
-        task=self.store.claim(self.store.owner)
+        task=self.store.claim(self.store.owner, processing=True) or self.store.claim(self.store.owner)
         self.assertIsNotNone(task)
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info or self.info()):
-            result=execute('download',task['payload'],report_progress=report,store=self.store,task_id=task['id'])
+            result=self.run_task(task, report=report)
+            if result.get('network_pending'):
+                self.assertTrue(self.store.finish(task['id'],result=result,worker_id=self.store.owner))
+                self.cleanup_result(result)
+                task=self.store.claim(self.store.owner)
+                self.assertIsNotNone(task)
+                result=self.run_task(task, report=report)
         self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        self.cleanup_result(result)
         return task,result
+
+    def cleanup_result(self, result):
+        if result.get('_processing_workspace'):
+            from webapp.delivery.processing import cleanup_completed
+            deleted = cleanup_completed(self.store, result['_processing_workspace'])
+            if result.get('test_mode'):
+                result['files_deleted'] = deleted
+
+    def run_task(self, task, report=None):
+        from web_worker import execute
+        result=execute('download',task['payload'],report_progress=report,store=self.store,task_id=task['id'])
+        if result.get('processing_pending'):
+            self.assertTrue(self.store.finish(task['id'],result=result,worker_id=self.store.owner))
+            local=self.store.claim(self.store.owner, processing=True)
+            self.assertIsNotNone(local)
+            self.assertEqual(local['id'], task['id'])
+            result=execute('download',local['payload'],report_progress=report,store=self.store,task_id=task['id'],worker_slot=-2)
+        return result
 
     def test_subtitle_http_429_uses_shared_transfer_recovery_and_honors_retry_after(self):
         from web_worker import execute
@@ -86,7 +110,7 @@ class DeliveryTests(unittest.TestCase):
         info=self.info();info['subtitles']['en'][0]['url']=self.url+'/limited.vtt'
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info):
             with self.assertRaises(RuntimeError) as caught:
-                execute('download',task['payload'],store=self.store,task_id=task['id'])
+                self.run_task(task)
         evidence=failure_evidence(caught.exception)
         self.assertEqual((evidence.phase,evidence.http_status),('transfer',429))
         self.assertGreaterEqual(caught.exception.retry_after,2390)
@@ -106,9 +130,154 @@ class DeliveryTests(unittest.TestCase):
         router.outcome(router.channels[0],success=False,error=RuntimeError('HTTP Error 429'),phase='transfer')
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
             with self.assertRaises(PipelineBusy):
-                execute('download',task['payload'],store=self.store,task_id=task['id'])
+                self.run_task(task)
         extract.assert_not_called()
         self.assertEqual(self.hits,[])
+
+    def drain_role(self, role):
+        from web_worker import execute
+        from webapp.worker.queue import drain_queue
+        with patch.dict(os.environ, {'VIDEO_WORKER_PROCESS':'true'}):
+            drain_queue(self.store.directory, slot=-2 if role == 'processing' else 0, role=role,
+                        execute_task=execute, store_factory=lambda *args: self.store)
+
+    def test_failed_caption_delivers_acquired_tracks_and_preserves_terminal_failure(self):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget
+        job=self.create(['video_only','audio_only','subtitle'])
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+            self.drain_role('download')
+        task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
+        pending=self.store.get(task['id'])
+        self.assertEqual((pending['status'],pending['progress']['stage']),('queued','waiting_processing'))
+        self.assertEqual(pending['error'],'字幕请求未生成可用文件。')
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+        self.assertEqual((work['attempts'],work['source_attempts']),(0,1))
+        self.assertFalse(json.loads(work['plan'])['source_failure']['retryable'])
+        self.hits.clear()
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=AssertionError('source requested')), \
+             patch('webapp.youtube_auth.YouTubeAuth.require',side_effect=AssertionError('account acquired')):
+            self.drain_role('processing')
+        done=self.store.get(task['id'])
+        self.assertEqual((done['status'],done['attempts']),('failed',1))
+        self.assertEqual(done['error'],'字幕请求未生成可用文件。')
+        self.assertEqual(done['result']['file_count'],2)
+        self.assertNotEqual(done['result']['delivery_status'],'complete')
+        self.assertNotIn('source_failed',done['result'])
+        self.assertEqual(self.hits,[])
+        issue=self.client.get('/api/notifications').json['items'][0]['detail']
+        self.assertEqual(set(issue['completed']),{'无声视频','纯音频'})
+        self.assertEqual(issue['missing'],['字幕 · en'])
+        self.assertEqual(issue['phase'],'下载传输')
+        with self.store.connect() as db:
+            outputs=list(db.execute(select(delivery_artifacts)).mappings())
+            self.assertEqual({r['kind'] for r in outputs},{'video_only','audio_only'})
+            self.assertTrue(all(r['available'] and Path(r['path']).is_file() for r in outputs))
+            self.assertFalse(db.execute(select(delivery_work)).first())
+        self.assertFalse(Path(work['workspace']).exists())
+        with DiskBudget(self.store.directory,self.store.runtime()).connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0],0)
+        self.assertIsNone(self.store.claim(self.store.owner))
+
+    def test_caption_rate_limit_delivers_tracks_then_retries_only_missing_caption(self):
+        import time
+        from webapp.database import tasks, delivery_work
+        job=self.create(['video_only','audio_only','subtitle'])
+        info=self.info();info['subtitles']['en'][0]['url']=self.url+'/limited.vtt'
+        before=time.time()
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info):
+            self.drain_role('download')
+        task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
+        self.drain_role('processing')
+        pending=self.store.get(task['id'])
+        self.assertEqual((pending['status'],pending['attempts']),('queued',1))
+        self.assertGreaterEqual(pending['available_at'],before+2390)
+        self.assertEqual(pending['result']['file_count'],2)
+        self.assertEqual(pending['progress']['last_failure']['http_status'],429)
+        self.assertIsNone(self.store.claim(self.store.owner))
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(select(delivery_work)).first())
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(available_at=0))
+        # Elapse the upstream cooldown as well as the task's retry deadline.
+        from webapp.channel_scheduler import ChannelScheduler
+        router=ChannelScheduler(self.store,self.store.runtime(),task['id'])
+        with router.transaction() as (db,stamp):
+            channel=router.channels[0]
+            for scope in ('channel:'+channel.id,'resolver:'+channel.resolver_group,
+                          'upstream:'+channel.upstream_group,'quota:'+channel.quota_group):
+                state=router._state(db,scope)
+                state.update(cooldown_until=0,recover_until=0)
+                router._save(db,scope,state)
+        self.hits.clear()
+        _,result=self.execute()
+        self.assertEqual(self.hits,['/en.vtt'])
+        self.assertEqual((result['delivery_status'],result['file_count']),('complete',3))
+        self.assertEqual(self.store.get(task['id'])['status'],'succeeded')
+
+    def test_partial_delivery_keeps_source_retry_limit_across_local_retry(self):
+        from webapp.database import tasks, delivery_work
+        from webapp.delivery.verify import LocalDeliveryError
+        job=self.create(['video_only','audio_only','subtitle'])
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.batch_id==job).values(attempts=2,max_attempts=3))
+        info=self.info();info['subtitles']['en'][0]['url']=self.url+'/limited.vtt'
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info):
+            self.drain_role('download')
+        task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
+        with patch('webapp.delivery.executor.publish',side_effect=LocalDeliveryError('temporary local failure')):
+            self.drain_role('processing')
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+            self.assertEqual((work['attempts'],work['source_attempts']),(1,3))
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(available_at=0))
+        self.drain_role('processing')
+        done=self.store.get(task['id'])
+        self.assertEqual((done['status'],done['attempts']),('failed',3))
+        self.assertIn('429',done['error'])
+        self.assertEqual(done['result']['file_count'],2)
+        self.assertEqual(done['progress']['last_failure']['http_status'],429)
+        self.assertIsNone(self.store.claim(self.store.owner))
+
+    def test_explicit_redelivery_clears_deferred_failure_and_preserves_acquired_files(self):
+        from webapp.database import delivery_work
+        job=self.create(['video_only','audio_only','subtitle'])
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+            self.drain_role('download')
+        task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
+        response=self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']]},headers=self.headers)
+        self.assertEqual(response.status_code,202,response.json)
+        with self.store.connect() as db:
+            work=db.execute(select(delivery_work)).mappings().one()
+        self.assertEqual((work['source_attempts'],work['attempts']),(0,0))
+        self.assertNotIn('source_failure',json.loads(work['plan']))
+        self.hits.clear()
+        _,result=self.execute()
+        self.assertEqual(self.hits,['/en.vtt'])
+        self.assertEqual((result['delivery_status'],result['file_count']),('complete',3))
+        self.assertEqual(self.store.get(task['id'])['status'],'succeeded')
+
+    def test_failed_caption_in_test_mode_records_tracks_and_releases_temporary_space(self):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['video_only','audio_only','subtitle'])
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+            self.drain_role('download')
+        self.drain_role('processing')
+        task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
+        done=self.store.get(task['id'])
+        self.assertEqual(done['status'],'failed')
+        self.assertEqual(done['result']['file_count'],2)
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],2)
+        self.assertFalse(any((self.store.directory/'test-downloads').rglob('*.mp4')))
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(select(delivery_work)).first())
+        with DiskBudget(self.store.directory,self.store.runtime()).connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0],0)
 
     def test_multiple_subtitle_languages_share_one_task_start_and_keep_metadata(self):
         from web_worker import execute
@@ -119,7 +288,7 @@ class DeliveryTests(unittest.TestCase):
         updates=[]
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info) as extract, \
              patch.object(ChannelScheduler,'wait_youtube_start',autospec=True) as start:
-            result=execute('download',task['payload'],report_progress=updates.append,store=self.store,task_id=task['id'])
+            result=self.run_task(task, report=updates.append)
             self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.assertEqual(extract.call_count,1)
         self.assertEqual(start.call_count,1)
@@ -196,7 +365,7 @@ class DeliveryTests(unittest.TestCase):
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
              patch.object(self.store.statistics,'record_file',side_effect=RuntimeError('interrupted before receipt')):
             with self.assertRaises(RuntimeError):
-                execute('download',task['payload'],store=self.store,task_id=task['id'])
+                self.run_task(task)
         self.retry_failed(job,task);self.hits.clear()
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
             self.execute();extract.assert_not_called()
@@ -235,9 +404,179 @@ class DeliveryTests(unittest.TestCase):
             return self.info()
         with patch.object(self.server.RequestHandlerClass.func,'do_GET',download), \
              patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',extract):
-            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+            result=self.run_task(task)
             self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.assertEqual(cookies,['caption_session=from_metadata'])
+
+    def test_original_tracks_use_one_probe_each_and_never_ffmpeg_or_file_copy(self):
+        from webapp.delivery.verify import inspect
+        self.create(['video_only','audio_only','subtitle','thumbnail','metadata'],
+                    {'video':{'container':'mp4'}, 'subtitles':{'languages':['en'],'format':'vtt'}})
+        commands=[];run=subprocess.run
+        def track(command, *args, **kwargs):
+            commands.append(Path(command[0]).stem)
+            return run(command, *args, **kwargs)
+        with patch('webapp.delivery.verify.subprocess.run', side_effect=track), \
+             patch('webapp.delivery.processing.inspect', wraps=inspect) as probe, \
+             patch('webapp.delivery.files.shutil.copyfile', side_effect=AssertionError('full-file copy')):
+            _, result=self.execute()
+        self.assertEqual(result['file_count'],5)
+        self.assertEqual(probe.call_count,2)
+        self.assertNotIn('ffmpeg', commands)
+        with self.store.connect() as db:
+            rows=list(db.execute(select(delivery_artifacts)).mappings())
+        for row in rows:
+            original={'video_only':'video.mp4','audio_only':'audio.m4a','subtitle':'en.vtt'}.get(row['kind'])
+            if original:
+                self.assertEqual(Path(row['path']).read_bytes(), (self.media/original).read_bytes())
+
+    def test_local_claims_have_separate_capacity_and_bypass_network_disk_gate(self):
+        from web_worker import execute
+        from webapp.database import delivery_work
+        self.store.set_runtime({**self.store.runtime(),'postprocess_limit':1})
+        first_job=self.create(['audio_only']);second_job=self.create(['audio_only'])
+        first=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=execute('download',first['payload'],store=self.store,task_id=first['id'])
+        self.assertTrue(result['processing_pending'])
+        self.assertTrue(self.store.finish(first['id'],result=result,worker_id=self.store.owner))
+        self.assertEqual(self.store.get(first['id'])['progress']['stage'],'waiting_processing')
+        self.assertEqual(self.store.runnable_counts().get('processing'),1)
+        second=self.store.claim(self.store.owner)
+        self.assertNotEqual(first['id'],second['id'])
+        with patch('webapp.disk_budget.resource_blocked',return_value=True):
+            local=self.store.claim(self.store.owner,processing=True)
+        self.assertEqual(local['id'],first['id'])
+        from webapp.database import session_tasks
+        with self.store.connect() as db:
+            activity=db.execute(select(session_tasks).where(session_tasks.c.task_id==first['id'])).mappings().one()
+        self.assertEqual(activity['status'],'running')
+        self.assertIsNone(activity['finished_at'])
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=execute('download',second['payload'],store=self.store,task_id=second['id'])
+        self.store.finish(second['id'],result=result,worker_id=self.store.owner)
+        self.assertIsNone(self.store.claim(self.store.owner,processing=True),'local pool limit must be authoritative')
+        with patch('webapp.youtube_auth.YouTubeAuth.require',side_effect=AssertionError('account acquired')), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=AssertionError('network requested')):
+            result=execute('download',local['payload'],store=self.store,task_id=local['id'],worker_slot=-2)
+        self.store.finish(local['id'],result=result,worker_id=self.store.owner)
+        self.cleanup_result(result)
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+            db.execute(delivery_work.update().values(instance_id='another-instance'))
+        self.assertIsNone(self.store.claim(self.store.owner,processing=True),'local source files cannot migrate to another instance')
+        self.assertIsNone(self.store.claim(self.store.owner),'network workers cannot consume processing plans')
+
+    def test_atomic_move_crash_resumes_without_source_requests_or_duplicate_receipts(self):
+        from webapp.delivery import artifacts
+        from webapp.database import delivery_work
+        job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(artifacts,'pending',side_effect=RuntimeError('crash after move')):
+            with self.assertRaisesRegex(RuntimeError,'crash after move'):
+                self.run_task(task)
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+        plan=json.loads(work['plan']);pending=plan['jobs'][0]
+        self.assertTrue(Path(pending['destination']).is_file())
+        self.assertFalse(Path(pending['inputs'][0]).exists())
+        self.retry_failed(job,task);self.hits.clear()
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=AssertionError('re-download')):
+            _, result=self.execute()
+        self.assertEqual(self.hits,[])
+        self.assertEqual((result['file_count'],result['delivery_status']),(1,'complete'))
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
+
+    def test_pending_local_files_survive_sweep_and_crash_before_settlement(self):
+        from web_worker import execute
+        from webapp.database import delivery_work, tasks
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['video_only','audio_only']);task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+        self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        budget.cleanup(self.store,grace=0)
+        self.assertTrue(Path(work['workspace']).exists(),'queued local sources must be protected from cleanup')
+        local=self.store.claim(self.store.owner,processing=True)
+        result=execute('download',local['payload'],store=self.store,task_id=task['id'],worker_slot=-2)
+        self.assertFalse(__import__('webapp.delivery.processing',fromlist=['cleanup_completed']).cleanup_completed(self.store,work))
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(lease_until=0))
+        self.store.recover()
+        with self.store.connect() as db:
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(available_at=0))
+        self.hits.clear();_,result=self.execute()
+        self.assertEqual(self.hits,[])
+        self.assertEqual(result['file_count'],2)
+        self.assertTrue(result['files_deleted'])
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],2)
+        with budget.connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0],0)
+
+    def test_processing_role_completes_in_fresh_process_without_source_or_start_gate(self):
+        import sys
+        import time
+        from web_worker import execute
+        from webapp.database import delivery_work
+        self.storage={'storage_mode':'test'}
+        self.create(['video_only','audio_only']);task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+        self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        acquisition_seconds=dict(self.store.get(task['id'])['progress']['stage_seconds'])
+        self.hits.clear()
+        (self.store.directory/'throughput.json').write_text(json.dumps(dict(mode='cookie_pool',time=time.time(),
+            cookie_pool={'halted':True,'next_start_at':time.time()+3600})))
+        completed=subprocess.run([sys.executable,'web_worker.py','--state',str(self.store.directory),
+            '--slot','-2','--role','processing'],cwd=Path(__file__).resolve().parents[1],
+            env=dict(os.environ,VIDEO_WORKER_DATABASE_URL=self.store.db.url,PYTHONUTF8='1'),
+            capture_output=True,timeout=25, **({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}))
+        self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
+        done=self.store.get(task['id'])
+        self.assertEqual(done['status'],'succeeded',done['error'])
+        self.assertEqual(done['result']['file_count'],2)
+        self.assertNotIn('r',done['progress']['stage_seconds'])
+        for stage,seconds in acquisition_seconds.items():
+            self.assertGreaterEqual(done['progress']['stage_seconds'].get(stage,0),seconds)
+        self.assertEqual(self.hits,[])
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(select(delivery_work)).first())
+        self.assertFalse(any((self.store.directory/'test-downloads').rglob('*.mp4')))
+
+    def test_delivery_space_reserves_original_tracks_without_copy_multiplier(self):
+        from webapp.disk_budget import DiskLease
+        self.storage={'storage_mode':'test'}
+        self.create(['video_only','audio_only'])
+        check=DiskLease.check;requested=[]
+        def checked(lease,estimate=0,**kwargs):
+            requested.append(estimate)
+            return check(lease,estimate,**kwargs)
+        with patch.object(DiskLease,'check',checked):
+            _,result=self.execute()
+        self.assertGreater(max(requested),0)
+        self.assertLessEqual(max(requested),result['file_bytes'])
+        self.assertTrue(result['files_deleted'])
+
+    def test_progressive_av_already_matching_container_never_invokes_ffmpeg(self):
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(self.media/'video.mp4'),
+            '-i',str(self.media/'audio.m4a'),'-c','copy',str(self.media/'combined.mp4')],check=True,capture_output=True)
+        info=self.info(False);info['formats']=[dict(format_id='combined',url=self.url+'/combined.mp4',
+            ext='mp4',vcodec='h264',acodec='aac',height=120,width=160,protocol='http',http_headers={})]
+        job=self.create(['av']);run=subprocess.run;commands=[]
+        def track(command,*args,**kwargs):
+            commands.append(Path(command[0]).stem)
+            return run(command,*args,**kwargs)
+        with patch('webapp.delivery.verify.subprocess.run',side_effect=track):
+            _,result=self.execute(info)
+        self.assertEqual(result['file_count'],1)
+        self.assertNotIn('ffmpeg',commands)
+        with self.store.connect() as db:
+            path=db.execute(select(delivery_artifacts.c.path).where(delivery_artifacts.c.job_id==job)).scalar_one()
+        self.assertEqual(Path(path).read_bytes(),(self.media/'combined.mp4').read_bytes())
 
     def test_all_fifteen_combinations_and_track_reuse(self):
         for length in range(1,5):
@@ -278,7 +617,7 @@ class DeliveryTests(unittest.TestCase):
              patch('webapp.delivery.executor.shutil.which', side_effect=lambda name: None if name in ('ffmpeg', 'ffprobe') else find_tool(name)), \
              patch.object(ProviderExecution, 'transmitting', transmitting), \
              patch.object(ChannelScheduler, 'wait_youtube_start', autospec=True) as start:
-            result = execute('download', task['payload'], report_progress=updates.append, store=self.store, task_id=task['id'])
+            result = self.run_task(task, report=updates.append)
         self.store.finish(task['id'], result=result, worker_id=self.store.owner)
         self.assertEqual((extract.call_count, start.call_count), (1, 1))
         self.assertEqual(admitted, [('thumbnail', 1)])
@@ -323,7 +662,7 @@ class DeliveryTests(unittest.TestCase):
         self.hits.clear()
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info):
             with self.assertRaises(RuntimeError) as caught:
-                execute('download', task['payload'], store=self.store, task_id=task['id'])
+                self.run_task(task)
         self.assertEqual(failure_evidence(caught.exception).http_status, 429)
         self.assertGreaterEqual(caught.exception.retry_after, 2390)
         self.assertEqual(self.hits, ['/limited.vtt'])
@@ -343,7 +682,7 @@ class DeliveryTests(unittest.TestCase):
         task = self.store.claim(self.store.owner)
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info):
             with self.assertRaises(LocalDeliveryError):
-                execute('download', task['payload'], store=self.store, task_id=task['id'])
+                self.run_task(task)
         self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'], [])
 
     def test_sidecar_variants_do_not_depend_on_media_or_subtitle_options(self):
@@ -410,6 +749,125 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(detail['file_count'],0);self.assertEqual(detail['test_file_count'],len(KINDS))
         self.assertEqual(self.client.get('/api/jobs/'+job+'/artifacts').json['items'],[])
 
+    def test_test_retry_reuses_registered_outputs_after_workspace_deletion(self):
+        from web_worker import execute
+        from webapp.delivery import executor
+        from webapp.disk_budget import DiskPressure, DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['metadata','thumbnail','video_only','audio_only','subtitle'])
+        task=self.store.claim(self.store.owner)
+        publish=executor.publish
+        def interrupt(session, source, kind, *args, **kwargs):
+            if kind=='audio_only':
+                raise DiskPressure('interrupt before audio delivery')
+            return publish(session, source, kind, *args, **kwargs)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(executor,'publish',side_effect=interrupt):
+            with self.assertRaises(DiskPressure):
+                self.run_task(task)
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        self.assertLess(budget.snapshot(force=True)['categories']['test']['used_bytes'],64*1024)
+        before=self.client.get('/api/jobs/'+job).json
+        self.assertEqual(before['test_file_count'],3)
+        self.retry_failed(job,task);self.hits.clear()
+        _,result=self.execute()
+        self.assertEqual(self.hits,[],'local retry must reuse all acquired tracks and captions')
+        self.assertEqual((result['file_count'],result['delivery_status']),(5,'complete'))
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],5)
+        self.assertTrue(result['files_deleted'])
+
+    def test_partial_crash_recovery_registers_once_and_removes_queued_workspace(self):
+        from web_worker import execute
+        from webapp.disk_budget import DiskBudget
+        from webapp.delivery.verify import LocalDeliveryError
+        self.storage={'storage_mode':'test'}
+        job=self.create(['metadata','audio_only'])
+        task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(self.store.statistics,'record_file',side_effect=LocalDeliveryError('crash before registration')):
+            with self.assertRaises(LocalDeliveryError):
+                self.run_task(task)
+        receipt=next((self.store.directory/'test-downloads'/task['id']).glob('*/.completed-files.json'))
+        self.store.release(task['id'],self.store.owner,'retry',delay=0)
+        task=self.store.claim(self.store.owner)
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        self.assertIsNone(budget.recover_test_result(self.store,task['id']))
+        self.assertFalse(receipt.parent.exists(),'accounted partial test files must not accumulate')
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],1)
+        self.store.release(task['id'],self.store.owner,'continue',delay=0)
+        self.hits.clear();_,result=self.execute()
+        self.assertEqual(self.hits,['/audio.m4a'])
+        self.assertEqual(result['delivery_status'],'complete')
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],2)
+
+    def test_last_crash_receipt_reports_all_previously_completed_outputs(self):
+        from web_worker import execute
+        from webapp.delivery import executor
+        from webapp.delivery.verify import LocalDeliveryError
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['metadata','audio_only']);task=self.store.claim(self.store.owner)
+        record=self.store.statistics.record_file
+        def interrupted(*args,**kwargs):
+            if kwargs.get('artifact',{}).get('kind')=='audio_only':
+                raise LocalDeliveryError('last output pending registration')
+            return record(*args,**kwargs)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(self.store.statistics,'record_file',side_effect=interrupted):
+            with self.assertRaises(LocalDeliveryError):
+                self.run_task(task)
+        receipt=next((self.store.directory/'test-downloads'/task['id']).glob('*/.completed-files.json'))
+        # A crash workspace need only contain the last output. Earlier durable
+        # test receipts remain valid after their local files have been removed.
+        items=[r for r in json.loads(receipt.read_text()) if r['artifact']['kind']=='audio_only']
+        receipt.write_text(json.dumps(items))
+        self.store.release(task['id'],self.store.owner,'retry',delay=0)
+        task=self.store.claim(self.store.owner, processing=True)
+        self.assertIsNone(DiskBudget(self.store.directory,self.store.runtime()).recover_test_result(self.store,task['id']))
+        result=self.run_task(task)
+        self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        self.cleanup_result(result)
+        self.assertEqual(result['file_count'],2)
+        self.assertEqual(result['file_bytes'],self.client.get('/api/jobs/'+job).json['test_file_bytes'])
+        self.assertFalse(receipt.parent.exists())
+
+    def test_superseded_test_receipt_cleans_queued_and_completed_workspaces(self):
+        from web_worker import execute
+        from webapp.disk_budget import DiskBudget
+        from webapp.delivery.executor import recover_test_outputs
+        from webapp.delivery.verify import LocalDeliveryError
+        self.storage={'storage_mode':'test'}
+        job=self.create(['metadata','audio_only']);task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+             patch.object(self.store.statistics,'record_file',side_effect=LocalDeliveryError('crash')):
+            with self.assertRaises(LocalDeliveryError):
+                self.run_task(task)
+        receipt=next((self.store.directory/'test-downloads'/task['id']).glob('*/.completed-files.json'))
+        receipts=json.loads(receipt.read_text());item=receipts[0]
+        self.assertIsNone(recover_test_outputs(self.store,task['id'],receipts,receipt.parent))
+        replacement=self.root/'replacement.json';replacement.write_text('{"title":"changed metadata size"}')
+        self.store.statistics.record_file(task['id'],replacement,task['video_id'],'fixture',test_mode=True,artifact=item['artifact'])
+        self.assertNotEqual(replacement.stat().st_size,item['size'])
+        before=self.client.get('/api/jobs/'+job).json['test_file_bytes']
+        # Recovery must not overwrite the newer artifact with the stale file.
+        self.assertIsNone(recover_test_outputs(self.store,task['id'],receipts,receipt.parent))
+        with self.store.connect() as db:
+            self.assertEqual(db.execute(select(delivery_artifacts.c.path).where(
+                delivery_artifacts.c.id==item['artifact']['id'])).scalar_one(),str(replacement.resolve()))
+        self.store.release(task['id'],self.store.owner,'retry',delay=0)
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        snapshot=budget.cleanup(self.store,grace=0)
+        self.assertFalse(receipt.parent.exists())
+        self.assertEqual(snapshot['last_cleanup']['pending_results'],0)
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_bytes'],before)
+        # A second retired workspace remains safe to collect after task success.
+        with budget.lease('test',task=task['id']) as old:
+            stale=old.path/'.completed-files.json';stale.write_text(json.dumps(receipts));old.preserve=True
+        task=self.store.claim(self.store.owner)
+        self.store.finish(task['id'],result={'test_mode':True},worker_id=self.store.owner)
+        budget.cleanup(self.store,grace=0)
+        self.assertFalse(old.path.exists())
+
     def test_language_policy_and_delivery_filter_without_task_filter(self):
         job=self.create(['subtitle'],{'subtitles':{'mode':'original_and_translated','languages':['en','fr'],'language_policy':'all_selected'}})
         task,result=self.execute()
@@ -473,7 +931,7 @@ class DeliveryTests(unittest.TestCase):
         with patch('oss2.Bucket'),patch.object(OSSStorage,'_upload',autospec=True,side_effect=upload), \
              patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
             with self.assertRaises(OSSUploadError):
-                execute('download',task['payload'],store=self.store,task_id=task['id'])
+                self.run_task(task)
             self.retry_failed(job,task);self.hits.clear()
             with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
                 self.execute();extract.assert_not_called()
@@ -501,8 +959,9 @@ class DeliveryTests(unittest.TestCase):
         job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
         cloud=MagicMock();cloud.upload_files.side_effect=OSSUploadError('fixture upload failure')
         with patch('Utils.oss_storage.OSSStorage',return_value=cloud),patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch('webapp.channel_scheduler.ChannelScheduler.outcome') as outcome:
-            with self.assertRaises(OSSUploadError):execute('download',task['payload'],store=self.store,task_id=task['id'])
-            outcome.assert_not_called()
+            with self.assertRaises(OSSUploadError):self.run_task(task)
+            outcome.assert_called_once()
+            self.assertTrue(outcome.call_args.kwargs['success'],'network success is independent of local upload failure')
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],0)
         self.assertEqual(self.client.get('/api/jobs/'+job+'/artifacts').json['items'],[])
         self.retry_failed(job,task);self.hits.clear()
@@ -531,8 +990,8 @@ class DeliveryTests(unittest.TestCase):
                 raise PipelineBusy('shared transfer busy')
             return transmitting(executor,*args,**kwargs)
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(ProviderExecution,'transmitting',reserve):
-            with self.assertRaises(PipelineBusy):execute('download',task['payload'],store=self.store,task_id=task['id'])
-        self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],1)
+            with self.assertRaises(PipelineBusy):self.run_task(task)
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],0)
         self.retry_failed(job,task);self.hits.clear();self.execute()
         self.assertEqual(self.hits,['/en.vtt']);self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],2)
 
@@ -576,7 +1035,7 @@ class DeliveryTests(unittest.TestCase):
         for kinds,complete in [(['audio_only'],True),(['audio_only','av'],False)]:
             job=self.create(kinds);task=self.store.claim(self.store.owner)
             with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(self.store.statistics,'record_file',side_effect=LocalDeliveryError('simulated interruption')):
-                with self.assertRaises(LocalDeliveryError):execute('download',task['payload'],store=self.store,task_id=task['id'])
+                with self.assertRaises(LocalDeliveryError):self.run_task(task)
             receipt=next((self.store.directory/'test-downloads'/task['id']).glob('*/.completed-files.json'))
             result=recover_test_outputs(self.store,task['id'],json.loads(receipt.read_text()),receipt.parent)
             self.assertEqual(bool(result),complete)
@@ -597,7 +1056,7 @@ class DeliveryTests(unittest.TestCase):
         for message,kind in [('HTTP Error 403: Forbidden','access_denied'),('HTTP Error 429: Too Many Requests','request_rate_limit'),('Your account has been rate-limited','account_rate_limit')]:
             job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
             with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=yt_dlp.utils.DownloadError(message)),patch('webapp.channel_scheduler.ChannelScheduler.outcome'):
-                with self.assertRaises(RuntimeError) as caught:execute('download',task['payload'],store=self.store,task_id=task['id'])
+                with self.assertRaises(RuntimeError) as caught:self.run_task(task)
             self.assertEqual(failure_evidence(caught.exception).kind,kind)
             self.store.finish(task['id'],error=message,worker_id=self.store.owner)
 

@@ -13,6 +13,7 @@ export interface RuntimeTask extends VideoTask {
   };
 }
 export interface WorkbenchStatus {
+  disk?: import('../disk/model').DiskDiagnostic | null;
   selected_job_id: string | null;
   job: (Job & { importing?: number }) | null;
   online: boolean;
@@ -129,6 +130,7 @@ export interface Capacity extends InstanceStatus {
     disk_message: string;
     global_limit: number;
     global_running: number;
+    local_processing?: { queued: number; running: number; limit: number };
     transfer_limit: number;
     requested: number;
     cookie_pool?: { sessions?: RuntimeSlot[] };

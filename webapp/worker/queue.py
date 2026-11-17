@@ -28,7 +28,8 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     # Mark this process as a worker for dynamic connection pool sizing
     os.environ['VIDEO_WORKER_PROCESS'] = 'true'
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
-    name = 'maintenance' if slot < 0 else str(slot)
+    from webapp.diagnostics import worker_name
+    name = worker_name(slot)
     with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
         if not acquired:
             return
@@ -49,12 +50,18 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 # No task lease or DB transaction is held during this wait.
                 time.sleep(min(1, remaining))
                 continue
-            task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
+            if role in ('processing', 'all'):
+                task, start_ticket, waiting_start = store.claim(processing=True), None, False
+                if not task and role == 'all':
+                    task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
+            else:
+                task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
             if not task:
                 if waiting_start:
                     time.sleep(1)  # No task lease, DB transaction or workspace held.
                     continue
                 break
+            processing_task = bool(task['payload'].get('_processing'))
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()
             configure_diagnostics(runtime)
@@ -69,7 +76,7 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     start_ticket.finish()
                 store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
                 break
-            if task['action'] == 'download':
+            if task['action'] == 'download' and not processing_task:
                 from Utils.config import video_directory
                 from Utils.download_storage import DownloadWorkspace
                 workspace = DownloadWorkspace(config, store.directory, task['id'])
@@ -118,16 +125,31 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     event('attempt_start', action=task['action'], policy_version=task.get('policy_version'))
                     result = execute(task['action'], task['payload'],
                                      report,
-                                     rotation_completed=store.rotation_completed, store=store, worker_slot=max(0, slot), task_id=task['id'],
+                                     rotation_completed=store.rotation_completed, store=store, worker_slot=slot, task_id=task['id'],
                                      **({'start_ticket': start_ticket} if start_ticket else {}))
+                    if result.get('processing_pending'):
+                        committed = lease_guard.settle(store.finish, task['id'], result=result, worker_id=store.owner)
+                        print('网络下载完成，账号已释放，等待本地处理。', flush=True)
+                        event('attempt_end', outcome='waiting_processing' if committed else 'lease_lost',
+                              elapsed_seconds=round(time.monotonic() - started, 3))
+                        continue
                     if task['action'] == 'download':
                         transferred = last_progress.get('downloaded_bytes', 0)
                         output_bytes = result.get('file_bytes', 0)
-                        print(f'任务执行完成。传输数据：{format_bytes(transferred)}；文件大小：{format_bytes(output_bytes)}。', flush=True)
+                        summary = '已下载内容处理完成，下载缺项按原失败策略处理。' if result.get('source_failed') else '任务执行完成。'
+                        print(f'{summary}传输数据：{format_bytes(transferred)}；文件大小：{format_bytes(output_bytes)}。', flush=True)
                     else:
                         print('任务执行完成。', flush=True)
                     committed = lease_guard.settle(store.finish, task['id'], result=result, worker_id=store.owner)
-                    event('attempt_end', outcome='succeeded' if committed else 'lease_lost',
+                    if committed and result.get('_processing_workspace'):
+                        from webapp.delivery.processing import cleanup_completed
+                        try:
+                            cleanup_completed(store, result['_processing_workspace'])
+                        except OSError:
+                            event('local_cleanup_pending')
+                    settled = store.get(task['id']) if committed and result.get('source_failed') else None
+                    event('attempt_end', outcome=(settled['status'] if settled else
+                          'waiting_source' if result.get('network_pending') else 'succeeded') if committed else 'lease_lost',
                           elapsed_seconds=round(time.monotonic() - started, 3),
                           test_mode=bool(result.get('test_mode')), skipped=bool(result.get('skipped')),
                           file_count=result.get('file_count'), file_bytes=result.get('file_bytes'),
@@ -151,7 +173,8 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     continue
                 except DiskPressure as error:
                     resource_wait = str(error)
-                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=60, resource=True)
+                    lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=60, resource=True,
+                                       resource_detail=error.detail)
                     store.worker_status(store.owner, name, 'disk_wait', message=str(error))
                     print(f'磁盘资源等待：{error}', flush=True)
                     event('attempt_released', reason='disk_pressure', message=str(error), **error_details(error))
@@ -196,6 +219,24 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         break
                     continue
                 except BaseException as error:
+                    if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
+                        record_failure(error)
+                        resource_wait = '磁盘空间或配额不足，等待释放空间。'
+                        lease_guard.settle(store.release, task['id'], store.owner, resource_wait, delay=60, resource=True)
+                        store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
+                        event('attempt_released', reason='disk_full', **error_details(error))
+                        break
+                    if processing_task and isinstance(error, Exception):
+                        # Local conversion/upload errors never cool YouTube
+                        # accounts or discard the acquired source tracks.
+                        from webapp.delivery.verify import LocalDeliveryError
+                        local_error = LocalDeliveryError('本地处理失败：' + str(error))
+                        record_failure(local_error)
+                        traceback.print_exc()
+                        lease_guard.settle(store.finish, task['id'], error=safe_text(str(local_error))[:2000],
+                            worker_id=store.owner, retryable=True)
+                        event('local_processing_failed', **error_details(local_error))
+                        continue
                     record_failure(error)
                     failure = failure_evidence(error)
                     if failure.kind == 'account_rate_limit':
@@ -211,12 +252,6 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)
                         event('attempt_released', reason='authentication_required', **error_details(error))
                         break
-                    if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
-                        resource_wait = '磁盘空间或配额不足，等待释放空间。'
-                        lease_guard.settle(store.release, task['id'], store.owner, resource_wait, delay=60, resource=True)
-                        store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
-                        event('attempt_released', reason='disk_full', **error_details(error))
-                        break
                     traceback.print_exc()
                     print(f'任务失败：{error}', flush=True)
                     message = safe_text(str(error) or type(error).__name__)[:2000]
@@ -228,16 +263,22 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     transient = failure.retryable
                     lease_guard.settle(store.finish, task['id'], error=message, worker_id=store.owner, retryable=transient, retry_after=server_delay)
                     current = store.get(task['id'])
-                    event('attempt_end', outcome=current['status'] if current else 'unknown',
+                    waiting_processing = bool(current and current['progress'].get('stage') == 'waiting_processing')
+                    source_retry = bool(current and current['status'] == 'queued' and not waiting_processing)
+                    event('attempt_end', outcome='waiting_processing' if waiting_processing else current['status'] if current else 'unknown',
                           failed_stage=last_progress.get('stage'),
                           elapsed_seconds=round(time.monotonic() - started, 3),
                           stage_seconds=last_progress.get('stage_seconds', {}),
-                          retryable=transient, retry_scheduled=bool(current and current['status'] == 'queued'),
+                          retryable=transient, retry_scheduled=source_retry,
+                          processing_pending=waiting_processing,
                           retry_reason=('transient_error' if transient else 'not_classified_as_transient'),
-                          retry_delay_seconds=max(0, round(current.get('available_at', 0) - time.time())) if current and current['status'] == 'queued' else None,
+                          retry_delay_seconds=max(0, round(current.get('available_at', 0) - time.time())) if source_retry else None,
                           **error_details(error))
                     if current and current['status'] == 'queued':
-                        print(f'临时错误，已安排自动重试；本次为第 {current["attempts"]}/{current["max_attempts"]} 次尝试。', flush=True)
+                        if current['progress'].get('stage') == 'waiting_processing':
+                            print('部分下载失败，已释放账号；先交付已下载内容，再按原失败策略处理缺项。', flush=True)
+                        else:
+                            print(f'临时错误，已安排自动重试；本次为第 {current["attempts"]}/{current["max_attempts"]} 次尝试。', flush=True)
                     if not isinstance(error, Exception):
                         raise
                 finally:

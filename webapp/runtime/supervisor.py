@@ -137,9 +137,10 @@ class TaskRunner:
                     config = self.store.fleet.local_settings()['config']
                 if self.throughput.state is None or time.monotonic() - last_beat >= 5:
                     from sqlalchemy import select
-                    from webapp.database import tasks
+                    from webapp.database import tasks, delivery_work
                     with self.store.connect() as db:
-                        statement = select(tasks.c.progress).where(tasks.c.status == 'running', tasks.c.action == 'download')
+                        statement = select(tasks.c.progress).where(tasks.c.status == 'running', tasks.c.action == 'download',
+                            ~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists())
                         if self.store.fleet:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
                         stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
@@ -195,8 +196,9 @@ class TaskRunner:
                         self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
                         self.parser.start()
                     download_starts = role_counts.get('download', 0)
-                    for slot in [-1, *range(count)]:
-                        role = 'maintenance' if slot < 0 else 'regular' if slot == 0 else 'download'
+                    local_slots = range(-2, -2 - max(1, min(8, int(config.get('postprocess_limit', 2)))), -1)
+                    for slot in [-1, *local_slots, *range(count)]:
+                        role = 'processing' if slot < -1 else 'maintenance' if slot == -1 else 'regular' if slot == 0 else 'download'
                         if role not in roles:
                             continue
                         if role == 'download' and download_starts <= 0:
@@ -217,7 +219,8 @@ class TaskRunner:
                         from webapp.database import schema_token
                         env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path
-                        temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{role if slot < 0 else slot}', self.store.directory)
+                        from webapp.diagnostics import worker_name
+                        temporary = safe_path(self.store.directory / 'runtime/cache' / f'worker-{worker_name(slot)}', self.store.directory)
                         temporary.mkdir(parents=True, exist_ok=True)
                         env.update(TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
                         options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}

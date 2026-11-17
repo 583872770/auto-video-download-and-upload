@@ -177,6 +177,9 @@ def settle_task(store, db, row, *, error=None, result=None, progress=None, retry
                 max_attempts=row.get('max_attempts', 0), http_status=failure.get('http_status'), **outputs)
     if resource:
         code, headline, reason, next_step = 'disk', '磁盘空间或临时预算不足', raw, '查看磁盘用量，释放空间或调整预算；满足条件后自动重试。'
+        info['disk_pressure'] = progress.get('disk_pressure')
+        if (info['disk_pressure'] or {}).get('kind') == 'budget':
+            headline = '临时文件预算不足，等待资源'
     elif kind in ('authentication_required', 'verification_required'):
         state = 'action'
         code, headline, reason, next_step = 'account_auth', '账号登录或验证需要处理', '当前账号登录检查未通过或需要网页验证。', '到账号管理完成登录或验证，再检测登录状态。'
@@ -335,7 +338,10 @@ def register_notifications(app, store):
                 for status, count in db.execute(select(groups.c.status, func.count()).group_by(groups.c.status)):
                     global_counts[status] = count
             if request.args.get('compact') == '1':
-                return jsonify(counts=counts, global_counts=global_counts, items=[], next_cursor=None, sampled_at=time.time())
+                resources = db.execute(select(groups).where(groups.c.code == 'disk_resource',
+                    groups.c.status == 'action').order_by(groups.c.updated_at.desc()).limit(5)).mappings().all()
+                return jsonify(counts=counts, global_counts=global_counts, items=[], resource_alerts=public(db, resources),
+                    next_cursor=None, sampled_at=time.time())
             statement = select(groups).where(*clauses, groups.c.status == state)
             cursor = request.args.get('cursor')
             if cursor:
@@ -349,7 +355,10 @@ def register_notifications(app, store):
                 statement = statement.where(or_(groups.c.updated_at < stamp,
                     and_(groups.c.updated_at == stamp, groups.c.id > identity)))
             rows = db.execute(statement.order_by(groups.c.updated_at.desc(), groups.c.id).limit(31)).mappings().all()
+            resources = db.execute(select(groups).where(groups.c.code == 'disk_resource',
+                groups.c.status == 'action').order_by(groups.c.updated_at.desc()).limit(5)).mappings().all()
             return jsonify(counts=counts, global_counts=global_counts, items=public(db, rows[:30]),
+                resource_alerts=public(db, resources),
                 next_cursor=packed([rows[29]['updated_at'], rows[29]['id']]) if len(rows) > 30 else None,
                 sampled_at=time.time())
 
@@ -359,7 +368,12 @@ def register_notifications(app, store):
             group = db.execute(select(groups).where(groups.c.id == identity)).mappings().first()
             if not group:
                 abort(404, description='通知不存在。')
-            statement = select(members, tasks.c.status).join(tasks, tasks.c.id == members.c.task_id).where(members.c.group_id == identity)
+            statement = select(members, tasks.c.status).join(tasks, tasks.c.id == members.c.task_id)
+            if group['code'] == 'disk_resource':
+                statement = statement.join(groups, groups.c.id == members.c.group_id).where(
+                    groups.c.instance_id == group['instance_id'], groups.c.code == 'disk', tasks.c.status == 'queued')
+            else:
+                statement = statement.where(members.c.group_id == identity)
             if request.args.get('cursor'):
                 statement = statement.where(members.c.task_id > request.args['cursor'][:32])
             rows = db.execute(statement.order_by(members.c.task_id).limit(51)).mappings().all()

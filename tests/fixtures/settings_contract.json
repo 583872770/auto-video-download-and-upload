@@ -433,6 +433,7 @@
     "log_retention_days",
     "max_log_mb",
     "min_free_gb",
+    "postprocess_limit",
     "scheduler_mode",
     "throughput_mode",
     "worker_count",

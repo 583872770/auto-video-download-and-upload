@@ -52,13 +52,17 @@ class PoolSamplingTests(unittest.TestCase):
 
     def test_profile_replacement_and_deletion_are_not_hidden_by_parsing_cache(self):
         first = self.pool()
-        scope = first.accounts[0][2]
+        scope = next(account[2] for account in first.accounts if account[0] == self.ids[0])
+        from webapp.cookie_binding import claim, credential_keys
+        replacement = test_cookie_pool.COOKIE.replace(b'TEST_SECRET', b'REPLACED_SESSION')
         with self.store.connect() as db:
+            claim(db, self.profiles.scope, credential_keys(replacement))
             db.execute(cookie_profiles.update().where(cookie_profiles.c.id == self.ids[0]).values(
-                content=test_cookie_pool.COOKIE.replace(b'TEST_SECRET', b'REPLACED_SESSION').decode()))
+                content=replacement.decode()))
         replaced = CookiePool(self.store, self.config, self.base, None, strict=False)
-        self.assertEqual(replaced.accounts[0][2], scope)  # Same named account retains its health budget.
-        self.assertIn(b'REPLACED_SESSION', replaced.accounts[0][1].read_bytes())
+        account = next(account for account in replaced.accounts if account[0] == self.ids[0])
+        self.assertEqual(account[2], scope)  # Match identity; account ordering can change.
+        self.assertIn(b'REPLACED_SESSION', account[1].read_bytes())
         self.profiles.delete(self.ids[0])
         result = CookiePool(self.store, self.config, self.base, None, strict=False).status()
         self.assertEqual(result['capacity_summary']['unavailable_files'], 1)
@@ -102,14 +106,14 @@ class WorkerBudgetTests(unittest.TestCase):
             state = pool_worker_limits(self.config, 36, self.resources)
         self.assertEqual(state['worker_transfer_capacity'], 18)
         self.assertEqual(state['configured_worker_limit'], 20)
-        self.assertEqual(state['workers'], 18)  # 48 - 7 main - 4 auxiliary, at 2 each.
+        self.assertEqual(state['workers'], 16)  # Also reserve four connections for local delivery workers.
         self.assertLessEqual(state['workers'] * state['db_connections_per_worker'] +
-                             state['db_main_connections'] + state['db_auxiliary_connections'], 48)
+                             state['db_main_connections'] + state['db_auxiliary_connections'] + state['db_processing_connections'], 48)
         with patch.dict(os.environ, {'VIDEO_DB_CONNECTION_BUDGET': '64'}):
             self.assertEqual(pool_worker_limits(self.config, 36, self.resources)['workers'], 20)
         with patch.dict(os.environ, {'VIDEO_WORKER_DB_POOL_SIZE': '3', 'VIDEO_WORKER_DB_MAX_OVERFLOW': '1'}):
             self.assertEqual(calculate_pool_size(True), (3, 1))
-            self.assertEqual(connection_budget()['workers'], 8)
+            self.assertEqual(connection_budget()['workers'], 6)
 
     def test_explicit_main_pool_is_honored_and_invalid_budget_fails_early(self):
         with patch.dict(os.environ, {'VIDEO_DB_POOL_SIZE': '3', 'VIDEO_DB_MAX_OVERFLOW': '1'}):

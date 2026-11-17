@@ -17,6 +17,7 @@ export const useNotifications = defineStore('notifications', () => {
   const globalCounts = ref<NoticeCounts>({ action: 0, recovering: 0, resolved: 0 });
   const items = shallowRef<Notification[]>([]),
     nextCursor = ref<string | null>(null);
+  const resourceAlerts = shallowRef<Notification[]>([]);
   const loading = ref(false),
     error = ref(''),
     sampledAt = ref(0);
@@ -50,6 +51,7 @@ export const useNotifications = defineStore('notifications', () => {
       });
       if (ticket !== revision || current.signal.aborted) return;
       globalCounts.value = value.global_counts;
+      resourceAlerts.value = value.resource_alerts || [];
       sampledAt.value = value.sampled_at;
       if (expanded) {
         counts.value = value.counts;
@@ -101,6 +103,7 @@ export const useNotifications = defineStore('notifications', () => {
     counts,
     globalCounts,
     items,
+    resourceAlerts,
     nextCursor,
     loading,
     error,

@@ -59,6 +59,12 @@ def task_wait(progress, *, states=None, identity='local', stamp=0):
         if stage in ('scheduling_wait', 'disk_wait', 'retrying'):
             detail = safe_text(str(progress.get('wait_reason') or detail))[:300]
             until = progress.get('retry_at')
+        if stage == 'disk_wait' and progress.get('disk_pressure'):
+            pressure = progress['disk_pressure']
+            label = ('等待临时预算' if pressure.get('kind') == 'budget' else
+                     '等待预留空间' if pressure.get('kind') == 'reservation' else '等待磁盘空间')
+            detail = (f'需新增预留 {pressure.get("requested_bytes", 0)/1024**3:.1f} GiB；'
+                      f'当时可分配 {pressure.get("allocatable_bytes", 0)/1024**3:.1f} GiB。')
     result = {'code': code, 'label': label, 'detail': detail}
     if isinstance(until, (int, float)) and not isinstance(until, bool) and math.isfinite(until) and until > stamp:
         result['until'] = until

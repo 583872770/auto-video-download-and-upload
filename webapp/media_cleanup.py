@@ -1,5 +1,6 @@
 """Explicitly confirmed material reset; download deduplication is retained."""
 from contextlib import ExitStack
+import json
 import os
 from pathlib import Path
 import time
@@ -23,18 +24,23 @@ def validate_clear_root(root, protected=()):
     return root
 
 
-def clear_media(catalog, root, report=None, *, config=None, base=None, protected=()):
+def clear_media(catalog, root, report=None, *, config=None, base=None, protected=(), files_only=False):
     from Utils.runtime import ROOT
-    from webapp.disk_budget import DiskBudget, file_lock
+    from webapp.disk_budget import DiskBudget, file_lock, alive
     from webapp.media_reset import reset_records
 
     store = catalog.store
     root = validate_clear_root(root, (ROOT, store.directory, *protected))
     local_id = store.fleet.id if store.fleet else 'local'
     preserved = {(Path(base) / 'videos.txt').absolute()} if base else set()
-    cache_roots = [store.directory / part for part in (
+    cache_parts = (
         'runtime/downloads', 'runtime/cache', 'runtime/uploads', 'runtime/browser-profiles',
-        'test-downloads', 'yt5s', 'imports', 'download-metrics')]
+        'test-downloads', 'yt5s', 'imports', 'download-metrics')
+    if files_only:
+        # A file purge must not cancel pending imports, erase login state or
+        # remove task history. The UI's full material reset remains explicit.
+        cache_parts = ('runtime/downloads', 'runtime/cache', 'test-downloads', 'yt5s', 'download-metrics')
+    cache_roots = [store.directory / part for part in cache_parts]
     for folder in cache_roots:
         if not folder.parent.resolve().is_relative_to(store.directory.resolve()):
             raise ValueError('下载缓存父目录不能指向实例状态目录之外。')
@@ -46,6 +52,8 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
             raise RuntimeError('仍有下载、导入或索引任务运行，请停止后再清空。')
         artifacts = list(db.execute(select(delivery_artifacts).where(
             delivery_artifacts.c.instance_id == local_id)).mappings())
+        if files_only:
+            artifacts = [a for a in artifacts if a['storage'] == 'local']
         from webapp.delivery.artifacts import storage_config
         destinations = {a['id']: storage_config(db, a) for a in artifacts if a['storage'] == 'oss'}
         from Utils.config import video_directory
@@ -107,8 +115,11 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
         if not locks.enter_context(file_lock(store.directory / 'disk-cleanup.lock')):
             raise RuntimeError('磁盘清理正在执行，请稍后重试。')
         with budget.connect(write=False) as db:
-            leases = db.execute('SELECT id FROM leases').fetchall()
+            leases = db.execute('SELECT * FROM leases').fetchall()
         for lease in leases:
+            if files_only:
+                if alive(json.loads(lease['owner'])) or any(alive(child) for child in json.loads(lease['children'])):
+                    raise RuntimeError('仍有下载工作区进程存活，请停止后再清空。')
             if not locks.enter_context(file_lock(store.directory / 'disk-locks' / (lease['id'] + '.lock'))):
                 raise RuntimeError('下载工作区仍被占用，请等待执行进程停止后重试。')
         try:
@@ -119,7 +130,8 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
             # Remove an earlier registered output by its exact filename only.
             from webapp.media import VIDEO_SUFFIXES
             output_suffixes = VIDEO_SUFFIXES | {'.mp3', '.m4a', '.mka', '.opus', '.ogg', '.wav', '.aac',
-                                               '.vtt', '.srt', '.ass', '.ttml', '.srv1', '.srv2', '.srv3', '.json3'}
+                                               '.vtt', '.srt', '.ass', '.ttml', '.srv1', '.srv2', '.srv3', '.json3',
+                                               '.webp', '.jpg', '.jpeg', '.png', '.json'}
             for artifact in artifacts:
                 path = Path(artifact['path']).absolute()
                 if not path.exists() and not path.is_symlink():
@@ -172,10 +184,19 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
             if failures:
                 raise RuntimeError(f'部分素材未能删除（{len(failures)} 个文件或目录），请检查占用、权限和清理日志后重试。')
             progress(force=True)
-            records = reset_records(store, local_id, remove_log)
+            records = ({'deleted_tasks': 0, 'deleted_artifacts': 0} if files_only else
+                       reset_records(store, local_id, remove_log))
             with budget.connect() as db:
-                db.execute('DELETE FROM leases')
-                db.execute('DELETE FROM requirements')
+                if files_only:
+                    from webapp.database import delivery_work
+                    with store.connect() as connection:
+                        connection.execute(delivery_work.delete().where(delivery_work.c.instance_id == local_id))
+                    # Keep ownership for categories outside the requested purge.
+                    db.execute("DELETE FROM leases WHERE category IN ('test','downloads','cache')")
+                    db.execute("DELETE FROM requirements WHERE task NOT IN (SELECT task FROM leases WHERE task IS NOT NULL)")
+                else:
+                    db.execute('DELETE FROM leases')
+                    db.execute('DELETE FROM requirements')
         finally:
             for folder in managed_roots:
                 catalog.reindex(folder)
@@ -186,5 +207,9 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
                         db.execute(delivery_artifacts.update().where(
                             delivery_artifacts.c.id == artifact['id']).values(available=0))
     progress(force=True)
-    return {'message': f'素材和关联数据已清空，删除 {deleted} 个文件，仅保留下载去重记录。',
+    budget.snapshot(force=True)
+    budget._retention_health(store, 0)
+    message = (f'已清空下载文件，删除 {deleted} 个文件；任务、统计和下载去重记录保留。' if files_only else
+               f'素材和关联数据已清空，删除 {deleted} 个文件，仅保留下载去重记录。')
+    return {'message': message,
             'deleted_files': deleted, 'deleted_bytes': total_bytes, 'failed_files': 0, **records}

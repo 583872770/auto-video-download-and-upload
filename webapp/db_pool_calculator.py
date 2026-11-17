@@ -41,15 +41,16 @@ def target_workers(config):
 
 
 def connection_budget(config=None):
-    """Reserve main + two auxiliary lanes before admitting download workers.
+    """Reserve main, auxiliary and local delivery workers before network workers.
 
     This is an instance budget, not the MySQL server's max_connections. Operators
     sharing a database must allocate a suitable budget to each instance.
     """
     per_worker = sum(worker_pool_size())
     auxiliary = _integer('VIDEO_DB_AUXILIARY_CONNECTIONS', 2 * per_worker, 2 * per_worker)
+    processing = max(1, min(8, int((config or {}).get('postprocess_limit', 2)))) * per_worker
     main = (_integer('VIDEO_DB_POOL_SIZE', 5, 2), _integer('VIDEO_DB_MAX_OVERFLOW', 2))
-    fixed = sum(main) + auxiliary
+    fixed = sum(main) + auxiliary + processing
     # Engine initialization uses the deployment connection budget.
     # Runtime callers provide this instance's latest configuration.
     mode = config.get('db_budget_mode', 'auto') if config is not None else 'deployment'
@@ -68,12 +69,12 @@ def connection_budget(config=None):
     worker_cap = (_integer('VIDEO_WORKER_DB_CONNECTION_BUDGET', 48, per_worker)
                   if 'VIDEO_WORKER_DB_CONNECTION_BUDGET' in os.environ or config is None else None)
     total = min(requested, deployment_cap) if deployment_cap is not None else requested
-    if sum(main) + auxiliary + per_worker > total:
+    if fixed + per_worker > total:
         raise ValueError(f'数据库连接预算至少需要 {fixed + per_worker} 个，以覆盖主服务、辅助进程和一个下载进程。')
     workers = (total - fixed) // per_worker
     if worker_cap is not None:
         workers = min(workers, worker_cap // per_worker)
-    return {'total': total, 'main': main, 'auxiliary': auxiliary,
+    return {'total': total, 'main': main, 'auxiliary': auxiliary, 'processing': processing,
             'per_worker': per_worker, 'workers': workers, 'mode': mode,
             'requested_total': requested, 'required_total': required, 'target_workers': target,
             'deployment_cap': deployment_cap, 'deployment_worker_cap': worker_cap,

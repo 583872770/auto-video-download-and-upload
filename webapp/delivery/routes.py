@@ -1,5 +1,6 @@
 """Authenticated output listing, preview, missing-item acceptance and repair."""
 import csv
+import json
 from io import StringIO
 from pathlib import Path
 from flask import Response, abort, g, jsonify, request, send_file, stream_with_context
@@ -116,7 +117,18 @@ def register_delivery(app, store):
             if len(rows) != len(set(ids)) or any(r['status'] in ('running', 'removed') for r in rows):
                 raise Conflict('部分来源正在执行、已移除或不属于该客户任务。')
             for row in rows:
+                from webapp.database import delivery_work
+                work = db.execute(select(delivery_work).where(delivery_work.c.task_id == row['id'])).mappings().first()
+                if work:
+                    plan = json.loads(work['plan'])
+                    # An explicit retry starts a fresh source budget, while
+                    # keeping acquired files available for local delivery.
+                    plan.pop('source_failure', None)
+                    db.execute(delivery_work.update().where(delivery_work.c.task_id == row['id']).values(
+                        attempts=0, source_attempts=0, plan=packed(plan)))
                 if data.get('use_latest') is True:
+                    if db.execute(select(delivery_work.c.task_id).where(delivery_work.c.task_id == row['id'])).first():
+                        raise Conflict('该来源已有下载文件等待本地处理，请先完成处理，或移除该来源后按新要求重新添加。')
                     run = db.execute(select(runs).where(runs.c.task_id == row['id']).with_for_update()).mappings().first()
                     if run:
                         test = contract['spec']['storage']['storage_mode'] == 'test'

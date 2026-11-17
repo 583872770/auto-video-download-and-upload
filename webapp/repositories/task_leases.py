@@ -8,7 +8,7 @@ import time
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import OperationalError
 
-from webapp.database import reservations, rotations, settings, tasks, workers
+from webapp.database import reservations, rotations, settings, tasks, workers, delivery_work
 
 
 class TaskLeases:
@@ -16,20 +16,22 @@ class TaskLeases:
         return statement if self.db.sqlite else statement.with_for_update(
             skip_locked=skip and self.db.supports_skip_locked)
 
-    def claim(self, worker_id=None, actions=None, exclude=None, lease_seconds=60):
+    def claim(self, worker_id=None, actions=None, exclude=None, lease_seconds=60, *, processing=False):
         # A locking scan can deadlock with a transaction changing
         # the queue's status index. InnoDB rolls back the losing transaction;
         # retry the entire claim (including counters), never just its SELECT.
+        disk_blocked = (self.disk_blocked_tasks() if
+            not processing and (not actions or 'download' in actions) and 'download' not in (exclude or ()) else set())
         for attempt in range(5):
             try:
-                return self._claim(worker_id, actions, exclude, lease_seconds)
+                return self._claim(worker_id, actions, exclude, lease_seconds, disk_blocked, processing)
             except OperationalError as error:
                 code = error.orig.args[0] if error.orig.args else None
                 if not self.db.mysql or code != 1213 or attempt == 4:
                     raise
                 time.sleep(0.01 * 2 ** attempt)
 
-    def _claim(self, worker_id, actions, exclude, lease_seconds):
+    def _claim(self, worker_id, actions, exclude, lease_seconds, disk_blocked=(), processing=False):
         with self.connect() as db:
             if self.db.sqlite:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
@@ -45,20 +47,37 @@ class TaskLeases:
             if not self.fleet and mode is not None:
                 return None  # A registered fleet requires fenced instance ownership.
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
+            local_work = select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists()
+            if processing:
+                local_id = self.fleet.id if self.fleet else 'local'
+                statement = statement.select_from(delivery_work.join(tasks, delivery_work.c.task_id == tasks.c.id)).where(
+                    tasks.c.action == 'download', delivery_work.c.instance_id == local_id)
+                from sqlalchemy import func
+                config = (self.fleet.local_settings(db)['config'] if self.fleet else
+                    json.loads(db.execute(select(settings.c.value).where(settings.c.key == 'runtime')).scalar_one_or_none() or '{}'))
+                active = db.execute(select(func.count()).select_from(tasks.join(delivery_work,
+                    tasks.c.id == delivery_work.c.task_id)).where(tasks.c.status == 'running',
+                    tasks.c.lease_until > stamp, delivery_work.c.instance_id == local_id)).scalar_one()
+                if active >= max(1, min(8, int(config.get('postprocess_limit', 2)))):
+                    return None
+            else:
+                statement = statement.where(~local_work)
+            if disk_blocked:
+                statement = statement.where(self.disk_runnable_condition(disk_blocked))
             if self.fleet:
                 statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
                     and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))
-                if not self.fleet.admission(db):
+                if not processing and not self.fleet.admission(db):
                     statement = statement.where(tasks.c.action != 'download')
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
             if self.claims_paused(db, lock=True):
                 statement = statement.where(tasks.c.action != 'download')
-            elif not self._released_queued_count(db):
+            elif not processing and not self._released_queued_count(db):
                 statement = statement.where(tasks.c.action != 'download')
             from webapp.disk_budget import resource_blocked
-            if resource_blocked(self, db):
+            if not processing and resource_blocked(self, db):
                 statement = statement.where(tasks.c.action != 'download')
             if self.media_clear_busy(db):
                 statement = statement.where(~tasks.c.action.in_(('download', 'import', 'index')))
@@ -68,7 +87,7 @@ class TaskLeases:
                 statement = statement.where(~tasks.c.action.in_(exclude))
             download_only = actions and set(actions) == {'download'}
             regular_worker = actions is None and set(exclude or ()) == {'import', 'index'}
-            workbench_download = self.workbench_job(db) if self.fleet and (download_only or regular_worker) else None
+            workbench_download = self.workbench_job(db) if not processing and self.fleet and (download_only or regular_worker) else None
             row = None
             if workbench_download and regular_worker:
                 check = statement.where(tasks.c.action == 'check').order_by(tasks.c.available_at, tasks.c.seq).limit(1)
@@ -76,7 +95,8 @@ class TaskLeases:
             if workbench_download:
                 statement = statement.where(tasks.c.action == 'download', tasks.c.batch_id == workbench_download)
                 statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_ready)', dialect_name='mysql')
-            ordering = (tasks.c.seq,) if workbench_download else (tasks.c.available_at, tasks.c.seq)
+            ordering = ((delivery_work.c.created_at, tasks.c.seq) if processing else
+                        (tasks.c.seq,) if workbench_download else (tasks.c.available_at, tasks.c.seq))
             if row is None:
                 row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
             if row is None:
@@ -87,7 +107,16 @@ class TaskLeases:
                           attempts=row['attempts'] + 1, error=None)
             if self.fleet:
                 values.update(instance_id=self.fleet.id, lease_until=self.fleet.clock(db) + lease_seconds)
-            if row['action'] == 'download':
+            if processing:
+                work = db.execute(select(delivery_work).where(delivery_work.c.task_id == row['id'])).mappings().one()
+                values['attempts'] = work['attempts'] + 1
+                db.execute(delivery_work.update().where(delivery_work.c.task_id == row['id']).values(attempts=values['attempts']))
+                self.statistics.transition(db, row, 'running')
+                initial = json.loads(row['progress'] or '{}')
+                initial.update(stage='processing', speed=None, eta=None, cookie_profile_id=None,
+                               cookie_profile_name=None, wait_reason=None, retry_at=None)
+                values['progress'] = json.dumps(initial, ensure_ascii=False)
+            elif row['action'] == 'download':
                 payload = self.decode(row, private=True, db=db)['payload']
                 previous_config = (payload.get('config', {})
                                    if payload.get('_execution_settings') or row['attempts'] else None)
@@ -123,7 +152,10 @@ class TaskLeases:
             if row['action'] == 'download':
                 from webapp.notifications import retry_task
                 retry_task(self, db, {**row, **values})
-            return self.decode({**row, **values}, private=True, db=db)
+            decoded = self.decode({**row, **values}, private=True, db=db)
+            if processing:
+                decoded['payload']['_processing'] = dict(work)
+            return decoded
 
     def heartbeat(self, task_id, worker_id, lease_seconds=60):
         with self.connect() as db:
@@ -171,7 +203,7 @@ class TaskLeases:
 
             return db.execute(statement).rowcount
 
-    def release(self, task_id, worker_id, reason, delay=30, *, resource=False):
+    def release(self, task_id, worker_id, reason, delay=30, *, resource=False, resource_detail=None):
         with self.connect() as db:
             row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id,
                              tasks.c.worker_id == worker_id, tasks.c.status == 'running'))).mappings().first()
@@ -179,20 +211,25 @@ class TaskLeases:
                 if self.fleet and (self.fleet.row(db)['boot_id'] != self.fleet.boot_id
                                   or not row['lease_until'] or row['lease_until'] <= self.fleet.clock(db)):
                     return False
+                live = self.progress_cache.read(row)
+                observed = live['progress'] if live else json.loads(row['progress']) if row.get('progress') else {}
                 self._transition(db, row, 'queued')
+                self._release_processing_attempt(db, row)
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, attempts=max(0, row['attempts'] - 1),
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay, error=reason))
                 if resource:
-                    progress = json.loads(row['progress']) if row.get('progress') else {}
-                    progress.update(stage='disk_wait', speed=None, eta=None)
+                    progress = dict(observed)
+                    progress.update(stage='disk_wait', speed=None, eta=None, wait_reason=reason,
+                        retry_at=time.time()+delay, disk_pressure=resource_detail)
                     db.execute(tasks.update().where(tasks.c.id == task_id).values(progress=json.dumps(progress)))
                 self.statistics.transition(db, row, 'paused', reason)
                 self.statistics.settle(db, instance_id=row.get('instance_id'))
                 if row['action'] == 'download' and '下载进程数量已调整' not in str(reason):
                     from webapp.notifications import settle_task
-                    live = self.progress_cache.read(row)
-                    progress = live['progress'] if live else json.loads(row['progress']) if row.get('progress') else {}
+                    progress = observed
+                    if resource and resource_detail:
+                        progress = {**progress, 'disk_pressure': resource_detail}
                     # A paused executor requires intervention, regardless of a
                     # task's next queue eligibility timestamp.
                     if self.fleet:
@@ -202,6 +239,13 @@ class TaskLeases:
                         paused = self.downloads_paused(db)
                     settle_task(self, db, {**row, 'status': 'queued'}, error=reason, progress=progress,
                         retry_at=(time.time() + delay) if delay and not paused else None, resource=resource)
+
+    def _release_processing_attempt(self, db, row):
+        work = db.execute(select(delivery_work).where(delivery_work.c.task_id == row['id'])).mappings().first()
+        if work:
+            values = ({'attempts': work['attempts']-1} if work['attempts'] else
+                      {'source_attempts': max(0, row['attempts']-1)})
+            db.execute(delivery_work.update().where(delivery_work.c.task_id == row['id']).values(**values))
 
     def update_progress(self, task_id, progress, worker_id=None):
         if worker_id:
@@ -259,19 +303,84 @@ class TaskLeases:
                 return False
             if result:
                 result = dict(result)
+                result.pop('_processing_workspace', None)
+            work = None
+            if error or (result or {}).get('source_failed'):
+                work = db.execute(select(delivery_work).where(delivery_work.c.task_id == task_id)).mappings().first()
+            if error and work and work['attempts'] == 0:
+                # Source recovery has already classified the failure. Deliver
+                # acquired files first, then apply that exact recovery decision;
+                # local attempts must not reset the source retry budget.
+                plan = json.loads(work['plan'])
+                live = self.progress_cache.read(row)
+                failure_progress = dict(live['progress'] if live else json.loads(row['progress'] or '{}'))
+                plan['source_failure'] = dict(error=error, retryable=retryable,
+                    retry_at=settled_stamp + (retry_after or 0),
+                    progress={key: value for key, value in failure_progress.items() if key in (
+                        'last_failure', 'cookie_profile_id', 'cookie_profile_name',
+                        'retry_cookie_profile_id', 'retry_reason', 'retry_delay_seconds')},
+                    stage=plan['progress'].get('stage'))
+                db.execute(delivery_work.update().where(delivery_work.c.task_id == task_id).values(
+                    plan=json.dumps(plan, ensure_ascii=False)))
+                result = dict(processing_pending=True)
+            if (result or {}).get('processing_pending'):
+                if not db.execute(select(delivery_work.c.task_id).where(delivery_work.c.task_id == task_id)).first():
+                    raise RuntimeError('本地处理计划尚未登记，不能释放下载任务。')
+                live = self.progress_cache.read(row)
+                progress = dict(live['progress'] if live else json.loads(row['progress'] or '{}'))
+                progress.update(stage='waiting_processing', speed=None, eta=None,
+                    cookie_profile_id=None, cookie_profile_name=None,
+                    wait_reason='部分下载失败，先交付已下载内容。' if error else '网络下载完成，等待本地处理。')
+                self._transition(db, row, 'queued')
+                db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued',
+                    worker_id=None, lease_until=None, available_at=0, attempts=0,
+                    progress=json.dumps(progress, ensure_ascii=False), result=None, error=error))
+                self.statistics.transition(db, row, 'paused')
+                if error:
+                    from webapp.notifications import settle_task
+                    settle_task(self, db, row, error=error, progress=failure_progress,
+                                phase=plan['source_failure']['stage'])
+                self.progress_cache.discard([task_id])
+                return True
+            source_failure = None
+            if (result or {}).pop('source_failed', False):
+                if not work:
+                    raise RuntimeError('本地处理计划缺失，不能结算部分下载结果。')
+                source_failure = json.loads(work['plan'])['source_failure']
+                error, retryable = source_failure['error'], source_failure['retryable']
+                retry_after = max(0, source_failure['retry_at'] - settled_stamp)
+                row = {**row, 'attempts': work['source_attempts']}
+                db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
+            if (result or {}).get('network_pending'):
+                source_attempts = db.execute(select(delivery_work.c.source_attempts).where(delivery_work.c.task_id == task_id)).scalar_one()
+                self._transition(db, row, 'queued')
+                db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
+                progress = json.loads(row['progress'] or '{}')
+                progress.update(stage='queued', speed=None, eta=None, wait_reason='已保存已下载内容，等待补齐剩余内容。')
+                db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
+                    lease_until=None, available_at=0, progress=json.dumps(progress, ensure_ascii=False),
+                    attempts=source_attempts, result=None, error=None))
+                self.statistics.transition(db, row, 'paused')
+                self.progress_cache.discard([task_id])
+                return True
             retry = bool(error and retryable and row['attempts'] < row['max_attempts'])
             delay = min(300, 5 * 2 ** max(0, row['attempts'] - 1))
             delay = max(delay, min(86400, retry_after or 0)) + random.uniform(0, delay * .2)
             status = 'queued' if retry else 'failed' if error else 'succeeded'
             live = self.progress_cache.read(row)
             progress = live['progress'] if live else json.loads(row['progress']) if row['progress'] else {}
-            failure_phase = progress.get('stage')
+            if source_failure:
+                progress.update(source_failure['progress'])
+                # The account is no longer held by a local worker. Retry
+                # identity comes from last_failure, without displaying it busy.
+                progress.update(cookie_profile_id=None, cookie_profile_name=None)
+            failure_phase = source_failure['stage'] if source_failure else progress.get('stage')
             if progress:
                 progress.update(stage='retrying' if retry else 'failed' if error else
                                 'skipped' if (result or {}).get('skipped') else 'completed', speed=None, eta=None)
                 if not error:
                     progress['percent'] = 100
-            extra = {}
+            extra = {'attempts': row['attempts']} if source_failure else {}
             failure = progress.get('last_failure') or {}
             retry_profile = failure.get('profile_id') or progress.get('cookie_profile_id')
             pin_retry = bool(error) and retry_profile and (failure.get('reason') == 'no_data'
@@ -296,6 +405,8 @@ class TaskLeases:
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
                 available_at=settled_stamp + delay if retry else 0,
                 lease_until=None, worker_id=None, **extra))
+            if not error:
+                db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
             self.statistics.transition(db, row, outcome, error)

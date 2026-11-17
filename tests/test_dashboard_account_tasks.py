@@ -75,6 +75,26 @@ class DashboardAccountTaskTests(unittest.TestCase):
                                  (task_id, 'downloading', 'Live title', 12345))
                 self.assertIsNone(task['wait'])
 
+    def test_queued_disk_wait_keeps_account_and_countdown_but_is_not_a_running_process(self):
+        from webapp.notifications import settle_task
+        from sqlalchemy import select
+        identity = self.task(stage='disk_wait', status='queued', details={
+            'retry_at': time.time()+60, 'disk_pressure': dict(kind='budget',
+                requested_bytes=2*1024**3, allocatable_bytes=1024**3)})
+        with self.store.connect() as db:
+            row = db.execute(select(tasks).where(tasks.c.id == identity)).mappings().one()
+            settle_task(self.store, db, row, error='临时预算不足', resource=True,
+                progress=json.loads(row['progress']), retry_at=time.time()+60)
+        response = self.client.get('/api/status', headers={'X-Instance-ID': 'node'})
+        result = response.json['concurrency']
+        task = result['cookie_allocation']['accounts'][0]['tasks'][0]
+        self.assertEqual(task['task_id'], identity)
+        self.assertEqual(task['wait']['label'], '等待临时预算')
+        self.assertIn('2.0 GiB', task['wait']['detail'])
+        self.assertGreater(task['wait']['until'], time.time())
+        self.assertEqual(result['running'], 0)
+        self.assertEqual(result['transfer_allocation']['occupied'], [])
+
     def test_missing_cache_falls_back_to_persisted_task_stage(self):
         task_id = self.task(stage='processing')
         with patch.object(self.store.progress_cache, 'read_many', return_value={}):

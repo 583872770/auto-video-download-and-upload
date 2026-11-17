@@ -14,10 +14,9 @@ from Utils.config import video_directory
 from webapp.downloader import build_ydl_options, download_cookie_session
 from webapp.delivery.contracts import variant
 from webapp.delivery import artifacts as ledger
-from webapp.delivery.verify import verify, convert, inspect, LocalDeliveryError
+from webapp.delivery.verify import verify, LocalDeliveryError
 from webapp.database import delivery_requirements as requirements, delivery_artifacts as artifacts
 from webapp.parallel_http import ParallelYoutubeDL
-from webapp.local_processing import local_processing
 from webapp.subtitle_tracks import SubtitleSession, caption_plan, translated, provider_options
 
 
@@ -56,6 +55,17 @@ def ready(session, kind, language=''):
         return True
     if artifact:
         session.current_video.update(title=artifact['title'])
+    if session.test_mode and artifact and artifact['test_mode']:
+        with session.store.connect() as db:
+            ledger.fenced_run(session.store, db, task['id'])
+            recorded = ledger.recorded_test_output(db, task, artifact)
+            if recorded:
+                db.execute(requirements.update().where(requirements.c.task_id == task['id'],
+                    requirements.c.key == key).values(status='done', artifact_id=artifact['id'], error=None))
+                ledger.refresh(session.store, db, task['id'])
+        if recorded:
+            session.output_files[recorded['path']] = recorded['size']
+            return True
     local_id = session.store.fleet.id if session.store.fleet else 'local'
     if artifact and not artifact['available'] and not artifact['test_mode'] and artifact['instance_id'] == local_id:
         path = Path(artifact['path'])
@@ -105,7 +115,7 @@ def ready(session, kind, language=''):
     return False
 
 
-def publish(session, source, kind, language='', *, retained=False, subtitle_source=''):
+def publish(session, source, kind, language='', *, retained=False, subtitle_source='', verified=False, destination=None):
     spec = session.config['_delivery_contract']
     task_id = session.payload['_task_id']
     with session.store.connect() as db:
@@ -119,11 +129,13 @@ def publish(session, source, kind, language='', *, retained=False, subtitle_sour
         subdirectory = Path(video_id)
     root = source.parent if retained else video_directory(session.config, session.base) / subdirectory
     root.mkdir(parents=True, exist_ok=True)
-    target = source if retained else root / (identity + '-' + uuid.uuid4().hex + source.suffix)
-    verify(source, kind)
+    target = source if retained else Path(destination) if destination else root / (identity + '-' + uuid.uuid4().hex + source.suffix)
+    if not verified:
+        verify(source, kind)
     # Attempt-local paths cannot overwrite a later worker's published output.
     if not retained:
-        shutil.copyfile(source, target)
+        from webapp.delivery.files import move_output
+        move_output(source, target)
     artifact = dict(id=identity, kind=kind, language=language, variant=variant(spec, kind),
                     subtitle_source=subtitle_source,
                     title=session.current_video.get('title', ''), storage='oss' if session.oss_mode else 'local')
@@ -173,6 +185,19 @@ def choose(info, kind, max_height):
 
 
 def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
+    try:
+        return acquire(executor, channel, addresses, without_cookies=without_cookies, cookie_retry=cookie_retry)
+    except Exception:
+        # Retain already acquired outputs even if a later caption request fails.
+        # Settlement persists the source recovery decision before handing off
+        # local work. Any permitted retry fetches only missing requirements.
+        if executor.session.local_jobs:
+            from webapp.delivery.processing import enqueue
+            enqueue(executor.session, resume_network=True)
+        raise
+
+
+def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
     session = executor.session
     from webapp.downloads import DownloadFailure
     session.failure = DownloadFailure()
@@ -275,7 +300,9 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                         raise RuntimeError('来源媒体轨道下载失败。')
                     tracks[kind] = path
                     acquired[source_key] = path
-                for kind in remaining:
+                # Acquisition ends here. Conversion, verification and large-file
+                # publication run in independent local workers, without Cookies.
+                for kind in sorted(remaining, key=lambda kind: kind != 'av'):
                     if kind in ('thumbnail', 'metadata'):
                         continue
                     inputs = [tracks.get('video_only'), tracks.get('audio_only')] if kind == 'av' else [tracks.get(kind)]
@@ -284,22 +311,8 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
                         continue
                     mp4 = spec['av']['container'] == 'mp4' if kind == 'av' else kind == 'video_only' and spec['video']['container'] == 'mp4'
                     mp3 = kind == 'audio_only' and spec['audio']['format'] == 'mp3'
-                    auto_mp4 = False
-                    if kind == 'av' and spec['av']['container'] == 'auto':
-                        _, video_info = inspect(inputs[0]);_, audio_info = inspect(inputs[1])
-                        video_codec = next(s['codec_name'] for s in video_info['streams'] if s.get('codec_type') == 'video')
-                        audio_codec = next(s['codec_name'] for s in audio_info['streams'] if s.get('codec_type') == 'audio')
-                        auto_mp4 = video_codec in ('h264', 'hevc', 'av1', 'mpeg4') and audio_codec in ('aac', 'alac', 'mp3')
-                    ext = '.mp3' if mp3 else '.mp4' if mp4 or auto_mp4 else '.mkv' if kind == 'av' else inputs[0].suffix
-                    if kind == 'audio_only' and not mp3:
-                        types, media = inspect(inputs[0])
-                        audio = next(s for s in media['streams'] if s.get('codec_type') == 'audio')
-                        ext = '.m4a' if audio.get('codec_name') in ('aac', 'alac') else '.webm' if audio.get('codec_name') in ('opus', 'vorbis') else '.mka'
-                    output = temporary / (kind + ext)
-                    progress.state.update(stage='postprocessing', output_kind=kind);progress.save(force=True)
-                    with local_processing(session.payload.get('_disk_state') or session.store.directory, session.config, progress, 'delivery_' + kind):
-                        convert(inputs, output, kind, mp4=mp4, mp3=mp3)
-                    publish(session, output, kind)
+                    session.local_jobs.append(dict(kind=kind, inputs=[str(p) for p in inputs],
+                        mp4=mp4, mp3=mp3, auto=kind == 'av' and spec['av']['container'] == 'auto'))
                 if not sub_done:
                     subtitles(executor, channel, info, safe, temporary, caption_session)
     except (yt_dlp.utils.DownloadError, HTTPError) as error:
@@ -418,16 +431,8 @@ def subtitles(executor, channel, info, safe, temporary, caption_session):
             if not files:
                 raise RuntimeError('字幕请求未生成可用文件。')
             source = files[0]
-            target = directory / ('delivery.' + config['format'])
-            with local_processing(session.payload.get('_disk_state') or session.store.directory, session.config,
-                                  session.progress, 'delivery_subtitle'):
-                if source.suffix == target.suffix:
-                    shutil.copyfile(source, target);verify(target, 'subtitle')
-                else:
-                    convert([source], target, 'subtitle')
-            event('subtitle_processed', language=language, source_format=source.suffix.lstrip('.'),
-                  target_format=target.suffix.lstrip('.'))
-            publish(session, target, 'subtitle', language, subtitle_source=source_kind)
+            session.local_jobs.append(dict(kind='subtitle', inputs=[str(source)], language=language,
+                format=config['format'], subtitle_source=source_kind))
         except Exception as error:
             from webapp.throughput import PipelineBusy
             if not isinstance(error, PipelineBusy):
@@ -436,6 +441,9 @@ def subtitles(executor, channel, info, safe, temporary, caption_session):
 
 
 def finish(session):
+    if session.local_jobs:
+        from webapp.delivery.processing import enqueue
+        return enqueue(session)
     with session.store.connect() as db:
         ledger.fenced_run(session.store, db, session.payload['_task_id'])
         status = ledger.refresh(session.store, db, session.payload['_task_id'])
@@ -453,6 +461,10 @@ def recover_test_outputs(store, task_id, receipts, root):
     for item in receipts:
         if not item.get('artifact') or not item.get('complete'):
             return None
+        with store.connect() as db:
+            task = ledger.fenced_run(store, db, task_id)
+            if ledger.recorded_test_output(db, task, item['artifact']):
+                continue  # Never overwrite a newer artifact from an old workspace.
         path = safe_path(item['path'], root)
         if not path.is_file() or path.stat().st_size != item['size']:
             return None
@@ -463,8 +475,14 @@ def recover_test_outputs(store, task_id, receipts, root):
                                      test_mode=True, artifact=item['artifact'])
     with store.connect() as db:
         status = ledger.refresh(store, db, task_id)
+        from sqlalchemy import func
+        from webapp.database import test_files
+        count, size = db.execute(select(func.count(), func.coalesce(func.sum(test_files.c.size), 0))
+            .select_from(test_files.join(requirements, requirements.c.artifact_id == test_files.c.id))
+            .where(test_files.c.task_id == task_id, requirements.c.task_id == task_id,
+                   requirements.c.status == 'done')).one()
     if status not in ('complete', 'accepted'):
         return None
     return dict(message='已恢复已校验的测试产物。', test_mode=True, skipped=False,
-                file_count=len(receipts), file_bytes=sum(r['size'] for r in receipts),
+                file_count=count, file_bytes=size,
                 billable_bytes=0, download_method='yt_dlp', recovered=True, delivery_status=status)

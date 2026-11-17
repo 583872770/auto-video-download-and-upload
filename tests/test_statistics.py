@@ -420,9 +420,9 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        response = self.client.put('/api/config', json={
-            'storage_mode': 'test', 'youtube_sleep_preset': False}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
+        from webapp.settings import DEFAULTS
+        self.store.set_download_settings({**DEFAULTS, 'storage_mode':'test', 'youtube_sleep_preset':False},
+                                         self.root, self.store.directory/'clash')
         self.store.create('download', {'config': {'storage_mode': 'test'}, 'base': str(self.root),
             'urls': [f'http://127.0.0.1:{server.server_port}/video.mp4']})
         task = self.claim()
@@ -473,8 +473,9 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
             if index == 3:
                 with self.store.connect() as db:
                     db.execute(archive.delete())  # A pre-existing file must not be billed without its archive entry.
-            response = self.client.put('/api/config', json={'storage_mode': mode}, headers=self.headers)
-            self.assertEqual(response.status_code, 200, response.json)
+            from webapp.settings import DEFAULTS
+            self.store.set_download_settings({**DEFAULTS, 'path':'videos', 'proxy_mode':'direct',
+                'storage_mode':mode, 'youtube_sleep_preset':False}, self.root, self.store.directory/'clash')
             self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', 'storage_mode': mode},
                 'base': str(self.root), 'urls': [f'http://127.0.0.1:{server.server_port}/{name}.mp4']})
             job = self.claim()

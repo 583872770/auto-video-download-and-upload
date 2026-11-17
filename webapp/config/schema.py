@@ -103,7 +103,7 @@ SETTINGS = MappingProxyType({
     'youtube_pacing_mode': Setting('manual', family='pacing'),
     'youtube_hourly_start_limit': Setting(30, limits=(0, 5000), family='pacing'),
     'youtube_daily_start_limit': Setting(720, limits=(0, 5000), family='pacing'),
-    'postprocess_limit': Setting(2, limits=(1, 8)),
+    'postprocess_limit': Setting(2, limits=(1, 8), persist_runtime=True),
     'downmp3_quality': Setting('best', scope='policy'),
     'downmp3_timeout': Setting(300, limits=(30, 1800), scope='policy'),
     'yt1d_quality': Setting('best', scope='policy'),

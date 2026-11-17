@@ -275,6 +275,14 @@ delivery_requirements = Table('delivery_requirements', metadata,
     Column('variant', String(64), nullable=False), Column('status', String(24), nullable=False),
     Column('error', Text), Column('artifact_id', String(64)), Column('waived_by', String(64)),
     Column('waived_reason', Text), Column('updated_at', String(40), nullable=False))
+delivery_work = Table('delivery_work', metadata,
+    Column('task_id', String(32), primary_key=True),
+    Column('instance_id', String(64), nullable=False),
+    Column('workspace', Text, nullable=False), Column('disk_lease', String(32), nullable=False),
+    Column('plan', Text, nullable=False), Column('created_at', Float, nullable=False),
+    Column('attempts', Integer, nullable=False, server_default='0'),
+    Column('source_attempts', Integer, nullable=False))
+Index('ix_delivery_work_instance', delivery_work.c.instance_id, delivery_work.c.created_at)
 delivery_artifacts = Table('delivery_artifacts', metadata,
     Column('id', String(64), primary_key=True), Column('seq', BigInteger, nullable=False, unique=True),
     Column('job_id', String(32), nullable=False), Column('task_id', String(32), nullable=False),

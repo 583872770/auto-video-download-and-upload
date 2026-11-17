@@ -13,6 +13,7 @@ import { useResource } from '../composables/resource';
 import { speedNumber } from '../features/workbench/speeds';
 import type { Job, Page } from '../features/jobs/contracts';
 import AppIcon from './AppIcon.vue';
+import { diskLabel } from '../features/disk/model';
 
 defineProps<{ menuOpen: boolean }>();
 const emit = defineEmits<{ menu: []; logout: []; refreshPage: [] }>();
@@ -345,6 +346,24 @@ const powerTitle = computed(
       >
     </div>
     <button
+      class="header-disk"
+      :class="status.fresh && status.data?.disk?.severity"
+      :title="
+        status.fresh && status.data?.disk
+          ? status.data.disk.headline + ' · 点击查看空间诊断'
+          : '等待当前实例的空间采样'
+      "
+      @click="
+        router.push({
+          path: '/settings',
+          query: bootstrap().fleetEnabled ? { instance_id: instances.selectedId } : {},
+          hash: '#maintenance',
+        })
+      "
+    >
+      {{ diskLabel(status.fresh ? status.data?.disk : null) }}
+    </button>
+    <button
       class="header-notifications"
       type="button"
       aria-controls="notification-center"
@@ -376,6 +395,37 @@ const powerTitle = computed(
 </template>
 
 <style scoped>
+.workspace-statusbar .header-disk {
+  font-size: 10px;
+  white-space: nowrap;
+  border: 1px solid #dcebe6;
+  background: #f1faf6;
+  color: #328371;
+  min-height: 28px;
+  padding: 4px 7px;
+}
+.workspace-statusbar .header-disk.warning {
+  background: #fff8e9;
+  color: #a17323;
+  border-color: #f4e4bc;
+}
+.workspace-statusbar .header-disk.critical,
+.workspace-statusbar .header-disk.blocked {
+  background: #fff0ef;
+  color: #c8504a;
+  border-color: #f5dcd8;
+}
+@media (max-width: 1250px) {
+  .header-metric:nth-child(2) {
+    display: none;
+  }
+}
+@media (max-width: 700px) {
+  .workspace-statusbar .header-disk {
+    font-size: 9px;
+    padding: 3px 4px;
+  }
+}
 .header-notifications {
   display: flex;
   align-items: center;

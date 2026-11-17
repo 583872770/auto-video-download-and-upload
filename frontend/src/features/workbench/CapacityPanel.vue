@@ -58,7 +58,7 @@ const blockers: Record<string, string> = {
     </p>
     <div class="summary-grid">
       <div class="card">
-        <small>任务进程 / 当前额度</small
+        <small>下载进程 / 当前额度</small
         ><strong
           >{{ fresh ? (worker?.used ?? capacity.running) : '—' }} /
           {{ fresh ? (worker?.dynamic_limit ?? capacity.effective_limit) : '—' }}</strong
@@ -75,13 +75,19 @@ const blockers: Record<string, string> = {
         >
       </div>
       <div class="card">
-        <small>集群处理 / 全局上限</small
+        <small>集群下载 / 全局上限</small
         ><strong
           >{{ fresh ? capacity.global_running : '—' }} /
           {{ capacity.global_limit || '不额外限制' }}</strong
         >
       </div>
     </div>
+    <p v-if="capacity.local_processing" class="notice">
+      本地处理：{{ fresh ? capacity.local_processing.running : '—' }} /
+      {{ capacity.local_processing.limit }} · 等待处理
+      {{ fresh ? capacity.local_processing.queued : '—' }} 个任务。
+      网络下载完成即释放账号，格式转换和文件交付使用独立工作池。
+    </p>
     <p>{{ capacity.bottleneck }}</p>
     <p v-if="capacity.disk_message" class="notice">{{ capacity.disk_message }}</p>
     <template v-if="worker"

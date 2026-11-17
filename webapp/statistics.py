@@ -257,7 +257,8 @@ class DownloadStatistics:
         if not old or old['status'] == status:
             return
         db.execute(session_tasks.update().where(session_tasks.c.session_id == identity,
-            session_tasks.c.task_id == row['id']).values(status=status, error=error, finished_at=stamp()))
+            session_tasks.c.task_id == row['id']).values(status=status, error=error,
+                finished_at=None if status == 'running' else stamp()))
         changes = {}
         if old['status'] in OUTCOMES:
             changes[old['status']] = sessions.c[old['status']] - 1

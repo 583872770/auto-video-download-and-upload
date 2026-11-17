@@ -277,6 +277,7 @@ class QueueControl:
                 progress = json.loads(row['progress']) if row['progress'] else {}
                 progress.update(stage='paused', speed=None, eta=None)
                 self._transition(db, row, 'queued')
+                self._release_processing_attempt(db, row)
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, available_at=0, finished_at=None, error=None,
                     attempts=max(0, row['attempts'] - 1), progress=json.dumps(progress, ensure_ascii=False)))

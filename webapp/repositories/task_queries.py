@@ -5,7 +5,7 @@ import time
 
 from sqlalchemy import and_, case, func, or_, select, union_all
 
-from webapp.database import batches, counters, download_lists, tasks, job_imports
+from webapp.database import batches, counters, download_lists, tasks, job_imports, delivery_work
 from webapp.repositories.task_codec import LIST_FIELDS
 
 
@@ -199,31 +199,45 @@ class TaskQueries:
                         or (not self.downloads_paused(db) and self._released_queued_count(db)))
 
     def runnable_roles(self):
-        """Dispatch only queues with a due task, including after retry backoff."""
-        with self.connect() as db:
-            paused = self.claims_paused(db)
-            queued = db.execute(select(counters.c.scope).where(
-                counters.c.status == 'queued', counters.c.value > 0,
-                counters.c.scope.like('action:%'))).scalars().all()
-            roles = set()
-            for scope in queued:
-                action = scope.removeprefix('action:')
-                if action == 'download' and (paused or not self._released_queued_count(db)):
-                    continue
-                due = db.execute(select(tasks.c.id).where(
-                    tasks.c.action == action, tasks.c.status == 'queued',
-                    tasks.c.available_at <= time.time(), self.released_condition()).limit(1)).first()
-                if due:
-                    roles.update(('download', 'regular') if action == 'download' else
-                                 ('maintenance',) if action in ('import', 'index') else ('regular',))
-            return roles
+        """Use the same role calculation as supervisor admission."""
+        roles = set(self.runnable_counts())
+        if 'download' in roles:
+            roles.add('regular')
+        return roles
+
+    def disk_blocked_tasks(self):
+        """Do not claim known disk waits until their measured demand can fit."""
+        if not (self.directory / 'disk-budget.sqlite3').exists():
+            return set()
+        from webapp.disk_budget import DiskBudget, DiskCoordinationBusy
+        try:
+            return DiskBudget(self.directory, self.runtime()).blocked_tasks()
+        except DiskCoordinationBusy:
+            return set()  # The authoritative workspace reservation fails closed.
+
+    @staticmethod
+    def disk_runnable_condition(blocked):
+        stage = func.json_extract(tasks.c.progress, '$.stage')
+        return or_(~tasks.c.id.in_(blocked), tasks.c.action != 'download',
+                   tasks.c.progress.is_(None), stage.is_(None),
+                   stage.not_in(('disk_wait', '"disk_wait"')))
 
     def runnable_counts(self):
         """Small due-count snapshot used to avoid launching idle worker slots."""
+        disk_blocked = self.disk_blocked_tasks()
         with self.connect() as db:
             paused = self.claims_paused(db)
             counts = {}
             stamp = self.fleet.clock(db) if self.fleet else time.time()
+            if not paused and not self.media_clear_busy(db):
+                local_id = self.fleet.id if self.fleet else 'local'
+                local = select(tasks.c.id).select_from(tasks.join(delivery_work,
+                    tasks.c.id == delivery_work.c.task_id)).where(tasks.c.status == 'queued',
+                    tasks.c.available_at <= stamp, delivery_work.c.instance_id == local_id,
+                    self.released_condition()).limit(8)
+                count = len(db.execute(local).all())
+                if count:
+                    counts['processing'] = count
             for role, actions in (('download', ('download',)), ('maintenance', ('import', 'index')),
                                   ('regular', ('check',))):
                 if self.fleet and role == 'download' and not self.fleet.admission(db, lock=False):
@@ -237,6 +251,10 @@ class TaskQueries:
                 from webapp.throughput import MAX_WORKERS
                 statement = select(tasks.c.id).where(tasks.c.action.in_(actions),
                     tasks.c.status == 'queued', tasks.c.available_at <= stamp, self.released_condition()).limit(MAX_WORKERS)
+                if role == 'download' and disk_blocked:
+                    statement = statement.where(self.disk_runnable_condition(disk_blocked))
+                if role == 'download':
+                    statement = statement.where(~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists())
                 if self.fleet:
                     statement = statement.where(or_(tasks.c.target_instance_id == self.fleet.id,
                         and_(tasks.c.target_instance_id.is_(None), tasks.c.action.in_(self.fleet.untargeted_actions()))))

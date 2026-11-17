@@ -23,6 +23,7 @@ export interface DatabaseBudget {
   per_worker: number;
   main: number[];
   auxiliary: number;
+  processing: number;
   deployment_cap: number | null;
   deployment_worker_cap: number | null;
 }
@@ -34,6 +35,7 @@ export interface ConfigResponse {
   instance_id?: string;
 }
 export interface DiskSnapshot {
+  diagnostic?: import('../features/disk/model').DiskDiagnostic;
   free_bytes: number;
   used_bytes: number;
   budget_bytes: number;

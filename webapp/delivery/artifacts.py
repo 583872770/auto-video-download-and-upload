@@ -103,6 +103,31 @@ def artifact_identity(job, video_id, spec, kind, language='', test=False):
     return digest([job, video_id, kind, language, variant(spec, kind), bool(test)])
 
 
+def recorded_test_output(db, task, artifact):
+    """A disposable test output is complete once its semantic receipt is durable.
+
+    The first successful size is the statistics receipt. Later attempts can
+    produce different bytes (especially metadata); those do not invalidate or
+    replace the original completed test. Formal deliveries still require files.
+    """
+    from webapp.database import test_files
+    from webapp.delivery.contracts import KINDS
+    kind, language = artifact.get('kind'), artifact.get('language', '')
+    if kind not in KINDS or artifact.get('id') != digest([
+            task['batch_id'], task['video_id'], kind, language, artifact.get('variant'), True]):
+        return None
+    published = db.execute(select(artifacts.c.id).where(
+        artifacts.c.id == artifact['id'], artifacts.c.task_id == task['id'],
+        artifacts.c.job_id == task['batch_id'], artifacts.c.video_id == task['video_id'],
+        artifacts.c.kind == kind, artifacts.c.language == language,
+        artifacts.c.variant == artifact['variant'], artifacts.c.test_mode == 1)).first()
+    if not published:
+        return None
+    return db.execute(select(test_files).where(test_files.c.id == artifact['id'],
+        test_files.c.task_id == task['id'], test_files.c.video_id == task['video_id'],
+        test_files.c.size > 0)).mappings().first()
+
+
 def pending(store, task_id, artifact, path):
     """Retain a verified file for upload retry without issuing a billing receipt."""
     with store.connect() as db:

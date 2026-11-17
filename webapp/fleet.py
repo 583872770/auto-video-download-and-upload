@@ -8,7 +8,7 @@ import socket
 import time
 import uuid
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, select, text
 
 from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles, job_profiles
 from webapp.config_schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, DEFAULTS
@@ -177,7 +177,8 @@ class Fleet:
                 or row['heartbeat'] < stamp - ONLINE_SECONDS
                 or not (self.store.workbench_job(db) or self.policy(active=True, db=db))):
             return False
-        active = tasks.c.status == 'running'
+        from webapp.database import delivery_work
+        active = and_(tasks.c.status == 'running', ~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists())
         valid = tasks.c.lease_until > stamp
         global_count = db.execute(select(func.count()).select_from(tasks).where(active, valid, tasks.c.action == 'download')).scalar_one()
         local_count = db.execute(select(func.count()).select_from(tasks).where(active, valid, tasks.c.action == 'download', tasks.c.instance_id == self.id)).scalar_one()
@@ -221,16 +222,23 @@ class Fleet:
         from webapp.settings import download_methods
         with self.store.connect() as db:
             stamp = self.clock(db)
+            from webapp.database import delivery_work
+            network_task = ~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists()
             rows = db.execute(select(instances).order_by(instances.c.name, instances.c.id)).mappings().all()
             running = db.execute(select(tasks.c.instance_id, func.count()).where(tasks.c.status == 'running',
-                tasks.c.action == 'download').group_by(tasks.c.instance_id)).all()
+                tasks.c.action == 'download', network_task).group_by(tasks.c.instance_id)).all()
             counts = dict(running)
             by_instance = {}
             current_tasks = {}
             active = list(db.execute(select(tasks.c.id, tasks.c.instance_id, tasks.c.batch_id,
                     tasks.c.video_id, tasks.c.title, tasks.c.progress, tasks.c.status,
                     tasks.c.worker_id, tasks.c.started_at, tasks.c.attempts, tasks.c.lease_until).where(
-                    tasks.c.action == 'download', tasks.c.status == 'running').order_by(tasks.c.seq)).mappings())
+                    tasks.c.action == 'download', tasks.c.status == 'running', network_task).order_by(tasks.c.seq)).mappings())
+            local_counts = {}
+            for identity, status, count in db.execute(select(delivery_work.c.instance_id, tasks.c.status, func.count())
+                    .select_from(tasks.join(delivery_work, tasks.c.id == delivery_work.c.task_id))
+                    .where(tasks.c.status.in_(('queued', 'running'))).group_by(delivery_work.c.instance_id, tasks.c.status)):
+                local_counts.setdefault(identity, {})[status] = count
             live = self.store.progress_cache.read_many(active)
             for task in active:
                 progress = live[task['id']]['progress'] if task['id'] in live else json.loads(task['progress'] or '{}')
@@ -308,6 +316,9 @@ class Fleet:
                     item['concurrency']['risks'] = observed(configs[item['id']], item['concurrency'],
                         auths.get(item['id']), stamp, error=item['error'])
                     item['concurrency']['auth_checked_at'] = auths.get(item['id'], {}).get('checked_at')
+                    local = local_counts.get(item['id'], {})
+                    item['concurrency']['local_processing'] = dict(queued=local.get('queued', 0),
+                        running=local.get('running', 0), limit=int(configs[item['id']].get('postprocess_limit', 2)))
             if compact:
                 for item in result:
                     item['mode'] = ('cookie_pool' if item['cookie_count'] else

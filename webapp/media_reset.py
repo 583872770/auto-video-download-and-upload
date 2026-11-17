@@ -6,7 +6,7 @@ import re
 from sqlalchemy import func, or_, select
 
 from webapp.database import (tasks, counters, snapshots, delivery_artifacts, delivery_requirements,
-    delivery_runs, delivery_totals, deliveries, test_files, download_sessions, session_tasks,
+    delivery_runs, delivery_work, delivery_totals, deliveries, test_files, download_sessions, session_tasks,
     method_tasks, method_totals, provider_tasks, test_totals, download_lists, settings,
     download_permits, job_removed, job_imports, imports, runtime_hours, notifications)
 from webapp.notifications import forget_tasks
@@ -116,7 +116,7 @@ def reset_records(store, local_id, remove_log):
             if import_ids:
                 db.execute(imports.delete().where(imports.c.id.in_(import_ids)))
             for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
-                          delivery_requirements, delivery_runs, download_permits, job_removed, job_imports):
+                          delivery_requirements, delivery_runs, delivery_work, download_permits, job_removed, job_imports):
                 db.execute(table.delete().where(table.c.task_id.in_(ids)))
             forget_tasks(store, db, ids)
             db.execute(tasks.delete().where(tasks.c.id.in_(ids)))
@@ -131,7 +131,7 @@ def reset_records(store, local_id, remove_log):
             for table in (session_tasks, deliveries, test_files):
                 session_ids.update(db.execute(select(table.c.session_id).where(table.c.task_id.in_(ids))).scalars())
             for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
-                          delivery_requirements, delivery_runs, download_permits, job_removed):
+                          delivery_requirements, delivery_runs, delivery_work, download_permits, job_removed):
                 db.execute(table.delete().where(table.c.task_id.in_(ids)))
         for start in range(0, len(artifact_rows), 500):
             ids = [row['id'] for row in artifact_rows[start:start + 500]]

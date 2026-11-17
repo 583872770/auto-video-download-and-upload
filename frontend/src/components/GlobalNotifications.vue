@@ -16,6 +16,8 @@ import {
 import { videoStates, type Job, type Page } from '../features/jobs/contracts';
 import AppIcon from './AppIcon.vue';
 import TaskLog from './TaskLog.vue';
+import DiskDiagnosis from './DiskDiagnosis.vue';
+import { diskBytes } from '../features/disk/model';
 
 const notices = useNotifications(),
   instances = useInstances();
@@ -36,6 +38,13 @@ const busy = ref(''),
   feedback = ref(''),
   actionError = ref('');
 const stale = computed(() => !!notices.sampledAt && now.value - notices.sampledAt > 35);
+const resource = computed(() => notices.resourceAlerts[0]);
+function showResource() {
+  notices.state = 'action';
+  notices.instance = resource.value?.instance_id || '';
+  notices.job = '';
+  notices.show();
+}
 let timer: ReturnType<typeof setInterval>, searchTimer: ReturnType<typeof setTimeout>;
 let previousFocus: HTMLElement | null = null;
 async function loadJobs(append = false) {
@@ -175,6 +184,21 @@ usePolling(
     </div>
     <button @click="notices.show()">查看并重试</button>
   </div>
+  <div v-else-if="resource" class="global-notice-summary disk-resource-summary" role="status">
+    <span class="summary-icon"><AppIcon name="alert" /></span>
+    <div>
+      <strong>{{ resource.instance_name }} · {{ resource.detail.headline }}</strong>
+      <small
+        >{{ resource.detail.reason
+        }}<template v-if="resource.detail.affected_tasks">
+          · {{ resource.detail.affected_tasks }} 个任务受影响</template
+        ><template v-if="notices.resourceAlerts.length > 1">
+          · 另有 {{ notices.resourceAlerts.length - 1 }} 个实例空间告警</template
+        ></small
+      >
+    </div>
+    <button @click="showResource">查看空间诊断 <AppIcon name="arrow" /></button>
+  </div>
   <div v-else-if="notices.globalCounts.action" class="global-notice-summary" role="status">
     <span class="summary-icon"><AppIcon name="alert" /></span>
     <div>
@@ -283,6 +307,13 @@ usePolling(
               <strong>{{ task.detail.title || task.detail.video_id }}</strong>
               <p>{{ videoStates[task.status] || task.status }} · {{ task.detail.phase }}</p>
               <p>{{ task.detail.reason }}</p>
+              <p v-if="task.detail.disk_pressure">
+                申请新增预留 {{ diskBytes(task.detail.disk_pressure.requested_bytes) }} · 当时可分配
+                {{ diskBytes(task.detail.disk_pressure.allocatable_bytes) }}
+              </p>
+              <p v-if="task.detail.retry_at" class="notification-countdown">
+                {{ countdown(task.detail.retry_at, now) }}
+              </p>
               <p v-if="task.detail.missing.length" class="notification-missing">
                 未完成：{{ task.detail.missing.join('、') }}
               </p>
@@ -378,10 +409,11 @@ usePolling(
                   <dd>{{ item.detail.next_step }}</dd>
                 </div>
               </dl>
-              <p
-                v-if="item.detail.activity && item.status === 'recovering'"
-                class="notification-activity"
-              >
+              <DiskDiagnosis v-if="item.detail.disk" :diagnostic="item.detail.disk" />
+              <p v-if="item.detail.recovery" class="notification-activity">
+                本次告警期间可用空间增加 {{ diskBytes(item.detail.recovery.freed_bytes) }}。
+              </p>
+              <p v-if="item.detail.activity" class="notification-activity">
                 {{ item.detail.activity }}
               </p>
               <p
@@ -433,11 +465,15 @@ usePolling(
                 执行日志 ↗
               </button>
               <button
-                v-if="item.active_count > 1"
+                v-if="item.active_count > 1 || item.code === 'disk_resource'"
                 class="notification-text-button notification-group-link"
                 @click="loadAffected(item)"
               >
-                {{ item.active_count }} 个视频 · 查看全部 ↗
+                {{
+                  item.code === 'disk_resource'
+                    ? '查看已等待任务 ↗'
+                    : item.active_count + ' 个视频 · 查看全部 ↗'
+                }}
               </button>
               <span v-else-if="item.detail.affected_tasks" class="notification-impact"
                 >影响 {{ item.detail.affected_tasks }} 个待执行视频</span

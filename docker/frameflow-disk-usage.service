@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Frameflow host disk usage
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/frameflow/collect_disk_usage.py --app-container youtube-downloader-local-app-1
+TimeoutStartSec=240
+Nice=15
+IOSchedulingClass=idle

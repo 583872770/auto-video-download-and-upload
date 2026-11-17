@@ -48,6 +48,7 @@ class DashboardService:
         stamp = snapshot['stamp']
         concurrency = diagnose(config, snapshot['identity'], snapshot['progress'], rate,
             snapshot['context'], stamp, cookie_profiles=snapshot['profiles'], current_tasks=snapshot['current_tasks'],
+            waiting_tasks=snapshot['waiting_tasks'],
             global_limit=snapshot['budget'], global_running=snapshot['global_running'],
             paused=snapshot['paused'], pending_count=snapshot['pending_count'])
         from webapp.risk_diagnostics import observed, local_health
@@ -56,6 +57,7 @@ class DashboardService:
         concurrency['risks'] = observed(config, concurrency, youtube['auth'], stamp,
                                        error=snapshot['error'])
         concurrency['auth_checked_at'] = youtube['auth'].get('checked_at')
+        concurrency['local_processing'] = snapshot['local_processing']
         return dict(tools=tools, accounts={}, startup=self.context.startup.status(), python=sys.version.split()[0], database=self.context.store.db.engine.dialect.name,
                        throughput=rate, concurrency=concurrency,
                        workers=self.context.store.workers(), worker_count=config.get('worker_count', 1),

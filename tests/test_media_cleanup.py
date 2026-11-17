@@ -67,6 +67,41 @@ class MediaCleanupTests(unittest.TestCase):
                 available=1, test_mode=0, created_at='2026-01-01'))
         return identity
 
+    def test_file_purge_preserves_queue_dedup_imports_credentials_and_cloud(self):
+        video = self.write('video/track.mp4')
+        local = self.artifact(video)
+        cloud = self.artifact(video, storage='oss')
+        task = self.store.create('download', {'urls': ['https://example.test/queued.mp4']})
+        self.store.archive_add('youtube fixture', str(video))
+        source = self.store.directory / 'imports' / 'pending.csv'
+        source.parent.mkdir(exist_ok=True)
+        source.write_text('not yet imported')
+        credential = self.store.directory / 'accounts.json'
+        credential.write_text('keep credentials')
+        from webapp.disk_budget import DiskBudget, GIB
+        budget = DiskBudget(self.store.directory, self.store.runtime())
+        with budget.lease('test', reserve=GIB, task=task['id']) as lease:
+            partial = lease.path / 'partial.mp4'
+            partial.write_bytes(b'partial')
+            lease.preserve = True
+        with patch('Utils.oss_storage.OSSStorage') as storage:
+            result = clear_media(self.catalog, self.root, config=self.store.runtime(),
+                base=self.base, protected=(self.config,), files_only=True)
+        storage.assert_not_called()
+        self.assertGreater(result['deleted_files'], 0)
+        self.assertEqual(result['deleted_tasks'], 0)
+        self.assertFalse(video.exists())
+        self.assertFalse(partial.exists())
+        self.assertTrue(source.is_file())
+        self.assertTrue(credential.is_file())
+        self.assertTrue(self.store.archive_has('youtube fixture'))
+        self.assertEqual(self.store.get(task['id'])['status'], 'queued')
+        with self.store.connect() as db:
+            available = dict(db.execute(select(delivery_artifacts.c.id, delivery_artifacts.c.available)).all())
+        self.assertEqual(available, {local: 0, cloud: 1})
+        with budget.connect(write=False) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0], 0)
+
     def test_partial_clear_keeps_retry_records_and_success_removes_current_instance_outputs(self):
         subtitle = self.write('job/opaque-subtitle.srt')
         local = self.artifact(subtitle)

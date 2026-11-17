@@ -51,7 +51,12 @@ export const groups = {
     ),
     field('yt5s_browser_count', '浏览器并发数', 'performance', 'yt5s、yt1d、Bergung 共享。'),
     field('fragment_concurrency', '分片并发数', 'performance'),
-    field('postprocess_limit', '本地后处理并发', 'performance'),
+    field(
+      'postprocess_limit',
+      '本地后处理并发',
+      'performance',
+      '独立处理媒体、字幕转换和大文件交付，不占用账号下载名额。',
+    ),
   ],
   strategy: [
     select('scheduler_mode', '渠道选择策略', 'performance', [
