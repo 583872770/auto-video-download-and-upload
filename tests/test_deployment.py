@@ -316,7 +316,7 @@ class DeploymentTests(unittest.TestCase):
 
 
     def test_unified_service_starts_browser_when_enabled(self):
-        with patch.dict(os.environ, {'YT5S_BROWSER_ENABLED': '1'}), \
+        with patch.dict(os.environ, {'LOGIN_BROWSER_ENABLED': '1'}), \
                 patch('webapp.deployment.importlib.util.spec_from_file_location') as spec, \
                 patch('webapp.deployment.importlib.util.module_from_spec') as module:
             self.assertEqual(self.save(role='hybrid').status_code, 202)

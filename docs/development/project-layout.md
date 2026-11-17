@@ -1,6 +1,6 @@
 # 项目结构与维护边界
 
-更新时间：2026-11-15。命令从项目根目录运行，文档统一从 [文档导航](../README.md) 查阅。
+更新时间：2026-11-17。命令从项目根目录运行，文档统一从 [文档导航](../README.md) 查阅。
 
 ## 开发测试阶段约定
 
@@ -12,31 +12,31 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `app.py` | Flask 工厂与 Web / CLI 兼容入口，继续导出 `create_app` |
+| `app.py` | Flask 工厂与 Web / CLI 入口，导出 `create_app` |
 | `web_worker.py` | 下载工作进程入口 |
 | `webapp/application.py`、`middleware.py` | 应用装配、启动顺序、认证及请求处理 |
 | `webapp/routes/` | HTTP 路由与 Blueprint |
 | `webapp/services/` | 任务、配置、账号及工作台业务编排 |
 | `webapp/repositories/` | TaskStore 数据访问与工作台快照 |
 | `webapp/worker/` | 执行、工作目录、续租、结算与恢复 |
-| `webapp/adapters/` | 下载器进度、渠道执行与实例 RPC |
+| `webapp/adapters/` | 实例 RPC |
 | `webapp/runtime/` | 后台组件监督 |
 | `webapp/config/` | 参数定义、默认值、校验和保存 |
 | `webapp/delivery/` | 交付要求、产物执行、校验、存储与 API |
-| `Utils/` | 兼容工具及下载实现 |
+| `Utils/` | 路径、配置、存储及工具函数 |
 | `frontend/` | Vue 3 + TypeScript + Vue Router + Vite + Pinia + Element Plus；设置、任务中心、工作台、素材、日志及交付文件 |
-| `templates/`、`static/` | Flask 模板、兼容页面与打包后的静态资源 |
+| `templates/`、`static/` | Flask 模板与打包后的静态资源 |
 | `docker/` | 镜像启动、浏览器桌面、健康检查与打包验证 |
-| `scripts/verify/` | 可重复执行的验证脚本，`scripts/verify_*.py` 为原路径兼容入口 |
+| `scripts/verify/` | 可重复执行的验证脚本 |
 | `tests/`、`.github/workflows/` | 自动化测试与 CI |
 
-既有独立领域模块继续负责账号池、调度、租约和资源保护等逻辑；不为目录外观再次移动运行模块。`webapp/store.py`、`tasks.py`、`settings.py`、`config_schema.py` 继续保留公开兼容接口。
+独立领域模块负责账号池、请求调度、租约和资源保护。数据访问使用 `webapp/store.py`，进程监督使用 `webapp/runtime/supervisor.py`，配置直接引用 `webapp/config/`；不保留 `tasks.py`、`settings.py`、`config_schema.py` 转发层。下载仅支持 yt-dlp，必须经账号池领取账号；单个账号也可组成账号池。
 
 ## 前端开发
 
 Vue 工作区统一使用 `components/WorkspaceShell.vue` 和 `router.ts`，覆盖实例设置 `/settings`、任务中心 `/jobs`、任务详情 `/jobs/<任务编号>`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 及部署 `/deployment`。登录与管理账户 `/login`、独立部署恢复 `/setup` 使用独立布局。任务详情使用路径参数，页签使用 `?tab=settings` 等参数。页面按路由分包加载。
 
-实例设置组件按下载、并发渠道、空间日志和诊断划分；任务组件按列表、详情、表单、视频清单、导入及确认操作划分。交付要求与文件保存由任务表单维护，字幕和媒体预览、执行日志、对话框及离页草稿保护复用公共组件。任务的创建请求编号在失败重试时保持不变；编辑继续携带 `edit_version`，冲突时保留输入，明确核对后才采用新版本。
+实例设置组件按下载、并发保护、空间日志和诊断划分；任务组件按列表、详情、表单、视频清单、导入及确认操作划分。交付要求与文件保存由任务表单维护，字幕和媒体预览、执行日志、对话框及离页草稿保护复用公共组件。任务的创建请求编号在失败重试时保持不变；编辑继续携带 `edit_version`，冲突时保留输入，明确核对后才采用新版本。
 
 请求层集中处理 CSRF、权限过期、超时及实例切换。实例设置草稿由 Pinia 管理，任务表单独立管理交付与保存草稿；客户任务和交付清单请求不携带实例选择头。列表查询取消旧请求并忽略过期返回，轮询在隐藏页面、编辑或组件卸载时暂停。上传分步提交，粘贴已成功时只重试未成功的文件上传。
 

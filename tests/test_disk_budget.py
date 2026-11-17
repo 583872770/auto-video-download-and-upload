@@ -651,7 +651,9 @@ class DiskBudgetTests(unittest.TestCase):
 
 
 class DiskWebTests(unittest.TestCase):
-    setUp = test_scale.ScaleTests.setUp
+    def setUp(self):
+        from tests.test_jobs import JobTests
+        JobTests.setUp(self)
 
     def _create_test_download_task(self):
         """Create a test-mode job using the current task-owned storage scope."""
@@ -698,7 +700,8 @@ class DiskWebTests(unittest.TestCase):
     def test_upload_is_bounded_during_multipart_parsing(self):
         response = self.client.put('/api/config', json={'disk_upload_limit_mb':1}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        response = self.client.post('/api/downloads/import', data={'file':(BytesIO(b'x' * (MIB + 1)), 'large.txt')}, headers=self.headers)
+        identity = self.client.post('/api/jobs', json={'name': 'Upload limit', 'customer': 'Fixture'}, headers=self.headers).json['id']
+        response = self.client.post('/api/jobs/' + identity + '/imports', data={'file':(BytesIO(b'x' * (MIB + 1)), 'large.txt')}, headers=self.headers)
         self.assertEqual(response.status_code, 413)
         self.assertFalse(any((self.store.directory / 'runtime/uploads').glob('*')))
 
@@ -822,45 +825,8 @@ class DiskWebTests(unittest.TestCase):
         self.assertTrue(output.exists())
         self.assertEqual(budget.snapshot()['used_bytes'], budget.snapshot()['committed_bytes'])
 
-    def test_completed_file_is_recovered_before_any_new_download(self):
-        self.check_completed_file_recovery()
 
-    def test_automatic_completed_receipt_recovery_uses_actual_adapter(self):
-        response = self.client.put('/api/config', json={'scheduler_mode': 'auto',
-            'download_methods': ['yt_dlp', 'downmp3']}, headers=self.headers)
-        self.assertEqual(response.status_code, 200)
-        self.check_completed_file_recovery()
 
-    def check_completed_file_recovery(self):
-        from web_worker import execute
-        task = self._create_test_download_task()
-        self.store.claim(self.store.owner)
-        budget = DiskBudget(self.store.directory, {'disk_min_free_gb':0,'disk_resume_free_gb':0})
-        with budget.lease('test', task=task['id']) as lease:
-            video = lease.path / 'complete.mp4'
-            video.write_bytes(b'completed fixture')
-            (lease.path / '.completed-files.json').write_text(json.dumps([{'path':str(video.resolve()),
-                'size':video.stat().st_size,'complete':True,'method':'downmp3','video_id':'npNnbj46_ik','title':'Fixture'}]))
-            lease.preserve = True
-        self.store.release(task['id'], self.store.owner, 'simulated restart', delay=0)
-        self.store.claim(self.store.owner)
-        with patch.object(self.store.statistics, 'record_file', return_value=False):
-            with self.assertRaisesRegex(DiskPressure, '尚未核对一致'):
-                budget.recover_test_result(self.store, task['id'])
-        self.assertTrue(video.exists(), 'an unconfirmed receipt must not be deleted')
-        with patch('web_worker._execute', side_effect=AssertionError('must not redownload')):
-            result = execute('download', self.store.get(task['id'], private=True)['payload'], store=self.store, task_id=task['id'])
-        self.assertTrue(result['recovered'])
-        self.assertFalse(video.exists())
-        self.store.finish(task['id'], result=result, worker_id=self.store.owner)
-        before = self.client.get('/api/statistics').json['summary']
-        self.assertEqual(before['test_file_count'], 1)
-        self.assertEqual(before['test_file_bytes'], len(b'completed fixture'))
-        methods = {row['method']: row for row in self.client.get('/api/statistics').json['methods']}
-        self.assertEqual(methods['downmp3']['test_file_bytes'], len(b'completed fixture'))
-        self.assertEqual(methods['yt_dlp']['test_file_bytes'], 0)
-        budget.cleanup(self.store, grace=0)
-        self.assertEqual(self.client.get('/api/statistics').json['summary'], before)
 
     def test_late_watchdog_pressure_does_not_requeue_completed_pipeline(self):
         from web_worker import execute
@@ -870,10 +836,11 @@ class DiskWebTests(unittest.TestCase):
         def download(*args):
             running[0].error = DiskPressure('late observation during completion')
             return {'file_count':1, 'file_bytes':20}
+        task = self._create_test_download_task()
+        task = self.store.claim(self.store.owner)
         with patch('webapp.disk_budget.DiskLease.start_monitor', new=monitor):
             with patch('web_worker._execute', side_effect=download):
-                result = execute('download', {'config':{'storage_mode':'test','disk_min_free_gb':0,
-                    'disk_resume_free_gb':0}, 'base':str(self.root)})
+                result = execute('download', task['payload'], store=self.store, task_id=task['id'])
         self.assertEqual(result['file_count'], 1)
         self.assertTrue(result['files_deleted'])
 

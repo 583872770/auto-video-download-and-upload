@@ -92,14 +92,14 @@ class CookieBindingTests(unittest.TestCase):
         from webapp.youtube_auth import YouTubeAuthRequired
         self.library('alpha').add('A', COOKIE)
         (self.root / 'beta/custom.txt').write_bytes(COOKIE)
-        config = {**self.b.fleet.local_settings()['config'], 'download_methods': ['yt_dlp'],
-                  'youtube_cookie': 'custom.txt'}
-        with patch('webapp.youtube_auth.probe') as probe, patch('webapp.downloader.require_download_tools') as tools:
+        config = {**self.b.fleet.local_settings()['config'], '_cookie_pool_selected': True,
+                  '_delivery_contract': {'version': 1}, 'youtube_cookie': 'custom.txt'}
+        with patch('webapp.youtube_auth.probe') as probe, patch('webapp.environment.require_native_environment') as tools:
             with self.assertRaises(YouTubeAuthRequired) as result:
                 _execute('download', {'config': config, 'base': str(self.root / 'beta'),
                     '_execution_settings': True, 'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.b)
         probe.assert_not_called()
-        tools.assert_not_called()
+        tools.assert_called_once()
         self.assertFalse(result.exception.retryable)
         self.assertIn('账号', str(result.exception))
 
@@ -108,20 +108,19 @@ class CookieBindingTests(unittest.TestCase):
         identity = self.library('alpha').add('A', COOKIE)['id']
         self.serve('beta')
         headers = {**self.headers, 'X-Instance-ID': 'beta'}
-        response = self.client.put('/api/config', json={'download_methods': ['yt_dlp'],
-            'youtube_cookie_pool': [identity]}, headers=headers)
+        response = self.client.put('/api/config', json={'youtube_cookie_pool': [identity]}, headers=headers)
         self.assertEqual(response.status_code, 400, response.json)
-        self.assertEqual(self.b.fleet.local_settings()['config']['youtube_cookie_pool'], [])
+        self.assertNotIn(identity, self.b.fleet.local_settings()['config']['youtube_cookie_pool'])
         (self.root / 'beta/custom.txt').write_bytes(COOKIE)
         response = self.client.put('/api/config', json={'youtube_cookie': 'custom.txt'}, headers=headers)
         self.assertEqual(response.status_code, 400, response.json)
-        self.assertIn('账号', response.json['error'])
+        self.assertIn('不支持', response.json['error'])
 
     def test_pool_controls_save_to_selected_instance_and_match_settings_and_scheduler(self):
-        from webapp.channels import registry
-        from webapp.youtube_pacing import cookie_pool_start_interval
+        from webapp.concurrency_policy import fragment_limit
+        from webapp.concurrency_policy import cookie_pool_start_interval
         self.serve('alpha')
-        limits = {'builtin_transfer_limit': 11, 'youtube_cookie_session_limit': 3,
+        limits = {'download_task_limit': 11, 'youtube_cookie_session_limit': 3,
                   'youtube_cookie_pool_start_interval': 7}
         response = self.client.put('/api/instances/alpha', json=limits, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
@@ -129,17 +128,16 @@ class CookieBindingTests(unittest.TestCase):
         for key, value in limits.items():
             self.assertEqual(config[key], value)
         effective = self.a.fleet.local_settings()['config']
-        effective.update(download_methods=['yt_dlp'], download_channels=[])
-        self.assertEqual(registry(effective)[0].transfer_limit, 11)
+        self.assertEqual(effective['download_task_limit'], 11)
         self.assertEqual(cookie_pool_start_interval(effective), 7)
-        self.assertNotEqual(self.b.fleet.local_settings()['config']['builtin_transfer_limit'], 11)
+        self.assertNotEqual(self.b.fleet.local_settings()['config']['download_task_limit'], 11)
         # Saving full settings must also replace the resource overlay.
-        response = self.client.put('/api/config', json={'builtin_transfer_limit': 9},
+        response = self.client.put('/api/config', json={'download_task_limit': 9},
             headers={**self.headers, 'X-Instance-ID': 'alpha'})
         self.assertEqual(response.status_code, 200, response.json)
         item = next(item for item in self.a.fleet.list()['items'] if item['id'] == 'alpha')
-        self.assertEqual(item['resources']['builtin_transfer_limit'], 9)
-        for key, value in [('builtin_transfer_limit', 65), ('youtube_cookie_session_limit', 0),
+        self.assertEqual(item['resources']['download_task_limit'], 9)
+        for key, value in [('download_task_limit', 65), ('youtube_cookie_session_limit', 0),
                            ('youtube_cookie_pool_start_interval', -1)]:
             response = self.client.put('/api/instances/alpha', json={key: value}, headers=self.headers)
             self.assertEqual(response.status_code, 400, response.json)

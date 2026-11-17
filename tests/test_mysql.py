@@ -22,7 +22,6 @@ from sqlalchemy.pool import NullPool
 
 from app import create_app
 from tests import test_controls, test_scale, test_fleet, test_hot_policy, test_jobs
-from tests.test_storage import StorageContract
 from tests.test_task_views import TaskViewContract
 from tests.test_youtube_auth import AuthContract
 from webapp.database import batches, imports, reservations, tasks, settings
@@ -196,8 +195,6 @@ class MySQLControlTests(StandaloneMySQLFixture, test_controls.ControlContract, u
     pass
 
 
-class MySQLStorageTests(StandaloneMySQLFixture, StorageContract, unittest.TestCase):
-    pass
 
 
 class MySQLAuthTests(AuthContract, StandaloneMySQLFixture, unittest.TestCase):

@@ -21,7 +21,7 @@
 | [YouTube 登录](guides/youtube-login.md) | 浏览器登录、外部 Cookie 导出与手工更新 |
 | [交付要求](guides/delivery.md) | 四类产物、15 种组合、要求版本、缺项与补交 |
 | [账单与统计](guides/billing.md) | 客户任务计费、精确字节、测试模式和导出 |
-| [下载器](guides/downloaders.md) | yt-dlp、网页渠道、画质及兼容任务 |
+| [下载器](guides/downloaders.md) | yt-dlp、账号池与任务交付 |
 | [网络与代理](guides/proxy.md) | 多订阅、节点选择、连接与实例隔离 |
 | [磁盘管理](guides/disk.md) | 空间预算、临时文件、日志、等待与清理 |
 | [OSS 保存](guides/oss.md) | Endpoint、Bucket、凭据、上传与本地副本 |
@@ -43,10 +43,10 @@
 | 文档 | 内容 |
 | --- | --- |
 | [项目结构](development/project-layout.md) | 入口、模块、目录职责与持久化边界 |
-| [配置维护](development/configuration.md) | 默认值、参数范围、校验、保存和兼容字段 |
-| [容量测试](development/capacity-testing.md) | 使用隔离数据库模拟多实例负载 |
+| [配置维护](development/configuration.md) | 默认值、参数范围、校验和保存 |
+| [容量测试](development/capacity-testing.md) | 账号准入、资源保护、租约与交付验证 |
 | [媒体传输](development/media-transfers.md) | HTTP Range 并行、恢复及限定 HLS 兼容 |
-| [验证脚本](../scripts/verify/README.md) | 测试入口、兼容脚本和临时产物位置 |
+| [验证脚本](../scripts/verify/README.md) | 测试入口和临时产物位置 |
 
 ## 文档维护
 

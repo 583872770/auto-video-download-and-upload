@@ -64,8 +64,7 @@ class ScopedPressureTests(unittest.TestCase):
 
     def controller(self):
         config = {'youtube_cookie_pool': [str(i) for i in range(18)],
-                  'builtin_transfer_limit': 12, 'download_connection_limit': 48,
-                  'download_methods': ['yt_dlp'], 'fragment_concurrency': 8}
+                  'download_task_limit': 16, 'fragment_concurrency': 8}
         tick = [100]
         controller = ThroughputController(self.root / 'state', clock=lambda: tick[0])
         resources = {'cpu_cores': 4, 'memory_total': 16384 * MIB,

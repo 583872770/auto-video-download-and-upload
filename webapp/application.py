@@ -13,7 +13,7 @@ from Utils.config import DEFAULT_CONFIG, load_config
 from Utils.runtime import ROOT, configure_runtime
 from webapp.clash import ClashError
 from webapp.service_role import normalize_role
-from webapp.settings import DEFAULTS
+from webapp.config.settings import DEFAULTS
 from webapp.runtime.supervisor import TaskRunner
 from webapp.store import TaskStore
 

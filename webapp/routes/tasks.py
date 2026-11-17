@@ -1,6 +1,6 @@
 """Tasks HTTP endpoints."""
 from flask import jsonify, request
-from webapp.helpers import get_body, json_result
+from webapp.helpers import json_result
 
 
 def register_tasks_routes(context, queue, preflight):
@@ -8,7 +8,6 @@ def register_tasks_routes(context, queue, preflight):
     activate_downloads = preflight.activate_downloads
     startup = context.startup
     store = context.store
-    body = get_body
 
     @app.get('/api/tasks')
     def tasks():
@@ -44,11 +43,6 @@ def register_tasks_routes(context, queue, preflight):
     def start_downloads():
         return jsonify(startup.start(activate_downloads)), 202
 
-    @app.post('/api/downloads/import')
-    def import_downloads():
-        config, _ = context.settings()
-        request.max_content_length = int(config.get('disk_upload_limit_mb', 256)) * 1024 ** 2 + 1024 ** 2
-        return json_result(queue.import_downloads(request.files.get('file'), request.form, config))
 
     @app.get('/api/tasks/<task_id>')
     def task_detail(task_id):
@@ -75,12 +69,3 @@ def register_tasks_routes(context, queue, preflight):
                                  'pending': '尚未产生日志，请等待任务开始执行。',
                                  'missing': '本实例未找到任务日志，请查看实例运行日志及磁盘写入告警。'}[result['state']]
         return jsonify(result)
-
-    @app.post('/api/tasks')
-    @app.post('/api/downloads')
-    def create_task():
-        return json_result(queue.create_task(body(), batch=request.path == '/api/downloads'))
-
-    @app.post('/api/downloads/queue')
-    def enqueue_downloads():
-        return json_result(queue.enqueue_downloads(body()))

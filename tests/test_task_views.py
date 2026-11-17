@@ -140,5 +140,3 @@ class TaskViewContract:
 
 class SQLiteTaskViewTests(TaskViewContract, unittest.TestCase):
     setUp = test_scale.ScaleTests.setUp
-
-

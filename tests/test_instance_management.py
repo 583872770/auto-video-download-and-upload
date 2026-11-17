@@ -27,10 +27,8 @@ class InstanceManagementTests(unittest.TestCase):
             for target in self.apps:
                 with self.subTest(source=source, target=target):
                     selected = {**headers, 'X-Instance-ID': target}
-                    saved = {'download_methods': ['downmp3'],
-                             'postprocess_limit': 3, 'disk_log_budget_mb': 72,
-                             'youtube_cookie_pool_start_interval': 7,
-                             'db_budget_mode': 'manual', 'db_connection_budget': 60 if target == 'alpha' else 64}
+                    saved = {'postprocess_limit': 3, 'disk_log_budget_mb': 72,
+                             'youtube_cookie_pool_start_interval': 7, 'download_task_limit': 4}
                     before = {name: app.extensions['fleet'].local_settings()['config'].copy()
                               for name, app in self.apps.items()}
                     response = client.put('/api/config', json=saved, headers=selected)
@@ -39,7 +37,7 @@ class InstanceManagementTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 200, response.json)
                     for key, value in saved.items():
                         self.assertEqual(response.json['config'][key], value)
-                    self.assertEqual(response.json['database_budget']['requested_total'], saved['db_connection_budget'])
+                    self.assertEqual(response.json['database_budget']['mode'], 'auto')
                     self.assertEqual(response.json['config_path'], str(self.root / target / 'config.yaml'))
                     self.assertEqual(response.json['media_directory'], '由任务中心的文件保存配置决定')
                     self.assertNotIn('path', response.json['config'])

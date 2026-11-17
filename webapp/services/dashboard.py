@@ -5,7 +5,6 @@ import sys
 import time
 from flask import g, has_request_context
 from Utils.config import resolve_path, video_directory
-from webapp.config.settings import download_methods
 
 
 class DashboardService:
@@ -23,21 +22,19 @@ class DashboardService:
             return cached[2]
         tools = {name: shutil.which(name) for name in ('ffmpeg', 'ffprobe', 'node', 'deno')}
         tools['playwright'] = importlib.util.find_spec('playwright') is not None
-        from webapp.yt5s import browser_executable, display_available
+        from webapp.browser import browser_executable, display_available
         try:
-            tools['yt5s_browser'] = bool(browser_executable(executable))
+            tools['login_browser'] = bool(browser_executable(executable))
         except RuntimeError:
-            tools['yt5s_browser'] = False
-        tools['yt5s_display'] = display_available()
+            tools['login_browser'] = False
+        tools['login_display'] = display_available()
         self._capability_cache = (now, key, tools)
         return tools
 
     def status(self):
         config, base = self.context.settings()
         tools = self._capabilities(config, base)
-        youtube_file = resolve_path(base, config['youtube_cookie']) if config.get('youtube_cookie') else None
-        youtube = {'saved': bool(youtube_file and youtube_file.is_file() and youtube_file.stat().st_size),
-                   'path': str(youtube_file) if youtube_file else None, 'login': self.context.app.extensions['youtube_login'].status(),
+        youtube = {'login': self.context.app.extensions['youtube_login'].status(),
                    'auth': self.context.youtube_auth.status(), 'auth_block': self.context.youtube_auth.block_reason()}
         queue = self.context.store.download_queue()
         from webapp.throughput import runtime_limits
@@ -60,12 +57,10 @@ class DashboardService:
         concurrency['local_processing'] = snapshot['local_processing']
         return dict(tools=tools, accounts={}, startup=self.context.startup.status(), python=sys.version.split()[0], database=self.context.store.db.engine.dialect.name,
                        throughput=rate, concurrency=concurrency,
-                       workers=self.context.store.workers(), worker_count=config.get('worker_count', 1),
-                       yt5s_browser_count=config.get('yt5s_browser_count', 2), download_queue=queue,
+                       workers=self.context.store.workers(), download_queue=queue,
                        execution=self.context.app.extensions['execution_control'].status(queue),
                        connection_busy=self.context.store.download_connection_busy(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
-                       download_methods=download_methods(config),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
 
     def overview(self):

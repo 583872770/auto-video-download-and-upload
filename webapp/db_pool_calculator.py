@@ -15,29 +15,17 @@ def worker_pool_size():
             _integer('VIDEO_WORKER_DB_MAX_OVERFLOW', 0))
 
 
-def cookie_pool_worker_limit(config):
+def download_task_limit(config):
     """Zero removes the configured process cap, not resource/admission limits."""
-    return max(0, min(64, int(config.get('youtube_cookie_pool_worker_limit', 20))))
+    return max(0, min(64, int(config.get('download_task_limit', 0))))
 
 
 def target_workers(config):
     """Size the reservation from configured demand, never temporary cooldowns."""
-    if config.get('youtube_cookie_pool'):
-        configured = cookie_pool_worker_limit(config)
-        if configured:
-            return configured
-        # Reserve for selected files and configured session demand, independent
-        # of temporary cooling/warmup. Live admission still deduplicates accounts.
-        sessions = len(config['youtube_cookie_pool'])
-        per_session = max(1, min(64, int(config.get('youtube_cookie_session_limit', 1))))
-        return max(1, min(64, sessions * per_session))
-    requested = max(1, min(64, int(config.get('worker_count', 1))))
-    if config.get('throughput_mode', 'manual') == 'auto':
-        methods = config.get('download_methods', ['yt_dlp'])
-        browsers = min(16, max(1, int(config.get('yt5s_browser_count', 2))))
-        preparation = browsers + min(2, browsers) if {'yt5s', 'yt1d', 'bergung'} & set(methods) else 2
-        return min(96, requested + preparation)
-    return requested
+    sessions = len(config.get('youtube_cookie_pool', []))
+    per_session = max(1, min(64, int(config.get('youtube_cookie_session_limit', 1))))
+    demand = max(1, min(64, sessions * per_session))
+    return min(demand, download_task_limit(config) or 64)
 
 
 def connection_budget(config=None):
@@ -53,17 +41,10 @@ def connection_budget(config=None):
     fixed = sum(main) + auxiliary + processing
     # Engine initialization uses the deployment connection budget.
     # Runtime callers provide this instance's latest configuration.
-    mode = config.get('db_budget_mode', 'auto') if config is not None else 'deployment'
-    if mode not in ('auto', 'manual', 'deployment'):
-        raise ValueError('Unknown database budget mode')
+    mode = 'auto' if config is not None else 'deployment'
     target = target_workers(config) if config is not None else None
     required = fixed + target * per_worker if target is not None else None
-    if mode == 'auto':
-        requested = required
-    elif mode == 'manual':
-        requested = int(config.get('db_connection_budget', 64))
-    else:
-        requested = _integer('VIDEO_DB_CONNECTION_BUDGET', 48, 8)
+    requested = required if config is not None else _integer('VIDEO_DB_CONNECTION_BUDGET', 48, 8)
     deployment_cap = (_integer('VIDEO_DB_CONNECTION_BUDGET', 48, 8)
                       if 'VIDEO_DB_CONNECTION_BUDGET' in os.environ else None)
     worker_cap = (_integer('VIDEO_WORKER_DB_CONNECTION_BUDGET', 48, per_worker)

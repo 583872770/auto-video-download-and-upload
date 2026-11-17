@@ -99,7 +99,7 @@ class AccountRecoveryPolicyTests(unittest.TestCase):
         for _, _, scope in pool.accounts:
             pool.outcome(scope, YouTubeAuthRequired({'state': 'not_logged_in', 'message': 'Login rejected'}))
         status = pool.status()
-        self.assertFalse(status['halted'])
+        self.assertNotIn('halted', status)
         self.assertEqual(status['capacity_summary']['capacity'], 0)
         self.assertEqual(status['capacity_summary']['available_sessions'], 0)
         self.assertEqual(status['capacity_summary']['manual_sessions'], 3)
@@ -173,38 +173,3 @@ class AccountRecoveryPolicyTests(unittest.TestCase):
         self.assertEqual(second['status'], 'succeeded')
         self.assertNotEqual(*selected)
         self.assertEqual(CookiePool(self.store, self.config, self.base, None).status()['capacity_summary']['manual_sessions'], 1)
-
-    def test_server_circuit_requires_three_tasks_and_cools_only_channel_briefly(self):
-        now = time.time()
-        routers = [self.pool().router for _ in range(3)]
-        scope = 'channel:yt_dlp'
-        for index, router in enumerate(routers):
-            router.clock = lambda db: now
-            for _ in range(2):
-                router.outcome(router.channels[0], success=False, error=RuntimeError('HTTP Error 503'))
-            states = router.snapshot([scope, 'quota:yt_dlp', 'resolver:youtube-origin', 'upstream:youtube-origin'])[0]
-            if index < 2:
-                self.assertFalse(states[scope].get('cooldown_until'))
-            else:
-                self.assertEqual(states[scope]['cooldown_until'], now + 30)
-                self.assertEqual(states[scope]['cooldown_kind'], 'server_failure')
-            self.assertFalse(any(state.get('cooldown_until') for key, state in states.items() if key != scope))
-        other = self.pool().router
-        other.clock = lambda db: now
-        with self.assertRaises(PipelineBusy):
-            with other.permit(other.channels[0], 'resolve', timeout=0):
-                self.fail('Channel cooldown bypassed')
-        now += 31
-        with other.permit(other.channels[0], 'resolve', timeout=0):
-            pass
-
-    def test_single_server_error_honors_retry_after_without_penalizing_account(self):
-        pool = self.pool()
-        error = RuntimeError('HTTP Error 503')
-        error.headers = {'Retry-After': '90'}
-        value = failure_evidence(error)
-        policy = recovery_policy(value, self.config)
-        self.assertEqual((policy.action, policy.delay, policy.targets), ('retry', 90, ('task', 'channel')))
-        pool.router.outcome(pool.router.channels[0], success=False, error=error)
-        state = pool.router.snapshot(['channel:yt_dlp'])[0]['channel:yt_dlp']
-        self.assertFalse(state.get('cooldown_until'))

@@ -24,7 +24,7 @@ class MediaResetTests(unittest.TestCase):
                      '.hidden/.deep/file.bin', 'leftover.txt', 'nested/.state.json'):
             self.write(name)
         caches = ('runtime/cache', 'runtime/downloads', 'runtime/uploads', 'runtime/browser-profiles',
-                  'test-downloads', 'yt5s', 'imports', 'download-metrics')
+                  'test-downloads', 'imports', 'download-metrics')
         for folder in caches:
             target = self.store.directory / folder / '.hidden/leftover.bin'
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +77,7 @@ class MediaResetTests(unittest.TestCase):
             self.assertEqual(db.execute(select(schema.reservations)).all(), reservations)
             for table in (schema.delivery_artifacts, schema.delivery_runs, schema.delivery_requirements,
                           schema.deliveries, schema.test_files, schema.session_tasks, schema.download_sessions,
-                          schema.method_tasks, schema.method_totals, schema.provider_tasks, schema.test_totals):
+                          schema.test_totals):
                 self.assertEqual(db.execute(select(func.count()).select_from(table)).scalar_one(), 0, table.name)
         self.assertEqual(self.store.download_queue()['queued'], 0)
         self.assertEqual(self.store.statistics.dashboard()['file_bytes'], 0)

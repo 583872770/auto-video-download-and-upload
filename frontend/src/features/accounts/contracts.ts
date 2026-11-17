@@ -39,7 +39,6 @@ export interface Cookie {
   instance_name: string;
   online: boolean;
   pooled: boolean;
-  active: boolean;
   account_id?: string;
   created_at: string;
   download_state: string;

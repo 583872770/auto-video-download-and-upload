@@ -15,7 +15,7 @@ import yt_dlp
 
 from webapp.downloader import build_ydl_options
 from webapp.downloads import DownloadLeaseLost
-from webapp.parallel_http import ParallelYoutubeDL, fragment_connection_budget, transfer_connection_units
+from webapp.parallel_http import ParallelYoutubeDL
 
 
 CHUNK = 64 * 1024
@@ -252,7 +252,7 @@ class ParallelHttpTests(unittest.TestCase):
         self.assertEqual(state['peak'], 1)
 
     def test_recovery_http_limit_preserves_status_and_retry_after(self):
-        from webapp.channel_scheduler import throttle_details
+        from webapp.request_scheduler import throttle_details
         options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
         options.update(quiet=True, noprogress=True, http_chunk_size=CHUNK, proxy='',
                        retries=0, fragment_retries=1, concurrent_fragment_downloads=3)
@@ -364,7 +364,7 @@ class ParallelHttpTests(unittest.TestCase):
                 self.assert_file()
 
     def test_retry_after_survives_ignored_download_error_for_scheduler_cooldown(self):
-        from webapp.channel_scheduler import throttle_details
+        from webapp.request_scheduler import throttle_details
         options = build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name))
         options.update(quiet=True, noprogress=True, http_chunk_size=CHUNK, proxy='',
                        retries=0, fragment_retries=1)
@@ -374,61 +374,6 @@ class ParallelHttpTests(unittest.TestCase):
             self.assertEqual(throttle_details(downloader.http_range_error), (503, 30))
         self.assertFalse(self.path.exists())
         self.assertEqual(max(state['counts'].values()), 1)
-
-    def test_connection_budget_counts_native_http_and_combined_tracks(self):
-        config = {'fragment_concurrency': 8, 'download_connection_limit': 4}
-        budget = fragment_connection_budget(config, 16, 2)
-        self.assertEqual(budget, 2)
-        info = {'requested_formats': [{'protocol': 'https'}, {'protocol': 'https'}]}
-        # Tracks are downloaded in sequence, so reserve the per-track maximum.
-        self.assertEqual(transfer_connection_units(info, budget, native=True), 2)
-        self.assertEqual(transfer_connection_units(info, budget), 1)
-        self.assertEqual(transfer_connection_units({'protocol': 'm3u8_native'}, budget), 2)
-
-    def test_builtin_fragment_budget_ignores_retired_shared_connection_cap(self):
-        config = dict(download_methods=['yt_dlp'], builtin_connection_limit=1,
-                      fragment_concurrency=8, download_connection_limit=32, worker_count=1)
-        self.assertEqual(fragment_connection_budget(config, None, 1), 8)
-        self.assertEqual(build_ydl_options(config, Path(self.temp.name))['concurrent_fragment_downloads'], 8)
-        config['download_connection_limit'] = 4
-        self.assertEqual(fragment_connection_budget(config, None, 1), 4)
-        self.assertEqual(build_ydl_options(config, Path(self.temp.name))['concurrent_fragment_downloads'], 4)
-        self.assertEqual(fragment_connection_budget(config, 2, 1), 2)
-
-    def test_worker_reserves_same_connection_count_as_actual_downloader(self):
-        from unittest.mock import patch
-        from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
-
-        for mode in ('manual', 'auto'):
-            with self.subTest(mode=mode):
-                reservations = []
-                configured = []
-
-                @contextmanager
-                def permit(scheduler, channel, phase, **kwargs):
-                    if phase == 'transfer':
-                        reservations.append(kwargs['streams'])
-                    yield channel
-
-                def process(downloader, info, download=True):
-                    configured.append(downloader.params['concurrent_fragment_downloads'])
-                    self.assertIsInstance(downloader, ParallelYoutubeDL)
-                    self.assertTrue(downloader.params['_parallel_http'])
-
-                payload = dict(base=self.temp.name, urls=['https://youtu.be/00000000001'], config={
-                    'download_methods': ['yt_dlp'], 'path': 'videos', 'throughput_mode': mode,
-                    'youtube_pacing_mode': 'adaptive', 'youtube_sleep_preset': False,
-                    'worker_count': 2, 'fragment_concurrency': 8, 'download_connection_limit': 4})
-                info = dict(id='00000000001', title='fixture', ext='mp4',
-                    requested_formats=[{'protocol': 'https'}, {'protocol': 'https'}])
-                with patch.object(ChannelScheduler, 'permit', permit), \
-                        patch.object(yt_dlp.YoutubeDL, 'extract_info', return_value=info), \
-                        patch.object(yt_dlp.YoutubeDL, 'process_ie_result', process), \
-                        patch('webapp.downloader.require_download_tools'), patch('builtins.print'):
-                    execute('download', payload)
-                self.assertEqual(reservations, [2])
-                self.assertEqual(configured, reservations)
 
 
 if __name__ == '__main__':

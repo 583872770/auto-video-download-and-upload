@@ -1,25 +1,10 @@
-﻿"""Checks needed by the YouTube download providers."""
+"""Checks needed by the YouTube download providers."""
 import importlib.util
 import shutil
 
 
 class DownloadEnvironmentRequired(RuntimeError):
-    """Missing fallback prerequisites must pause work rather than fail videos."""
-
-
-def require_downmp3_environment():
-    if not shutil.which('ffprobe'):
-        raise DownloadEnvironmentRequired('downmp3 需要 ffprobe 校验视频和音频，请安装 FFmpeg 或重新构建 Docker 镜像。')
-
-
-def require_fallback_environment(config, base):
-    """Check both providers locally; the caller validates Cookie over the task proxy."""
-    from webapp.yt5s import require_browser_environment
-
-    require_browser_environment(config, base)
-    if importlib.util.find_spec('playwright') is None:
-        raise DownloadEnvironmentRequired('下载器环境检查未通过，缺少：playwright。请安装依赖或重新构建 Docker 镜像。')
-    require_native_environment(config)
+    """Missing source prerequisites must pause work rather than fail videos."""
 
 
 def require_native_environment(config):
@@ -43,58 +28,10 @@ def require_native_environment(config):
 
 
 def check_download_environment(config=None, base=None):
-    missing = []
-    from webapp.settings import download_methods
-    methods = download_methods(config or {})
-    if 'bergung' in methods and 'yt_dlp' not in methods:
-        for module in ('yaml', 'PIL', 'yt_dlp', 'playwright'):
-            found = importlib.util.find_spec(module) is not None
-            print(f'{module}: {"OK" if found else "缺失"}', flush=True)
-            if not found:
-                missing.append(module)
-        from pathlib import Path
-        from webapp.bergung import require_environment
-        try:
-            require_environment(config, Path(base or '.'))
-        except (RuntimeError, OSError) as error:
-            print(str(error), flush=True)
-            missing.append('Bergung browser / ffprobe')
-        print('Bergung: 使用网站验证与解析；无需 YouTube Cookie 或独立 JavaScript 运行时。', flush=True)
-        return int(bool(missing))
-    if 'yt1d' in methods and 'yt_dlp' not in methods:
-        for module in ('yaml', 'PIL', 'yt_dlp', 'playwright'):
-            found = importlib.util.find_spec(module) is not None
-            print(f'{module}: {"OK" if found else "缺失"}', flush=True)
-            if not found:
-                missing.append(module)
-        from pathlib import Path
-        from webapp.yt1d import require_environment
-        try:
-            require_environment(config, Path(base or '.'))
-        except (RuntimeError, OSError) as error:
-            print(str(error), flush=True)
-            missing.append('yt1d browser / ffprobe')
-        print('yt1d: 使用浏览器网页验证与转换；无需 YouTube Cookie 或独立 JavaScript 运行时。', flush=True)
-        return int(bool(missing))
-    api_only = methods == ['downmp3']
-    modules = ('yaml', 'PIL', 'yt_dlp') if api_only else ('yaml', 'PIL', 'yt_dlp', 'yt_dlp_ejs')
-    for module in modules:
-        found = importlib.util.find_spec(module) is not None
-        print(f'{module}: {"OK" if found else "缺失"}', flush=True)
-        if not found:
-            missing.append(module)
-    for binary in ('ffprobe',) if api_only else ('ffmpeg', 'ffprobe'):
-        location = shutil.which(binary)
-        print(f'{binary}: {location or "缺失，请安装 FFmpeg 并加入 PATH"}', flush=True)
-        if not location:
-            missing.append(binary)
-    if api_only:
-        print('downmp3: 使用转换 API；无需浏览器、YouTube Cookie 或 JavaScript 运行时。', flush=True)
-        return int(bool(missing))
-    runtime = shutil.which('deno') or shutil.which('node')
-    print(f'JavaScript runtime: {runtime or "缺失，请安装 Deno 或 Node.js 22+"}', flush=True)
-    if not runtime:
-        missing.append('JavaScript runtime')
-    return int(bool(missing))
-
-
+    try:
+        require_native_environment(config or {})
+    except DownloadEnvironmentRequired as error:
+        print(str(error), flush=True)
+        return 1
+    print('yt-dlp、JavaScript 运行时及媒体处理工具已就绪。', flush=True)
+    return 0

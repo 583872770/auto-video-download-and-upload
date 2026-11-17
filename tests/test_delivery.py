@@ -46,7 +46,19 @@ class DeliveryTests(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever,daemon=True).start()
         self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
         self.url=f'http://127.0.0.1:{self.server.server_port}'
-        response=self.client.put('/api/config',json={'download_methods':['yt_dlp'],'youtube_cookie_usage':'never',
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        self.profile = AccountCookieProfiles(self.root, self.store).add('Delivery fixture',
+            b'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tdelivery_fixture\n')['id']
+        # Delivery fixtures exercise actual account ownership and permits. Time
+        # budgets and remote login are isolated here; cookie_pool tests cover them.
+        for target in ('webapp.cookie_pool.account_interval', 'webapp.cookie_policy.account_interval'):
+            mocked = patch(target, return_value=0);mocked.start();self.addCleanup(mocked.stop)
+        mocked = patch('webapp.cookie_pool.random.uniform', return_value=0)
+        mocked.start();self.addCleanup(mocked.stop)
+        mocked = patch('webapp.youtube_auth.YouTubeAuth.require', return_value={'state':'valid'})
+        mocked.start();self.addCleanup(mocked.stop)
+        response=self.client.put('/api/config',json={'youtube_cookie_pool':[self.profile],
+            'youtube_cookie_pool_start_interval':0,'youtube_hourly_start_limit':0,'youtube_daily_start_limit':0,
             'youtube_sleep_preset':False,'youtube_start_interval':0,'proxy_mode':'direct'},headers=self.headers)
         self.assertEqual(response.status_code,200,response.json)
 
@@ -103,7 +115,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_subtitle_http_429_uses_shared_transfer_recovery_and_honors_retry_after(self):
         from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.request_scheduler import RequestScheduler
         from webapp.download_policy import failure_evidence
         self.create(['subtitle'])
         task=self.store.claim(self.store.owner)
@@ -113,21 +125,25 @@ class DeliveryTests(unittest.TestCase):
                 self.run_task(task)
         evidence=failure_evidence(caught.exception)
         self.assertEqual((evidence.phase,evidence.http_status),('transfer',429))
-        self.assertGreaterEqual(caught.exception.retry_after,2390)
+        self.assertGreaterEqual(failure_evidence(caught.exception).retry_after,2390)
         self.assertEqual(self.hits,['/limited.vtt'])
-        router=ChannelScheduler(self.store,{'download_methods': ['yt_dlp']},task['id'])
-        states,_,stamp=router.snapshot(['upstream:youtube-origin','channel:yt_dlp'])
-        for scope in ('upstream:youtube-origin','channel:yt_dlp'):
-            self.assertGreaterEqual(states[scope]['cooldown_until'],stamp+2390)
+        from webapp.cookie_pool import CookiePool
+        pool=CookiePool(self.store,self.store.runtime(),self.root,task['id'])
+        states,_,stamp=pool.router.snapshot([pool.accounts[0][2],'source:youtube'])
+        self.assertGreaterEqual(states[pool.accounts[0][2]]['cooldown_until'],stamp+2390)
+        self.assertFalse(states.get('source:youtube',{}).get('cooldown_until'))
 
-    def test_shared_channel_cooldown_blocks_subtitle_metadata_requests(self):
+    def test_account_cooldown_blocks_subtitle_metadata_requests(self):
         from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.request_scheduler import RequestScheduler
         from webapp.throughput import PipelineBusy
         self.create(['subtitle'])
         task=self.store.claim(self.store.owner)
-        router=ChannelScheduler(self.store,{'download_methods': ['yt_dlp']},task['id'])
-        router.outcome(router.channels[0],success=False,error=RuntimeError('HTTP Error 429'),phase='transfer')
+        from webapp.cookie_pool import CookiePool
+        pool=CookiePool(self.store,self.store.runtime(),self.root,task['id'])
+        with pool.router.transaction() as (db,stamp):
+            pool.router._state(db,pool.accounts[0][2])
+            pool.router._save(db,pool.accounts[0][2],{'cooldown_until':stamp+3600})
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info') as extract:
             with self.assertRaises(PipelineBusy):
                 self.run_task(task)
@@ -200,16 +216,14 @@ class DeliveryTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertFalse(db.execute(select(delivery_work)).first())
             db.execute(tasks.update().where(tasks.c.id==task['id']).values(available_at=0))
-        # Elapse the upstream cooldown as well as the task's retry deadline.
-        from webapp.channel_scheduler import ChannelScheduler
-        router=ChannelScheduler(self.store,self.store.runtime(),task['id'])
-        with router.transaction() as (db,stamp):
-            channel=router.channels[0]
-            for scope in ('channel:'+channel.id,'resolver:'+channel.resolver_group,
-                          'upstream:'+channel.upstream_group,'quota:'+channel.quota_group):
-                state=router._state(db,scope)
+        # Elapse the affected account's cooldown as well as the task deadline.
+        from webapp.cookie_pool import CookiePool
+        pool=CookiePool(self.store,self.store.runtime(),self.root,task['id'])
+        with pool.router.transaction() as (db,stamp):
+            for _,_,scope in pool.accounts:
+                state=pool.router._state(db,scope)
                 state.update(cooldown_until=0,recover_until=0)
-                router._save(db,scope,state)
+                pool.router._save(db,scope,state)
         self.hits.clear()
         _,result=self.execute()
         self.assertEqual(self.hits,['/en.vtt'])
@@ -281,13 +295,13 @@ class DeliveryTests(unittest.TestCase):
 
     def test_multiple_subtitle_languages_share_one_task_start_and_keep_metadata(self):
         from web_worker import execute
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.request_scheduler import RequestScheduler
         job=self.create(['subtitle'],{'subtitles':{'languages':['en','fr']}})
         info=self.info();info['subtitles']['fr']=[{'url':self.url+'/en.vtt','ext':'vtt'}]
         task=self.store.claim(self.store.owner)
         updates=[]
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info) as extract, \
-             patch.object(ChannelScheduler,'wait_youtube_start',autospec=True) as start:
+             patch('webapp.cookie_pool.CookiePool.outcome', autospec=True) as start:
             result=self.run_task(task, report=updates.append)
             self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.assertEqual(extract.call_count,1)
@@ -304,17 +318,17 @@ class DeliveryTests(unittest.TestCase):
                          {('en','manual'),('fr','manual')})
 
     def test_mixed_delivery_starts_once_and_uses_common_transfer_admission_for_every_output(self):
-        from webapp.adapters.execution import ProviderExecution
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.worker.pipeline import SourceExecution
+        from webapp.request_scheduler import RequestScheduler
         self.create(['av','subtitle'])
-        reserve=ProviderExecution.transmitting
+        reserve=SourceExecution.transmitting
         admitted=[]
         updates=[]
-        def transmitting(executor,channel,info,streams):
-            admitted.append((executor.session.progress.state.get('output_kind'),streams))
-            return reserve(executor,channel,info,streams)
-        with patch.object(ProviderExecution,'transmitting',transmitting), \
-             patch.object(ChannelScheduler,'wait_youtube_start',autospec=True) as start:
+        def transmitting(executor):
+            admitted.append((executor.session.progress.state.get('output_kind'),1))
+            return reserve(executor)
+        with patch.object(SourceExecution,'transmitting',transmitting), \
+             patch('webapp.cookie_pool.CookiePool.outcome', autospec=True) as start:
             task,result=self.execute(report=updates.append)
         self.assertEqual(start.call_count,1)
         self.assertEqual([kind for kind,_ in admitted],['video_only','audio_only','subtitle'])
@@ -412,13 +426,13 @@ class DeliveryTests(unittest.TestCase):
         from webapp.delivery.verify import inspect
         self.create(['video_only','audio_only','subtitle','thumbnail','metadata'],
                     {'video':{'container':'mp4'}, 'subtitles':{'languages':['en'],'format':'vtt'}})
-        commands=[];run=subprocess.run
+        commands=[];run=subprocess.run;copy=shutil.copyfile
         def track(command, *args, **kwargs):
             commands.append(Path(command[0]).stem)
             return run(command, *args, **kwargs)
         with patch('webapp.delivery.verify.subprocess.run', side_effect=track), \
              patch('webapp.delivery.processing.inspect', wraps=inspect) as probe, \
-             patch('webapp.delivery.files.shutil.copyfile', side_effect=AssertionError('full-file copy')):
+             patch('webapp.delivery.files.shutil.copyfile', side_effect=lambda source,target: (_ for _ in ()).throw(AssertionError('full-file media copy')) if Path(source).suffix != '.txt' else copy(source,target)):
             _, result=self.execute()
         self.assertEqual(result['file_count'],5)
         self.assertEqual(probe.call_count,2)
@@ -598,25 +612,25 @@ class DeliveryTests(unittest.TestCase):
 
     def test_cover_and_metadata_use_one_extraction_shared_admission_and_no_media_tools(self):
         from web_worker import execute
-        from webapp.adapters.execution import ProviderExecution
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.worker.pipeline import SourceExecution
+        from webapp.request_scheduler import RequestScheduler
         job = self.create(['thumbnail', 'metadata'])
         task = self.store.claim(self.store.owner)
         info = self.info()
         info.update(description='中文简介', channel='测试频道', duration=12.5, tags=['汽车'],
                     http_headers={'Authorization': 'private-token'}, cookies='private-cookie',
                     chapters=[dict(title='开场', start_time=0, end_time=12.5, url='secret')])
-        reserve = ProviderExecution.transmitting
+        reserve = SourceExecution.transmitting
         admitted = []
-        def transmitting(executor, channel, transfer_info, streams):
-            admitted.append((executor.session.progress.state['output_kind'], streams))
-            return reserve(executor, channel, transfer_info, streams)
+        def transmitting(executor):
+            admitted.append((executor.session.progress.state['output_kind'], 1))
+            return reserve(executor)
         updates = []
         find_tool = shutil.which
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info) as extract, \
              patch('webapp.delivery.executor.shutil.which', side_effect=lambda name: None if name in ('ffmpeg', 'ffprobe') else find_tool(name)), \
-             patch.object(ProviderExecution, 'transmitting', transmitting), \
-             patch.object(ChannelScheduler, 'wait_youtube_start', autospec=True) as start:
+             patch.object(SourceExecution, 'transmitting', transmitting), \
+             patch('webapp.cookie_pool.CookiePool.outcome', autospec=True) as start:
             result = self.run_task(task, report=updates.append)
         self.store.finish(task['id'], result=result, worker_id=self.store.owner)
         self.assertEqual((extract.call_count, start.call_count), (1, 1))
@@ -664,7 +678,7 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 self.run_task(task)
         self.assertEqual(failure_evidence(caught.exception).http_status, 429)
-        self.assertGreaterEqual(caught.exception.retry_after, 2390)
+        self.assertGreaterEqual(failure_evidence(caught.exception).retry_after, 2390)
         self.assertEqual(self.hits, ['/limited.vtt'])
         self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'], [])
 
@@ -958,7 +972,7 @@ class DeliveryTests(unittest.TestCase):
             'oss_bucket':'fixture-bucket','oss_access_key_id':'fixture-id','oss_access_key_secret':'fixture-secret'}
         job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
         cloud=MagicMock();cloud.upload_files.side_effect=OSSUploadError('fixture upload failure')
-        with patch('Utils.oss_storage.OSSStorage',return_value=cloud),patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch('webapp.channel_scheduler.ChannelScheduler.outcome') as outcome:
+        with patch('Utils.oss_storage.OSSStorage',return_value=cloud),patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch('webapp.request_scheduler.RequestScheduler.outcome') as outcome:
             with self.assertRaises(OSSUploadError):self.run_task(task)
             outcome.assert_called_once()
             self.assertTrue(outcome.call_args.kwargs['success'],'network success is independent of local upload failure')
@@ -983,13 +997,13 @@ class DeliveryTests(unittest.TestCase):
         from web_worker import execute
         from webapp.throughput import PipelineBusy
         job=self.create(['av','subtitle']);task=self.store.claim(self.store.owner)
-        from webapp.adapters.execution import ProviderExecution
-        transmitting=ProviderExecution.transmitting
+        from webapp.worker.pipeline import SourceExecution
+        transmitting=SourceExecution.transmitting
         def reserve(executor,*args,**kwargs):
             if executor.session.progress.state.get('output_kind')=='subtitle':
                 raise PipelineBusy('shared transfer busy')
             return transmitting(executor,*args,**kwargs)
-        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(ProviderExecution,'transmitting',reserve):
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()),patch.object(SourceExecution,'transmitting',reserve):
             with self.assertRaises(PipelineBusy):self.run_task(task)
         self.assertEqual(self.client.get('/api/jobs/'+job).json['file_count'],0)
         self.retry_failed(job,task);self.hits.clear();self.execute()
@@ -1055,10 +1069,13 @@ class DeliveryTests(unittest.TestCase):
         from webapp.download_policy import failure_evidence
         for message,kind in [('HTTP Error 403: Forbidden','access_denied'),('HTTP Error 429: Too Many Requests','request_rate_limit'),('Your account has been rate-limited','account_rate_limit')]:
             job=self.create(['audio_only']);task=self.store.claim(self.store.owner)
-            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=yt_dlp.utils.DownloadError(message)),patch('webapp.channel_scheduler.ChannelScheduler.outcome'):
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=yt_dlp.utils.DownloadError(message)),patch('webapp.request_scheduler.RequestScheduler.outcome'):
                 with self.assertRaises(RuntimeError) as caught:self.run_task(task)
             self.assertEqual(failure_evidence(caught.exception).kind,kind)
             self.store.finish(task['id'],error=message,worker_id=self.store.owner)
+            from webapp.cookie_pool import CookiePool
+            pool=CookiePool(self.store,self.store.runtime(),self.root,None)
+            pool.router.transaction_call(lambda db,stamp:[pool.router._save(db,scope,{}) for _,_,scope in pool.accounts])
 
 
     def test_rejected_cookie_warning_stops_before_anonymous_fallback(self):

@@ -43,7 +43,7 @@ class BudgetRequest(Request):
         if store is None:
             return super()._get_file_stream(total_content_length, content_type, filename, content_length)
         config = current_app.extensions['disk_config']()
-        maximum = int(config.get('disk_upload_limit_mb', 256)) * MIB if self.path.endswith('/imports') or self.path == '/api/downloads/import' else current_app.config['MAX_CONTENT_LENGTH']
+        maximum = int(config.get('disk_upload_limit_mb', 256)) * MIB if self.path.endswith('/imports') else current_app.config['MAX_CONTENT_LENGTH']
         stream = UploadStream(DiskBudget(store.directory, config), maximum)
         if not hasattr(self, '_budget_streams'):
             self._budget_streams = []

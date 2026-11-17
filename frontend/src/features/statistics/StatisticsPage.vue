@@ -5,27 +5,16 @@ import { RouterLink } from 'vue-router';
 import { api } from '../../api';
 import { useResource } from '../../composables/resource';
 import { usePolling } from '../../composables/polling';
-import {
-  gb,
-  integer,
-  time,
-  type Totals,
-  type Session,
-  type Method,
-  type Ledger,
-} from './contracts';
-import MethodTable from './MethodTable.vue';
+import { gb, integer, time, type Totals, type Session, type Ledger } from './contracts';
 import SessionDetail from './SessionDetail.vue';
 interface Overview {
   summary: Totals;
   billing: { file_bytes_exact: string; amount: string; unset: number };
   items: Session[];
   active: Session | null;
-  methods: Method[];
   next_cursor: string | null;
   tracking_since: string;
   test_tracking_since: string;
-  method_tracking_since: string;
 }
 const query = ref(''),
   applied = ref(''),
@@ -45,11 +34,7 @@ const key = computed(() => (tab.value === 'ledger' ? 'ledger' : 'sessions'));
 const exportHref = computed(
   () =>
     '/api/statistics/' +
-    (tab.value === 'ledger'
-      ? 'lists/export'
-      : tab.value === 'methods'
-        ? 'methods/export'
-        : 'export') +
+    (tab.value === 'ledger' ? 'lists/export' : 'export') +
     '?' +
     new URLSearchParams({ q: applied.value }),
 );
@@ -144,8 +129,7 @@ usePolling(
           查询</button
         ><select v-model="tab" aria-label="账本范围">
           <option value="ledger">客户任务账本</option>
-          <option value="sessions">执行会话</option>
-          <option value="methods">下载提供方</option></select
+          <option value="sessions">执行会话</option></select
         ><a :href="exportHref" download>导出 CSV</a>
       </form>
       <template v-if="tab === 'ledger'"
@@ -216,16 +200,7 @@ usePolling(
           </tbody>
         </table>
       </div>
-      <template v-else
-        ><MethodTable :items="overview.data.value?.methods || []" />
-        <p class="muted">
-          提供方统计起始于
-          {{
-            time(overview.data.value?.method_tracking_since)
-          }}。按实际处理视频的提供方归类；成功率包含测试成功。
-        </p></template
-      >
-      <div v-if="tab !== 'methods'" class="pager">
+      <div class="pager">
         <button
           :disabled="!histories[key].length || overview.loading.value || ledger.loading.value"
           @click="page(false)"

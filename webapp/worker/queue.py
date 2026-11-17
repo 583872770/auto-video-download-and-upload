@@ -19,12 +19,9 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     execute = execute_task
     TaskStore = store_factory
     from webapp.disk_budget import DiskPressure, is_disk_full, MIB
-    from webapp.downmp3 import Downmp3Error
-    from webapp.bergung import BergungError
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost, YouTubeAccountLimited
-    from webapp.yt5s import BrowserEnvironmentRequired, WebsiteHTTPError, WebsiteTimeoutError
     # Mark this process as a worker for dynamic connection pool sizing
     os.environ['VIDEO_WORKER_PROCESS'] = 'true'
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
@@ -179,7 +176,7 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     print(f'磁盘资源等待：{error}', flush=True)
                     event('attempt_released', reason='disk_pressure', message=str(error), **error_details(error))
                     break
-                except (BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
+                except DownloadEnvironmentRequired as error:
                     from webapp.execution import isolate_download_failure
                     isolate_download_failure(store, error)
                     lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=0)

@@ -91,7 +91,6 @@ BOOTSTRAP_SETTINGS = {
     'download_statistics_active:local': '',
     'download_statistics_since': None,
     'download_test_statistics_since': None,
-    'download_method_statistics_since': None,
 }
 cookie_profiles = Table('youtube_cookie_profiles', metadata,
     Column('scope', String(64), primary_key=True), Column('id', String(32), primary_key=True),
@@ -317,23 +316,6 @@ test_totals = Table('download_test_totals', metadata,
     Column('session_id', String(32), primary_key=True),
     Column('test_file_count', BigInteger, nullable=False, server_default='0'),
     Column('test_file_bytes', BigInteger, nullable=False, server_default='0'))
-
-method_totals = Table('download_method_totals', metadata,
-    Column('session_id', String(32), primary_key=True), Column('method', String(32), primary_key=True),
-    *(Column(name, BigInteger, nullable=False, server_default='0') for name in
-      ('attempted', 'running', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'file_count', 'file_bytes',
-       'test_file_count', 'test_file_bytes', 'fallback_tasks')))
-method_tasks = Table('download_method_tasks', metadata,
-    Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
-    Column('method', String(32), nullable=False), Column('status', String(24), nullable=False),
-    Column('fallback_used', Integer, nullable=False, server_default='0'))
-
-# One row per provider/video/session keeps arbitrary fallback chains idempotent
-# across retries without rewriting existing ledgers or large task queues.
-provider_tasks = Table('download_provider_tasks', metadata,
-    Column('session_id', String(32), primary_key=True), Column('task_id', String(32), primary_key=True),
-    Column('method', String(32), primary_key=True), Column('status', String(24), nullable=False),
-    Column('fallback_used', Integer, nullable=False, server_default='0'))
 
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;

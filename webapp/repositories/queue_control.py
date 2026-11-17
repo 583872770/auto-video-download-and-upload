@@ -164,8 +164,7 @@ class QueueControl:
                 raise ValueError('当前下载进程尚未停止，请稍后再应用当前连接。')
             if not (queue['queued'] or queue['importing']):
                 raise ValueError('当前没有排队的下载或导入任务。')
-            cutoff = db.execute(select(func.max(tasks.c.seq))).scalar_one() or 0
-            value = {'cutoff_seq': cutoff, 'config': connection, 'updated_at': self._timestamp()}
+            value = {'config': connection, 'updated_at': self._timestamp()}
             if connection['proxy_mode'] == 'clash':
                 value['clash'] = clash
             db.execute(self.db.upsert(settings, dict(key=self._connection_key(),
@@ -240,21 +239,7 @@ class QueueControl:
                 result['clash'] = {'directory': value['clash_directory']}
             from webapp.jobs import apply_job_scope
             return apply_job_scope(self, db, task_id, result)
-        # Compatibility for standalone stores without a Web configuration.
-        saved = db.execute(select(settings.c.value).where(
-            settings.c.key == 'download_connection_override')).scalar_one_or_none()
-        if not saved:
-            return payload
-        value = json.loads(saved)
-        eligible = db.execute(select(tasks.c.id).where(tasks.c.id == task_id,
-            tasks.c.seq <= value['cutoff_seq'], tasks.c.action.in_(('download', 'import')))).first()
-        if not eligible:
-            return payload
-        result = {**payload, 'config': {**payload.get('config', {}), **value['config']}}
-        result.pop('clash', None)
-        if value.get('clash'):
-            result['clash'] = value['clash']
-        return result
+        return payload
 
     def stop_running_downloads(self, terminate):
         """Stop only verified owners, then release their tasks under the same row lock."""

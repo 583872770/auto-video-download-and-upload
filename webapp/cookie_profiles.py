@@ -37,8 +37,7 @@ class CookieProfiles:
                 youtube_account_cookies.c.profile_id == table.c.id,
                 youtube_accounts.c.instance_id == table.c.scope).exists()
 
-    def items(self, active=''):
-        current = resolve_path(self.base, active).resolve() if active else None
+    def items(self):
         with self.store.connect() as db:
             source = table.outerjoin(youtube_account_cookies,
                 (youtube_account_cookies.c.instance_id == table.c.scope) & (youtube_account_cookies.c.profile_id == table.c.id))
@@ -46,7 +45,7 @@ class CookieProfiles:
             rows = db.execute(select(table.c.id, table.c.name, table.c.created_at,
                 youtube_accounts.c.id.label('account_id'), youtube_accounts.c.email).select_from(source).where(
                 self._where() & (table.c.deleted == 0) & self._account_link()).order_by(table.c.created_at, table.c.id)).mappings().all()
-        return [{**row, 'instance_id': self.scope, 'active': self.path(row['id']).resolve() == current} for row in rows]
+        return [{**row, 'instance_id': self.scope} for row in rows]
 
     def add(self, name, data, filename='cookies.txt'):
         raise ValueError('请先新增或导入账号，再从该账号登录或更新 Cookie。')

@@ -10,7 +10,6 @@ from unittest.mock import patch
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
-from webapp.channels import registry
 from webapp.database import download_permits, tasks
 from webapp.download_metrics import DownloadMeter
 from webapp.store import TaskStore
@@ -21,7 +20,7 @@ class MetricTests(unittest.TestCase):
     def test_parallel_progress_counts_and_publications_remain_consistent(self):
         with tempfile.TemporaryDirectory() as root:
             meter = DownloadMeter(root)
-            meter.begin(registry({'download_methods': ['yt_dlp']})[0])
+            meter.begin()
             def update(stream):
                 for size in range(1, 61):
                     meter.hook({'filename': str(stream), 'downloaded_bytes': size})
@@ -65,14 +64,14 @@ class MetricTests(unittest.TestCase):
 
 class TransactionTests(unittest.TestCase):
     def test_permit_deadlock_retries_rolled_back_db_work_not_transfer(self):
-        from webapp.channel_scheduler import ChannelScheduler
+        from webapp.request_scheduler import RequestScheduler
         with tempfile.TemporaryDirectory() as root:
             store = TaskStore(root)
             try:
                 job = store.create('download', {'base': root, 'urls': ['https://youtu.be/jNQXAC9IVRw']})
                 with store.connect() as db:
                     db.execute(tasks.update().where(tasks.c.id == job['id']).values(status='running', worker_id=store.owner, lease_until=time.time()+60))
-                scheduler = ChannelScheduler(store, {'download_methods': ['yt_dlp']}, job['id'])
+                scheduler = RequestScheduler(store, {'download_methods': ['yt_dlp']}, job['id'])
                 admit = scheduler._admit
                 calls = []
                 def deadlock(db, stamp, requirements):
@@ -83,7 +82,7 @@ class TransactionTests(unittest.TestCase):
                     return value
                 transfers = []
                 with patch.object(scheduler, '_admit', side_effect=deadlock):
-                    with scheduler.permit(scheduler.channels[0], 'transfer'):
+                    with scheduler.permit('transfer'):
                         transfers.append('download')
                         with store.connect() as db:
                             tokens = set(db.execute(select(download_permits.c.token)).scalars())
@@ -110,7 +109,8 @@ class BudgetAndPolicyTests(unittest.TestCase):
         from webapp.disk_budget import DiskBudget, GIB
         with tempfile.TemporaryDirectory() as root:
             config = {'storage_mode': 'test', 'disk_budget_gb': 20, 'disk_test_budget_gb':16,
-                      'disk_min_free_gb':0, 'disk_resume_free_gb':0, 'worker_count':16}
+                      'disk_min_free_gb':0, 'disk_resume_free_gb':0,
+                      'download_task_limit':16, 'youtube_cookie_pool':[str(i) for i in range(16)]}
             budget = DiskBudget(root, config)
             for size in (GIB, GIB, 2*GIB):
                 budget.record_video_size(size)
@@ -120,18 +120,3 @@ class BudgetAndPolicyTests(unittest.TestCase):
             self.assertLessEqual(estimate['suggested_slots'], 4)
             self.assertEqual(estimate['budget_for_configured_bytes'], 64*GIB)
             self.assertEqual(snapshot['budget_bytes'], 20*GIB)
-
-    def test_explicit_channel_limits_and_delivery_owned_subtitles(self):
-        from webapp.settings import validate_settings
-        from webapp.downloader import build_ydl_options
-        config = {'builtin_transfer_limit':16,'builtin_resolver_limit':6}
-        validate_settings(config)
-        channel = registry(config)[0]
-        self.assertEqual((channel.transfer_limit, channel.connection_limit, channel.resolver_limit), (16,None,6))
-        self.assertIsNone(registry({'scheduler_mode':'auto','builtin_transfer_limit':0})[0].transfer_limit)
-        with tempfile.TemporaryDirectory() as root:
-            self.assertFalse(build_ydl_options(config, root)['writesubtitles'])
-            self.assertFalse(build_ydl_options(config, root)['writeautomaticsub'])
-            self.assertNotIn('subtitleslangs', build_ydl_options(config, root))
-        with self.assertRaises(ValueError):
-            validate_settings({'builtin_transfer_limit': 65})

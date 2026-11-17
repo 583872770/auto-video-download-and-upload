@@ -2,12 +2,7 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { api } from '../api';
 import type { ConfigResponse, DatabaseBudget } from '../api/types';
-import {
-  defaultConfig,
-  type ConfigKey,
-  type ConsoleConfig,
-  type Provider,
-} from '../generated/config';
+import { defaultConfig, type ConfigKey, type ConsoleConfig } from '../generated/config';
 import { useInstances } from './instances';
 import { changes, unconfirmed } from '../features/settings/model';
 
@@ -24,7 +19,6 @@ export const useSettings = defineStore('settings', () => {
   const issues = ref<Partial<Record<ConfigKey, string>>>({});
   const patch = computed(() => changes(baseline.value, draft.value));
   const dirty = computed(() => Object.keys(patch.value).length > 0);
-  const providers = computed<Provider[]>(() => draft.value.download_methods);
 
   function accept(response: ConfigResponse) {
     const config = { ...structuredClone(defaultConfig), ...response.config };
@@ -39,9 +33,6 @@ export const useSettings = defineStore('settings', () => {
     delete issues.value[key];
     error.value = '';
     message.value = '';
-  }
-  function setProviders(value: Provider[]) {
-    update('download_methods', value);
   }
   async function load(discard = false) {
     if (dirty.value && !discard) throw new Error('请先保存或放弃当前实例的修改。');
@@ -107,9 +98,7 @@ export const useSettings = defineStore('settings', () => {
     issues,
     dirty,
     changedCount,
-    providers,
     update,
-    setProviders,
     load,
     save,
     reset,

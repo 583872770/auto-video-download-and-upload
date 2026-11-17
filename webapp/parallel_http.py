@@ -16,20 +16,11 @@ from yt_dlp.networking import Request
 from yt_dlp.networking.exceptions import CertificateVerifyError, HTTPError, IncompleteRead, TransportError
 from yt_dlp.utils import parse_http_range
 from yt_dlp.utils.networking import HTTPHeaderDict
-from webapp.concurrency_policy import fragment_connection_budget
 from webapp.diagnostics import safe_text
 from webapp.hls_download import YoutubeHlsFD
 
 
 CHUNK_SIZE = 10 * 1024 * 1024
-
-
-def transfer_connection_units(info, budget, *, native=False):
-    formats = info.get('requested_formats') or [info]
-    protocols = [item.get('protocol') or item.get('url', '').split(':', 1)[0] for item in formats]
-    parallel = any(any(word in protocol for word in ('m3u8', 'dash', 'ism'))
-                   or (native and protocol in ('http', 'https')) for protocol in protocols)
-    return budget if parallel else 1
 
 
 class RangeUnsupported(Exception):

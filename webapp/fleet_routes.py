@@ -7,19 +7,13 @@ import requests
 from webapp.adapters.fleet import UploadBody, instance_auth_error, rpc
 from webapp.database import settings
 from webapp.fleet import DOWNLOAD_ROLES, LOCAL_FIELDS, POLICY_FIELDS
-from webapp.settings import DEFAULTS, validate_settings, download_methods
+from webapp.config.settings import DEFAULTS, validate_settings
 
 
 def selected_id():
     fleet = current_app.extensions['fleet']
     return (request.headers.get('X-Instance-ID') or request.args.get('instance_id')
             or fleet.id)
-
-
-
-
-
-
 
 
 def selected_configuration(fleet, config):
@@ -148,8 +142,7 @@ def register_fleet(app, fleet):
 
 def check_instance(app, fleet, policy):
     """Check this node directly so its management requests never wait on its own HTTP pool."""
-    from webapp.environment import require_downmp3_environment, require_native_environment, require_fallback_environment
-    from webapp.yt5s import require_browser_environment
+    from webapp.environment import require_native_environment
     from webapp.youtube_auth import YouTubeAuth
     from Utils.config import video_directory
     from Utils.download_storage import DownloadWorkspace
@@ -157,27 +150,10 @@ def check_instance(app, fleet, policy):
     config = dict(local['config'])
     validate_settings(config)
     base = local['base']
-    methods = download_methods(config)
-    if 'yt1d' in methods:
-        from webapp.yt1d import require_environment
-        require_environment(config, base)
-    if 'bergung' in methods:
-        from webapp.bergung import require_environment
-        require_environment(config, base)
-    if 'downmp3' in methods:
-        require_downmp3_environment()
-    if 'yt5s' in methods:
-        (require_fallback_environment if 'yt_dlp' in methods else require_browser_environment)(config, base)
-    elif 'yt_dlp' in methods:
-        require_native_environment(config)
-    snapshot = app.extensions['clash'].snapshot() if config.get('proxy_mode') == 'clash' else None
-    if 'yt_dlp' in methods:
-        auth = YouTubeAuth(fleet.store)
-        result = auth.check_startup(config, base, force=True, **({'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
-        if result['state'] not in ('valid', 'waiting'):
-            return {'error': result['message']}, 409
-        if result['state'] == 'valid':
-            auth.clear_block()
+    require_native_environment(config)
+    if not config.get('youtube_cookie_pool'):
+        return {'error': '当前实例未分配账号，请在账号管理中分配并登录账号。'}, 409
+    YouTubeAuth(fleet.store).clear_block()
     import shutil
     from pathlib import Path
     workspace = DownloadWorkspace(config, fleet.store.directory)

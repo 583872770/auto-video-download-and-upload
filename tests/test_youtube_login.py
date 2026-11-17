@@ -54,6 +54,7 @@ class YoutubeBrowserTests(unittest.IsolatedAsyncioTestCase):
                 item = MagicMock()
                 item.first = item
                 item.is_visible = AsyncMock(return_value=False)
+                item.get_attribute = AsyncMock(return_value=None)
                 item.fill, item.click = AsyncMock(), AsyncMock()
                 elements[selector] = item
             return elements[selector]

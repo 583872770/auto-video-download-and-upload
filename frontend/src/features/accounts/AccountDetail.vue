@@ -147,7 +147,7 @@ onUnmounted(() => {
   alive = false;
   Object.assign(form, { password: '', extra: '' });
 });
-async function cookieAction(cookie: Cookie, action: string) {
+async function cookieAction(cookie: Cookie, action: 'check' | 'export' | 'delete') {
   await op.run(async () => {
     if (action === 'check') {
       if (dirty.value) throw new Error('请先保存资料修改。');
@@ -173,14 +173,7 @@ async function cookieAction(cookie: Cookie, action: string) {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         return;
       }
-      if (
-        !window.confirm(
-          action === 'delete'
-            ? `删除 Cookie「${cookie.name}」？`
-            : `单独使用「${cookie.name}」会关闭此实例账号池，继续？`,
-        )
-      )
-        return;
+      if (!window.confirm(`删除 Cookie「${cookie.name}」？`)) return;
       await api.request('/api/youtube/cookies/' + action, {
         method: 'POST',
         scope,
@@ -395,12 +388,6 @@ onMounted(() => op.run(read));
             <details class="account-more">
               <summary>更多操作</summary>
               <div class="actions">
-                <button
-                  :disabled="op.busy.value || dirty || blocked"
-                  @click="cookieAction(cookie, 'select')"
-                >
-                  单独使用
-                </button>
                 <button
                   class="danger"
                   :disabled="op.busy.value || dirty || blocked"

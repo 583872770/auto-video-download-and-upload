@@ -30,13 +30,13 @@ class BrowserDiscoveryTests(unittest.TestCase):
 
     def test_docker_desktop_browser_is_used_without_bundled_installation(self):
         system = self.executable('usr/bin/chromium')
-        with patch.dict(os.environ, {'YT5S_BROWSER': system}):
+        with patch.dict(os.environ, {'VIDEO_BROWSER_EXECUTABLE': system}):
             self.assertEqual(browser_options(self.chromium), {'executable_path': system})
         self.which.assert_not_called()
 
     def test_explicit_configuration_overrides_desktop_environment(self):
         explicit = self.executable('custom/chrome')
-        with patch.dict(os.environ, {'YT5S_BROWSER': str(self.root / 'invalid-env-path')}):
+        with patch.dict(os.environ, {'VIDEO_BROWSER_EXECUTABLE': str(self.root / 'invalid-env-path')}):
             self.assertEqual(browser_options(self.chromium, explicit), {'executable_path': explicit})
 
     def test_system_chromium_is_discovered_on_path(self):

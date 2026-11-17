@@ -10,7 +10,7 @@ from tests import test_cookie_pool
 from webapp.database import download_permits
 from webapp.downloads import YouTubeAccountLimited
 from webapp.fleet_routes import check_instance
-from webapp.settings import DEFAULTS
+from webapp.config.settings import DEFAULTS
 from webapp.throughput import PipelineBusy
 from webapp.youtube_auth import ProbeResult, YouTubeAuth
 
@@ -26,18 +26,20 @@ class PoolStartupTests(unittest.TestCase):
         with patch('webapp.environment.require_native_environment'):
             return check_instance(SimpleNamespace(extensions={}), fleet, {})
 
-    def test_selected_cooling_account_does_not_block_healthy_pool_member(self):
+    def test_cooling_account_does_not_block_healthy_pool_member(self):
         pool = self.pool()
         identity, path, scope = pool.accounts[0]
         pool.outcome(scope, YouTubeAccountLimited('limited'))
         before = pool.status()['accounts'][0]
-        config = {**self.config, 'youtube_cookie': str(path)}
+        config = dict(self.config)
         with patch('webapp.youtube_auth.probe', return_value=('valid', 'fixture')) as probe:
             value, status = self.startup(config)
+            result = YouTubeAuth(self.store).check_startup(config, self.base, force=True)
         self.assertEqual(status, 200, value)
+        self.assertEqual(result['state'], 'valid')
         self.assertEqual(probe.call_count, 1)
         self.assertEqual(probe.call_args.args[0], self.profiles.require(self.ids[1]).read_bytes())
-        self.assertEqual(config['youtube_cookie'], str(path))
+        self.assertNotIn('youtube_cookie', config)
         after = pool.status()['accounts'][0]
         for field in ('cooldown_until', 'limited_count', 'recovery_mode', 'interval'):
             self.assertEqual(before[field], after[field])
@@ -66,7 +68,7 @@ class PoolStartupTests(unittest.TestCase):
         self.assertEqual(result['state'], 'waiting')
         self.assertEqual(result['cooldown_until'], min(a['cooldown_until'] for a in before['accounts']))
         probe.assert_not_called()
-        clear.assert_not_called()
+        clear.assert_called_once()
         self.assertEqual(pool.status()['accounts'], before['accounts'])
         with self.assertRaises(PipelineBusy):
             with pool.assignment():
@@ -80,34 +82,14 @@ class PoolStartupTests(unittest.TestCase):
             self.assertEqual(session['limit'], 1)
             self.assertGreaterEqual(session['interval'], 180)
 
-    def test_manual_pool_halt_still_blocks_startup_without_login_requests(self):
+    def test_instance_preflight_does_not_probe_or_clear_account_state(self):
         pool = self.pool()
-        def halt(db, stamp):
-            state = pool.router._state(db, pool.global_scope)
-            state.update(halted=True, halted_at=stamp, halt_kind='verification_required')
-            pool.router._save(db, pool.global_scope, state)
-        pool.router.transaction_call(halt)
+        before = pool.status()['session_states']
         with patch('webapp.youtube_auth.probe') as probe:
             value, status = self.startup()
-        self.assertEqual(status, 409, value)
-        self.assertIn('额外验证', value['error'])
-        probe.assert_not_called()
-        self.assertTrue(pool.status()['halted'])
-
-    def test_pool_wide_cooldown_waits_even_when_member_is_not_cooling(self):
-        pool = self.pool()
-        until = time.time() + 600
-        def cool(db, stamp):
-            state = pool.router._state(db, pool.global_scope)
-            state['cooldown_until'] = until
-            pool.router._save(db, pool.global_scope, state)
-        pool.router.transaction_call(cool)
-        with patch('webapp.youtube_auth.probe') as probe:
-            value, status = self.startup()
-            result = YouTubeAuth(self.store).check_startup(self.config, self.base)
         self.assertEqual(status, 200, value)
-        self.assertEqual(result['cooldown_until'], until)
         probe.assert_not_called()
+        self.assertEqual(pool.status()['session_states'], before)
 
     def test_racing_cooldown_skips_account_and_checks_next_member(self):
         pool = self.pool()
@@ -125,8 +107,8 @@ class PoolStartupTests(unittest.TestCase):
 
     def test_no_verified_available_account_still_rejects_startup(self):
         with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'fixture rejected')):
-            value, status = self.startup()
-        self.assertEqual(status, 409, value)
+            result = YouTubeAuth(self.store).check_startup(self.config, self.base, force=True)
+        self.assertEqual(result['state'], 'not_logged_in')
 
     def test_manual_login_check_still_refuses_the_cooling_account(self):
         pool = self.pool()
@@ -139,8 +121,8 @@ class PoolStartupTests(unittest.TestCase):
     def test_login_429_cools_each_account_then_allows_waiting_startup(self):
         with patch('webapp.youtube_auth.probe', return_value=ProbeResult(
                 'rate_limited', 'fixture 429', http_status=429, retry_after=600)) as probe:
-            value, status = self.startup()
-        self.assertEqual(status, 200, value)
+            result = YouTubeAuth(self.store).check_startup(self.config, self.base, force=True)
+        self.assertEqual(result['state'], 'waiting')
         self.assertEqual(probe.call_count, len(self.ids))
         self.assertTrue(all(s['state'] == 'cooldown' for s in self.pool().status()['session_states']))
 
@@ -152,13 +134,12 @@ class PoolStartupTests(unittest.TestCase):
         self.assertEqual(result['state'], 'not_logged_in')
         self.assertEqual(probe.call_count, 1)
 
-    def test_single_cookie_startup_keeps_existing_check_behavior(self):
+    def test_startup_without_account_pool_requires_assignment(self):
         auth = YouTubeAuth(self.store)
-        result = {'state': 'not_logged_in', 'message': 'fixture'}
         config = {**self.config, 'youtube_cookie_pool': []}
-        with patch.object(auth, 'check', return_value=result) as check:
-            self.assertIs(auth.check_startup(config, self.base, force=True), result)
-        check.assert_called_once_with(config, self.base, force=True)
+        with patch.object(auth, 'check') as check:
+            self.assertEqual(auth.check_startup(config, self.base, force=True)['state'], 'missing')
+        check.assert_not_called()
 
 
 if __name__ == '__main__':

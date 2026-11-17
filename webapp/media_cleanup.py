@@ -35,11 +35,11 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
     preserved = {(Path(base) / 'videos.txt').absolute()} if base else set()
     cache_parts = (
         'runtime/downloads', 'runtime/cache', 'runtime/uploads', 'runtime/browser-profiles',
-        'test-downloads', 'yt5s', 'imports', 'download-metrics')
+        'test-downloads', 'imports', 'download-metrics')
     if files_only:
         # A file purge must not cancel pending imports, erase login state or
         # remove task history. The UI's full material reset remains explicit.
-        cache_parts = ('runtime/downloads', 'runtime/cache', 'test-downloads', 'yt5s', 'download-metrics')
+        cache_parts = ('runtime/downloads', 'runtime/cache', 'test-downloads', 'download-metrics')
     cache_roots = [store.directory / part for part in cache_parts]
     for folder in cache_roots:
         if not folder.parent.resolve().is_relative_to(store.directory.resolve()):

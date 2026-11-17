@@ -17,8 +17,8 @@ export interface AccountContext {
   paused: boolean;
 }
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
-const manual = new Set(['account_halted', 'unavailable', 'pool_halted']);
-const cooling = new Set(['account_cooldown', 'pool_cooldown']);
+const manual = new Set(['account_halted', 'unavailable']);
+const cooling = new Set(['account_cooldown']);
 const taskGroups = [
   { key: 'preparing', label: '准备', tone: 'gray' },
   { key: 'extracting', label: '解析', tone: 'purple' },
@@ -35,7 +35,7 @@ export function taskGroup(task: AccountTask) {
   if (task.stage === 'downloading') return 'downloading';
   if (['uploading', 'uploading_oss'].includes(task.stage)) return 'uploading';
   if (['processing', 'converting', 'cleaning'].includes(task.stage)) return 'processing';
-  if (['extracting', 'opening_site', 'submitting_site'].includes(task.stage)) return 'extracting';
+  if (task.stage === 'extracting') return 'extracting';
   return 'preparing';
 }
 

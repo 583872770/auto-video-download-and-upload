@@ -6,10 +6,10 @@ import shutil
 
 
 def browser_options(chromium, executable_path=None):
-    executable_path = executable_path or os.environ.get('YT5S_BROWSER')
+    executable_path = executable_path or os.environ.get('VIDEO_BROWSER_EXECUTABLE')
     if executable_path:
         if not Path(executable_path).is_file():
-            raise RuntimeError('指定的浏览器不存在，请检查 browser_executable 或 YT5S_BROWSER 配置。')
+            raise RuntimeError('指定的浏览器不存在，请检查 browser_executable 或 VIDEO_BROWSER_EXECUTABLE 配置。')
         return {'executable_path': str(executable_path)}
     if Path(str(chromium.executable_path)).is_file():
         return {}
@@ -51,3 +51,18 @@ async def browser_session(playwright, *, headless=True, executable_path=None,
                 await context.close()
         finally:
             await browser.close()
+
+def browser_executable(explicit=''):
+    configured = explicit or os.environ.get('VIDEO_BROWSER_EXECUTABLE', '')
+    candidates = [configured, shutil.which('google-chrome'), shutil.which('chromium'), shutil.which('chromium-browser')]
+    for root in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
+        for relative in ('Google/Chrome/Application/chrome.exe', 'Microsoft/Edge/Application/msedge.exe'):
+            candidates.append(str(Path(os.environ.get(root, '')) / relative))
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise RuntimeError('未找到账号登录使用的 Chrome/Chromium 浏览器。')
+
+
+def display_available():
+    return os.name == 'nt' or bool(os.environ.get('DISPLAY'))

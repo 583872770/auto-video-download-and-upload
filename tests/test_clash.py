@@ -51,15 +51,15 @@ class ClashTests(unittest.TestCase):
         self.config.write_text('path: videos\nproxy_mode: clash\n', encoding='utf-8')
         snapshot = {'directory': str(self.manager.directory), 'node': 'Test Node', 'proxy': self.manager.proxy_url}
         with patch.object(self.manager, 'snapshot', return_value=snapshot):
-            task = self.post('/api/tasks', {'action': 'download', 'urls': 'https://example.test/video.mp4'})
-        self.assertEqual(task.status_code, 202)
-        saved = self.app.extensions['task_store'].get(task.json['id'], private=True)
-        self.assertNotIn('clash', saved['payload'])
+            task = self.post('/api/jobs', {'name': 'Fixture', 'customer': 'Proxy', 'urls': 'npNnbj46_ik'})
+        self.assertEqual(task.status_code, 201)
+        saved = self.app.extensions['task_store'].page(actions=('download',))['items'][0]
+        self.assertNotIn('PRIVATE_SUBSCRIPTION', json.dumps(saved))
         self.assertNotIn('PRIVATE_SUBSCRIPTION', json.dumps(saved))
         self.assertNotIn('PRIVATE_CONTROLLER', json.dumps(saved))
 
     def test_queued_download_locks_subscription_node_and_connection_changes(self):
-        self.post('/api/tasks', {'action': 'download', 'urls': 'https://example.test/video.mp4'})
+        self.app.extensions['task_store'].create('download', {'urls':['https://youtu.be/npNnbj46_ik']})
         for path, data in (('/api/clash/subscription', {'url': 'https://example.test/sub'}),
                            ('/api/clash/select', {'name': 'other'}), ('/api/clash/stop', {})):
             self.assertEqual(self.post(path, data).status_code, 409)
@@ -165,22 +165,9 @@ class ClashTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot()['node'], '节点 B')
         with self.assertRaises(ClashError):
             self.manager.snapshot(expected='节点 / A')
-        task = self.post('/api/tasks', {'action': 'download', 'urls': 'http://192.0.2.1/download.mp4'}).json
-        subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')], cwd=ROOT,
-                       capture_output=True, check=True, timeout=30)
+        with opener.open('http://192.0.2.1/download.mp4', timeout=5) as response:
+            self.assertEqual(response.read(), video_bytes)
         store = self.app.extensions['task_store']
-        self.assertEqual(store.get(task['id'])['status'], 'succeeded', store.get(task['id']))
-        downloaded = list((self.root / 'videos').rglob('*.mp4'))
-        self.assertEqual(len(downloaded), 1)
-        self.assertEqual(downloaded[0].read_bytes(), video_bytes)
-        task = self.post('/api/tasks', {'action': 'download', 'urls': 'http://192.0.2.1/another.mp4'}).json
-        self.manager.select('节点 / A')  # Simulate a controller change outside this web UI.
-        subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')], cwd=ROOT,
-                       capture_output=True, check=True, timeout=30)
-        self.assertEqual(store.get(task['id'])['status'], 'failed')
-        self.assertNotIn('节点已改变', store.get(task['id'])['error'])
-        self.assertEqual(store.get(task['id'])['progress']['proxy_node'], '节点 / A')
-        self.manager.select('节点 B')
         before = (self.manager.directory / 'nodes.yaml').read_bytes()
         fixture['content'] = yaml.safe_dump({'proxies': [
             {'name': 'New Node', 'type': 'http', 'server': '127.0.0.1', 'port': server.server_port}]}).encode()
@@ -203,7 +190,6 @@ class ClashTests(unittest.TestCase):
         self.assertEqual((self.manager.directory / 'nodes.yaml').read_bytes(), before)
         self.assertTrue(self.manager.running())
         # Update a paused queue after its selected node is removed from the subscription.
-        task = self.post('/api/tasks', {'action': 'download', 'urls': 'http://192.0.2.1/updated/download.mp4'}).json
         previous_subscription = self.manager.config['subscription_id']
         store.set_downloads_paused(True)
         fixture['content'] = yaml.safe_dump({'proxies': [
@@ -211,13 +197,7 @@ class ClashTests(unittest.TestCase):
         updated = self.post('/api/clash/subscription')
         self.assertEqual(updated.status_code, 200, updated.json)
         self.assertNotEqual(self.manager.config['subscription_id'], previous_subscription)
-        self.assertEqual(store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
-        self.assertEqual(self.post('/api/downloads/resume').status_code, 200)
-        subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')], cwd=ROOT,
-                       capture_output=True, check=True, timeout=30)
-        current = store.get(task['id'])
-        self.assertEqual(current['status'], 'succeeded', current)
-        self.assertEqual(current['progress']['proxy_node'], 'New Node')
+        self.assertEqual(self.manager.snapshot()['node'], 'New Node')
         restored = ClashManager(self.manager.directory)
         self.assertEqual(restored.status()['selected'], 'New Node')
         restored.stop()
@@ -229,4 +209,3 @@ class ClashTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

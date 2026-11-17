@@ -160,7 +160,8 @@ class ControlContract:
 
 
 class SQLiteControlTests(ControlContract, unittest.TestCase):
-    setUp = test_scale.ScaleTests.setUp
+    from tests.test_jobs import JobTests
+    setUp = JobTests.setUp
 
     def test_unrelated_process_is_never_terminated(self):
         child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
@@ -173,5 +174,3 @@ class SQLiteControlTests(ControlContract, unittest.TestCase):
         finally:
             child.kill()
             child.wait(timeout=5)
-
-

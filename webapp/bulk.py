@@ -7,7 +7,7 @@ import time
 from sqlalchemy import select
 
 from webapp.database import imports
-from webapp.settings import urls_from
+from webapp.config.settings import urls_from
 
 CHUNK = 500
 REPORT_INTERVAL = 1.0

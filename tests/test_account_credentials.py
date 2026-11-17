@@ -78,7 +78,7 @@ class AccountCredentialTests(unittest.TestCase):
     def test_legacy_entrypoints_cannot_create_orphan_credentials(self):
         for route in ('/api/youtube/cookie', '/api/youtube/cookies'):
             response = self.client.post(route, headers=self.headers, data={'cookie': (io.BytesIO(COOKIE), 'test.txt')})
-            self.assertEqual(response.status_code, 404 if route.endswith('/cookie') else 400, response.json)
+            self.assertEqual(response.status_code, 404 if route.endswith('/cookie') else 405, response.json)
         self.assertEqual(self.client.post('/api/youtube/account-login', headers=self.headers, json={}).status_code, 400)
         with self.store.connect() as db:
             self.assertFalse(db.execute(select(cookie_profiles)).first())

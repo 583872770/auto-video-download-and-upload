@@ -24,7 +24,7 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         bootstrap = json.loads(re.search(r'id="frontend-bootstrap"[^>]*>(.*?)</script>', response.text, re.S)[1])
         self.assertEqual(bootstrap['role'], 'admin')
-        self.assertEqual(set(bootstrap), {'csrf','fleetEnabled','role','cobaltCatalog'})
+        self.assertEqual(set(bootstrap), {'csrf','fleetEnabled','role'})
         self.assertNotIn('/static/app.js', response.text)
         self.assertIn('/static/frontend/main.js', response.text)
 

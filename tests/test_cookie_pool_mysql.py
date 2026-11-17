@@ -13,4 +13,4 @@ class MySQLCookiePoolTests(MySQLFixture, contract.CookiePoolTests):
         self.ids = [self.profiles.add(str(i), contract.COOKIE.replace(b'TEST_SECRET', str(i).encode()))['id']
                     for i in range(3)]
         self.config = {'download_methods': ['yt_dlp'], 'youtube_cookie_pool': self.ids,
-                       'youtube_start_interval': 60, 'worker_count': 3}
+                       'youtube_start_interval': 60, 'download_task_limit': 3}

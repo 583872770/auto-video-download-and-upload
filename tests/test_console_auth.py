@@ -68,7 +68,7 @@ class ConsoleAuthTests(unittest.TestCase):
         self.assertEqual(reader.post('/api/jobs', json=dict(customer='A',name='B'), headers=reader_headers).status_code, 403)
         self.assertEqual(reader.get('/api/auth/users').status_code, 403)
         self.assertEqual(operator.post('/api/jobs', json=dict(customer='A',name='B'), headers=operator_headers).status_code, 201)
-        self.assertEqual(operator.put('/api/config', json=dict(worker_count=2), headers=operator_headers).status_code, 403)
+        self.assertEqual(operator.put('/api/config', json=dict(download_task_limit=2), headers=operator_headers).status_code, 403)
         self.assertEqual(operator.post('/api/auth/users', json=dict(username='intruder'), headers=operator_headers).status_code, 403)
         response = self.client.put('/api/auth/users/reader', json=dict(enabled=False), headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)

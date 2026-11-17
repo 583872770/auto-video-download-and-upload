@@ -56,11 +56,7 @@ const risks = computed(() => {
           >
         </div>
         <div>
-          <small>使用连接 / 连接预算</small
-          ><strong
-            >{{ status.concurrency.connection_used }} /
-            {{ status.concurrency.connection_budget }}</strong
-          >
+          <small>单文件分片上限</small><strong>{{ status.concurrency.fragment_limit }}</strong>
         </div>
       </div>
       <p>

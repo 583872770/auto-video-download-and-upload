@@ -64,7 +64,6 @@ export interface JobSummary {
 }
 export interface JobStatistics {
   events: Array<{ seq: number; message: string; created_at: string }>;
-  providers: Array<{ method: string; status: string; count: number }>;
   files: Array<{ video_id: string; title: string; size: number }>;
   test_files: Array<{ video_id: string; title: string; size: number }>;
 }

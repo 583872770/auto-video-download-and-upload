@@ -44,7 +44,7 @@ class TaskStorageTests(TestCase):
         self.assertEqual(self.update(a, 'changed-a').status_code, 409)
         self.assertEqual(self.update(b, 'changed-b').status_code, 200)
         # An ordinary instance policy write cannot alter the claimed destination.
-        self.assertEqual(self.client.put('/api/config', json={'worker_count': 3}, headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.put('/api/config', json={'download_task_limit': 3}, headers=self.headers).status_code, 200)
         self.assertEqual(self.store.effective_download_payload(task['id'], task['payload'])['config']['path'], 'customer-a')
         self.store.finish(task['id'], result={}, worker_id=self.store.owner)
         self.assertEqual(self.update(a, 'future-a').status_code, 200)

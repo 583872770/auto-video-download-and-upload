@@ -269,9 +269,9 @@ class DockerBootstrapTests(unittest.TestCase):
             directory = Path(temporary) / 'config'
             config = entrypoint.initialize_config(directory)
             defaults = yaml.safe_load(config.read_text(encoding='utf-8'))
-            self.assertEqual(defaults['path'], '/data/videos')
+            self.assertNotIn('path', defaults)  # Storage belongs to the task's delivery contract.
             self.assertEqual(defaults['proxy_mode'], 'direct')
-            defaults.update(worker_count=4, youtube_cookie='Cookies/youtube.txt')
+            defaults.update(download_task_limit=4, youtube_cookie='Cookies/youtube.txt')
             config.write_text(yaml.safe_dump(defaults), encoding='utf-8')
             cookie = directory / 'Cookies/youtube.txt'
             cookie.write_text('uploaded-cookie', encoding='utf-8')
@@ -298,4 +298,3 @@ class DockerBootstrapTests(unittest.TestCase):
         worker.kill.assert_called_once()
         media.kill.assert_called_once()
         proxy.kill.assert_not_called()
-

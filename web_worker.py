@@ -3,7 +3,7 @@ import os
 import time
 import traceback
 
-from webapp.tasks import TaskStore
+from webapp.store import TaskStore
 from webapp.worker.formatting import format_bytes
 from webapp.worker.locks import worker_lock
 

@@ -349,19 +349,6 @@ function samples(value: string) {
               >
             </div>
           </section>
-          <section class="card">
-            <h2>下载器执行统计</h2>
-            <div
-              v-for="provider in statistics.data.value?.providers"
-              :key="provider.method + provider.status"
-              class="detail-row"
-            >
-              <span
-                >{{ provider.method }} · {{ videoStates[provider.status] || provider.status }}</span
-              ><span>{{ provider.count }} 条执行记录</span>
-            </div>
-            <p v-if="!statistics.data.value?.providers.length">尚无执行记录。</p>
-          </section>
           <div class="detail-grid">
             <section v-for="kind in ['files', 'test_files'] as const" :key="kind" class="card">
               <h2>{{ kind === 'files' ? '最近交付' : '最近测试' }}（最多 50 条）</h2>

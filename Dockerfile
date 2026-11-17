@@ -10,7 +10,7 @@ COPY frontend/src/ ./src/
 RUN npm run build
 
 FROM python:3.13-slim-bookworm
-ARG WITH_YT5S_BROWSER=0
+ARG WITH_LOGIN_BROWSER=0
 ARG WITH_SUBTITLE_POT=0
 ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
@@ -19,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONUTF8=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=Asia/Shanghai \
-    YT5S_BROWSER_ENABLED=${WITH_YT5S_BROWSER}
+    LOGIN_BROWSER_ENABLED=${WITH_LOGIN_BROWSER}
 WORKDIR /app
 
 # The Bookworm base image uses the deb822 sources file.
@@ -30,7 +30,7 @@ RUN sed -i \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        ca-certificates ffmpeg tzdata \
-    && if [ "$WITH_YT5S_BROWSER" = "1" ]; then \
+    && if [ "$WITH_LOGIN_BROWSER" = "1" ]; then \
          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
            chromium xvfb x11vnc novnc websockify fonts-noto-cjk; \
        fi \

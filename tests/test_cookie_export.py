@@ -49,8 +49,7 @@ class CookieExportTests(unittest.TestCase):
         self.assertEqual(cache.read_bytes(), b'tampered cache')
         imported = self.add('Imported backup', response.data)
         self.assertEqual(imported.status_code, 201, imported.json)
-        self.assertEqual([item['id'] for item in self.client.get('/api/youtube/cookies').json['items']
-                          if item['active']], [first])
+        self.assertTrue(all('active' not in item for item in self.client.get('/api/youtube/cookies').json['items']))
 
     def test_legacy_and_expired_saved_content_can_be_exported_without_cache(self):
         profiles = CookieProfiles(self.root, self.store)

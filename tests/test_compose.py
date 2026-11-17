@@ -119,7 +119,7 @@ class ComposeDeploymentTests(unittest.TestCase):
         remote = self.render('remote', self.remote_values())['services']['app']
         self.assertEqual(local['stop_grace_period'], '0s')
         self.assertEqual(remote['stop_grace_period'], '0s')
-        self.assertEqual(local['build']['args']['WITH_YT5S_BROWSER'], '1')
+        self.assertEqual(local['build']['args']['WITH_LOGIN_BROWSER'], '1')
         self.assertTrue(local['healthcheck']['test'])
         for port in local['ports']:
             self.assertEqual(port['host_ip'], '127.0.0.1')

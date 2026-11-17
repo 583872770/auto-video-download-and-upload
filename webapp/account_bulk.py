@@ -11,7 +11,7 @@ from werkzeug.exceptions import Conflict, HTTPException
 
 from web_worker import worker_lock
 from webapp.database import youtube_accounts
-from webapp.tasks import now
+from webapp.runtime.supervisor import now
 
 
 ACTIVE = {'running', 'stopping'}

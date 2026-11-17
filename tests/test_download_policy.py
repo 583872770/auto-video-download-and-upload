@@ -96,10 +96,8 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertEqual(value.evidence, 'http_response')
         self.assertFalse(recovery_policy(value, {}).manual)
 
-    def test_local_halt_and_resource_messages_cannot_become_remote_limits(self):
-        halt = YouTubeAuthRequired(dict(state='verification_required', source='cookie_pool_halted',
-            message='Cookie 池沿用此前保存的停止状态：Your account has been rate-limited HTTP 429'))
-        for error, kind in ((halt, 'local_halt'), (PipelineBusy('HTTP 429 quota wait'), 'local_resource')):
+    def test_resource_messages_cannot_become_remote_limits(self):
+        for error, kind in ((PipelineBusy('HTTP 429 quota wait'), 'local_resource'),):
             value = failure_evidence(error)
             self.assertEqual(value.kind, kind)
             self.assertEqual(value.source, 'local')

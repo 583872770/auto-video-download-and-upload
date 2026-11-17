@@ -10,10 +10,6 @@ from types import MappingProxyType
 from typing import Callable
 
 
-def default_download_methods():
-    return ['yt_dlp']
-
-
 @dataclass(frozen=True)
 class Setting:
     # Defaults are immutable scalars; mutable collections use a fresh factory.
@@ -54,41 +50,20 @@ class Setting:
 SETTINGS = MappingProxyType({
     'path': Setting('videos', scope='task'),
     'dir': Setting(scope='task'),
-    'url': Setting(custom=True),
     'proxy': Setting(),
     'proxy_mode': Setting('manual'),
-    'youtube_cookie': Setting(persist_runtime=True),
     'browser_executable': Setting(download=False),
-    'download_format': Setting(scope='policy', download=False),
     'js_runtimes': Setting(None, download=False, custom=True),
-    'worker_count': Setting(1, limits=(1, 64), resource_override=True, persist_runtime=True),
     'download_attempts': Setting(3, limits=(1, 10), scope='policy'),
     'min_free_gb': Setting(2, limits=(0, 10000), resource_override=True, persist_runtime=True),
     'log_retention_days': Setting(0, limits=(0, 3650), persist_runtime=True),
     'max_log_mb': Setting(2, limits=(1, 1000), persist_runtime=True),
     'shard_downloads': Setting(True, scope='task'),
     'storage_mode': Setting('local', scope='task'),
-    'yt5s_quality': Setting('best', scope='policy'),
-    'yt5s_browser_count': Setting(2, limits=(1, 16), resource_override=True, persist_runtime=True),
-    'download_methods': Setting(factory=default_download_methods, scope='policy', persist_runtime=True, pipeline_key=True, custom=True),
     'fragment_concurrency': Setting(4, limits=(1, 16), scope='policy', persist_runtime=True, pipeline_key=True),
-    'throughput_mode': Setting('manual', persist_runtime=True),
-    'bandwidth_mbps': Setting(0, limits=(0, 100000), persist_runtime=True),
-    'db_budget_mode': Setting('auto', persist_runtime=True, pipeline_key=True),
-    'db_connection_budget': Setting(64, limits=(8, 10000), persist_runtime=True, pipeline_key=True),
-    'scheduler_mode': Setting('ordered_fallback', scope='policy', persist_runtime=True, pipeline_key=True),
-    'download_channels': Setting(factory=list, scope='policy', persist_runtime=True, pipeline_key=True, custom=True),
-    'auto_channel_attempts': Setting(3, limits=(1, 6), scope='policy'),
-    'download_connection_limit': Setting(32, limits=(2, 128), persist_runtime=True, pipeline_key=True),
-    'shared_parser': Setting(True),
-    'builtin_transfer_limit': Setting(12, limits=(0, 64), scope='policy', resource_override=True,
-                                      persist_runtime=True, pipeline_key=True),
-    'builtin_resolver_limit': Setting(4, limits=(0, 16), scope='policy', persist_runtime=True, pipeline_key=True),
     'youtube_source_address': Setting(),
     'youtube_start_interval': Setting(120, limits=(0, 600)),
     'youtube_task_rest_interval': Setting(0, limits=(0, 3600), persist_runtime=True, pipeline_key=True),
-    'youtube_cookie_fallback': Setting(False),
-    'youtube_cookie_usage': Setting('auto'),
     'youtube_throttle_cooldown': Setting(300, limits=(30, 3600)),
     'youtube_sleep_preset': Setting(True),
     'youtube_cookie_pool': Setting(factory=list, persist_runtime=True, pipeline_key=True, custom=True),
@@ -96,20 +71,11 @@ SETTINGS = MappingProxyType({
                                           persist_runtime=True, pipeline_key=True),
     'youtube_cookie_pool_start_interval': Setting(5, limits=(0, 600), resource_override=True,
                                                 persist_runtime=True, pipeline_key=True),
-    'youtube_cookie_pool_worker_limit': Setting(20, limits=(0, 64), resource_override=True,
+    'download_task_limit': Setting(0, limits=(0, 64), resource_override=True,
                                               persist_runtime=True, pipeline_key=True),
-    'youtube_cookie_pool_preparation_workers': Setting(4, limits=(0, 16), resource_override=True,
-                                                     persist_runtime=True, pipeline_key=True),
-    'youtube_pacing_mode': Setting('manual', family='pacing'),
     'youtube_hourly_start_limit': Setting(30, limits=(0, 5000), family='pacing'),
     'youtube_daily_start_limit': Setting(720, limits=(0, 5000), family='pacing'),
     'postprocess_limit': Setting(2, limits=(1, 8), persist_runtime=True),
-    'downmp3_quality': Setting('best', scope='policy'),
-    'downmp3_timeout': Setting(300, limits=(30, 1800), scope='policy'),
-    'yt1d_quality': Setting('best', scope='policy'),
-    'yt1d_timeout': Setting(180, limits=(30, 1800), scope='policy'),
-    'bergung_quality': Setting('best', scope='policy'),
-    'bergung_timeout': Setting(180, limits=(30, 1800), scope='policy'),
     'disk_budget_gb': Setting(20, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_test_budget_gb': Setting(16, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_browser_budget_mb': Setting(1024, limits=(1, 100000), family='disk', persist_runtime=True),
@@ -134,7 +100,7 @@ SETTINGS = MappingProxyType({
 
 
 def default_settings(*, family=None):
-    """Return fresh defaults without sharing a mutable pool/channel selection."""
+    """Return fresh defaults without sharing a mutable account selection."""
     return {key: spec.default_value() for key, spec in SETTINGS.items()
             if family is None or spec.family == family}
 

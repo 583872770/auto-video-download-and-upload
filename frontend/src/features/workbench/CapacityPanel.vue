@@ -51,7 +51,7 @@ const blockers: Record<string, string> = {
   <section class="card capacity-panel" aria-label="当前实例传输并发">
     <div class="section-heading">
       <h2>执行容量与等待原因</h2>
-      <span class="badge">{{ capacity.mode === 'auto' ? '自动吞吐' : '手动并发' }}</span>
+      <span class="badge">账号池调度</span>
     </div>
     <p v-if="!fresh" class="notice">
       实例离线或采样尚未更新；下方保留上次记录，不能确认当前占用或恢复进度。
@@ -69,10 +69,7 @@ const blockers: Record<string, string> = {
         ><strong>{{ fresh ? capacity.transferring : '—' }} / {{ capacity.transfer_limit }}</strong>
       </div>
       <div class="card">
-        <small>连接 / 连接预算</small
-        ><strong
-          >{{ fresh ? capacity.connection_used : '—' }} / {{ capacity.connection_budget }}</strong
-        >
+        <small>单文件分片上限</small><strong>{{ capacity.fragment_limit }}</strong>
       </div>
       <div class="card">
         <small>集群下载 / 全局上限</small

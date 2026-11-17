@@ -2,8 +2,7 @@
 from webapp.diagnostics import event
 
 
-def prepare_connection(config, payload, channels, methods, progress, *, worker_slot,
-                       rotation_completed, route_key):
+def prepare_connection(config, payload, progress, *, worker_slot, rotation_completed):
     route_health = None
     snapshot = None
     if config.get('proxy_mode') == 'clash':
@@ -37,7 +36,6 @@ def prepare_connection(config, payload, channels, methods, progress, *, worker_s
                 raise RuntimeError('自动轮换需要通过下载队列执行。')
             rotation_id = rotation['id'] + (f':{worker_slot}' if worker_slot else '')
             completed = rotation_completed(rotation_id, rotation['count_failures'])
-        proxy['health_providers'] = list(dict.fromkeys(route_key(channel) for channel in channels))
         snapshot = manager.download_snapshot(proxy, completed)
         progress.state.update(proxy_node=snapshot['node'])
         if rotation:
@@ -45,20 +43,12 @@ def prepare_connection(config, payload, channels, methods, progress, *, worker_s
             print(f'自动轮换：已计数 {completed} 个视频，每 {rotation["every"]} 个切换节点。', flush=True)
         progress.save(force=True)
         config = {**config, '_resolved_clash_proxy': snapshot['proxy'],
-                  '_resolved_clash_node': snapshot.get('node', ''),
-                  '_parser_clash_directory': str(manager.directory)}
+                  '_resolved_clash_node': snapshot.get('node', '')}
         from webapp.proxy_health import ProxyHealth, ProxyCoolingDown
         route_health = ProxyHealth(manager.directory)
-        eligible_channels = [channel for channel in channels if route_health.eligible(snapshot['node'], route_key(channel))]
-        eligible = [provider for provider in methods if any(channel.adapter == provider for channel in eligible_channels)]
-        for provider in methods:
-            if provider not in eligible:
-                event('provider_cooling_down', provider=provider, proxy_node=snapshot['node'])
-        if not eligible:
-            raise ProxyCoolingDown('当前出口的下载方式均在冷却，稍后重新选择健康线路。')
-        methods = eligible
-        channels = eligible_channels
+        if not route_health.eligible(snapshot['node']):
+            raise ProxyCoolingDown('当前代理出口正在冷却，稍后重新选择健康线路。')
         print(f'下载代理节点：{snapshot["node"]}', flush=True)
     event('connection_selected', proxy_mode=config.get('proxy_mode', 'manual'),
           proxy_node=config.get('_resolved_clash_node', ''))
-    return config, channels, methods, route_health, snapshot
+    return config, route_health, snapshot

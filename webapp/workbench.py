@@ -114,7 +114,6 @@ class Workbench:
             from webapp.disk_diagnostics import summary
             disk_summary = summary(db, identity)
             selected = self.selection(db, 'workbench_job:' + identity)
-            # Legacy global selections are intentionally not inherited by a new instance.
             from webapp.repositories.task_codec import LIST_FIELDS
             active_query = select(*LIST_FIELDS).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',

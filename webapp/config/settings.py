@@ -6,9 +6,6 @@ import tempfile
 from urllib.parse import urlsplit
 
 YOUTUBE_PREFIX = 'https://www.youtube.com/watch?v='
-PROVIDERS = {'yt_dlp': 'yt-dlp', 'yt5s': 'yt5s', 'downmp3': 'downmp3', 'yt1d': 'yt1d',
-             'bergung': 'Bergung'}
-
 import yaml
 from Utils.oss_storage import validate_oss
 from webapp.config.schema import (DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, TEXT_FIELDS)
@@ -34,39 +31,21 @@ def urls_from(value):
     return urls
 
 
-def download_methods(config):
-    """Read the current ordered provider list."""
-    methods = config.get('download_methods', ['yt_dlp'])
-    if (not isinstance(methods, list) or not 1 <= len(methods) <= len(PROVIDERS)
-            or any(not isinstance(method, str) or method not in PROVIDERS for method in methods)
-            or len(set(methods)) != len(methods)):
-        raise ValueError('请至少选择一种下载器，并按优先级排列；下载器不能重复。')
-    return list(methods)
-
-
 def validate_settings(config, *, download_only=False):
-    if config.get('youtube_cookie_usage', 'auto') not in ('auto', 'always', 'never'):
-        raise ValueError('YouTube Cookie 使用策略请选择按需、始终使用或仅匿名。')
-    if config.get('youtube_pacing_mode', 'manual') not in ('manual', 'adaptive'):
-        raise ValueError('YouTube 请求节奏请选择固定间隔或渐进调速。')
+    unknown = [key for key in config if key not in DEFAULTS and not key.startswith('_')]
+    if unknown:
+        raise ValueError('不支持的配置项：' + '、'.join(sorted(unknown)))
     pool = config.get('youtube_cookie_pool', [])
     if (not isinstance(pool, list) or len(pool) > 50 or
             any(not isinstance(item, str) or not re.fullmatch(r'[a-f0-9]{32}', item) for item in pool) or
             len(set(pool)) != len(pool)):
         raise ValueError('Cookie 账号池必须为不重复的已保存 Cookie ID 列表，最多 50 个。')
-    if pool and download_methods(config) != ['yt_dlp']:
-        raise ValueError('Cookie 账号池仅支持单独使用 yt-dlp。')
     source = config.get('youtube_source_address', '')
     try:
         if source:
             ipaddress.ip_address(source)
     except (ValueError, TypeError):
         raise ValueError('直连源地址必须是本机可用的 IPv4 或 IPv6 地址；留空自动选择。') from None
-    fallback = config.get('youtube_cookie_fallback', False)
-    if fallback in ('true', 'false'):
-        config['youtube_cookie_fallback'] = fallback == 'true'
-    elif type(fallback) is not bool:
-        raise ValueError('匿名重试必须为开关值。')
     sleep_preset = config.get('youtube_sleep_preset', True)
     if sleep_preset in ('true', 'false'):
         config['youtube_sleep_preset'] = sleep_preset == 'true'
@@ -76,26 +55,6 @@ def validate_settings(config, *, download_only=False):
     storage_mode(config)
     if config.get('storage_mode') == 'oss':
         validate_oss(config)
-    if config.get('throughput_mode', 'manual') not in ('manual', 'auto'):
-        raise ValueError('吞吐调节请选择手动或自动。')
-    if config.get('db_budget_mode', 'auto') not in ('auto', 'manual'):
-        raise ValueError('数据库连接预算请选择自动核算或手动指定。')
-    download_methods(config)
-    from webapp.channels import validate_channels
-    validate_channels(config)
-    if type(config.get('shared_parser', True)) is not bool:
-        if config.get('shared_parser') in ('true', 'false'):
-            config['shared_parser'] = config['shared_parser'] == 'true'
-        else:
-            raise ValueError('复用解析浏览器必须为开关值。')
-    if config.get('yt5s_quality', 'best') not in ('best', '360', '720'):
-        raise ValueError('yt5s 画质请选择尽可能最高画质、360p 或 720p。')
-    if config.get('downmp3_quality', 'best') not in ('best', '360', '480', '720', '1080'):
-        raise ValueError('downmp3 画质请选择尽可能最高画质、360p、480p、720p 或 1080p。')
-    if config.get('yt1d_quality', 'best') not in ('best', '360', '480', '720', '1080', '1440', '2160'):
-        raise ValueError('yt1d 画质请选择尽可能最高画质或 360p、480p、720p、1080p、1440p、2160p。')
-    if config.get('bergung_quality', 'best') not in ('best', '360', '480', '720', '1080', '1440', '2160', '4320'):
-        raise ValueError('Bergung 画质请选择尽可能最高画质或 360p、480p、720p、1080p、1440p、2160p、4320p。')
     for key, (minimum, maximum) in INTEGER_FIELDS.items():
         value = config.get(key, DEFAULTS[key])
         if isinstance(value, str) and value.isascii() and value.isdigit():
@@ -122,21 +81,7 @@ def validate_settings(config, *, download_only=False):
             raise ValueError(f'{key} 必须为有效文本。')
     if not config.get('path', 'videos').strip():
         raise ValueError('素材目录不能为空。')
-    if config.get('url'):
-        urls_from(config['url'])
     return config
-
-
-def validate_method_urls(config, urls):
-    if config.get('youtube_pacing_mode') == 'adaptive' and 'yt_dlp' in download_methods(config):
-        from webapp.youtube_auth import is_youtube
-        from webapp.store import source_identity
-        if any(is_youtube([url]) and not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            raise ValueError('渐进调速需要逐个视频计量，请先导入播放列表展开为视频队列。')
-    if any(method != 'yt_dlp' for method in download_methods(config)):
-        from webapp.store import source_identity
-        if any(not re.fullmatch(r'[A-Za-z0-9_-]{11}', source_identity(url)[0] or '') for url in urls):
-            raise ValueError('yt5s、downmp3、yt1d、Bergung 仅支持单个 YouTube 视频 ID 或视频链接；多个视频请每行一个，不支持播放列表。')
 
 
 def save_settings(path, config):

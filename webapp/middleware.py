@@ -3,7 +3,6 @@ import secrets
 from flask import g, jsonify, request, session
 from werkzeug.exceptions import HTTPException
 from webapp.youtube_auth import YouTubeAuthRequired
-from webapp.yt5s import BrowserEnvironmentRequired
 from webapp.environment import DownloadEnvironmentRequired
 from webapp.youtube_login import LoginBusy
 from webapp.throughput import PipelineBusy
@@ -106,7 +105,6 @@ def register_middleware(context):
         youtube_auth.block(error.result)
         return jsonify(error=str(error), auth=error.result, download_queue=store.download_queue()), 409
 
-    @app.errorhandler(BrowserEnvironmentRequired)
     @app.errorhandler(DownloadEnvironmentRequired)
     def browser_environment_required(error):
         return jsonify(error=str(error), download_queue=store.download_queue()), 409

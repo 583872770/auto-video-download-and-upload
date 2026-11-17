@@ -14,120 +14,8 @@ from sqlalchemy import event, text
 from webapp.downloader import build_ydl_options
 from tests import test_scale
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.browser_pool import browser_slot
 from webapp.clash import ClashManager, parse_subscription
 from webapp.downloads import DownloadProgress
-from webapp.yt5s_browser import BrowserSession, NativeBrowser
-
-
-class FakeBrowser:
-    def __init__(self):
-        self.process = SimpleNamespace(poll=lambda: None)
-        self.created = time.monotonic()
-        self.uses = 0
-        self.closed = threading.Event()
-
-    def close(self):
-        self.process = None
-        self.closed.set()
-
-
-class BrowserReuseTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.session = BrowserSession(idle_seconds=0.2)
-        self.addCleanup(self.session.close)
-        factory = patch('webapp.yt5s_browser.NativeBrowser', FakeBrowser)
-        factory.start()
-        self.addCleanup(factory.stop)
-
-    def use(self, signature='node-a', capacity=1):
-        return self.session.use(self.root, capacity, None, 0, signature)
-
-    def test_reuse_retains_capacity_until_idle_expiry(self):
-        with self.use() as first:
-            pass
-        with self.use() as second:
-            self.assertIs(first, second)
-            with self.assertRaisesRegex(RuntimeError, '名额超时'):
-                with browser_slot(self.root, 1, timeout=0):
-                    self.fail('a resident browser must consume capacity')
-        self.assertTrue(first.closed.wait(3))
-        with browser_slot(self.root, 1, timeout=0):
-            pass
-        with self.use() as third:
-            self.assertIsNot(first, third)
-
-    def test_node_proxy_limit_crash_failure_and_periodic_recycle(self):
-        with self.use() as first:
-            pass
-        with self.use('node-b') as second:
-            self.assertIsNot(first, second)
-            self.assertTrue(first.closed.is_set())
-        with self.use('node-b', 2) as third:
-            self.assertIsNot(second, third)
-            third.uses = 20
-        with self.use('node-b', 2) as fourth:
-            self.assertIsNot(third, fourth)
-            fourth.created -= 301
-        with self.use('node-b', 2) as fifth:
-            self.assertIsNot(fourth, fifth)
-            fifth.process = SimpleNamespace(poll=lambda: 1)
-        with self.assertRaisesRegex(RuntimeError, 'site failure'):
-            with self.use('node-b', 2) as sixth:
-                self.assertIsNot(fifth, sixth)
-                raise RuntimeError('site failure')
-        self.assertTrue(sixth.closed.is_set())
-        with browser_slot(self.root, 1, timeout=0):
-            pass
-
-    def test_expired_timer_cannot_close_a_newly_borrowed_browser(self):
-        with patch('webapp.yt5s_browser.threading.Timer') as timer:
-            with self.use() as first:
-                pass
-            stale_expiry = timer.call_args.args[1]
-            with self.use() as second:
-                stale_expiry()
-                self.assertIs(first, second)
-                self.assertFalse(second.closed.is_set())
-
-
-class NativeBrowserTests(unittest.TestCase):
-    def test_real_chrome_reconnect_preserves_process_and_closes_task_pages(self):
-        from playwright.async_api import async_playwright
-        from webapp.yt5s import browser_executable
-        try:
-            executable = browser_executable()
-        except RuntimeError:
-            self.skipTest('Chrome/Chromium not installed')
-        owner = NativeBrowser()
-        self.addCleanup(owner.close)
-        native_popen = subprocess.Popen
-
-        def launch(command, **options):
-            if '--remote-debugging-address=127.0.0.1' in command:
-                command = [*command[:-1], '--headless=new', command[-1]]
-            return native_popen(command, **options)
-
-        async def visit():
-            address = await owner.start(SimpleNamespace(browser_executable=executable, proxy=''))
-            async with async_playwright() as driver:
-                browser = await driver.chromium.connect_over_cdp(address)
-                context = browser.contexts[0]
-                self.assertEqual(len(context.pages), 1)  # Only the initial blank page remains.
-                page = await context.new_page()
-                await page.set_content('<title>Local reuse fixture</title>')
-                await page.close()
-            return owner.process.pid
-
-        with patch('webapp.yt5s_browser.subprocess.Popen', side_effect=launch):
-            first = asyncio.run(visit())
-            self.assertEqual(first, asyncio.run(visit()))
-        process = owner.process
-        owner.close()
-        self.assertIsNotNone(process.poll())
 
 
 class ProgressRateTests(unittest.TestCase):
@@ -228,4 +116,3 @@ class MySQLPerformanceTests(StandaloneMySQLFixture, DispatchContract, unittest.T
         second.close()
         first.close()
         self.assertEqual(engine.pool.checkedout(), 0)
-

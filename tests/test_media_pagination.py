@@ -59,7 +59,7 @@ class MediaPaginationTests(unittest.TestCase):
         result = self.client.get('/api/media/assets?type=audio').json
         self.assertEqual({item['id'] for item in result['artifacts']['items']}, audio | av)
         self.assertEqual(result['media']['items'], [])
-        self.assertEqual(result['counts'], {'all': 65, 'video': 2, 'audio': 3, 'subtitle': 61})
+        self.assertEqual(result['counts'], {'all': 65, 'video': 2, 'audio': 3, 'subtitle': 61, 'metadata': 0, 'thumbnail': 0})
         subtitles = self.client.get('/api/media/assets?type=subtitle&artifact_limit=1').json
         self.assertEqual(len(subtitles['artifacts']['items']), 1)
         self.assertEqual(subtitles['artifacts']['total'], 61)

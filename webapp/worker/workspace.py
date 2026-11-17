@@ -21,10 +21,6 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     config = dict(payload['config'])
     runtime = store.runtime() if store else config
     config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
-    if store and not payload.get('_execution_settings') and not payload.get('_business_job'):
-        runtime = store.runtime()
-        if 'storage_mode' in runtime:
-            config['storage_mode'] = runtime['storage_mode']
     state = store.directory if store else Path(payload['base']) / '.cache'
     workspace = DownloadWorkspace(config, state, task_id, uuid.uuid4().hex)
     budget = DiskBudget(state, config)
@@ -47,8 +43,7 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         if workspace.test_mode:
             # Typed delivery reserves conversion peaks in the local pool. Its
             # acquisition phase stores only the original tracks, without copies.
-            copies = 2 if not config.get('_delivery_contract') and value.get('download_method') == 'yt_dlp' else 1
-            lease.check(estimate * copies)
+            lease.check(estimate)
         else:
             lease.check()
         last_progress.update(value, storage_mode=config.get('storage_mode', 'local'))
@@ -74,46 +69,33 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path),
                    '_disk_lease': lease.id, '_disk_state': str(state)}
         try:
-            from webapp.youtube_auth import is_youtube
-            if payload.get('_retry_cookie_profile_id') and not prepared.get('youtube_cookie_pool'):
-                raise RuntimeError('本任务重试绑定的 Cookie 池已关闭，请检查配置后手动重试。')
-            if prepared.get('youtube_cookie_pool') and is_youtube(payload['urls']):
-                from webapp.cookie_pool import CookiePool
-                pool = CookiePool(store, prepared, payload['base'], task_id, strict=False)
-                retry_profile = payload.get('_retry_cookie_profile_id')
-                if retry_profile and (retry_profile not in pool.profile_names or
-                        retry_profile not in {identity for identity, _, _ in pool.accounts} | set(pool.aliases) or
-                        payload.get('_retry_cookie_instance_id') != pool.router.instance):
-                    raise RuntimeError('本任务重试绑定的 Cookie 已不可用或实例不匹配，请检查账号池后手动重试。')
-                report({'stage': 'waiting_cookie'})
-                with pool.assignment(profile_id=retry_profile, count_success=False,
-                                     manual_retry=bool(payload.get('_manual_retry'))) as selected:
-                    if start_ticket:
-                        start_ticket.finish(selected['_cookie_pool_next_at'] - selected['_cookie_pool_admitted_at'])
-                    cookie_profile_id = selected['_cookie_pool_selected']
-                    cookie_profile_name = selected.get('_cookie_pool_profile_name', cookie_profile_id)
-                    report({'cookie_profile_id': cookie_profile_id,
-                            'cookie_profile_name': cookie_profile_name})
-                    selected['_cookie_pool_profile_name'] = cookie_profile_name
-                    event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
-                          source_address=selected.get('youtube_source_address', ''), identity_retry=bool(retry_profile))
-                    result = _execute(action, {**payload, 'config': selected}, report,
-                                      rotation_completed, store, worker_slot)
-                    if not result.get('skipped') and (result.get('file_count', 0) > 0 or result.get('processing_pending')):
-                        pool.outcome(selected['_cookie_pool_scope'], None,
-                                     admitted_at=selected['_cookie_pool_admitted_at'])
-            else:
+            if not store or not task_id or not prepared.get('youtube_cookie_pool'):
+                from webapp.throughput import PipelineBusy
+                raise PipelineBusy('当前实例未分配可用账号，请在账号管理中分配并登录账号。')
+            from webapp.cookie_pool import CookiePool
+            pool = CookiePool(store, prepared, payload['base'], task_id, strict=False)
+            retry_profile = payload.get('_retry_cookie_profile_id')
+            if retry_profile and (retry_profile not in pool.profile_names or
+                    retry_profile not in {identity for identity, _, _ in pool.accounts} | set(pool.aliases) or
+                    payload.get('_retry_cookie_instance_id') != pool.router.instance):
+                raise RuntimeError('本任务重试绑定的 Cookie 已不可用或实例不匹配，请检查账号池后手动重试。')
+            report({'stage': 'waiting_cookie'})
+            with pool.assignment(profile_id=retry_profile, count_success=False,
+                                 manual_retry=bool(payload.get('_manual_retry'))) as selected:
                 if start_ticket:
-                    start_ticket.finish(0)
-                # A mutable marker follows configuration copies inside _execute.
-                # Only a granted source permit starts the end-of-task rest clock.
-                activity = prepared['_youtube_task_activity'] = {}
-                try:
-                    result = _execute(action, payload, report, rotation_completed, store, worker_slot)
-                finally:
-                    if store and task_id and is_youtube(payload['urls']) and activity.get('started'):
-                        from webapp.channel_scheduler import ChannelScheduler
-                        ChannelScheduler(store, prepared, task_id).finish_youtube_task()
+                    start_ticket.finish(selected['_cookie_pool_next_at'] - selected['_cookie_pool_admitted_at'])
+                cookie_profile_id = selected['_cookie_pool_selected']
+                cookie_profile_name = selected.get('_cookie_pool_profile_name', cookie_profile_id)
+                report({'cookie_profile_id': cookie_profile_id,
+                        'cookie_profile_name': cookie_profile_name})
+                selected['_cookie_pool_profile_name'] = cookie_profile_name
+                event('cookie_pool_selected', profile_id=selected['_cookie_pool_selected'],
+                      source_address=selected.get('youtube_source_address', ''), identity_retry=bool(retry_profile))
+                result = _execute(action, {**payload, 'config': selected}, report,
+                                  rotation_completed, store, worker_slot)
+                if not result.get('skipped') and (result.get('file_count', 0) > 0 or result.get('processing_pending')):
+                    pool.outcome(selected['_cookie_pool_scope'], None,
+                                 admitted_at=selected['_cookie_pool_admitted_at'])
             if result.get('file_count') and not result.get('processing_pending'):
                 try:
                     budget.record_video_size(result['file_bytes'] // result['file_count'],

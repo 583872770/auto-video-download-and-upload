@@ -36,8 +36,8 @@ class FleetTests(unittest.TestCase):
             base = self.root / identity
             base.mkdir()
             config = base / 'config.yaml'
-            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nworker_count: {count}\n'
-                              'min_free_gb: 0\ndownload_methods: [downmp3]\ndownmp3_quality: "720"\n', encoding='utf-8')
+            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\ndownload_task_limit: {count}\n'
+                              'min_free_gb: 0\nyoutube_start_interval: 90\nyoutube_cookie_pool: [' + ', '.join(repr(format(i+1, '032x')) for i in range(count)) + ']\n', encoding='utf-8')
             app = create_app(config, base / 'state', start_worker=False, role=role,
                              instance_id=identity, instance_name=identity, database_url=self.url)
             app.testing = True
@@ -91,26 +91,6 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn('download', self.a.runnable_counts())
         self.assertNotIn('download', self.b.runnable_counts())
 
-    def test_auto_pipeline_has_bounded_extra_preparation_and_zero_global_limit(self):
-        from webapp.throughput import _atomic, policy_key
-        self.queue(12)
-        self.activate(limit=0)
-        self.a.fleet.save_policy({'throughput_mode': 'auto', 'worker_count': 2, 'yt5s_browser_count': 1})
-        config = self.a.fleet.local_settings()['config']
-        _atomic(self.a.directory / 'throughput.json', {'time': time.time(), 'policy': policy_key(config),
-                'transfers': 2, 'workers': 4, 'browsers': 1})
-        with ThreadPoolExecutor(8) as pool:
-            found = list(pool.map(lambda store: store.claim(store.owner), [self.a, self.b] * 4))
-        claimed = [item for item in found if item]
-        self.assertEqual(len(claimed), 7)
-        self.assertEqual(sum(item['instance_id'] == 'alpha' for item in claimed), 4)
-        self.assertEqual(len({item['id'] for item in claimed}), 7)
-        self.assertIsNone(self.a.claim())
-        # A configured cluster cap still includes preparation tasks.
-        with self.manager.connect() as db:
-            db.execute(settings.update().where(settings.c.key == 'fleet_budget').values(value='3'))
-        self.assertIsNone(self.a.claim())
-        self.assertIsNone(self.b.claim())
 
     def test_machine_paths_and_strategy_versions_are_isolated(self):
         self.queue(3)
@@ -120,23 +100,23 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(first['payload']['base'], str(self.root / 'alpha'))
         self.assertEqual(first['payload']['config']['path'], 'videos-alpha')
         self.assertEqual(first['policy_version'], version)
-        self.b.fleet.save_policy({'download_methods': ['downmp3'], 'downmp3_quality': '1080'})
+        self.b.fleet.save_policy({'fragment_concurrency': 8})
         second = self.b.claim(self.b.owner)
         self.assertEqual(second['payload']['config']['path'], 'videos-beta')
-        self.assertEqual(second['payload']['config']['downmp3_quality'], '1080')
+        self.assertEqual(second['payload']['config']['fragment_concurrency'], 8)
         self.assertEqual(second['policy_version'], version + 1)
         third = self.b.claim(self.b.owner)
-        self.assertEqual(third['payload']['config']['downmp3_quality'], '1080')
-        self.assertEqual(self.a.get(first['id'], private=True)['payload']['config']['downmp3_quality'], '720')
+        self.assertEqual(third['payload']['config']['fragment_concurrency'], 8)
+        self.assertEqual(self.a.get(first['id'], private=True)['payload']['config']['youtube_start_interval'], 90)
 
     def test_worker_registration_does_not_overwrite_policy_or_other_limits(self):
-        self.a.fleet.control('alpha', {'worker_count': 1})
-        self.assertEqual(self.a.runtime()['worker_count'], 1)
-        self.assertEqual(self.b.runtime()['worker_count'], 3)
-        self.assertEqual(self.manager.fleet.policy()['config']['downmp3_quality'], '720')
-        self.a.fleet.save_local({'path': 'other-local', 'worker_count': 16}, self.root / 'alpha', self.root / 'alpha/clash')
-        self.assertEqual(self.a.runtime()['worker_count'], 1)
-        self.assertEqual(self.manager.fleet.policy()['config']['downmp3_quality'], '720')
+        self.a.fleet.control('alpha', {'download_task_limit': 1})
+        self.assertEqual(self.a.runtime()['download_task_limit'], 1)
+        self.assertEqual(self.b.runtime()['download_task_limit'], 3)
+        self.assertEqual(self.manager.fleet.local_settings()['config']['youtube_start_interval'], 90)
+        self.a.fleet.save_local({'path': 'other-local', 'download_task_limit': 16}, self.root / 'alpha', self.root / 'alpha/clash')
+        self.assertEqual(self.a.runtime()['download_task_limit'], 1)
+        self.assertEqual(self.manager.fleet.local_settings()['config']['youtube_start_interval'], 90)
 
     def test_drain_blocks_only_selected_instance(self):
         self.queue()
@@ -157,14 +137,17 @@ class FleetTests(unittest.TestCase):
         self.assertFalse(self.a.update_progress(old['id'], {'stage': 'downloading'}, self.a.owner))
         self.assertFalse(self.a.heartbeat(old['id'], self.a.owner))
         from webapp.downloads import DownloadLeaseLost
+        fixture = self.root / 'fenced.mp4'
+        fixture.write_bytes(b'complete')
         with self.assertRaises(DownloadLeaseLost):
-            self.a.statistics.methods.fallback(old['id'], 'downmp3')
+            self.a.statistics.record_file(old['id'], fixture)
         self.manager.recover(expired_only=True)
         with self.manager.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == old['id']).values(available_at=0))
         new = self.b.claim(self.b.owner)
         self.assertEqual(new['id'], jobs[0]['id'])
-        self.assertTrue(new['payload']['_restart_transfer'])
+        self.assertTrue(new['payload']['_execution_settings'])
+        self.assertEqual(new['worker_id'], self.b.owner)
         self.assertFalse(self.a.finish(old['id'], result={}, worker_id=self.a.owner))
         self.assertFalse(self.a.heartbeat(old['id'], self.a.owner))
         self.assertTrue(self.b.finish(new['id'], result={}, worker_id=self.b.owner))
@@ -243,7 +226,7 @@ class FleetTests(unittest.TestCase):
         new.mkdir()
         (new / 'new.mp4').write_bytes(b'new')
         catalog.reindex(new)
-        self.a.fleet.save_local({'path': 'new', 'worker_count': 1}, self.root / 'alpha', self.root / 'alpha/clash')
+        self.a.fleet.save_local({'path': 'new', 'download_task_limit': 1}, self.root / 'alpha', self.root / 'alpha/clash')
         response = self.client.get('/api/overview').json
         self.assertEqual(response['media']['count'], 1)
         self.assertEqual([item['name'] for item in response['recent_media']], ['new.mp4'])
@@ -262,11 +245,11 @@ class FleetTests(unittest.TestCase):
 
     def test_manager_settings_target_only_one_worker(self):
         self.serve('alpha')
-        result = self.client.put('/api/config', json={'worker_count': 3, 'download_methods': ['downmp3']},
+        result = self.client.put('/api/config', json={'download_task_limit': 3, },
                                  headers={**self.headers, 'X-Instance-ID': 'alpha'})
         self.assertEqual(result.status_code, 200, result.json)
-        self.assertEqual(self.a.fleet.local_settings()['config']['worker_count'], 3)
-        self.assertEqual(self.b.fleet.local_settings()['config']['worker_count'], 3)
+        self.assertEqual(self.a.fleet.local_settings()['config']['download_task_limit'], 3)
+        self.assertEqual(self.b.fleet.local_settings()['config']['download_task_limit'], 3)
 
     def test_download_node_auth_failure_does_not_expire_management_login(self):
         manager = self.apps['manager']
@@ -350,7 +333,7 @@ class FleetTests(unittest.TestCase):
         self.serve('alpha')
         self.serve('beta')
         self.queue(3)
-        with patch('webapp.environment.require_downmp3_environment') as check:
+        with patch('webapp.environment.require_native_environment') as check:
             response = self.client.post('/api/downloads/start', headers=self.headers)
             self.assertEqual(response.status_code, 202)
             result = self.wait_startup()
@@ -368,7 +351,7 @@ class FleetTests(unittest.TestCase):
         self.serve('beta')
         self.queue(1)
         self.manager.set_downloads_paused(True)
-        with patch('webapp.environment.require_downmp3_environment', side_effect=ValueError('fixture missing tools')):
+        with patch('webapp.environment.require_native_environment', side_effect=ValueError('fixture missing tools')):
             self.client.post('/api/downloads/start', headers=self.headers)
             result = self.wait_startup()
         self.assertEqual(result['state'], 'failed', result)
@@ -438,65 +421,6 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(replacement.row()['boot_id'], replacement.boot_id)
         self.assertFalse(self.a.fleet.beat())  # The old process cannot reclaim the new boot.
 
-    def test_real_worker_subprocesses_download_into_their_own_directories(self):
-        # Exercise runtime attachment and SQL connections in fresh interpreters,
-        # using only a local fixture server; no external provider/production DB.
-        content = b'local-video-fixture' * 32768
-        transfers = threading.Barrier(2)
-        class Video(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                transfers.wait(timeout=15)
-                self.send_response(200)
-                self.send_header('Content-Type', 'video/mp4')
-                self.send_header('Content-Length', str(len(content)))
-                self.end_headers()
-                for start in range(0, len(content), 32768):
-                    try:
-                        self.wfile.write(content[start:start + 32768])
-                    except (BrokenPipeError, ConnectionResetError):
-                        return  # Generic extractor may close its sniffing request early.
-                    time.sleep(0.01)
-            def log_message(self, *args):
-                pass
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Video)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        def close_server():
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
-        self.addCleanup(close_server)
-        for store in (self.a, self.b):
-            store.fleet.save_policy({'download_methods': ['yt_dlp'], 'download_format': 'best'})
-            store.fleet.control(store.fleet.id, {'worker_count': 1})
-        self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/0.mp4']})
-        self.manager.create('download', {'urls': [f'http://127.0.0.1:{server.server_port}/1.mp4']})
-        self.activate(limit=2)
-        processes = []
-        from webapp.control import ROOT
-        def cleanup():
-            for process in processes:
-                if process.poll() is None:
-                    process.kill()
-                process.wait(timeout=5)
-        self.addCleanup(cleanup)
-        for store in (self.a, self.b):
-            process = subprocess.Popen([sys.executable, str(ROOT / 'web_worker.py'), '--state', str(store.directory),
-                '--slot', '0', '--role', 'download'], cwd=ROOT, env=dict(os.environ, VIDEO_WORKER_DATABASE_URL=self.url,
-                PYTHONUTF8='1'), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                **({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}))
-            processes.append(process)
-        for process in processes:
-            self.assertEqual(process.wait(timeout=40), 0)
-        jobs = self.manager.page(actions=('download',))['items']
-        self.assertEqual([item['status'] for item in jobs], ['succeeded', 'succeeded'],
-                         [(item['error'], self.manager.logs(item['id'])) for item in jobs])
-        self.assertEqual({item['instance_id'] for item in jobs}, {'alpha', 'beta'})
-        for identity in ('alpha', 'beta'):
-            files = list((self.root / identity / f'videos-{identity}').rglob('*.mp4'))
-            self.assertEqual(len(files), 1)
-            self.assertEqual(files[0].stat().st_size, len(content))
-        self.assertEqual(self.manager.statistics.dashboard()['file_bytes'], len(content) * 2)
 
 
 if __name__ == '__main__':

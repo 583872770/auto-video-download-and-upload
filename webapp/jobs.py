@@ -12,9 +12,9 @@ from sqlalchemy import and_, func, or_, select
 from werkzeug.exceptions import Conflict, PreconditionRequired
 
 from webapp.database import (batches, counters, download_lists, imports, job_events,
-    job_imports, job_profiles, job_removed, provider_tasks, tasks, instances, settings as schema_settings)
+    job_imports, job_profiles, job_removed, tasks, instances, settings as schema_settings)
 from webapp.fleet import POLICY_FIELDS
-from webapp.settings import DEFAULTS, urls_from, validate_settings
+from webapp.config.settings import DEFAULTS, urls_from, validate_settings
 from webapp.statistics import charge, pricing, stamp
 
 
@@ -680,11 +680,10 @@ def register_jobs(app, store, settings, preflight):
         if data.get('action') == 'start' and not resume:
             from webapp.execution import isolate_download_failure
             from webapp.environment import DownloadEnvironmentRequired
-            from webapp.yt5s import BrowserEnvironmentRequired
             from webapp.youtube_auth import YouTubeAuthRequired
             try:
                 warnings = preflight(config, base) or []
-            except (ValueError, DownloadEnvironmentRequired, BrowserEnvironmentRequired, YouTubeAuthRequired) as error:
+            except (ValueError, DownloadEnvironmentRequired, YouTubeAuthRequired) as error:
                 isolate_download_failure(store, error)
                 warnings = [f'本机已暂停领取，任务运行意愿保留：{error}']
         return jsonify(message='任务操作已保存。', job=jobs.detail(identity), warnings=warnings)
@@ -723,12 +722,9 @@ def register_jobs(app, store, settings, preflight):
     def job_statistics(identity):
         current=get(identity)
         with store.connect() as db:
-            providers=[dict(row) for row in db.execute(select(provider_tasks.c.method,provider_tasks.c.status,
-                func.count().label('count')).join(tasks,tasks.c.id==provider_tasks.c.task_id).where(tasks.c.batch_id==identity)
-                .group_by(provider_tasks.c.method,provider_tasks.c.status)).mappings()]
             events=[dict(row) for row in db.execute(select(job_events).where(job_events.c.job_id==identity)
                 .order_by(job_events.c.seq.desc()).limit(50)).mappings()]
-        return jsonify(job=current,providers=providers,events=events,files=store.lists.files(identity,limit=50),
+        return jsonify(job=current,events=events,files=store.lists.files(identity,limit=50),
             test_files=store.lists.files(identity,test=True,limit=50))
 
     @app.get('/api/jobs/<identity>/export')

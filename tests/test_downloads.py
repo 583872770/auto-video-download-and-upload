@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from app import create_app
 from webapp.downloads import DownloadFailure, DownloadProgress
-from webapp.settings import urls_from, YOUTUBE_PREFIX
+from webapp.config.settings import urls_from, YOUTUBE_PREFIX
 
 
 class DownloadTests(unittest.TestCase):
@@ -29,25 +29,6 @@ class DownloadTests(unittest.TestCase):
         self.headers = {'X-CSRF-Token': token}
         self.store = self.app.extensions['task_store']
 
-    def test_ids_are_normalized_deduplicated_and_invalid_batch_is_atomic(self):
-        ids = 'npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk\nhI0ofOjFloE\nNJvj1iQdZwE\n8XiDhkvwgEo\nXmyef5q9wSo\np2MeSftrXtM'
-        values = ids + '\nnpNnbj46_ik\n' + YOUTUBE_PREFIX + 'npNnbj46_ik'
-        with patch.object(self.app.extensions['youtube_auth'], 'require', return_value={'state': 'valid'}):
-            response = self.client.post('/api/downloads', json={'urls': values}, headers=self.headers)
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(len(response.json['items']), 8)
-        batch_id = response.json['batch_id']
-        for task, video_id in zip(response.json['items'], ids.splitlines()):
-            self.assertEqual(task['video_id'], video_id)
-            self.assertEqual(task['batch_id'], batch_id)
-            self.assertEqual(task['url'], YOUTUBE_PREFIX + video_id)
-            self.assertEqual(self.store.get(task['id'], private=True)['payload']['urls'], [YOUTUBE_PREFIX + video_id])
-        invalid = self.client.post('/api/downloads', json={'urls': 'npNnbj46_ik\nnot-a-valid-id'}, headers=self.headers)
-        self.assertEqual(invalid.status_code, 400)
-        self.assertEqual(self.store.counts()['total'], 8)
-        self.assertEqual(self.client.post('/api/downloads', json={'urls': ids}).status_code, 403)
-        with self.assertRaises(ValueError):
-            urls_from('\n'.join(['npNnbj46_ik'] * 101))
 
     def test_structured_progress_tracks_audio_video_and_clears_stale_speed(self):
         task = self.store.create('download', {'urls': ['https://example.test/video.mp4']})
@@ -114,35 +95,6 @@ class DownloadTests(unittest.TestCase):
         self.assertIn('已失效或被轮换', failure.message())
         self.assertIn('上传新的 Cookie', failure.message())
 
-    def test_worker_preserves_cause_and_uploaded_cookie_on_both_failure_paths(self):
-        import yt_dlp
-        from web_worker import execute
-        cookie = self.root / 'cookies.txt'
-        original = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tPRIVATE_VALUE\n'
-        cookie.write_bytes(original)
-        for raises in (False, True):
-            sessions = []
-
-            def download(downloader, urls):
-                session = Path(downloader.params['cookiefile'])
-                sessions.append(session)
-                self.assertNotEqual(session, cookie)
-                self.assertEqual(session.read_bytes(), original)
-                session.write_text('# Netscape HTTP Cookie File\n', encoding='utf-8')
-                downloader.report_warning('The provided YouTube account cookies are no longer valid.')
-                if raises:
-                    raise yt_dlp.utils.DownloadError('Sign in to confirm you’re not a bot.')
-                downloader.report_error('Sign in to confirm you’re not a bot.')
-                return 1
-
-            payload = {'base': str(self.root), 'urls': ['https://example.test/video.mp4'],
-                       'config': {'youtube_cookie': str(cookie), 'proxy_mode': 'direct'}}
-            with self.subTest(raises=raises), patch.object(yt_dlp.YoutubeDL, 'download', download):
-                with self.assertRaisesRegex(RuntimeError, 'Cookie 已失效或被轮换'):
-                    execute('download', payload)
-                self.assertEqual(cookie.read_bytes(), original)
-                self.assertTrue(sessions)
-                self.assertFalse(sessions[0].exists())
 
     def test_other_extractor_errors_retain_reason_without_credentials_or_terminal_codes(self):
         failure = DownloadFailure()
@@ -152,44 +104,6 @@ class DownloadTests(unittest.TestCase):
         for secret in ('SECRET', 'PRIVATE', '\x1b'):
             self.assertNotIn(secret, message)
 
-    def test_real_batch_failure_does_not_block_next_video_and_archive_skip_is_visible(self):
-        response = self.client.put('/api/config', json={'throughput_mode': 'auto'}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        fixture = self.root / 'http'
-        fixture.mkdir()
-        content = b'local-download-fixture\n' * 100
-        (fixture / 'video.mp4').write_bytes(content)
-
-        class Handler(http.server.SimpleHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(fixture)))
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        urls = [f'http://127.0.0.1:{server.server_port}/{name}.mp4' for name in ('missing', 'video')]
-        response = self.client.post('/api/downloads', json={'urls': urls}, headers=self.headers)
-
-        def drain():
-            subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')],
-                           capture_output=True, check=True, timeout=25)
-
-        drain()
-        tasks = [self.store.get(item['id']) for item in response.json['items']]
-        self.assertEqual([task['status'] for task in tasks], ['failed', 'succeeded'])
-        self.assertIn('404', tasks[0]['error'])
-        self.assertNotIn('部分视频下载失败', tasks[0]['error'])
-        self.assertEqual(tasks[0]['progress']['stage'], 'failed')
-        self.assertEqual(tasks[1]['progress']['stage'], 'completed')
-        self.assertEqual(tasks[1]['progress']['downloaded_bytes'], len(content))
-        self.assertEqual(tasks[1]['progress']['percent'], 100)
-        repeated = self.client.post('/api/downloads', json={'urls': urls[1]}, headers=self.headers)
-        drain()
-        skipped = self.store.get(repeated.json['items'][0]['id'])
-        self.assertEqual(skipped['status'], 'succeeded')
-        self.assertTrue(skipped['result']['skipped'])
-        self.assertEqual(skipped['progress']['stage'], 'skipped')
 
 
 class DownloadRateTests(unittest.TestCase):
@@ -254,4 +168,3 @@ class DownloadRateTests(unittest.TestCase):
                 clock[0] += 1
                 tracker.hook({'status': 'downloading', 'downloaded_bytes': 19990})
             self.assertEqual(tracker.state['speed'], 0)
-

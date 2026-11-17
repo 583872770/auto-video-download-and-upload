@@ -182,7 +182,7 @@ function countdown(until?: number) {
 function waitText(reason: WaitReason) {
   if (!props.fresh) return '等待新鲜采样';
   if (reason.until) return countdown(reason.until);
-  if (['account_halted', 'unavailable', 'pool_halted'].includes(reason.code)) return '需人工处理';
+  if (['account_halted', 'unavailable'].includes(reason.code)) return '需人工处理';
   if (reason.code === 'waiting_verification') return '等待验证完成';
   if (['account_refresh', 'unknown', 'offline'].includes(reason.code)) return '等待状态更新';
   if (['shared', 'removed'].includes(reason.code)) return '';

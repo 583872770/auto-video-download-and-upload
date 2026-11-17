@@ -33,7 +33,7 @@ if __name__ == '__main__':
         'webapp.store',
         'webapp.store_utils',
         'webapp.database',
-        'webapp.tasks',
+        'webapp.runtime.supervisor',
 
         # Routes
         'webapp.clash_routes',
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         'webapp.startup',
 
         # Utils
-        'webapp.settings',
+        'webapp.config.settings',
         'webapp.media',
         'webapp.disk_budget',
         'webapp.diagnostics',

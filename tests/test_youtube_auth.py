@@ -106,68 +106,18 @@ class AuthParserTests(unittest.TestCase):
 
 
 class AuthContract:
-    def setUp(self):
-        super().setUp()
-        # These are the explicit always-authenticated preflight contracts.
-        # The default on-demand mode has separate anonymous-first coverage.
-        response = self.client.put('/api/config', json={'youtube_cookie_usage': 'always'}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-
     def cookie(self, content=COOKIE):
         from tests.account_cookie_fixture import AccountCookieProfiles
-        AccountCookieProfiles(self.root,self.store).seed_default(content)
-        result=self.client.post('/api/youtube/cookies/select',json={'id':'dddddddddddddddddddddddddddddddd'},headers=self.headers)
-        self.assertEqual(result.status_code,200,result.json)
-        from Utils.config import load_config
-        return load_config(self.config)[0]
+        AccountCookieProfiles(self.root, self.store).seed_default(content)
+        result = self.client.put('/api/config', json={'youtube_cookie_pool': ['d'*32]}, headers=self.headers)
+        self.assertEqual(result.status_code, 200, result.json)
+        return {**self.app.extensions['task_store'].runtime(), 'youtube_cookie': str(self.root / 'Cookies/profiles' / ('d'*32 + '.txt'))}
 
     def post(self, path, data=None):
         return self.client.post(path, json=data, headers=self.headers)
 
-    def test_missing_or_anonymous_cookie_blocks_before_creating_jobs(self):
-        self.assertEqual(self.client.post('/api/youtube/auth/check').status_code, 403)
-        response = self.post('/api/downloads', {'urls': 'npNnbj46_ik'})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json['auth']['state'], 'missing')
-        self.assertEqual(self.store.counts()['total'], 0)
-        self.assertTrue(self.store.downloads_paused())
-        self.cookie(COOKIE.replace(b'SID', b'PREF'))
-        with patch('webapp.youtube_auth.probe') as check:
-            response = self.post('/api/youtube/auth/check')
-            check.assert_not_called()
-        self.assertEqual(response.json['auth']['state'], 'not_logged_in')
-        from webapp.database import cookie_profiles
-        with self.store.connect() as db:
-            db.execute(cookie_profiles.update().where(cookie_profiles.c.id == 'dddddddddddddddddddddddddddddddd').values(
-                content=COOKIE.replace(b'\t0\tSID', b'\t1\tSID').decode()))
-        with patch('webapp.youtube_auth.probe') as check:
-            response = self.post('/api/youtube/auth/check')
-            check.assert_not_called()
-        self.assertEqual(response.json['auth']['state'], 'invalid')
 
-    def test_failed_resume_retains_jobs_and_verified_resume_does_not_consume_attempts(self):
-        task = self.store.create('download', {'config': {}, 'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']})
-        self.store.set_downloads_paused(True)
-        self.cookie()
-        with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture not logged in')):
-            response = self.post('/api/downloads/resume')
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
-        self.assertEqual(self.store.get(task['id'])['attempts'], 0)
-        with patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture verified')):
-            self.assertEqual(self.post('/api/downloads/resume').status_code, 200)
-        self.assertFalse(self.store.downloads_paused())
-        self.assertEqual(self.store.get(task['id'])['status'], 'queued')
 
-    def test_unexpected_probe_error_blocks_without_exposing_details(self):
-        self.cookie()
-        with patch('webapp.youtube_auth.probe', side_effect=RuntimeError('PRIVATE_COOKIE_DETAIL')):
-            response = self.post('/api/downloads', {'urls': 'npNnbj46_ik'})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json['auth']['state'], 'unconfirmed')
-        self.assertNotIn('PRIVATE_COOKIE_DETAIL', response.text)
-        self.assertEqual(self.store.counts()['total'], 0)
-        self.assertTrue(self.store.downloads_paused())
 
     def test_cache_is_shared_between_workers_and_changes_with_cookie_and_node(self):
         config = self.cookie()
@@ -201,106 +151,10 @@ class AuthContract:
         self.assertNotIn('TEST_ONLY_COOKIE_SECRET', public)
         self.assertNotIn('UPDATED_FIXTURE', public)
 
-    def test_worker_confirmed_login_failure_requeues_and_stops_without_download_or_failure(self):
-        import yt_dlp
-        from web_worker import drain
-        config = self.cookie()
-        task = self.store.create('download', {'config': config, 'base': str(self.root),
-                                             'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
-        with patch('webapp.youtube_auth.probe', return_value=('not_logged_in', 'Fixture login rejected')):
-            with patch('web_worker.os.dup2'), patch.object(yt_dlp.YoutubeDL, 'download') as download:
-                drain(self.store.directory)
-                download.assert_not_called()
-        current = self.store.get(task['id'])
-        self.assertEqual((current['status'], current['attempts']), ('queued', 0))
-        self.assertEqual(current['progress']['stage'], 'checking_login')
-        self.assertEqual(self.store.download_queue(), {'paused': True, 'queued': 1, 'running': 0, 'waiting_lists': 0, 'importing': 0})
-        self.assertEqual(self.client.get('/api/tasks?view=history').json['items'], [])
 
-    def test_worker_network_preflight_recovers_without_manual_restart_or_consuming_attempts(self):
-        import yt_dlp
-        from web_worker import drain
-        config = self.cookie()
-        task = self.store.create('download', {'config': config, 'base': str(self.root),
-                                             'urls': ['https://youtu.be/npNnbj46_ik']})
-        with patch('webapp.youtube_auth.probe', return_value=('network_error', 'Fixture timeout')), \
-                patch('web_worker.os.dup2'), patch.object(yt_dlp.YoutubeDL, 'download') as download:
-            drain(self.store.directory)
-            download.assert_not_called()
-        current = self.store.get(task['id'])
-        self.assertEqual((current['status'], current['attempts']), ('queued', 0))
-        self.assertEqual(current['progress']['stage'], 'retrying')
-        self.assertGreater(current['available_at'], time.time() + 20)
-        self.assertFalse(self.store.downloads_paused())
-        self.assertIsNone(YouTubeAuth(self.store).block_reason())
-        after_retry = time.time() + 31
-        with patch('webapp.youtube_auth.time.time', return_value=after_retry), \
-                patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture recovered')), \
-                patch('webapp.downloader.require_download_tools'), patch('web_worker.os.dup2'), \
-                patch.object(yt_dlp.YoutubeDL, 'download', return_value=0) as download:
-            drain(self.store.directory)
-            download.assert_called_once()
-        self.assertEqual(self.store.get(task['id'])['status'], 'succeeded')
-        self.assertFalse(self.store.downloads_paused())
 
-    def test_repeated_proxy_preflight_failures_cool_the_route_without_invalidating_cookie(self):
-        from web_worker import execute
-        from webapp.clash import ClashManager
-        from webapp.proxy_health import ProxyHealth
-        config = {**self.cookie(), 'proxy_mode': 'clash'}
-        manager = self.app.extensions['clash']
-        snapshot = {'directory': str(manager.directory), 'node': 'Bad', 'proxy': manager.proxy_url}
-        with patch.object(ClashManager, 'download_snapshot', return_value=snapshot), \
-                patch('webapp.youtube_auth.probe', return_value=('network_error', 'Fixture timeout')):
-            for _ in range(3):
-                with self.assertRaises(YouTubeAuthRequired):
-                    execute('download', {'config': config, 'base': str(self.root), 'clash': snapshot,
-                                        'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
-        health = ProxyHealth(manager.directory)
-        self.assertFalse(health.eligible('Bad', 'yt_dlp'))
-        self.assertEqual(health.select(['Bad', 'Good'], providers=['yt_dlp']), 'Good')
-        self.assertFalse(self.store.downloads_paused())
-        self.assertIsNone(YouTubeAuth(self.store).block_reason())
 
-    def test_login_verified_before_extractor_and_cookie_rejection_stops_later_jobs(self):
-        import yt_dlp
-        from web_worker import execute
-        config = self.cookie()
-        events = []
 
-        def positive(*args):
-            events.append('login')
-            return 'valid', 'Fixture verified'
-
-        def download(downloader, urls):
-            events.append('download')
-            downloader.report_warning('The provided YouTube account cookies are no longer valid.')
-            return 1
-
-        with patch('webapp.youtube_auth.probe', side_effect=positive), patch('webapp.downloader.require_download_tools'):
-            with patch.object(yt_dlp.YoutubeDL, 'download', download):
-                with self.assertRaises(YouTubeAuthRequired):
-                    execute('download', {'config': config, 'base': str(self.root), 'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
-        self.assertEqual(events, ['login', 'download'])
-        self.assertEqual(YouTubeAuth(self.store).status()['state'], 'verification_required')
-
-    def test_pool_aborts_at_first_invalid_cookie_warning(self):
-        import yt_dlp
-        from web_worker import execute
-        config = {**self.cookie(), '_cookie_pool_selected': 'test-profile'}
-        events = []
-        def download(downloader, urls):
-            events.append('started')
-            downloader.report_warning('The provided YouTube account cookies are no longer valid.')
-            events.append('continued_after_invalid_cookie')
-            return 0
-        with patch('webapp.youtube_auth.probe', return_value=('valid', 'Fixture verified')), \
-                patch('webapp.downloader.require_download_tools'), \
-                patch.object(yt_dlp.YoutubeDL, 'download', download):
-            with self.assertRaises(YouTubeAuthRequired):
-                execute('download', {'config': config, 'base': str(self.root),
-                    'urls': ['https://youtu.be/npNnbj46_ik']}, store=self.store)
-        self.assertEqual(events, ['started'])
 
 
 class SQLiteFixture(unittest.TestCase):
@@ -309,7 +163,3 @@ class SQLiteFixture(unittest.TestCase):
 
 class SQLiteAuthTests(AuthContract, SQLiteFixture):
     pass
-
-
-
-

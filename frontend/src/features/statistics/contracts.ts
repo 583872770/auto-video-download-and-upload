@@ -13,12 +13,7 @@ export interface Totals {
   attempted: number;
   unfinished: number;
 }
-export interface Method extends Totals {
-  method: string;
-  label: string;
-  success_rate: number | null;
-  fallback_tasks: number;
-}
+
 export interface Session extends Totals {
   id: string;
   seq: number;

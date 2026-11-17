@@ -2,7 +2,7 @@
 from flask import abort, jsonify, request
 
 from webapp.clash import ClashError
-from webapp.settings import save_settings
+from webapp.config.settings import save_settings
 
 
 def register_clash(app, manager, store, media_lock, settings_lock, settings, config_path, sync_runtime):
@@ -33,10 +33,11 @@ def register_clash(app, manager, store, media_lock, settings_lock, settings, con
         rotation.update(completed=completed, remaining=rotation['every'] - completed % rotation['every'])
         rotation['next_node'] = (rotation['nodes'][(rotation['start_index'] + completed // rotation['every']) % len(rotation['nodes'])]
                                  if rotation['enabled'] and rotation['nodes'] else '')
-        rotation['worker_count'] = config.get('worker_count', 1)
+        from webapp.throughput import runtime_limits
+        rotation['worker_count'] = runtime_limits(config, store.directory)['workers']
         rotation['workers'] = []
         if rotation['enabled']:
-            for slot in range(config.get('worker_count', 1)):
+            for slot in range(rotation['worker_count']):
                 value = store.rotation_completed(rotation['id'] + (f':{slot}' if slot else ''), rotation['count_failures'])
                 rotation['workers'].append({'slot': slot, 'completed': value,
                     'next_node': rotation['nodes'][(rotation['start_index'] + value // rotation['every']) % len(rotation['nodes'])]})

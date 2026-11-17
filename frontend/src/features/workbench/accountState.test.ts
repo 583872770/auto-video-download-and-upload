@@ -63,7 +63,7 @@ describe('account workbench states', () => {
         context,
       ),
     ).toBe('waiting');
-    for (const code of ['account_cooldown', 'pool_cooldown']) {
+    for (const code of ['account_cooldown']) {
       expect(accountState(account({ reasons: [{ code, label: code, until: 200 }] }), context)).toBe(
         'cooldown',
       );
@@ -74,7 +74,10 @@ describe('account workbench states', () => {
     expect(accountState(account(), { ...context, pending: 0 })).toBe('idle');
     expect(accountState(account({ state: 'manual' }), context)).toBe('attention');
     expect(
-      accountState(account({ reasons: [{ code: 'pool_halted', label: '账号池需处理' }] }), context),
+      accountState(
+        account({ reasons: [{ code: 'account_halted', label: '账号需处理' }] }),
+        context,
+      ),
     ).toBe('attention');
     expect(
       accountState(account({ tasks: [task('downloading')] }), { ...context, fresh: false }),
@@ -84,9 +87,7 @@ describe('account workbench states', () => {
       'unknown',
     );
     expect(accountState(account({ state: 'recovery' }), { ...context, pending: 0 })).toBe('idle');
-    expect(accountState(account({ tasks: [task('waiting_verification')] }), context)).toBe(
-      'waiting',
-    );
+    expect(accountState(account({ tasks: [task('waiting_cookie')] }), context)).toBe('waiting');
   });
   it('counts waits independently of preparation, parsing and local processing', () => {
     const result = taskSummary(
@@ -99,7 +100,7 @@ describe('account workbench states', () => {
           'processing',
           'converting',
           'uploading_oss',
-          'waiting_resolver',
+          'waiting_cookie',
           'waiting_processing',
           'completed',
         ].map((stage) => task(stage)),
@@ -132,16 +133,16 @@ describe('account workbench states', () => {
       reasons: [
         { code: 'account_interval', label: '间隔', until: 99 },
         { code: 'account_busy', label: '并发已满' },
-        { code: 'pool_cooldown', label: '账号池冷却', until: 200 },
+        { code: 'account_cooldown', label: '账号池冷却', until: 200 },
         { code: 'paused', label: '实例暂停' },
       ],
     });
     expect(accountReasons(value, context).map((r) => r.code)).toEqual([
       'account_busy',
-      'pool_cooldown',
+      'account_cooldown',
     ]);
     expect(accountReasons(value, { ...context, pending: 0 }).map((r) => r.code)).toEqual([
-      'pool_cooldown',
+      'account_cooldown',
     ]);
   });
 });

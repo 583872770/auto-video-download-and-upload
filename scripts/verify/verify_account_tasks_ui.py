@@ -18,7 +18,7 @@ from tests.account_cookie_fixture import AccountCookieProfiles
 from webapp.browser import browser_options
 from webapp.cookie_pool import CookiePool
 from webapp.database import cookie_profiles, download_permits, tasks
-from webapp.settings import save_settings
+from webapp.config.settings import save_settings
 from webapp.throughput import _atomic, policy_key
 
 
@@ -31,13 +31,13 @@ def main():
     output = Path('.runtime/verify/account-tasks')
     output.mkdir(parents=True, exist_ok=True)
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
+                   if not key.startswith(('VIDEO_', 'MYSQL_', 'LOGIN_'))}
     with tempfile.TemporaryDirectory(prefix='account-tasks-') as temporary, patch.dict(os.environ, environment, clear=True):
         root = Path(temporary)
         config_path = root / 'config.yaml'
         config_path.write_text('path: videos\nproxy_mode: direct\nworker_count: 64\nmin_free_gb: 0\n'
-                               'builtin_transfer_limit: 12\nbuiltin_connection_limit: 64\n'
-                               'download_connection_limit: 64\n', encoding='utf-8')
+                               'download_task_limit: 12\n'
+                               'download_task_limit: 0\n', encoding='utf-8')
         app = create_app(config_path, root / 'state', start_worker=False, role='hybrid',
                          instance_id='preview', database_url='sqlite:///' + (root / 'fixture.db').as_posix())
         store = app.extensions['task_store']

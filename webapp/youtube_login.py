@@ -14,7 +14,7 @@ from werkzeug.exceptions import Conflict, NotFound
 
 from scripts.login_youtube import login, LoginCancelled, AutomaticLoginNeedsUser
 from web_worker import worker_lock
-from webapp.tasks import now
+from webapp.runtime.supervisor import now
 
 ACTIVE = ('starting', 'waiting', 'saving', 'committing', 'cancelling')
 

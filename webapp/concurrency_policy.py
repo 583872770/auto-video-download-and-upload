@@ -6,9 +6,11 @@ owners; a computed capacity alone never authorizes a download.
 """
 from dataclasses import dataclass
 
-from webapp.channels import backend_key, group_caps, minimum_limit, registry
-from webapp.config_schema import DEFAULTS
-from webapp.db_pool_calculator import cookie_pool_worker_limit
+def minimum_limit(*limits):
+    finite = [value for value in limits if value is not None]
+    return min(finite) if finite else None
+from webapp.config.schema import DEFAULTS
+from webapp.db_pool_calculator import download_task_limit
 
 
 MAX_TRANSFERS = 64
@@ -16,72 +18,14 @@ MAX_WORKERS = 96
 POLICY_TTL = 90
 
 
-def automatic(config):
-    # Routing mode does not select the instance's concurrency mode.
-    return not config.get('youtube_cookie_pool') and config.get('throughput_mode', 'manual') == 'auto'
-
-
 def cookie_pool_start_interval(config):
     """Zero disables future spacing, never an already reserved window."""
     return int(config.get('youtube_cookie_pool_start_interval', DEFAULTS['youtube_cookie_pool_start_interval']))
 
 
-def youtube_start_interval(config):
-    if config.get('_cookie_pool_selected'):
-        return cookie_pool_start_interval(config)
-    return int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval']))
-
-
 def cookie_session_limit(config, state):
     configured = max(1, min(MAX_TRANSFERS, int(config.get('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit']))))
     return configured if state.get('limit', 1) > 1 and not state.get('recovery_mode') else 1
-
-
-def fragment_connection_budget(config, channel_limit, transfers):
-    if channel_limit is None:
-        channel_limit = int(config.get('download_connection_limit', 32))
-    return max(1, min(16, int(config.get('fragment_concurrency', 4)), channel_limit,
-                      max(1, int(config.get('download_connection_limit', 32)) // max(1, transfers))))
-
-
-def backend_limits(channels):
-    limits = {}
-    for channel in channels:
-        key = backend_key(channel)
-        current = (channel.task_limit, channel.resolver_limit, channel.transfer_limit)
-        limits[key] = tuple(minimum_limit(a, b) for a, b in zip(limits.get(key, current), current))
-    return limits
-
-
-def assignment_transfer_limit(channel, local):
-    """Preparation demand may later resolve onto the YouTube media upstream."""
-    groups = local.get('groups', {})
-    limit = minimum_limit(channel.transfer_limit, groups.get(channel.upstream_group, {}).get('limit', local['transfers']))
-    if channel.upstream_group == 'unverified-media':
-        limit = minimum_limit(channel.transfer_limit, max(limit, groups.get('youtube-origin', {}).get('limit', limit)))
-    return limit
-
-
-def resolver_requirements(channel, caps):
-    return [('resolver:' + channel.resolver_group, caps['resolver:' + channel.resolver_group], 1),
-            ('quota:' + channel.quota_group, caps['quota:' + channel.quota_group], 1)]
-
-
-def transfer_requirements(config, identity, channel, caps, local, streams=1):
-    """Ordered overlapping permits; connection units differ from video units."""
-    group = channel.upstream_group
-    ceiling = caps.get('upstream:' + group, channel.transfer_limit)
-    limit = minimum_limit(ceiling, local.get('groups', {}).get(group, {}).get(
-        'limit', ceiling if ceiling is not None else local['transfers']))
-    requirements = [('upstream:' + group, ceiling, 1),
-                    ('local-transfers:' + identity, local['transfers'], 1),
-                    ('local-upstream:' + identity + ':' + group, limit, 1),
-                    ('local-connections:' + identity, int(config.get('download_connection_limit', 32)), streams),
-                    ('quota:' + channel.quota_group, caps['quota:' + channel.quota_group], 1)]
-    shared = caps.get('connections:' + group, channel.connection_limit)
-    if shared is not None:
-        requirements.append(('connections:' + group, shared, streams))
-    return requirements
 
 
 def live_policies(state, stamp):
@@ -106,37 +50,26 @@ def resource_capacity(cap, state, stamp):
     return ResourceCapacity(limit, effective, cooling, recovering)
 
 
-def pool_process_limits(config, capacity, memory_total, db_budget):
-    """Static process bounds; live account/transfer permits still control work.
+def fragment_limit(config):
+    """Per-file ceiling, never divided by the number of accounts or tasks."""
+    return max(1, min(16, int(config.get('fragment_concurrency', 4))))
 
-    Keep one worker when all accounts are cooling so state can be rechecked.
-    The worker floor never grants an account or a media transfer permit.
-    """
+
+def pool_process_limits(config, capacity, memory_total, db_budget):
     capacity = max(1, min(MAX_TRANSFERS, int(capacity)))
-    channels = registry(config)
-    caps = group_caps(channels)
-    groups = {}
-    for channel in channels:
-        units = fragment_connection_budget(config, channel.connection_limit, capacity) if channel.adapter == 'yt_dlp' else 1
-        group = channel.upstream_group
-        limit = minimum_limit(capacity, channel.transfer_limit, caps['upstream:' + group],
-                    int(config.get('download_connection_limit', 32)) // units)
-        if 'connections:' + group in caps:
-            limit = min(limit, caps['connections:' + group] // units)
-        groups[group] = max(groups.get(group, 0), limit)
-    transfer_capacity = min(capacity, sum(groups.values()), int(config.get('download_connection_limit', 32)))
-    preparation = max(0, min(16, int(config.get('youtube_cookie_pool_preparation_workers', 4))))
-    configured = cookie_pool_worker_limit(config)
-    memory_cap = max(1, int((memory_total * .65 - 256 * 1024**2) / (160 * 1024**2)))
-    workers = max(1, min(capacity, configured or MAX_TRANSFERS, transfer_capacity + preparation, memory_cap, db_budget['workers']))
-    bounds = {'accounts': capacity, 'configured': configured or None, 'channel_connections': transfer_capacity + preparation,
+    configured = download_task_limit(config)
+    # Parallel HTTP retains at most one 10 MiB chunk per fragment. Reserve
+    # worker overhead plus those buffers instead of inventing a connection cap.
+    per_worker = (160 + 10 * fragment_limit(config)) * 1024**2
+    memory_cap = max(1, int((memory_total * .65 - 256 * 1024**2) / per_worker))
+    bounds = {'accounts': capacity, 'configured': configured or None,
               'memory': memory_cap, 'database': db_budget['workers']}
-    return {'workers': workers, 'configured_worker_limit': configured,
-            'worker_bounds': bounds,
+    workers = max(1, minimum_limit(*bounds.values()))
+    return {'workers': workers, 'configured_worker_limit': configured, 'worker_bounds': bounds,
             'worker_limit_reasons': [key for key, value in bounds.items() if value == workers
                                      and not (key == 'database' and db_budget.get('target_supported'))],
-            'preparation_workers': preparation, 'worker_transfer_capacity': transfer_capacity,
             'memory_worker_cap': memory_cap, 'db_worker_cap': db_budget['workers'],
+            'memory_per_worker_mb': per_worker // 1024**2,
             'db_connection_budget': db_budget['total'], 'db_main_connections': sum(db_budget['main']),
             'db_auxiliary_connections': db_budget['auxiliary'], 'db_processing_connections': db_budget['processing'],
             'db_connections_per_worker': db_budget['per_worker']}

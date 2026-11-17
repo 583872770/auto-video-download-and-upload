@@ -17,13 +17,8 @@ class DownloadSession:
     youtube: bool
     test_mode: bool
     oss_mode: bool
-    automatic: bool
-    catalog: Any
     output_files: dict = field(default_factory=dict)
-    existing_files: set = field(default_factory=set)
     current_video: dict = field(default_factory=dict)
-    deferred_files: dict = field(default_factory=dict)
-    deferred_archives: dict = field(default_factory=dict)
     failure: Any = None
     failure_phase: str = 'resolve'
     transfer_seconds: float = 0

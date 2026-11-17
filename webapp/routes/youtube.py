@@ -1,6 +1,5 @@
 """Youtube HTTP endpoints."""
 from io import BytesIO
-from pathlib import Path
 from flask import g, jsonify, request, send_file
 from webapp.helpers import get_body, json_result
 
@@ -23,7 +22,7 @@ def register_youtube_routes(context, cookies, preflight):
         with media_lock:
             require_login_idle()
             config, base = settings()
-            result = verify_youtube({**config, 'download_methods': ['yt_dlp']}, base, ['https://www.youtube.com/'], force=True)
+            result = verify_youtube(config, base, ['https://www.youtube.com/'], force=True)
             youtube_auth.clear_block()
         return jsonify(auth=result, message=result['message'])
 
@@ -110,23 +109,6 @@ def register_youtube_routes(context, cookies, preflight):
                 limit=request.args.get('limit', 100))
         return jsonify(profile=profile, events=events)
 
-    @app.post('/api/youtube/cookies/pool/recover')
-    def recover_youtube_cookie_pool():
-        return json_result(cookies.recover_youtube_cookie_pool())
-
-    @app.post('/api/youtube/cookies')
-    def add_youtube_cookie():
-        request.max_content_length = 2 * 1024 * 1024
-        uploaded = request.files.get('cookie')
-        if uploaded is None or not uploaded.filename or Path(uploaded.filename).suffix.lower() != '.txt':
-            raise ValueError('请选择 Netscape 格式的 Cookie .txt 文件。')
-        data = uploaded.stream.read(1024 * 1024 + 1)
-        return json_result(cookies.add_youtube_cookie(data, request.form.get('name'),
-            uploaded.filename, activate=request.form.get('activate') != 'false'))
-
-    @app.post('/api/youtube/cookies/select')
-    def select_youtube_cookie():
-        return json_result(cookies.select_youtube_cookie(body().get('id')))
 
     @app.post('/api/youtube/cookies/delete')
     def delete_youtube_cookie():

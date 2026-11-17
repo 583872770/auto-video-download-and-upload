@@ -1,4 +1,4 @@
-﻿"""Structured yt-dlp progress persisted independently of terminal output."""
+"""Structured yt-dlp progress persisted independently of terminal output."""
 from collections import deque, Counter
 import math
 import re
@@ -19,11 +19,9 @@ class YouTubeAccountLimited(RuntimeError):
 
 def initial_progress(config, policy_version=None):
     """Publish this attempt's selected providers as part of the claim itself."""
-    from webapp.settings import download_methods
-    methods = download_methods(config)
     return dict(stage='preparing_workspace', percent=0, downloaded_bytes=0,
                 total_bytes=None, speed=None, eta=None, title='', format='',
-                download_method=methods[0], selected_download_methods=methods,
+                download_method='yt_dlp',
                 policy_version=policy_version, storage_mode=config.get('storage_mode', 'local'),
                 stage_started_at=time.time(), elapsed=0, stage_seconds={})
 
@@ -232,4 +230,3 @@ class DownloadProgress:
         self.state.update(stage='processing', speed=None, eta=None,
                           title=str(info.get('title') or self.state['title']))
         self.save(force=True)
-

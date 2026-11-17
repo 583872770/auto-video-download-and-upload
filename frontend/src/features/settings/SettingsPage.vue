@@ -20,8 +20,8 @@ const instances = useInstances(),
 const boot = bootstrap(),
   admin = boot.role === 'admin';
 const sections: Array<[Section, string, string]> = [
-  ['download', '下载策略', '下载方式、画质与重试'],
-  ['performance', '并发与渠道', '资源预算与渠道调度'],
+  ['download', '下载策略', '执行方式与失败重试'],
+  ['performance', '并发与资源', '任务、分片与本地处理'],
   ['maintenance', '空间与日志', '空间水位、清理与日志'],
   ['diagnostics', '运行诊断', '工具状态与风险排查'],
 ];
@@ -75,14 +75,7 @@ async function save() {
   settings.issues = Object.fromEntries(issues.map((item) => [item.key, item.message]));
   if (issues.length) {
     const key = issues[0]!.key;
-    show(
-      allFields.find((field) => field.key === key)?.section ||
-        (key === 'download_methods'
-          ? 'download'
-          : key === 'download_channels'
-            ? 'performance'
-            : 'download'),
-    );
+    show(allFields.find((field) => field.key === key)?.section || 'download');
     await nextTick();
     const element = document.querySelector<HTMLElement>(`[name="${key}"]`);
     let parent = element?.parentElement;

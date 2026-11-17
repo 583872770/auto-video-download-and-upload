@@ -8,15 +8,13 @@ import { useResource } from '../../composables/resource';
 import { usePolling } from '../../composables/polling';
 import { useOperation } from '../../composables/operation';
 import { confirmNavigation, useLeaveGuard } from '../../composables/leaveGuard';
-import MethodTable from './MethodTable.vue';
-import { gb, time, type Session, type Entry, type Method } from './contracts';
+import { gb, time, type Session, type Entry } from './contracts';
 const props = defineProps<{ id: string }>(),
   emit = defineEmits<{ close: []; saved: [] }>();
 const resource = useResource<{
     session: Session;
     items: Entry[];
     next_cursor: string | null;
-    methods: Method[];
   }>(),
   op = useOperation();
 const label = ref(''),
@@ -98,11 +96,6 @@ usePolling(
         <label>会话备注<input v-model="label" :disabled="!canEdit" maxlength="200" /></label
         ><button :disabled="!canEdit || op.busy.value || !dirty">保存备注</button>
       </form>
-      <MethodTable :items="resource.data.value.methods" /><a
-        :href="`/api/statistics/sessions/${id}/export?kind=methods`"
-        download
-        >导出提供方统计</a
-      >
       <div class="toolbar">
         <label
           >明细范围<select v-model="kind">

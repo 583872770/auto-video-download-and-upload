@@ -6,10 +6,6 @@ from typing import Callable
 @dataclass(frozen=True)
 class WebDependencies:
     save_settings: Callable
-    require_browser_environment: Callable
-    require_fallback_environment: Callable
-    require_downmp3_environment: Callable
-    require_yt1d_environment: Callable
     selected_id: Callable
     rpc: Callable
     preflight_instances: Callable

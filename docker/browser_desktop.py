@@ -69,7 +69,7 @@ def start_logged(command, path):
 
 
 def start_desktop():
-    os.environ.update(DISPLAY=':99', YT5S_BROWSER='/usr/bin/chromium', YT5S_CONTAINER_BROWSER='1')
+    os.environ.update(DISPLAY=':99', VIDEO_BROWSER_EXECUTABLE='/usr/bin/chromium', LOGIN_CONTAINER_BROWSER='1')
     children = []
     try:
         prepare_display(Path('/tmp'))

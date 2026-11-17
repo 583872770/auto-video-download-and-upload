@@ -69,7 +69,8 @@ class DownloadStartGate:
         if snapshot.get('mode') != 'cookie_pool' or not 0 <= now - snapshot.get('time', 0) < 20:
             return None, False
         summary = snapshot.get('cookie_pool') or {}
-        if summary.get('halted') or (summary.get('next_start_at') or 0) > now:
+        if (summary.get('known') and not summary.get('capacity') or
+                (summary.get('next_start_at') or 0) > now):
             return None, True
         with file_lock(self.lock) as acquired:
             if not acquired:

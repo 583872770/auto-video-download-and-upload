@@ -125,7 +125,7 @@ class RedesignContract:
         self.store.set_downloads_paused(True)
         self.assertEqual(self.detail(started)['state'], 'waiting')
         for route in ('/api/jobs/system/resume', '/api/downloads/resume'):
-            with patch('app.require_downmp3_environment'):
+            with patch('webapp.environment.require_native_environment'):
                 response = self.client.post(route, headers=self.headers)
             self.assertEqual(response.status_code, 200, response.json)
             self.assertTrue(self.detail(started)['desired_running'])
@@ -133,7 +133,7 @@ class RedesignContract:
             self.store.set_downloads_paused(True)
         self.store.create('clear_media', {})
         for route in ('/api/jobs/system/resume', '/api/downloads/resume'):
-            with patch('app.require_downmp3_environment'):
+            with patch('webapp.environment.require_native_environment'):
                 self.assertEqual(self.client.post(route, headers=self.headers).status_code, 409)
         self.assertTrue(self.store.downloads_paused())
 
@@ -170,7 +170,7 @@ class SQLiteRedesignTests(RedesignContract, unittest.TestCase):
 class MySQLRedesignTests(StandaloneMySQLFixture, RedesignContract, unittest.TestCase):
     def setUp(self):
         StandaloneMySQLFixture.setUp(self)
-        response = self.client.put('/api/config',json={'download_methods':['downmp3']},headers=self.headers)
+        response = self.client.put('/api/config',json={},headers=self.headers)
         self.assertEqual(response.status_code,200,response.json)
         config, base = self.app.extensions['settings_func']()
         self.store.set_download_settings(config, base, self.root / 'clash')

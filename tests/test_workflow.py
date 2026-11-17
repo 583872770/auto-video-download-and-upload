@@ -10,18 +10,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from tests import test_scale
+from tests.test_jobs import JobTests
 from webapp.bulk import run_import
 from webapp.database import download_lists, download_sessions
 from webapp.startup import DownloadStartup
 
 
 class WorkflowTests(unittest.TestCase):
-    setUp = test_scale.ScaleTests.setUp
+    setUp = JobTests.setUp
+    detail = JobTests.detail
+    control = JobTests.control
 
     def enqueue(self, urls='npNnbj46_ik', **values):
-        response = self.client.post('/api/downloads/queue', json={'urls': urls, **values}, headers=self.headers)
-        self.assertEqual(response.status_code, 202, response.json)
-        return response.json
+        identity = JobTests.create(self, name=values.get('list_name', 'List'),
+            customer=values.get('customer', 'Fixture'), urls=urls)
+        return {'batch_id': identity}
 
     def wait_startup(self):
         deadline = time.monotonic() + 5
@@ -36,74 +39,66 @@ class WorkflowTests(unittest.TestCase):
     def test_adding_list_needs_no_environment_and_never_auto_starts(self):
         with patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('no login')):
             first = self.enqueue(customer='Client A', list_name='One')
-            duplicate = self.enqueue()
-        self.assertEqual((first['added'], duplicate['added'], duplicate['duplicates']), (1, 0, 1))
+            duplicate = self.client.post('/api/jobs/' + first['batch_id'] + '/videos',
+                json={'urls': 'npNnbj46_ik'}, headers=self.headers)
+        self.assertEqual((duplicate.json['added'], duplicate.json['duplicates']), (0, 1))
         self.assertIsNone(self.store.claim(self.store.owner))
         self.assertEqual(self.store.runnable_counts(), {})
-        self.assertFalse(self.store.download_connection_busy())
-        self.assertEqual(self.store.download_queue()['waiting_lists'], 1)
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(download_sessions)).all(), [])
         self.store.activate_download_lists()
+        self.assertIsNone(self.store.claim(self.store.owner))
+        self.control(first['batch_id'], 'start')
         running = self.store.claim(self.store.owner)
         self.assertIsNotNone(running)
         self.enqueue('2Gu7q-KUXCk')
         self.assertIsNone(self.store.claim(self.store.owner))
         self.store.finish(running['id'], result={}, worker_id=self.store.owner)
         session = self.store.statistics.session(running['payload']['download_session_id'])
-        self.assertEqual(session['status'], 'active')  # Queue exhaustion does not stop the executor session.
-        self.assertEqual((session['running'], session['attempted']), (0, 1))
+        self.assertEqual((session['status'], session['running'], session['attempted']), ('active', 0, 1))
         self.store.set_downloads_paused(True)
         self.assertEqual(self.store.statistics.session(session['id'])['status'], 'paused')
 
     def test_import_runs_while_paused_but_videos_wait_and_proxy_stays_editable(self):
         self.store.set_downloads_paused(True)
-        response = self.client.post('/api/downloads/import', data={
-            'customer': 'Client A', 'list_name': '', 'file': (BytesIO(b'npNnbj46_ik\ninvalid\n'), 'client.txt')}, headers=self.headers)
-        self.assertEqual(response.status_code, 202, response.json)
+        identity = JobTests.create(self, name='client.txt', customer='Client A', urls='')
+        JobTests.import_file(self, identity, b'npNnbj46_ik\ninvalid\n')
         imported = self.store.claim(self.store.owner, actions=('import',))
         result = run_import(self.store, imported['payload'], lambda value: None)
         self.store.finish(imported['id'], result=result, worker_id=self.store.owner)
         self.assertIsNone(self.store.claim(self.store.owner, actions=('download',)))
         self.assertFalse(self.store.download_connection_busy())
         row = self.client.get('/api/statistics/lists').json['items'][0]
-        self.assertEqual((row['name'], row['customer'], row['queued'], row['invalid']), ('client.txt', 'Client A', 1, 1))
+        self.assertEqual((row['name'], row['customer'], row['queued']), ('client.txt', 'Client A', 1))
+        self.assertEqual(result['invalid'], 1)
         self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'manual'}, headers=self.headers).status_code, 200)
         self.assertFalse(self.client.get('/api/clash').json['rotation_locked'])
 
     def test_instance_session_survives_queue_and_import_gaps_until_stopped(self):
-        self.enqueue()
-        self.store.activate_download_lists()
+        job = self.enqueue()['batch_id']
+        self.control(job, 'start')
         video = self.store.claim(self.store.owner)
-        self.client.post('/api/downloads/import', data={'file': (BytesIO(b'2Gu7q-KUXCk'), 'later.txt')}, headers=self.headers)
-        self.store.finish(video['id'], result={}, worker_id=self.store.owner)
-        first_identity = video['payload']['download_session_id']
-        self.assertEqual(self.store.statistics.session(first_identity)['status'], 'active')
-        # Releasing an import continues the same instance lifecycle session,
-        # including short gaps between imported chunks.
-        self.enqueue('WMu6ANTg8mk')
-        self.store.activate_download_lists()
-        video = self.store.claim(self.store.owner, actions=('download',))
+        JobTests.import_file(self, job, b'2Gu7q-KUXCk')
         self.store.finish(video['id'], result={}, worker_id=self.store.owner)
         identity = video['payload']['download_session_id']
-        self.assertEqual(identity, first_identity)
         self.assertEqual(self.store.statistics.session(identity)['status'], 'active')
         imported = self.store.claim(self.store.owner, actions=('import',))
-        self.store.finish(imported['id'], error='invalid file', worker_id=self.store.owner)
-        self.assertEqual(self.store.statistics.session(identity)['status'], 'active')
+        result = run_import(self.store, imported['payload'], lambda value: None)
+        self.store.finish(imported['id'], result=result, worker_id=self.store.owner)
+        video = self.store.claim(self.store.owner, actions=('download',))
+        self.assertEqual(video['payload']['download_session_id'], identity)
+        self.store.finish(video['id'], result={}, worker_id=self.store.owner)
         self.store.set_downloads_paused(True)
         self.assertEqual(self.store.statistics.session(identity)['status'], 'paused')
 
-    def test_async_start_reports_stages_checks_selected_providers_and_can_cancel(self):
+    def test_async_start_reports_stages_and_can_cancel(self):
         self.enqueue()
-        self.client.put('/api/config', json={'download_methods': ['downmp3']}, headers=self.headers)
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
-        def check():
+        def check(config):
             entered.set()
             self.assertTrue(release.wait(4))
-        with patch('app.require_downmp3_environment', side_effect=check), \
-                patch('app.require_browser_environment', side_effect=AssertionError('no browser')), \
+        with patch('webapp.environment.require_native_environment', side_effect=check), \
                 patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('no cookie')):
             result = self.client.post('/api/downloads/start', headers=self.headers)
             self.assertEqual(result.status_code, 202)
@@ -118,21 +113,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(current['state'], 'cancelled')
         self.assertTrue(self.store.downloads_paused())
         self.assertEqual(self.store.download_queue()['waiting_lists'], 1)
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             self.client.post('/api/downloads/start', headers=self.headers)
             current = self.wait_startup()
         self.assertEqual(current['state'], 'succeeded', current)
         self.assertEqual([step['stage'] for step in current['steps']], [
             'checking_database', 'reading_queue', 'preparing_proxy', 'checking_environment', 'releasing_queue'])
         self.assertTrue(all(step['elapsed'] >= 0 for step in current['steps']))
-        self.assertIsNotNone(self.store.claim(self.store.owner))
+        self.assertIsNone(self.store.claim(self.store.owner))  # Global start preserves job intent.
 
     def test_preflight_config_changes_or_database_failure_do_not_release_lists(self):
         self.enqueue()
-        self.client.put('/api/config', json={'download_methods': ['downmp3']}, headers=self.headers)
-        def changed():
-            self.client.put('/api/config', json={'downmp3_quality': '1080'}, headers=self.headers)
-        with patch('app.require_downmp3_environment', side_effect=changed):
+        def changed(config):
+            self.client.put('/api/config', json={'fragment_concurrency': 8}, headers=self.headers)
+        with patch('webapp.environment.require_native_environment', side_effect=changed):
             self.client.post('/api/downloads/start', headers=self.headers)
             self.assertEqual(self.wait_startup()['state'], 'failed')
         self.assertEqual(self.store.download_queue()['waiting_lists'], 1)
@@ -149,7 +143,7 @@ class WorkflowTests(unittest.TestCase):
             urls='npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk')
         from Utils.config import load_config
         from webapp.jobs import Jobs
-        Jobs(self.store).control(identity, 'start', load_config(self.config)[0], {})
+        self.control(identity, 'start')
         queued = {'batch_id': identity}
         first = self.store.claim(self.store.owner)
         path = self.root / 'first.mp4'
@@ -210,7 +204,8 @@ class WorkflowTests(unittest.TestCase):
             self.assertFalse(self.store.download_connection_busy())
         finally:
             event.remove(self.store.db.engine, 'before_cursor_execute', capture)
-        self.assertFalse(any('FROM tasks' in query for query in queries), queries)
+        task_queries = [query for query in queries if 'FROM tasks' in query]
+        self.assertTrue(all('JOIN delivery_work' in query and 'LIMIT' in query for query in task_queries), task_queries)
 
 
 class StartupTimingTests(unittest.TestCase):

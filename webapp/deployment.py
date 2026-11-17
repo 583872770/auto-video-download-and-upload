@@ -327,7 +327,7 @@ class DeploymentGateway:
         self.profile = profile
         if self.managed_path.is_file():
             os.environ['REDIS_URL'] = profile.get('redis_url', '')
-        if os.environ.get('YT5S_BROWSER_ENABLED') == '1' and not self.desktop_started:
+        if os.environ.get('LOGIN_BROWSER_ENABLED') == '1' and not self.desktop_started:
             self.report_startup('正在启动浏览器桌面环境…')
             spec = importlib.util.spec_from_file_location('frameflow_desktop', ROOT / 'docker/browser_desktop.py')
             module = importlib.util.module_from_spec(spec)

@@ -118,20 +118,10 @@ class TaskLeases:
                 values['progress'] = json.dumps(initial, ensure_ascii=False)
             elif row['action'] == 'download':
                 payload = self.decode(row, private=True, db=db)['payload']
-                previous_config = (payload.get('config', {})
-                                   if payload.get('_execution_settings') or row['attempts'] else None)
-                previous_method = previous_config.get('download_method', 'yt_dlp') if previous_config is not None else None
                 payload.pop('_execution_settings', None)
                 payload.pop('download_session_id', None)
                 payload = self.effective_download_payload(row['id'], payload, db)
                 payload['_execution_settings'] = True
-                transfer_keys = ('download_method', 'download_methods', 'download_format', 'yt5s_quality',
-                                 'downmp3_quality', 'yt1d_quality', 'bergung_quality')
-                payload['_restart_transfer'] = bool(payload.get('_restart_transfer') or (
-                    previous_config is not None and any(
-                        previous_config.get(key) != payload.get('config', {}).get(key) for key in transfer_keys)))
-                if self.fleet and row.get('instance_id') and row['instance_id'] != self.fleet.id:
-                    payload['_restart_transfer'] = True
                 values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
                 values['policy_version'] = payload.get('policy_version')
                 from webapp.downloads import initial_progress
@@ -142,12 +132,11 @@ class TaskLeases:
                 # Generate snapshot BEFORE adding download_session_id
                 packed_without_session = self._pack(db, payload)
                 row = {**row, 'instance_id': values.get('instance_id', row.get('instance_id')),
-                       'payload': packed_without_session, '_previous_download_method': previous_method}
+                       'payload': packed_without_session}
                 identity = self.statistics.begin(db, row)
                 # Add download_session_id and create final snapshot
                 payload_with_session = {**payload, 'download_session_id': identity}
                 values['payload'] = self._pack(db, payload_with_session)
-                row.pop('_previous_download_method', None)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
             if row['action'] == 'download':
                 from webapp.notifications import retry_task
@@ -490,4 +479,3 @@ class TaskLeases:
             for row in db.execute(statement.order_by(workers.c.heartbeat.desc()).limit(500)).mappings():
                 latest.setdefault(row['slot'], dict(row))
             return list(latest.values())
-

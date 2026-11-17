@@ -11,16 +11,9 @@ from webapp.database import settings
 
 
 class RiskDiagnosticsTests(unittest.TestCase):
-    def test_saved_pool_halt_is_not_evidence_of_explicit_account_limit(self):
-        stopped = 'Cookie 池已停止。触发原因：登录检查未通过或需要额外验证。'
-        replay = 'Cookie 池沿用此前保存的停止状态，本次尚未选择 Cookie 或发起视频下载请求。'
-        for message in (stopped, replay):
-            self.assertIn('cookie_pool_halted', classify(message))
-            values = observed({'download_methods': ['yt_dlp']}, {}, None, time.time(), error=message)
-            self.assertIn('cookie_pool_halted', [v['code'] for v in values])
-            self.assertNotIn('account_rate_limit', [v['code'] for v in values])
+    def test_account_limit_requires_explicit_evidence(self):
         for message in ('Your account has been rate-limited',
-                        'YouTube 明确提示账号被限流，实例已停止领取，任务保留。'):
+                        'YouTube 明确提示账号被限流，账号已暂停领取，任务保留。'):
             self.assertIn('account_rate_limit', classify(message))
         self.assertNotIn('account_rate_limit', classify('账号登录验证未通过，请检查限流状态'))
 
@@ -60,8 +53,6 @@ class RiskDiagnosticsTests(unittest.TestCase):
                                ({'state': 'invalid'}, 'auth_missing')]:
             values = observed(config, {}, auth, stamp)
             self.assertIn(expected, [value['code'] for value in values])
-        self.assertNotIn('auth_unknown', [v['code'] for v in observed({'download_methods': ['downmp3']}, {}, None, stamp)])
-        self.assertIn('auth_unknown', [v['code'] for v in observed({'download_methods': ['yt5s', 'yt_dlp']}, {}, None, stamp)])
 
     def test_local_route_evidence_is_sanitized_and_stale_is_not_live(self):
         with tempfile.TemporaryDirectory() as root:
@@ -81,8 +72,6 @@ class RiskDiagnosticsTests(unittest.TestCase):
 
     def test_verification_notice_distinguishes_recorded_causes(self):
         cases = [
-            ({'source': 'download', 'request_mode': 'anonymous_fallback'},
-             '不带 Cookie 重试时遇到机器人验证', 'Video unavailable'),
             ({'http_status': 403}, '登录检查被 YouTube 拒绝（HTTP 403）', 'HTTP 403'),
             ({'verification_reason': 'redirect'}, '登录检查跳转到了其他页面', 'YouTube 以外'),
             ({'source': 'download'}, '下载时登录或验证未通过', '下载器记录'),
@@ -127,12 +116,12 @@ class RiskDiagnosticsTests(unittest.TestCase):
             finally:
                 store.db.engine.dispose()
 
-    def test_saved_anonymous_failure_reaches_workbench_without_losing_attribution(self):
+    def test_saved_download_failure_reaches_workbench_without_losing_attribution(self):
         with tempfile.TemporaryDirectory() as root:
             store = TaskStore(root)
             try:
                 saved = {'state': 'verification_required', 'checked_at': 1793936259,
-                         'source': 'download', 'request_mode': 'anonymous_fallback',
+                         'source': 'download',
                          'message': 'SECRET', 'node': 'SECRET', 'connection': 'SECRET',
                          'cookie': 'SECRET'}
                 with store.connect() as db:
@@ -140,8 +129,8 @@ class RiskDiagnosticsTests(unittest.TestCase):
                     auth = read_auth(db, ['local'], standalone=True)['local']
                 facts = observed({'download_methods': ['yt_dlp']}, {}, auth, time.time())
                 fact = next(f for f in facts if f['code'] == 'bot_check')
-                self.assertIn('不带 Cookie 重试', fact['title'])
-                self.assertIn('不能证明', fact['impact'])
+                self.assertIn('下载时登录或验证未通过', fact['title'])
+                self.assertIn('不能说明', fact['impact'])
                 self.assertIn('未记录', fact['evidence'])
                 self.assertNotIn('SECRET', json.dumps({'auth': auth, 'facts': facts}))
                 # A later successful check replaces the historical warning.
@@ -152,19 +141,17 @@ class RiskDiagnosticsTests(unittest.TestCase):
             finally:
                 store.db.engine.dispose()
 
-    def test_resolver_cooldown_does_not_claim_existing_transfers_are_blocked(self):
+    def test_source_cooldown_is_explained_without_halting_accounts(self):
         stamp = time.time()
-        config = {'download_methods': ['yt_dlp'], 'worker_count':16, 'throughput_mode':'auto'}
-        context = ({'resolver:yt_dlp': {'cooldown_until': stamp+50}}, {}, {})
+        config = {'download_task_limit':16}
+        context = ({'source:youtube': {'cooldown_until': stamp+50}}, {}, {})
         value = diagnose(config, 'node', [], None, context, stamp)
-        self.assertGreater(value['channels'][0]['effective_limit'], 0)
-        self.assertEqual(value['channels'][0]['resolver_cooldown_seconds'], 50)
-        self.assertTrue(any(r['phase'] == 'resolve' and r['cooldown_seconds'] == 50
-                            for r in value['channels'][0]['resources']))
+        restrictions = value['decisions']['restrictions']
+        self.assertTrue(any(r['until'] == stamp+50 and not r['manual'] for r in restrictions))
 
     def test_local_connection_cooldown_also_blocks_transfer_estimate(self):
         stamp = time.time()
-        config = {'download_methods': ['yt_dlp'],'worker_count':16,'throughput_mode':'auto'}
+        config = {'download_methods': ['yt_dlp'],'download_task_limit':16,'throughput_mode':'auto'}
         value = diagnose(config, 'node', [], None, ({'local-connections:node':
             {'cooldown_until':stamp+40}}, {}, {}), stamp)
         self.assertEqual(value['effective_limit'], 0)

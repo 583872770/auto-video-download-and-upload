@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 
 from webapp.database import (tasks, counters, snapshots, delivery_artifacts, delivery_requirements,
     delivery_runs, delivery_work, delivery_totals, deliveries, test_files, download_sessions, session_tasks,
-    method_tasks, method_totals, provider_tasks, test_totals, download_lists, settings,
+    test_totals, download_lists, settings,
     download_permits, job_removed, job_imports, imports, runtime_hours, notifications)
 from webapp.notifications import forget_tasks
 from webapp.statistics import COUNTERS, OUTCOMES
@@ -22,7 +22,7 @@ def rebuild_session(db, identity):
             .where(table.c.session_id == identity)).one()
         sizes[prefix + 'file_count'], sizes[prefix + 'file_bytes'] = count, size
     if not states and not any(sizes.values()):
-        for table in (method_tasks, provider_tasks, method_totals, test_totals, download_sessions):
+        for table in (test_totals, download_sessions):
             column = table.c.id if table is download_sessions else table.c.session_id
             db.execute(table.delete().where(column == identity))
         db.execute(settings.update().where(settings.c.key.startswith('download_statistics_active:'),
@@ -34,21 +34,6 @@ def rebuild_session(db, identity):
     db.execute(download_sessions.update().where(download_sessions.c.id == identity).values(**values))
     db.execute(test_totals.update().where(test_totals.c.session_id == identity).values(
         test_file_count=sizes['test_file_count'], test_file_bytes=sizes['test_file_bytes']))
-    db.execute(method_totals.delete().where(method_totals.c.session_id == identity))
-    for method in db.execute(select(provider_tasks.c.method).where(
-            provider_tasks.c.session_id == identity).distinct()).scalars().all():
-        records = list(db.execute(select(provider_tasks).where(provider_tasks.c.session_id == identity,
-            provider_tasks.c.method == method)).mappings())
-        status_counts = Counter(row['status'] for row in records)
-        totals = {key: status_counts.get(key, 0) for key in COUNTERS}
-        totals.update(attempted=len(records), fallback_tasks=sum(row['fallback_used'] for row in records))
-        for table, prefix in ((deliveries, ''), (test_files, 'test_')):
-            count, size = db.execute(select(func.count(), func.coalesce(func.sum(table.c.size), 0))
-                .select_from(table.join(method_tasks, (table.c.session_id == method_tasks.c.session_id) &
-                    (table.c.task_id == method_tasks.c.task_id)))
-                .where(table.c.session_id == identity, method_tasks.c.method == method)).one()
-            totals[prefix + 'file_count'], totals[prefix + 'file_bytes'] = count, size
-        db.execute(method_totals.insert().values(session_id=identity, method=method, **totals))
 
 
 def reset_records(store, local_id, remove_log):
@@ -115,7 +100,7 @@ def reset_records(store, local_id, remove_log):
             import_ids.extend(payload['import_id'] for payload in payloads if payload.get('import_id'))
             if import_ids:
                 db.execute(imports.delete().where(imports.c.id.in_(import_ids)))
-            for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
+            for table in (session_tasks, deliveries, test_files,
                           delivery_requirements, delivery_runs, delivery_work, download_permits, job_removed, job_imports):
                 db.execute(table.delete().where(table.c.task_id.in_(ids)))
             forget_tasks(store, db, ids)
@@ -130,7 +115,7 @@ def reset_records(store, local_id, remove_log):
             forget_tasks(store, db, ids)
             for table in (session_tasks, deliveries, test_files):
                 session_ids.update(db.execute(select(table.c.session_id).where(table.c.task_id.in_(ids))).scalars())
-            for table in (session_tasks, deliveries, test_files, method_tasks, provider_tasks,
+            for table in (session_tasks, deliveries, test_files,
                           delivery_requirements, delivery_runs, delivery_work, download_permits, job_removed):
                 db.execute(table.delete().where(table.c.task_id.in_(ids)))
         for start in range(0, len(artifact_rows), 500):

@@ -2,20 +2,20 @@
 import { useSettings } from '../../stores/settings';
 import { groups } from './fields';
 import FieldGroup from './FieldGroup.vue';
-import ChannelsEditor from './ChannelsEditor.vue';
 const store = useSettings();
 </script>
 <template>
-  <FieldGroup title="运行与并发" :fields="groups.performance" />
-  <FieldGroup title="渠道调度" :fields="groups.strategy" />
-  <FieldGroup title="账号池容量" :fields="groups.pool" />
-  <FieldGroup title="数据库连接预算" :fields="groups.database"
-    ><p v-if="store.budget">
-      已保存配置核算：连接预算 {{ store.budget.total }}，预计需求
-      {{ store.budget.required_total }}，目标下载进程
-      {{ store.budget.target_workers }}。其中本地处理池预留 {{ store.budget.processing }}
-      个连接。修改后的核算在保存后更新。
-    </p></FieldGroup
-  >
-  <ChannelsEditor />
+  <FieldGroup title="下载与本地处理" :fields="groups.performance" />
+  <section class="card">
+    <h2>自动资源保护</h2>
+    <p>
+      账号池提供任务容量，服务器持续检查 CPU、内存和 I/O
+      压力；压力升高时减少新任务，恢复后逐步增加。
+    </p>
+    <p v-if="store.budget">
+      数据库连接自动核算：当前预算 {{ store.budget.total }} 个连接， 目标下载任务
+      {{ store.budget.target_workers }} 个，本地处理预留 {{ store.budget.processing }} 个连接。
+      部署环境的数据库连接上限仍生效。
+    </p>
+  </section>
 </template>

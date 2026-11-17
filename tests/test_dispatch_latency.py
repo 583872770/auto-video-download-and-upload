@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from webapp.diagnostics import runtime_log
 from webapp.store import TaskStore
-from webapp.tasks import TaskRunner
+from webapp.runtime.supervisor import TaskRunner
 
 
 class DispatchLatencyTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class DispatchLatencyTests(unittest.TestCase):
         self.store = TaskStore(Path(temporary.name) / 'state')
         self.addCleanup(self.store.db.engine.dispose)
         self.runner = TaskRunner(self.store, lambda: {
-            'worker_count': 1, 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+            'download_task_limit': 1, 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
         self.log = runtime_log(self.store.directory)
 
     def download(self):
@@ -49,7 +49,7 @@ class DispatchLatencyTests(unittest.TestCase):
             dispatched.set()
             return SimpleNamespace(pid=123456, stdout=io.BytesIO(), poll=lambda: None)
         thread = threading.Thread(target=self.runner._watch, daemon=True)
-        with patch(target, side_effect=slow), patch('webapp.tasks.subprocess.Popen', side_effect=launch):
+        with patch(target, side_effect=slow), patch('webapp.runtime.supervisor.subprocess.Popen', side_effect=launch):
             thread.start()
             try:
                 self.assertTrue(entered.wait(5), 'maintenance never started')
@@ -68,7 +68,7 @@ class DispatchLatencyTests(unittest.TestCase):
         self.download()
         self.runner.processes[0] = SimpleNamespace(pid=42, poll=lambda: 0)
         self.runner.last_started[0] = time.monotonic()
-        with patch('webapp.tasks.subprocess.Popen', return_value=self.process()) as launch, \
+        with patch('webapp.runtime.supervisor.subprocess.Popen', return_value=self.process()) as launch, \
                 patch('webapp.diagnostics.capture_output'):
             self.tick()
         self.assertEqual(launch.call_count, 1)
@@ -77,7 +77,7 @@ class DispatchLatencyTests(unittest.TestCase):
         self.download()
         self.runner.processes[0] = SimpleNamespace(pid=42, poll=lambda: 1)
         self.runner.last_started[0] = time.monotonic()
-        with patch('webapp.tasks.subprocess.Popen') as launch:
+        with patch('webapp.runtime.supervisor.subprocess.Popen') as launch:
             self.tick()
         launch.assert_not_called()
 
@@ -85,7 +85,7 @@ class DispatchLatencyTests(unittest.TestCase):
         self.download()
         self.store.create('index', {'config': {}})
         with patch('webapp.disk_budget.resource_blocked', return_value=True), \
-                patch('webapp.tasks.subprocess.Popen', return_value=self.process()) as launch, \
+                patch('webapp.runtime.supervisor.subprocess.Popen', return_value=self.process()) as launch, \
                 patch('webapp.diagnostics.capture_output'):
             self.tick()
         self.assertEqual(launch.call_count, 1)
@@ -94,8 +94,8 @@ class DispatchLatencyTests(unittest.TestCase):
     def test_low_free_space_prevents_download_dispatch(self):
         self.download()
         self.runner.settings = lambda: {'disk_min_free_gb': 1}
-        with patch('webapp.tasks.shutil.disk_usage', return_value=SimpleNamespace(free=0)), \
-                patch('webapp.tasks.subprocess.Popen') as launch:
+        with patch('webapp.runtime.supervisor.shutil.disk_usage', return_value=SimpleNamespace(free=0)), \
+                patch('webapp.runtime.supervisor.subprocess.Popen') as launch:
             self.tick()
         launch.assert_not_called()
 
@@ -110,7 +110,7 @@ class DispatchLatencyTests(unittest.TestCase):
             return SimpleNamespace(pid=123456, stdout=io.BytesIO(), poll=lambda: None)
         thread = threading.Thread(target=self.runner._dispatch, args=(self.log,), daemon=True)
         with patch.object(self.runner._wake, 'wait', side_effect=wait), \
-                patch('webapp.tasks.subprocess.Popen', side_effect=launch):
+                patch('webapp.runtime.supervisor.subprocess.Popen', side_effect=launch):
             thread.start()
             try:
                 self.assertTrue(idle.wait(5))
@@ -136,7 +136,7 @@ class StartWakeTests(unittest.TestCase):
             self.assertFalse(self.store.downloads_paused())
         runner = SimpleNamespace(wake=Mock(side_effect=wake))
         self.app.extensions['task_runner'] = runner
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.client.post(f'/api/jobs/{identity}/control', json={
                 'action': 'start', 'resume_system': True}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)

@@ -87,7 +87,7 @@ class RotationTests(unittest.TestCase):
 
     def test_existing_snapshot_uses_saved_rotation_for_each_worker(self):
         import yt_dlp
-        from web_worker import execute
+        from webapp.worker.connection import prepare_connection
         self.seed()
         queued = {'directory': str(self.manager.directory), 'node': 'B', 'proxy': self.manager.proxy_url}
         payload = {'config': {'path': 'videos', 'proxy_mode': 'clash'}, 'base': str(self.root),
@@ -105,9 +105,10 @@ class RotationTests(unittest.TestCase):
                 with patch.object(ClashManager, 'download_snapshot', return_value=queued) as resolve, \
                      patch.object(ClashManager, 'select'), \
                      patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), \
-                     patch('webapp.downloader.require_download_tools'):
-                    execute('download', payload, progress.append, rotation_completed=completed,
-                            store=self.store, worker_slot=slot)
+                     patch('webapp.environment.require_native_environment'):
+                    from webapp.downloads import DownloadProgress
+                    prepare_connection(payload['config'], payload, DownloadProgress(progress.append),
+                                       rotation_completed=completed, worker_slot=slot)
                 actual, count = resolve.call_args.args
                 if policy['enabled']:
                     self.assertEqual(actual['rotation'], saved)
@@ -121,244 +122,9 @@ class RotationTests(unittest.TestCase):
                     self.assertEqual(counts, [])
                     self.assertEqual(count, 0)
 
-    def test_queued_download_uses_current_selection_after_subscription_replaces_old_node(self):
-        import yt_dlp
-        from web_worker import execute
 
-        self.seed()
-        self.manager.config['selected'] = 'A'
-        self.manager.config['subscription_id'] = 'updated-subscription'
-        self.manager.save()
-        queued = {'directory': str(self.manager.directory), 'node': 'removed-node', 'proxy': self.manager.proxy_url,
-                  'subscription_id': 'old-subscription'}
-        payload = {'config': {'path': 'videos', 'proxy_mode': 'clash'}, 'base': str(self.root),
-                   'urls': ['http://example.test/fixture.mp4'], 'clash': queued}
-        snapshot = {**queued, 'node': 'A'}
-        for slot in (0, 1):
-            with self.subTest(slot=slot), patch.object(ClashManager, 'for_worker', return_value=self.manager), \
-                    patch.object(ClashManager, 'select') as select, \
-                    patch.object(ClashManager, 'download_snapshot', return_value=snapshot) as resolve, \
-                    patch.object(yt_dlp.YoutubeDL, 'download', return_value=0), patch('webapp.downloader.require_download_tools'):
-                execute('download', payload, store=self.store, worker_slot=slot)
-                self.assertEqual(resolve.call_args.args[0]['node'], 'A')
-                if slot:
-                    select.assert_called_once_with('A', automatic=True)
-        self.assertEqual(queued['node'], 'removed-node')  # No mass rewrite of queued snapshots.
 
-    @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
-    @patch('webapp.clash.validate_subscription_url')  # Permit this test's loopback subscription fixture only.
-    def test_real_proxy_rotation_failures_archive_skips_and_restart(self, validate_url):
-        requests = []
-        content = b'rotation fixture video\n' * 100
-        nodes = []
-
-        def handler_for(node):
-            class Handler(http.server.BaseHTTPRequestHandler):
-                def do_CONNECT(self):
-                    with socket.create_connection(('127.0.0.1', self.server.server_port)) as upstream:
-                        self.send_response(200)
-                        self.end_headers()
-                        self.wfile.flush()
-                        while True:
-                            ready, _, _ = select.select([self.connection, upstream], [], [], 5)
-                            if not ready:
-                                return
-                            for stream in ready:
-                                data = stream.recv(65536)
-                                if not data:
-                                    return
-                                (upstream if stream is self.connection else self.connection).sendall(data)
-
-                def do_GET(self):
-                    if self.path.startswith('/subscribe'):
-                        body = yaml.safe_dump({'proxies': nodes}).encode('utf-8')
-                        self.send_response(200)
-                        self.send_header('Content-Length', str(len(body)))
-                        self.end_headers()
-                        self.wfile.write(body)
-                        return
-                    requests.append((node, self.path))
-                    if '/missing.mp4' in self.path:
-                        self.send_error(404)
-                        return
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'video/mp4')
-                    self.send_header('Content-Length', str(len(content)))
-                    self.end_headers()
-                    self.wfile.write(content)
-
-                def log_message(self, *args):
-                    pass
-            return Handler
-
-        for name in ('A', 'B', 'C'):
-            server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler_for(name))
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-            self.addCleanup(server.server_close)
-            self.addCleanup(server.shutdown)
-            nodes.append({'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': server.server_port})
-        (self.manager.directory / 'nodes.yaml').write_text(yaml.safe_dump({'proxies': nodes}), encoding='utf-8')
-        self.manager.config['selected'] = 'A'
-        self.manager.save()
-        self.manager.start()
-        self.addCleanup(self.manager.stop)
-        response = self.client.put('/api/config', json={'proxy_mode': 'clash'}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        rotation = self.rotation(nodes=['B', 'A', 'C'])
-        self.assertEqual(self.post('/api/clash/rotation', rotation).status_code, 200)
-
-        def batch(names):
-            result = self.post('/api/downloads', {'urls': [f'http://192.0.2.1/{name}.mp4' for name in names]})
-            self.assertEqual(result.status_code, 202, result.json)
-            return result.json['items']
-
-        def drain():
-            subprocess.run([sys.executable, 'web_worker.py', '--state', str(self.root / 'state')],
-                           cwd=ROOT, capture_output=True, check=True, timeout=45)
-
-        first = batch(['missing', 'one'])
-        drain()
-        self.assertEqual([self.store.get(task['id'])['status'] for task in first], ['failed', 'succeeded'],
-                         [self.store.get(task['id']) for task in first])
-        self.assertEqual(self.client.get('/api/clash').json['rotation']['completed'], 2)
-        second = batch(['one', 'two', 'three'])
-        drain()
-        tasks = [self.store.get(task['id']) for task in first + second]
-        self.assertEqual([task['progress']['proxy_node'] for task in tasks], ['A', 'A', 'C', 'C', 'C'])
-        self.assertTrue(tasks[2]['result']['skipped'])
-        state = self.client.get('/api/clash').json
-        self.assertEqual(state['rotation']['completed'], 4)
-        self.assertEqual(state['rotation']['next_node'], 'B')
-        self.assertEqual(state['selected'], 'C')  # Flask's original instance sees worker writes.
-
-        restored = ClashManager(self.manager.directory)
-        restored.stop()
-        self.manager.process.wait(timeout=5)
-        restored.start()
-        self.addCleanup(restored.stop)
-        third = batch(['four'])
-        drain()
-        self.assertEqual(self.store.get(third[0]['id'])['progress']['proxy_node'], 'B')
-        self.assertEqual(self.client.get('/api/clash').json['rotation']['completed'], 5)
-        for name, expected in [('missing', {'A'}), ('one', {'A', 'C'}), ('two', {'C'}), ('three', {'C'}), ('four', {'B'})]:
-            actual = [node for node, url in requests if f'/{name}.mp4' in url]
-            self.assertTrue(actual, name)
-            self.assertEqual(set(actual), expected, name)
-        # A manual choice starts a fresh ledger at that node.
-        self.assertEqual(self.post('/api/clash/select', {'name': 'C'}).status_code, 200)
-        state = self.client.get('/api/clash').json['rotation']
-        self.assertEqual(state['completed'], 0)
-        self.assertEqual(state['next_node'], 'C')
-        # Subscription updates remove missing pool entries, disabling only if fewer than two remain.
-        subscription_url = f'http://127.0.0.1:{nodes[0]["port"]}/subscribe'
-        nodes.pop()
-        response = self.post('/api/clash/subscription', {'url': subscription_url})
-        self.assertEqual(response.status_code, 200, response.json)
-        self.assertTrue(response.json['rotation']['enabled'])
-        self.assertEqual(response.json['rotation']['nodes'], ['B', 'A'])
-        self.assertEqual(response.json['rotation']['completed'], 0)
-        nodes.pop()
-        response = self.post('/api/clash/subscription', {'url': subscription_url})
-        self.assertEqual(response.status_code, 200, response.json)
-        self.assertFalse(response.json['rotation']['enabled'])
-        self.assertEqual(response.json['rotation']['nodes'], ['A'])
-
-    @unittest.skipUnless((ROOT / '.tools/mihomo/mihomo.exe').is_file(), 'Project Mihomo binary not installed')
-    def test_two_worker_processes_have_independent_proxy_nodes_and_rotation_counts(self):
-        requests = []
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_CONNECT(self):
-                with socket.create_connection(('127.0.0.1', self.server.server_port)) as upstream:
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.flush()
-                    while True:
-                        ready, _, _ = select.select([self.connection, upstream], [], [], 5)
-                        if not ready:
-                            return
-                        for stream in ready:
-                            data = stream.recv(65536)
-                            if not data:
-                                return
-                            (upstream if stream is self.connection else self.connection).sendall(data)
-
-            def do_GET(self):
-                requests.append((self.server.node, self.path))
-                body = b'parallel transport fixture' * 4096
-                self.send_response(200)
-                self.send_header('Content-Type', 'video/mp4')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                try:
-                    for offset in range(0, len(body), 8192):
-                        self.wfile.write(body[offset:offset + 8192])
-                        time.sleep(0.02)
-                except (ConnectionError, OSError):
-                    pass  # yt-dlp may close its initial format probe early.
-
-            def log_message(self, *args):
-                pass
-
-        nodes = []
-        for name in ('A', 'B'):
-            server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-            server.node = name
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-            self.addCleanup(server.server_close)
-            self.addCleanup(server.shutdown)
-            nodes.append({'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': server.server_port})
-        (self.manager.directory / 'nodes.yaml').write_text(yaml.safe_dump({'proxies': nodes}), encoding='utf-8')
-        self.manager.config['selected'] = 'A'
-        self.manager.save()
-        self.manager.start()
-        self.addCleanup(self.manager.stop)
-        # These are local HTTP fixtures, not YouTube requests. Test routing
-        # independently of the native downloader's 10-20 second sleep preset.
-        response = self.client.put('/api/config', json={'proxy_mode': 'clash', 'worker_count': 2,
-                                                       'youtube_sleep_preset': False}, headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        self.store.set_runtime({'worker_count': 2, 'min_free_gb': 0})
-        response = self.post('/api/clash/rotation', self.rotation(nodes=['A', 'B'], every=1))
-        self.assertEqual(response.status_code, 200, response.json)
-        generation = response.json['rotation']['id']
-        response = self.post('/api/downloads', {'urls': [f'http://192.0.2.1/parallel-{i}.mp4' for i in range(12)]})
-        self.assertEqual(response.status_code, 202, response.json)
-        children = [subprocess.Popen([sys.executable, 'web_worker.py', '--state', str(self.root / 'state'),
-                                     '--slot', str(slot), '--role', 'download'], cwd=ROOT,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for slot in (0, 1)]
-        try:
-            for child in children:
-                self.assertEqual(child.wait(timeout=90), 0)
-        finally:
-            for child in children:
-                if child.poll() is None:
-                    child.kill()
-                    child.wait(timeout=10)
-        completed = [self.store.get(item['id']) for item in response.json['items']]
-        self.assertTrue(all(item['status'] == 'succeeded' for item in completed), completed)
-        self.assertEqual({item['progress']['worker_slot'] for item in completed}, {0, 1})
-        for slot in (0, 1):
-            items = [item for item in completed if item['progress']['worker_slot'] == slot]
-            self.assertGreaterEqual(len(items), 2)
-            self.assertEqual([item['progress']['proxy_node'] for item in items],
-                             [('A', 'B')[i % 2] for i in range(len(items))])
-            identity = generation + (':1' if slot else '')
-            self.assertEqual(self.store.rotation_completed(identity), len(items))
-            for item in items:
-                path = item['url'].split('192.0.2.1')[1]
-                self.assertEqual({node for node, url in requests if path in url}, {item['progress']['proxy_node']})
-        child_manager = self.manager.for_worker(1)
-        self.assertNotEqual(child_manager.proxy_port, self.manager.proxy_port)
-        self.assertEqual(child_manager.directory, self.manager.directory)
-        self.assertEqual(child_manager.config['control_port'], self.manager.config['control_port'])
-        self.assertEqual(child_manager.owned_process().pid, self.manager.owned_process().pid)
-        self.assertFalse((self.manager.directory / 'workers').exists())
-        self.manager.stop()
-        self.assertFalse(child_manager.status()['running'])
 
 
 if __name__ == '__main__':
     unittest.main()
-
-

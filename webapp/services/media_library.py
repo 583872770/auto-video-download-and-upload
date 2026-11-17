@@ -21,8 +21,6 @@ class MediaLibraryService:
         with self.context.media_lock, self.context.settings_lock:
             config, base = self.context.settings()
             protected = [ROOT, self.context.config_path, self.context.store.directory]
-            if config.get('youtube_cookie'):
-                protected.append(resolve_path(base, config['youtube_cookie']))
             root = validate_clear_root(video_directory(config, base), protected)
             if data.get('directory') != str(root):
                 raise ValueError('素材目录已变化，请刷新页面后重新确认。')

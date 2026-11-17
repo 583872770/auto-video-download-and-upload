@@ -42,25 +42,12 @@ async function save() {
           props.mode === 'join'
             ? [...new Set([...before, ...profiles])]
             : before.filter((id) => !profiles.includes(id));
-        if (ids.length === 1)
-          throw new Error(
-            '账号池至少需要 2 个账号，请同时选择至少 2 个加入，或将剩余账号全部移出。单账号可在详情中选择“单独使用”。',
-          );
         const body: Record<string, unknown> = { youtube_cookie_pool: ids };
-        const current = config.youtube_cookie
-          .replaceAll('\\', '/')
-          .split('/')
-          .at(-1)
-          ?.replace(/\.txt$/, '');
-        if (props.mode === 'remove' && profiles.includes(current || '')) body.youtube_cookie = '';
         await api.request('/api/config', { method: 'PUT', scope, body });
         const { config: saved } = await api.request<{ config: ConsoleConfig }>('/api/config', {
           scope,
         });
-        if (
-          JSON.stringify(saved.youtube_cookie_pool) !== JSON.stringify(ids) ||
-          (body.youtube_cookie === '' && saved.youtube_cookie !== '')
-        )
+        if (JSON.stringify(saved.youtube_cookie_pool) !== JSON.stringify(ids))
           throw new Error('保存结果尚未确认，请刷新清单核对。');
         results.value.push({
           id: target!,
@@ -100,7 +87,7 @@ async function save() {
     <p class="muted">
       {{
         mode === 'join'
-          ? '将账号加入各自所属实例的下载账号池，保留其他成员。账号需先完成登录，每个账号池至少需要 2 个账号。'
+          ? '将账号加入各自所属实例的下载账号池，保留其他成员。账号需先完成登录，单个账号也可以加入。'
           : '从各自所属实例移出所选账号，不删除账号资料或登录凭据。'
       }}账号冷却与运行记录均保留。
     </p>

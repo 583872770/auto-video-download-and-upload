@@ -226,22 +226,19 @@ class YouTubeAuth:
     def check_startup(self, config, base, **options):
         """Check an available pool session without bypassing account cooldowns."""
         if not config.get('youtube_cookie_pool'):
-            return self.check(config, base, **options)
+            return {'state': 'missing', 'message': '当前实例没有账号，请在账号管理中分配并登录账号。'}
         from webapp.cookie_pool import CookiePool
         from webapp.throughput import PipelineBusy
 
         pool = CookiePool(self.store, config, base, None, strict=False)
 
         def waiting(status):
-            if status['halted']:
-                return {'state': 'blocked', 'message': status['reason'], 'source': 'cookie_pool_halted'}
             sessions = status['session_states']
             if sessions and all(s['state'] in ('manual', 'cooldown') for s in sessions) and any(
                     s['state'] == 'manual' for s in sessions):
                 return {'state': 'waiting', 'message': status['capacity_summary']['reason']}
-            if status['cooldown_until'] > time.time() or (
-                    sessions and all(s['state'] == 'cooldown' for s in sessions)):
-                until = max(status['cooldown_until'], min((s['cooldown_until'] for s in sessions), default=0))
+            if sessions and all(s['state'] == 'cooldown' for s in sessions):
+                until = min(s['cooldown_until'] for s in sessions)
                 return {'state': 'waiting', 'message': '账号池正在冷却，启动后自动等待，到期按低频恢复。',
                         'cooldown_until': until}
             return None
@@ -312,14 +309,6 @@ class YouTubeAuth:
         result = {'state': 'missing', 'message': '请先登录 YouTube 或上传 Cookie，再开始下载。',
                   'connection': connection, 'checked_at': time.time()}
         try:
-            # Older deployments could persist profiles before selecting one.
-            # Use the first saved profile for this preflight as a safe fallback;
-            # the settings endpoint also persists this repair for future jobs.
-            if not config.get('youtube_cookie'):
-                from webapp.cookie_profiles import CookieProfiles
-                saved = CookieProfiles(base, self.store).items()
-                if saved:
-                    config = {**config, 'youtube_cookie': f"Cookies/profiles/{saved[0]['id']}.txt"}
             if not config.get('youtube_cookie'):
                 raise FileNotFoundError
             from webapp.cookie_profiles import CookieProfiles
@@ -404,14 +393,11 @@ class YouTubeAuth:
             raise self._limit_error(config, base, result)
         return result
 
-    def reject(self, message, *, request_mode='authenticated', node='', profile_id=None):
+    def reject(self, message, *, node='', profile_id=None):
         if not profile_id:
             self.invalidate()
-        if request_mode == 'anonymous_fallback':
-            message = ('带 Cookie 的请求返回 Video unavailable；同一出口的匿名重试要求机器人验证。'
-                       '这不能证明上传的 Cookie 已失效。请在同一出口重新检测登录和视频播放。')
         result = {'state': 'verification_required', 'message': message, 'checked_at': time.time(),
-                  'source': 'download', 'request_mode': request_mode, 'node': node}
+                  'source': 'download', 'request_mode': 'authenticated', 'node': node}
         if not profile_id:
             self._write('youtube_auth_latest', result)
         return result

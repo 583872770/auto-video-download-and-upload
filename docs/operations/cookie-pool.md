@@ -14,11 +14,11 @@
 
 | 配置键 | 默认值 | 含义 |
 | --- | --- | --- |
-| `youtube_start_interval` | 120 秒 | 同一账号两次任务启动的最小间隔；非池模式按实例计算 |
+| `youtube_start_interval` | 120 秒 | 同一账号两次任务启动的最小间隔 |
 | `youtube_cookie_pool_start_interval` | 5 秒 | 同实例账号池共用的启动间隔，0 关闭此项限制 |
 | `youtube_task_rest_interval` | 0 秒 | 任务结束后的休息时间，0 关闭；支持 0–3600 秒 |
 | `youtube_cookie_session_limit` | 1 | 每核心会话的配置并发，实际容量还受预热与恢复约束 |
-| `youtube_cookie_pool_worker_limit` | 20 | 账号池下载进程上限，0 不施加此配置上限，执行边界仍为 64 |
+| `download_task_limit` | 20 | 账号池下载进程上限，0 不施加此配置上限，执行边界仍为 64 |
 | `youtube_hourly_start_limit` | 30 | 滚动一小时启动预算，0 不限制该预算 |
 | `youtube_daily_start_limit` | 720 | 滚动一天启动预算，0 不限制该预算 |
 

@@ -97,7 +97,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     if result or any(getattr(c, 'account_rate_limited', False) for c in chain):
         source = source or 'youtube'
     local_types = {'PipelineBusy', 'DownloadLeaseLost', 'DiskPressure', 'DiskCoordinationBusy',
-                   'BrowserEnvironmentRequired', 'DownloadEnvironmentRequired', 'LocalDeliveryError'}
+                   'DownloadEnvironmentRequired', 'LocalDeliveryError'}
     local = any(any(cls.__name__ in local_types for cls in type(c).__mro__) or type(c).__module__.startswith('sqlalchemy') or
                 isinstance(c, OSError) and c.errno in (5, 13, 28, 30, 122) for c in chain)
     transient = any(bool(getattr(c, 'retryable', False)) or isinstance(c, (TimeoutError, ConnectionError))
@@ -126,8 +126,6 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
             network_reason = 'network_unreachable'
     if any(type(c).__name__ == 'OSSUploadError' for c in chain):
         kind, source, phase = 'storage_failure', 'oss', 'upload'
-    elif result.get('source') == 'cookie_pool_halted':
-        kind, source, evidence = 'local_halt', 'local', 'local_state'
     elif local:
         kind, source, evidence = 'local_resource', 'local', 'typed_exception'
     elif any(getattr(c, 'account_rate_limited', False) for c in chain) or 'your account has been rate-limited' in lower:
@@ -197,20 +195,18 @@ def recovery_policy(failure, config, *, youtube=True):
             and failure.kind in ('authentication_required', 'verification_required')):
         return RecoveryPolicy('halt', manual=True, targets=('session',))
     if failure.kind in ('account_rate_limit', 'authentication_required', 'verification_required'):
-        targets = ('pool', 'session', 'execution')
-        if failure.kind == 'account_rate_limit':
-            targets += ('shared', 'pacing')
+        targets = ('execution',)
         return RecoveryPolicy('halt', max(3600, failure.retry_after or 0), True, targets)
     if failure.kind == 'request_rate_limit':
         return RecoveryPolicy('cooldown', max(int(config.get('youtube_throttle_cooldown', 300)) if youtube else 30,
-                                               failure.retry_after or 0), targets=('pool', 'session', 'shared', 'pacing'))
+                                               failure.retry_after or 0), targets=('task',))
     if failure.kind == 'transient_failure':
         # Transport faults never change account pacing or recovery observations.
         # Server responses get a task delay; repeated 5xx may briefly pause the
-        # affected channel. Retry-After is still honored by task settlement.
+        # source service. Retry-After is still honored by task settlement.
         if failure.http_status in (408, 500, 502, 503, 504):
             return RecoveryPolicy('retry', max(15, failure.retry_after or 0),
-                                  targets=('task', 'channel') if failure.http_status >= 500 else ('task',))
+                                  targets=('task', 'source') if failure.http_status >= 500 else ('task',))
         return RecoveryPolicy()
     return RecoveryPolicy()
 

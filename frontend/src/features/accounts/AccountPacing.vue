@@ -15,25 +15,6 @@ const config = ref<ConsoleConfig>(),
 const pacing = reactive<Record<string, string | number | boolean>>({});
 const fields = [
   {
-    key: 'youtube_pacing_mode',
-    label: 'YouTube 请求节奏',
-    options: [
-      ['manual', '固定间隔'],
-      ['adaptive', '渐进调速与累计预算'],
-    ],
-    help: '非账号池模式下使用；渐进模式从至少 60 秒起步，稳定交付后逐步提速。',
-  },
-  {
-    key: 'youtube_cookie_usage',
-    label: 'Cookie 使用策略',
-    options: [
-      ['auto', '按需使用（推荐）'],
-      ['always', '始终使用'],
-      ['never', '仅匿名'],
-    ],
-    help: '按需先匿名，仅明确要求登录时使用当前 Cookie 重试。账号池始终使用池内会话。',
-  },
-  {
     key: 'youtube_cookie_pool_start_interval',
     label: '账号池共用启动间隔（秒）',
     help: '全部 Cookie 共用，0 关闭此间隔。新任务使用新值，已有等待窗口保留到期。',
@@ -56,21 +37,12 @@ const fields = [
   {
     key: 'youtube_hourly_start_limit',
     label: '滚动一小时启动预算',
-    help: '0 不限制；账号池固定与渐进模式均生效，视频与重试共用额度。',
+    help: '0 不限制；逐账号生效，视频与重试共用额度。',
   },
   {
     key: 'youtube_daily_start_limit',
     label: '滚动二十四小时启动预算',
     help: '0 不限制；保存节奏、重启或重新导入不会清空账号池预算记录。',
-  },
-  {
-    key: 'youtube_cookie_fallback',
-    label: 'Cookie 不可用时匿名重试',
-    options: [
-      [false, '保留原始错误（推荐）'],
-      [true, '同一出口匿名重试一次'],
-    ],
-    help: '验证失败只暂停可归属的账号，匿名重试可能再次触发验证。',
   },
   {
     key: 'youtube_sleep_preset',
@@ -136,17 +108,6 @@ async function save() {
     emit('saved');
   });
 }
-async function recover() {
-  await op.run(async () => {
-    const result = await api.request<{ message: string }>('/api/youtube/cookies/pool/recover', {
-      method: 'POST',
-      scope: instances.scope(),
-      body: {},
-    });
-    op.message.value = result.message;
-    emit('saved');
-  });
-}
 usePolling(
   computed(() => !config.value && !op.busy.value),
   async () => {
@@ -206,15 +167,6 @@ usePolling(
           <button :disabled="!dirty">保存节奏</button>
         </fieldset>
       </form>
-      <details class="instance-recovery">
-        <summary>实例账号池恢复</summary>
-        <p class="muted">
-          实例整体受到拦截时使用。请先停止下载并等待任务结束；单个账号的登录问题请回到账号清单检测。原有账号冷却仍保留。
-        </p>
-        <button :disabled="!admin || dirty || op.busy.value" @click="recover">
-          检测账号池并解除拦截
-        </button>
-      </details>
     </template>
   </section>
 </template>

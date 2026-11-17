@@ -22,6 +22,14 @@ from webapp.subtitle_tracks import SubtitleSession, caption_plan, translated, pr
 
 def reporting_downloader(session):
     class DeliveryDownloader(ParallelYoutubeDL):
+        def to_screen(self, message, *args, **kwargs):
+            if str(message).startswith('[download] Sleeping '):
+                sleeping = re.match(r'\[download\] Sleeping (\d+(?:\.\d+)?) seconds\b', str(message))
+                session.progress.state.update(stage='waiting_request', speed=None, eta=None,
+                    request_wait_until=time.time() + float(sleeping[1]) if sleeping else None)
+                session.progress.save(force=True)
+            return super().to_screen(message, *args, **kwargs)
+
         def report_warning(self, message, *args, **kwargs):
             session.failure.warning(message)
             session.progress.state['warning_counts'] = dict(session.failure.warnings)
@@ -184,9 +192,9 @@ def choose(info, kind, max_height):
     return (only or candidates)[-1]
 
 
-def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
+def attempt(executor, addresses):
     try:
-        return acquire(executor, channel, addresses, without_cookies=without_cookies, cookie_retry=cookie_retry)
+        return acquire(executor, addresses)
     except Exception:
         # Retain already acquired outputs even if a later caption request fails.
         # Settlement persists the source recovery decision before handing off
@@ -197,7 +205,7 @@ def attempt(executor, channel, addresses, *, without_cookies=False, cookie_retry
         raise
 
 
-def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry=False):
+def acquire(executor, addresses):
     session = executor.session
     from webapp.downloads import DownloadFailure
     session.failure = DownloadFailure()
@@ -226,12 +234,9 @@ def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry
         sub_done = bool(sub_rows) and all(r['status'] == 'waived' or r['language'] and ready(session, 'subtitle', r['language']) for r in sub_rows)
     if not remaining and sub_done:
         return False
-    from webapp.channels import execution_config
-    from webapp.parallel_http import fragment_connection_budget, transfer_connection_units
-    from webapp.throughput import runtime_limits
-    transfer_count = runtime_limits(session.config, session.store.directory)['transfers']
-    fragment_budget = fragment_connection_budget(session.config, channel.connection_limit, transfer_count)
-    options = build_ydl_options({**execution_config(session.config, channel), '_use_youtube_cookie': not without_cookies}, session.base)
+    from webapp.concurrency_policy import fragment_limit
+    fragment_budget = fragment_limit(session.config)
+    options = build_ydl_options(session.config, session.base)
     options.update(ignoreerrors=False, download_archive=None, writesubtitles=False, writeautomaticsub=False,
                    writeinfojson=False, writethumbnail=False, post_hooks=[],
                    format='bestvideo/bestaudio/best', progress_hooks=[progress.hook, session.meter.hook],
@@ -241,24 +246,19 @@ def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry
         options = provider_options(options, force_subs=translating)
         # Listing translated variants of author-provided captions is opt-in.
         options['writeautomaticsub'] = spec['subtitles'].get('mode') == 'original_and_translated'
-    if without_cookies or session.config.get('youtube_cookie_usage') == 'never' and not session.config.get('_cookie_pool_selected'):
-        options.pop('cookiefile', None)
     temporary = Path(session.config.get('_temporary_directory') or session.payload['_disk_workspace']) / 'delivery'
     temporary.mkdir(parents=True, exist_ok=True)
-    progress.state.update(download_method='yt_dlp', channel_id=channel.id, output_types=spec['outputs'], delivery_version=session.config['_delivery_version'])
-    session.meter.begin(channel)
+    progress.state.update(download_method='yt_dlp', output_types=spec['outputs'], delivery_version=session.config['_delivery_version'])
+    session.meter.begin()
     try:
         with download_cookie_session(options) as safe:
             with reporting_downloader(session)(safe) as downloader:
-                if session.youtube:
-                    session.scheduler.wait_youtube_start(channel)
-                with session.scheduler.permit(channel, 'resolve'):
+                with session.scheduler.permit('resolve'):
                     progress.state.update(stage='extracting');progress.save(force=True)
                     started = time.monotonic()
                     info = downloader.extract_info(addresses[0], download=False)
                     session.meter.resolved(time.monotonic() - started)
                 caption_session = SubtitleSession(downloader)
-                session.scheduler.prepared()
                 if not info or info.get('_type') in ('playlist', 'multi_video'):
                     raise RuntimeError('来源不是可处理的单条媒体。')
                 session.current_video.update(id=info.get('id'), title=info.get('title', ''))
@@ -271,7 +271,7 @@ def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     publish(session, output, 'metadata')
                     print('视频信息已保存：JSON，包含标题、简介、频道等来源资料。', flush=True)
                 if 'thumbnail' in remaining:
-                    thumbnail(executor, channel, info, downloader, temporary, keys['thumbnail'])
+                    thumbnail(executor, info, downloader, temporary, keys['thumbnail'])
                 tracks = {}
                 acquired = {}
                 need_video = any(k in remaining for k in ('video_only', 'av'))
@@ -294,7 +294,7 @@ def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     progress.state.update(output_kind=kind, stage='downloading');progress.save(force=True)
                     session.failure_phase = 'transfer'
                     transfer_info = {**info, **selected}
-                    with executor.transmitting(channel, transfer_info, transfer_connection_units(transfer_info, fragment_budget, native=True)):
+                    with executor.transmitting():
                         success, _ = downloader.dl(str(path), transfer_info)
                     if not success:
                         raise RuntimeError('来源媒体轨道下载失败。')
@@ -314,16 +314,13 @@ def acquire(executor, channel, addresses, *, without_cookies=False, cookie_retry
                     session.local_jobs.append(dict(kind=kind, inputs=[str(p) for p in inputs],
                         mp4=mp4, mp3=mp3, auto=kind == 'av' and spec['av']['container'] == 'auto'))
                 if not sub_done:
-                    subtitles(executor, channel, info, safe, temporary, caption_session)
+                    subtitles(executor, info, safe, temporary, caption_session)
     except (yt_dlp.utils.DownloadError, HTTPError) as error:
-        text = session.failure.message(error).lower()
-        if without_cookies and not cookie_retry and not session.config.get('_cookie_pool_selected') and session.config.get('youtube_cookie_usage', 'auto') == 'auto' and session.config.get('youtube_cookie') and not any(s in text for s in ('bot', 'captcha')) and any(s in text for s in ('sign in to', 'login required', 'age-restricted', 'private video')):
-            return attempt(executor, channel, addresses, without_cookies=False, cookie_retry=True)
         raise session.failure.as_error(error) from error
     return False
 
 
-def thumbnail(executor, channel, info, downloader, temporary, key):
+def thumbnail(executor, info, downloader, temporary, key):
     from PIL import Image
     session = executor.session
     # yt-dlp orders thumbnails from least to most preferred. Reuse the same
@@ -343,7 +340,7 @@ def thumbnail(executor, channel, info, downloader, temporary, key):
                          http_headers=info.get('http_headers') or {}, format_id='thumbnail')
     session.progress.state.update(output_kind='thumbnail', output_language='', stage='downloading')
     session.progress.save(force=True)
-    with executor.transmitting(channel, transfer_info, 1):
+    with executor.transmitting():
         for url in urls:
             transfer_info.update(url=url, protocol='https' if url.startswith('https:') else 'http')
             try:
@@ -374,7 +371,7 @@ def thumbnail(executor, channel, info, downloader, temporary, key):
     print('封面图已保存：来源最佳封面，保留原始图片格式。', flush=True)
 
 
-def subtitles(executor, channel, info, safe, temporary, caption_session):
+def subtitles(executor, info, safe, temporary, caption_session):
     session = executor.session
     spec = session.config['_delivery_contract']
     config = spec['subtitles']
@@ -423,7 +420,7 @@ def subtitles(executor, channel, info, safe, temporary, caption_session):
                                       subtitle_source=source_kind)
         session.progress.save(force=True)
         try:
-            with executor.transmitting(channel, subtitle_info, 1):
+            with executor.transmitting():
                 with reporting_downloader(session)(options) as downloader:
                     caption_session.attach(downloader)
                     downloader.process_ie_result(subtitle_info, download=True)

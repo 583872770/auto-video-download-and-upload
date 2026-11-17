@@ -47,11 +47,9 @@ LOCAL_RPC_METHODS = {
     '/api/clash/test': {'POST'},
     '/api/youtube/account-login': {'GET', 'HEAD', 'POST'},
     '/api/youtube/account-login/cancel': {'POST'},
-    '/api/youtube/cookies': {'GET', 'HEAD', 'POST'},
+    '/api/youtube/cookies': {'GET', 'HEAD'},
     '/api/youtube/cookies/export': {'POST'},
-    '/api/youtube/cookies/select': {'POST'},
     '/api/youtube/cookies/check': {'POST'},
-    '/api/youtube/cookies/pool/recover': {'POST'},
     '/api/youtube/cookies/delete': {'POST'},
     '/api/youtube/auth/check': {'POST'},
 }
@@ -95,11 +93,7 @@ def rpc_allowed():
         return method in LOCAL_RPC_METHODS[path]
 
     # Allow check tasks submission
-    if path == '/api/tasks' and method == 'POST':
-        data = request.get_json(silent=True)
-        return isinstance(data, dict) and data.get('action') == 'check'
 
-    # Read-only task logs
     if re.fullmatch(r'/api/delivery/files/[a-f0-9]{64}', path):
         return method in ('GET', 'HEAD')
 

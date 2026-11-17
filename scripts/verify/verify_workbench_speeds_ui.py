@@ -20,7 +20,7 @@ from webapp.browser import browser_options
 def main():
     output = Path('.runtime/verify/workbench-speeds')
     output.mkdir(parents=True, exist_ok=True)
-    environment = {key: value for key, value in os.environ.items() if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(('VIDEO_', 'MYSQL_', 'LOGIN_'))}
     with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, environment, clear=True):
         root = Path(temporary)
         config = root / 'config.yaml'

@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import and_, func, select, text
 
 from webapp.database import instances, settings, tasks, counters, download_lists, cookie_profiles, job_profiles
-from webapp.config_schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, DEFAULTS
+from webapp.config.schema import POLICY_FIELDS, LOCAL_FIELDS, RESOURCE_LIMITS, DEFAULTS
 from webapp.service_role import normalize_role
 
 ONLINE_SECONDS = 45
@@ -136,7 +136,7 @@ class Fleet:
                 'config': {k: local['config'][k] for k in POLICY_FIELDS if k in local['config']}}
 
     def save_policy(self, config):
-        """Compatibility API: update this instance only; HTTP saves also persist YAML."""
+        """Update this instance only; HTTP saves also persist YAML."""
         local = self.local_settings()
         self.save_local({**local['config'], **config}, local['base'], local['clash_directory'])
         return self.policy()
@@ -219,7 +219,6 @@ class Fleet:
                 self.store.statistics.stop_session(db, identity)
 
     def list(self, *, compact=False, detail_id=None):
-        from webapp.settings import download_methods
         with self.store.connect() as db:
             stamp = self.clock(db)
             from webapp.database import delivery_work
@@ -269,20 +268,14 @@ class Fleet:
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading' and
                         (not p.get('_reported_at') or stamp-p['_reported_at'] <= 10) and
                         (not p.get('last_bytes_at') or stamp-p['last_bytes_at'] <= 10)),
-                    'worker_count': config.get('worker_count', 1), 'yt5s_browser_count': config.get('yt5s_browser_count', 2),
                     'throughput': local.get('throughput'),
                     'directory': local.get('directory', ''),
                     'policy': {k: config[k] for k in POLICY_FIELDS if k in config},
                     'policy_version': local.get('policy_version', 1),
                     'min_free_gb': config.get('min_free_gb', 2), 'statistics': totals.get(row['id'], {})})
-                result[-1]['resources'] = {key: config.get(key, default) for key, default in (
-                    ('builtin_transfer_limit', DEFAULTS['builtin_transfer_limit']),
-                    ('youtube_cookie_session_limit', DEFAULTS['youtube_cookie_session_limit']),
-                    ('youtube_cookie_pool_start_interval', DEFAULTS['youtube_cookie_pool_start_interval']), ('youtube_cookie_pool_worker_limit', 20),
-                    ('youtube_cookie_pool_preparation_workers', 4))}
+                result[-1]['resources'] = {key: config.get(key, DEFAULTS[key]) for key in
+                    ('download_task_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval')}
                 result[-1]['cookie_count'] = len(config.get('youtube_cookie_pool', []))
-                result[-1]['has_cookie'] = bool(config.get('youtube_cookie'))
-                result[-1]['uses_browser'] = bool({'yt5s', 'yt1d', 'bergung'} & set(download_methods(config)))
                 result[-1]['current_tasks'] = current_tasks.get(row['id'], [])
                 result[-1]['selected_job'] = jobs.get(selections.get('workbench_job:' + row['id']))
             budget = int(db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget')).scalar_one())

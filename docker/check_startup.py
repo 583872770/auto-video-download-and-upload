@@ -12,7 +12,7 @@ from app import create_app
 
 def main():
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('VIDEO_', 'MYSQL_', 'YT5S_'))}
+                   if not key.startswith(('VIDEO_', 'MYSQL_', 'LOGIN_'))}
     with patch.dict(os.environ, environment, clear=True), \
             tempfile.TemporaryDirectory(prefix='video-startup-check-') as temporary:
         root = Path(temporary)
@@ -34,7 +34,7 @@ def main():
                 assert (app.extensions['fleet'] is not None) == registered
                 with client.session_transaction() as session:
                     csrf = session['csrf']
-                assert client.put('/api/config', json={'worker_count': 1},
+                assert client.put('/api/config', json={'download_task_limit': 1},
                                   headers={'X-CSRF-Token': csrf}).status_code == 200
             finally:
                 app.extensions['task_store'].db.engine.dispose()

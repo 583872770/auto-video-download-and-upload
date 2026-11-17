@@ -30,10 +30,8 @@ def assets(static_folder):
 def render_workspace(app):
     """Share the authenticated Vue shell without exposing runtime configuration."""
     from flask import g, render_template, session
-    from webapp.cobalt_catalog import catalog
     bundle = assets(app.static_folder)
     return render_template('frontend.html', assets=bundle, bootstrap={
         'csrf': session['csrf'], 'fleetEnabled': app.extensions.get('fleet') is not None,
         'role': g.console_user['role'] if getattr(g, 'console_user', None) else 'admin',
-        'cobaltCatalog': catalog(),
     })

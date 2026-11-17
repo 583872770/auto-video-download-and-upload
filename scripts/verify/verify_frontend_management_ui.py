@@ -34,7 +34,7 @@ def token(client):
 def main():
     output = Path('.runtime/verify/frontend-management')
     output.mkdir(parents=True, exist_ok=True)
-    environment = {k: v for k, v in os.environ.items() if not k.startswith(('VIDEO_', 'MYSQL_', 'YT5S_', 'REDIS_'))}
+    environment = {k: v for k, v in os.environ.items() if not k.startswith(('VIDEO_', 'MYSQL_', 'LOGIN_', 'REDIS_'))}
     environment['VIDEO_ACCOUNT_ENCRYPTION_KEY'] = base64.urlsafe_b64encode(b'm' * 32).decode()
     with tempfile.TemporaryDirectory(prefix='vue-management-') as temporary, patch.dict(os.environ, environment, clear=True), ExitStack() as stack:
         root = Path(temporary)
@@ -51,7 +51,7 @@ def main():
             base = root / identity
             base.mkdir()
             config = base / 'config.yaml'
-            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nmin_free_gb: 0\ndownload_methods: [yt_dlp]\n', encoding='utf-8')
+            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nmin_free_gb: 0\n', encoding='utf-8')
             app = create_app(config, base / 'state', start_worker=False, role='hybrid', instance_id=identity,
                              instance_name=identity, database_url='sqlite:///' + (root / 'shared.db').as_posix())
             apps[identity] = app

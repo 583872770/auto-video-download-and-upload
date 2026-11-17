@@ -86,7 +86,7 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertEqual([a['id'] for a in accounts], ['cool', 'ready'])
         self.assertTrue(all(a['known'] for a in accounts))
         self.assertIn('account_cooldown', [r['code'] for r in accounts[0]['reasons']])
-        self.assertEqual(beta['account_summary']['accounts'], [])
+        self.assertTrue(all(not a['known'] for a in beta['account_summary']['accounts']))
         local['throughput']['time'] = stamp - 25
         with self.manager.connect() as db:
             db.execute(instances.update().where(instances.c.id == 'alpha').values(config=json.dumps(local)))
@@ -526,7 +526,7 @@ class StandaloneWorkbenchTests(unittest.TestCase):
 
     def test_delete_last_job_clears_workbench_and_preserves_delivered_files_and_ledger(self):
         job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk\nWMu6ANTg8mk', price='2')
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.client.post('/api/jobs/workbench', json={
                 'action': 'start', 'job_id': job}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
@@ -558,7 +558,7 @@ class StandaloneWorkbenchTests(unittest.TestCase):
 
     def test_start_pause_stop_and_persisted_selection(self):
         job = self.create(urls='npNnbj46_ik\n2Gu7q-KUXCk')
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.client.post('/api/jobs/workbench', json={'action':'start','job_id':job}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         first = self.store.claim('owner')

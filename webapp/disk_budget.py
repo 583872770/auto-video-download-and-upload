@@ -16,8 +16,9 @@ import uuid
 
 import psutil
 
-from webapp.config_schema import DISK_DEFAULTS, DISK_FIELDS
+from webapp.config.schema import DISK_DEFAULTS, DISK_FIELDS
 from webapp.worker.formatting import format_bytes
+from webapp.db_pool_calculator import target_workers
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
@@ -286,7 +287,7 @@ class DiskBudget:
                 'browsers': [self.runtime / 'browser-profiles'],
                 'logs': [self.directory / 'logs'],
                 'imports': [self.directory / 'imports', self.runtime / 'uploads'],
-                'cache': [self.runtime / 'cache', self.directory / 'yt5s'],
+                'cache': [self.runtime / 'cache'],
                 'downloads': [self.runtime / 'downloads']}
 
     def _get(self, db, key, default=None):
@@ -401,8 +402,8 @@ class DiskBudget:
                 capacity = max(0, min(self.limits['test'], int(self.config['disk_budget_gb']) * GIB - other,
                                      free + usage['test'] - int(self.config['disk_min_free_gb']) * GIB))
                 result['capacity_estimate'] = dict(sample_count=len(samples), peak_bytes=peak,
-                    suggested_slots=capacity // peak, configured_slots=int(self.config.get('worker_count', 1)),
-                    budget_for_configured_bytes=peak * int(self.config.get('worker_count', 1)),
+                    suggested_slots=capacity // peak, configured_slots=target_workers(self.config),
+                    budget_for_configured_bytes=peak * target_workers(self.config),
                     additional_slots=max(0, min(self.limits['test']-committed['test'],
                         int(self.config['disk_budget_gb']) * GIB - sum(committed.values()),
                         free-int(self.config['disk_min_free_gb']) * GIB)) // peak)
@@ -430,8 +431,7 @@ class DiskBudget:
             temporary.write_text(content, encoding='utf-8')
             temporary.replace(target)
     def _version(self):
-        policy_fields = ('download_methods', 'download_method', 'download_format', 'yt5s_quality',
-                         'downmp3_quality', 'yt1d_quality', 'bergung_quality', 'storage_mode')
+        policy_fields = ('storage_mode',)
         return json.dumps({'disk': {k: self.config[k] for k in sorted(DISK_FIELDS)},
                            'policy': {k: self.config.get(k) for k in policy_fields}}, sort_keys=True)
 
@@ -748,40 +748,17 @@ class DiskBudget:
     @staticmethod
     def receipts_recorded(store, task, path):
         from sqlalchemy import select
-        from webapp.database import tasks, test_files
+        from webapp.database import tasks
+        from webapp.delivery.artifacts import recorded_test_output
         receipts = json.loads(path.read_text(encoding='utf-8'))
-        if not receipts:
+        if not receipts or not all(item.get('artifact') and item.get('complete') for item in receipts):
             return False
         with store.connect() as db:
-            recorded = db.execute(select(test_files).where(test_files.c.task_id == task)).mappings().all()
-            if all(item.get('artifact') for item in receipts):
-                from webapp.delivery.artifacts import recorded_test_output
-                row = db.execute(select(tasks).where(tasks.c.id == task)).mappings().first()
-                return bool(row and all(item.get('complete') and
-                    recorded_test_output(db, row, item['artifact']) for item in receipts))
-            by_path = {r['path']: r['size'] for r in recorded}
-            if all(by_path.get(item['path']) == item['size'] for item in receipts):
-                return True
-            # Single-video tasks are counted once across attempts, whose temporary
-            # directories differ. Match that ledger identity, not the old path.
-            if len(receipts) != 1 or len(recorded) != 1:
-                return False
             row = db.execute(select(tasks).where(tasks.c.id == task)).mappings().first()
-            if not row or row['action'] != 'download':
-                return False
-            decoded = store.decode(row, private=True, db=db)
-        item, entry = receipts[0], recorded[0]
-        if (len(decoded['payload'].get('urls', [])) != 1 or not item.get('complete')
-                or not item.get('video_id') or item['video_id'] != decoded['video_id']
-                or item['video_id'] != entry['video_id'] or item['size'] <= 0
-                or item['size'] != entry['size']
-                or entry['id'] != store.statistics.file_identity(row, item['path'], test_mode=True)):
-            return False
-        current = safe_path(item['path'], path.parent)
-        return current.is_file() and current.stat().st_size == item['size']
+            return bool(row and all(recorded_test_output(db, row, item['artifact']) for item in receipts))
 
     def recover_test_result(self, store, task_id):
-        """A newly claimed owner can finish a complete file left before DB commit."""
+        """Recover only typed delivery receipts owned by a newly claimed task."""
         from sqlalchemy import select
         from webapp.database import delivery_work
         with store.connect() as db:
@@ -802,47 +779,18 @@ class DiskBudget:
                     continue
                 receipts = json.loads(receipt_path.read_text(encoding='utf-8'))
                 task = store.get(task_id, private=True)
-                if task and receipts and all(item.get('artifact') for item in receipts):
-                    from webapp.delivery.executor import recover_test_outputs
-                    result = recover_test_outputs(store, task_id, receipts, root)
-                    if not result and not self.receipts_recorded(store, task_id, receipt_path):
-                        continue
-                    shutil.rmtree(root)
-                    with self.connect() as db:
-                        db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
-                    if result:
-                        result['files_deleted'] = True
-                        return result
+                if not task or not receipts or not all(item.get('artifact') for item in receipts):
                     continue
-                # A direct download with multiple videos has no unambiguous whole
-                # task completion receipt. Preserve it for inspection.
-                if not task or len(task['payload'].get('urls', [])) != 1 or len(receipts) != 1:
+                from webapp.delivery.executor import recover_test_outputs
+                result = recover_test_outputs(store, task_id, receipts, root)
+                if not result and not self.receipts_recorded(store, task_id, receipt_path):
                     continue
-                item = receipts[0]
-                path = safe_path(item['path'], root)
-                if not item.get('complete') or not path.is_file() or path.stat().st_size != item['size']:
-                    continue
-                if not store.heartbeat(task_id, store.owner):
-                    return None
-                if item.get('method'):
-                    store.statistics.methods.select_provider(task_id, item['method'])
-                store.statistics.record_file(task_id, path, item.get('video_id', ''), item.get('title', ''), test_mode=True)
-                if not self.receipts_recorded(store, task_id, receipt_path):
-                    raise DiskPressure('完整测试文件与统计登记尚未核对一致，已保留文件，等待核对。')
-                try:
-                    shutil.rmtree(root)
-                    with self.connect() as db:
-                        db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
-                    try:
-                        root.parent.rmdir()
-                    except OSError:
-                        pass
-                    deleted = True
-                except OSError:
-                    deleted = False
-                return dict(message='已恢复上次完整测试结果，统计已核对，无需重新下载。',
-                            test_mode=True, files_deleted=deleted, skipped=False, file_count=1,
-                            file_bytes=item['size'], billable_bytes=0, download_method=item.get('method'), recovered=True)
+                shutil.rmtree(root)
+                with self.connect() as db:
+                    db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
+                if result:
+                    result['files_deleted'] = True
+                    return result
         return None
 
     def _clean_imports(self, store):
@@ -867,19 +815,6 @@ class DiskBudget:
                 continue
 
     def _clean_diagnostics(self, grace):
-        for path in (self.directory / 'yt5s').glob('worker-*'):
-            if not re.fullmatch(r'worker-\d+', path.name):
-                continue
-            with file_lock(self.directory / (path.name + '.lock')) as available:
-                if not available:
-                    continue
-                for child in path.glob('resolve-*'):
-                    try:
-                        safe_path(child, self.directory)
-                        if time.time() - child.stat().st_mtime >= grace:
-                            shutil.rmtree(child)
-                    except (OSError, ValueError):
-                        pass
         for path in (self.runtime / 'cache').glob('worker-*'):
             if not re.fullmatch(r'worker-(\d+|maintenance|processing-[0-7])', path.name):
                 continue
@@ -1079,4 +1014,3 @@ class DiskLease:
                 (self.budget.directory / 'disk-locks' / (self.id + '.lock')).unlink(missing_ok=True)
         if self.error and not isinstance(value, (KeyboardInterrupt, SystemExit)):
             raise self.error
-

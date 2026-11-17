@@ -15,7 +15,7 @@ from sqlalchemy.exc import OperationalError
 
 from tests import test_scale
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.database import (archive, deliveries, download_lists, download_sessions, method_totals,
+from webapp.database import (archive, deliveries, download_lists, download_sessions,
                              settings, tasks, test_files, test_totals)
 from webapp.statistics import describe
 from webapp.store import TaskStore
@@ -26,7 +26,7 @@ class StatisticsContract:
     def job(self, video='npNnbj46_ik', *, batch_id=None, **config):
         # Set the page's current settings for the next execution, rather than
         # relying on a queued task's config to select its provider.
-        from webapp.settings import DEFAULTS
+        from webapp.config.settings import DEFAULTS
         self.store.set_download_settings({**DEFAULTS, 'path': 'videos', 'proxy_mode': 'direct', **config},
                                          self.root, self.store.directory / 'clash')
         return self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', **config},
@@ -152,11 +152,8 @@ class StatisticsContract:
                 with self.store.connect() as db:
                     rows = db.execute(select(ledger).where(ledger.c.task_id == task['id'])).all()
                     listing = db.execute(select(download_lists).where(download_lists.c.id == batch)).mappings().one()
-                    method = db.execute(select(method_totals).where(method_totals.c.session_id == session,
-                        method_totals.c.method == 'yt_dlp')).mappings().one()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual((listing[prefix + '_count'], listing[prefix + '_bytes']), (1, 1234))
-                self.assertEqual((method[prefix + '_count'], method[prefix + '_bytes']), (1, 1234))
                 self.assertEqual(path.stat().st_size, 1234)
                 self.assertEqual(self.store.get(task['id'])['attempts'], 1)
 
@@ -401,104 +398,6 @@ class SQLiteStatisticsTests(StatisticsContract, unittest.TestCase):
             self.store.statistics.record_file(task['id'], self.final_file())
         self.assertEqual(self.overview()['summary']['file_count'], 0)
 
-    def test_post_hook_deadlock_does_not_repeat_the_download(self):
-        from webapp.parallel_http import ParallelYoutubeDL
-        content = b'completed video fixture\n' * 100
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header('Content-Type', 'video/mp4')
-                self.send_header('Content-Length', str(len(content)))
-                self.end_headers()
-                self.wfile.write(content)
-
-            def log_message(self, *_):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        from webapp.settings import DEFAULTS
-        self.store.set_download_settings({**DEFAULTS, 'storage_mode':'test', 'youtube_sleep_preset':False},
-                                         self.root, self.store.directory/'clash')
-        self.store.create('download', {'config': {'storage_mode': 'test'}, 'base': str(self.root),
-            'urls': [f'http://127.0.0.1:{server.server_port}/video.mp4']})
-        task = self.claim()
-        record = self.store.lists.record_file
-        calls = []
-
-        def deadlock_once(db, row, size, test):
-            record(db, row, size, test)
-            calls.append(1)
-            if len(calls) == 1:
-                raise OperationalError('fixture', {}, Exception(1213, 'Deadlock'))
-
-        with patch.object(self.store.lists, 'record_file', side_effect=deadlock_once), \
-                patch('webapp.db_retry.time.sleep'), \
-                patch('webapp.downloader.require_download_tools'), \
-                patch.object(ParallelYoutubeDL, 'download', autospec=True,
-                    side_effect=ParallelYoutubeDL.download) as download:
-            result = execute('download', task['payload'], store=self.store, task_id=task['id'])
-        self.assertEqual(download.call_count, 1)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual((result['file_count'], result['file_bytes'], result['files_deleted']),
-                         (1, len(content), True))
-        self.assertTrue(self.store.finish(task['id'], result=result, worker_id=self.store.owner))
-        self.assertEqual(self.store.get(task['id'])['status'], 'succeeded')
-        summary = self.store.statistics.session(task['payload']['download_session_id'])
-        self.assertEqual((summary['test_file_count'], summary['test_file_bytes']), (1, len(content)))
-
-    def test_actual_final_files_count_but_test_download_and_archive_skip_do_not_bill(self):
-        content = b'actual final video fixture\n' * 201
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header('Content-Type', 'video/mp4')
-                self.send_header('Content-Length', str(len(content)))
-                self.end_headers()
-                self.wfile.write(content)
-
-            def log_message(self, *args):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        identity = None
-        for index, (name, mode) in enumerate([('normal', 'local'), ('test', 'test'), ('normal', 'local'), ('normal', 'local')]):
-            if index == 3:
-                with self.store.connect() as db:
-                    db.execute(archive.delete())  # A pre-existing file must not be billed without its archive entry.
-            from webapp.settings import DEFAULTS
-            self.store.set_download_settings({**DEFAULTS, 'path':'videos', 'proxy_mode':'direct',
-                'storage_mode':mode, 'youtube_sleep_preset':False}, self.root, self.store.directory/'clash')
-            self.store.create('download', {'config': {'path': 'videos', 'proxy_mode': 'direct', 'storage_mode': mode},
-                'base': str(self.root), 'urls': [f'http://127.0.0.1:{server.server_port}/{name}.mp4']})
-            job = self.claim()
-            with patch('webapp.downloader.require_download_tools'):
-                result = execute('download', job['payload'], store=self.store, task_id=job['id'])
-            self.store.finish(job['id'], result=result, worker_id=self.store.owner)
-            if identity is None:
-                identity = job['payload']['download_session_id']
-                self.assertEqual(result['billable_bytes'], len(content))
-            elif mode == 'test':
-                self.assertTrue(result['files_deleted'])
-                self.assertEqual(result['billable_bytes'], 0)
-            else:
-                self.assertTrue(result['skipped'])
-        totals = self.overview()['summary']
-        self.assertEqual((totals['file_count'], totals['file_bytes']), (1, len(content)))
-        self.assertEqual((totals['succeeded'], totals['test_succeeded'], totals['skipped']), (1, 1, 2))
-        self.assertEqual((totals['test_file_count'], totals['test_file_bytes']), (1, len(content)))
-        self.assertEqual((totals['downloaded_file_count'], totals['downloaded_file_bytes']), (2, len(content) * 2))
-        self.assertFalse(list((self.store.directory / 'test-downloads').rglob('*.mp4')))
-
 
 class MySQLStatisticsTests(StandaloneMySQLFixture, StatisticsContract, unittest.TestCase):
     pass
-
-

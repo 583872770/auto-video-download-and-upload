@@ -73,8 +73,6 @@ class DownloadStatistics:
         from webapp.read_cache import ReadCache
         self._history_cache = ReadCache(ttl=3)
         self._dashboard_cache = ReadCache(ttl=2)
-        from webapp.statistics_methods import MethodStatistics
-        self.methods = MethodStatistics(store)
 
     @staticmethod
     def _scope(instance_id=None):
@@ -241,8 +239,6 @@ class DownloadStatistics:
         # Automatic routing may choose a different adapter than the first
         # configured candidate. Account for that adapter when it is assigned.
         config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
-        if config.get('scheduler_mode') != 'auto':
-            self.methods.change(db, row, identity, 'running')
         return identity
 
     def transition(self, db, row, status, error=None):
@@ -266,7 +262,6 @@ class DownloadStatistics:
             changes[status] = sessions.c[status] + 1
         if changes:
             db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
-        self.methods.change(db, row, identity, status)
 
     def settle(self, db, *, stop=False, instance_id=None):
         # Sessions follow instance start/stop.  A completed queue does not end
@@ -348,7 +343,6 @@ class DownloadStatistics:
             if artifact:
                 from webapp.delivery.artifacts import receipt
                 receipt(self.store, db, task, artifact, path, size, fresh=True)
-            self.methods.record_file(db, task, session_id, size, test_mode)
             self.store.lists.record_file(db, task, size, test_mode)
             if self.store.fleet:
                 scope = 'instance:' + self.store.fleet.id
@@ -383,8 +377,6 @@ class DownloadStatistics:
             active = db.execute(session_select().where(sessions.c.id == active_id, condition)).mappings().first() if active_id else None
             since = db.execute(select(settings.c.value).where(settings.c.key == 'download_statistics_since')).scalar_one()
             test_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_test_statistics_since')).scalar_one()
-            method_since = db.execute(select(settings.c.value).where(settings.c.key == 'download_method_statistics_since')).scalar_one()
-            methods = self.methods.summary(db, query=query)
             defaults = self.defaults(db)
         return {'summary': {**with_test_sizes({**{key: int(value) for key, value in totals.items()}, **test_summary}),
                             'file_bytes_exact': str(int(totals['file_bytes'])),
@@ -393,11 +385,8 @@ class DownloadStatistics:
                 'active': describe(active) if active else None,
                 'items': [describe(row) for row in rows[:20]], 'next_cursor': str(rows[19]['seq']) if len(rows) > 20 else None,
                 'pricing': defaults, 'tracking_since': since, 'test_tracking_since': test_since,
-                'methods': methods, 'method_tracking_since': method_since, 'billing': billing}
+                'billing': billing}
 
-    def method_summary(self, identity):
-        with self.store.connect() as db:
-            return self.methods.summary(db, identity=identity)
 
     @staticmethod
     def cursor(value):
@@ -444,4 +433,3 @@ class DownloadStatistics:
         with self.store.connect() as db:
             db.execute(self.db.upsert(settings, {'key': 'download_billing_defaults', 'value': json.dumps(values)}, ['key']))
         return values
-

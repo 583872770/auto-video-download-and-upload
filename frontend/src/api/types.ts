@@ -85,8 +85,6 @@ export interface InstanceStatus {
     preparing: number;
     processing: number;
     effective_limit: number;
-    connection_used: number;
-    connection_budget: number;
     bottleneck: string;
     risks: Array<{ code: string; severity: string; detail: string }>;
   };

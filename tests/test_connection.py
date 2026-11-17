@@ -17,9 +17,7 @@ from web_worker import execute
 
 class ConnectionContract:
     def old_task(self):
-        self.client.put('/api/config', json={'download_methods': ['yt5s'], 'yt5s_quality': '360'}, headers=self.headers)
-        payload = {'config': {'path': 'videos', 'proxy_mode': 'direct', 'download_methods': ['yt5s'],
-                              'yt5s_quality': '360', 'youtube_cookie': 'Cookies/original.txt'},
+        payload = {'config': {'path': 'videos', 'proxy_mode': 'direct'},
                    'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']}
         return self.store.create('download', payload), payload
 
@@ -83,7 +81,7 @@ class ConnectionContract:
         reopened = TaskStore(self.store.directory)
         effective = reopened.effective_download_payload(task['id'], old)
         self.assertEqual(effective['config']['proxy_mode'], 'clash')
-        self.assertEqual(effective['config']['download_methods'], ['yt5s'])
+        self.assertNotIn('download_methods', effective['config'])
         self.assertEqual(effective['clash'], {'directory': clash['directory']})
         self.assertEqual(effective['urls'], old['urls'])
         self.assertEqual(old, before)
@@ -122,35 +120,10 @@ class ConnectionContract:
         self.assertEqual(self.store.effective_download_payload(task['id'], old)['config']['proxy_mode'], 'clash')
         self.assertTrue(self.store.downloads_paused())
 
-    def test_worker_and_resume_preflight_receive_effective_connection(self):
-        task, old = self.old_task()
-        self.store.set_downloads_paused(True)
-        clash = self.use_clash()
-        with patch.object(self.app.extensions['clash'], 'snapshot', return_value=clash):
-            self.assertEqual(self.apply().status_code, 200)
-        with patch('web_worker._execute', return_value={'message': 'fixture'}) as run:
-            execute('download', old, store=self.store, task_id=task['id'], worker_slot=1)
-        used = run.call_args.args[1]
-        self.assertEqual(used['config']['proxy_mode'], 'clash')
-        self.assertEqual(used['clash'], {'directory': clash['directory']})
-        self.assertEqual(used['config']['download_methods'], ['yt5s'])
-        # A prior connection check must never override the current page config.
-        first = {**old, 'config': {**old['config'], 'download_methods': ['yt_dlp']}}
-        with self.store.connect() as db:
-            packed = self.store._pack(db, first)
-            db.execute(tasks.update().where(tasks.c.id == task['id']).values(payload=packed))
-        self.assertEqual(self.client.put('/api/config', json={'proxy_mode': 'direct', 'download_methods': ['yt_dlp'],
-                                                             'youtube_cookie_usage': 'always'},
-                                        headers=self.headers).status_code, 200)
-        with patch('webapp.youtube_auth.YouTubeAuth.require', return_value={}) as auth:
-            response = self.client.post('/api/downloads/resume', headers=self.headers)
-        self.assertEqual(response.status_code, 200, response.json)
-        self.assertNotIn('proxy', auth.call_args.kwargs)
-        self.assertEqual(auth.call_args.args[0]['proxy_mode'], 'direct')
-        self.assertEqual(old['config']['proxy_mode'], 'direct')
 
     def test_pending_import_creates_new_downloads_with_applied_connection(self):
-        response = self.client.post('/api/downloads/import', headers=self.headers,
+        identity = self.client.post('/api/jobs', json={'name':'Import','customer':'Fixture'}, headers=self.headers).json['id']
+        response = self.client.post('/api/jobs/' + identity + '/imports', headers=self.headers,
             data={'file': (BytesIO(b'npNnbj46_ik\n2Gu7q-KUXCk\n'), 'videos.txt')})
         self.assertEqual(response.status_code, 202, response.json)
         task = self.store.get(response.json['id'], private=True)
@@ -170,33 +143,6 @@ class ConnectionContract:
             self.assertEqual(effective['config']['proxy_mode'], 'clash')
         self.assertNotIn('config', task['payload'])
 
-    def test_method_two_browser_receives_clash_proxy_for_each_worker(self):
-        task, old = self.old_task()
-        self.store.set_downloads_paused(True)
-        clash = self.use_clash()
-        manager = self.app.extensions['clash']
-        with patch.object(manager, 'snapshot', return_value=clash):
-            self.assertEqual(self.apply().status_code, 200)
-        for slot in (0, 1):
-            # execute now acquires fenced channel permits, just like a worker.
-            with self.store.connect() as db:
-                db.execute(tasks.update().where(tasks.c.id == task['id']).values(
-                    status='running', worker_id=self.store.owner, lease_until=time.time() + 60))
-            resolved = {**clash, 'proxy': f'http://127.0.0.1:{17890 + slot}'}
-            with self.subTest(slot=slot), patch('webapp.clash.ClashManager.for_worker', return_value=manager), \
-                    patch('webapp.clash.ClashManager.snapshot', return_value=clash), \
-                    patch('webapp.clash.ClashManager.select'), \
-                    patch('webapp.clash.ClashManager.download_snapshot', return_value=resolved), \
-                    patch('webapp.downloader.require_download_tools'), \
-                    patch('webapp.yt5s.resolve', side_effect=RuntimeError('stop at browser fixture')) as browser, \
-                    patch('webapp.youtube_auth.YouTubeAuth.require', side_effect=AssertionError('method two uses no cookie')):
-                with self.assertRaisesRegex(RuntimeError, 'stop at browser fixture'):
-                    execute('download', old, store=self.store, worker_slot=slot, task_id=task['id'])
-                config = browser.call_args.args[1]
-                self.assertEqual(config['proxy_mode'], 'clash')
-                self.assertEqual(config['_resolved_clash_proxy'], resolved['proxy'])
-                self.assertEqual(config['yt5s_quality'], '360')
-        self.assertEqual(old['config']['proxy_mode'], 'direct')
 
 
 class SQLiteConnectionTests(ConnectionContract, unittest.TestCase):
@@ -205,5 +151,3 @@ class SQLiteConnectionTests(ConnectionContract, unittest.TestCase):
 
 class MySQLConnectionTests(StandaloneMySQLFixture, ConnectionContract, unittest.TestCase):
     pass
-
-

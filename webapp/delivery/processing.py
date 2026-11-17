@@ -80,7 +80,7 @@ def run(store, task_id, work, report, *, slot=0):
         payload={'_task_id': task_id, '_disk_workspace': work['workspace']}, store=store,
         worker_slot=slot, progress=progress, scheduler=None, meter=meter_for(store.directory, slot),
         youtube=False, test_mode=config.get('storage_mode') == 'test',
-        oss_mode=config.get('storage_mode') == 'oss', automatic=False, catalog=None,
+        oss_mode=config.get('storage_mode') == 'oss',
         current_video=plan['current_video'], output_files=dict(plan['output_files']),
         billable_bytes=plan['billable_bytes'])
     with lease, local_processing(store.directory, runtime, progress, 'delivery'):

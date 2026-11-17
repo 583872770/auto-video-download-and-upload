@@ -1,8 +1,6 @@
 """DownloadPreflight operations independent of route registration."""
 from flask import g, has_request_context
-from webapp.config.settings import download_methods, validate_method_urls
 from webapp.youtube_auth import YouTubeAuthRequired, is_youtube
-from webapp.yt5s import BrowserEnvironmentRequired
 from webapp.environment import DownloadEnvironmentRequired
 
 
@@ -11,38 +9,20 @@ class DownloadPreflight:
         self.context = context
 
     def verify_youtube(self, config, base, urls, snapshot=None, *, force=False):
-        methods = download_methods(config)
-        if 'yt1d' in methods:
-            self.context.dependencies.require_yt1d_environment(config, base)
-        if 'bergung' in methods:
-            from webapp.bergung import require_environment
-            require_environment(config, base)
-        if 'downmp3' in methods:
-            self.context.dependencies.require_downmp3_environment()
-        if 'yt5s' in methods and 'yt_dlp' in methods:
-            self.context.dependencies.require_fallback_environment(config, base)
-        elif 'yt5s' in methods:
-            self.context.dependencies.require_browser_environment(config, base)
-        if 'yt_dlp' not in methods:
-            return None
-        if not is_youtube(urls):
-            return None
-        if config.get('youtube_cookie_pool') and not force:
-            # Each admitted account is checked by its worker. The selected
-            # The selected Cookie may be cooling while other accounts work.
-            return None
-        # In on-demand mode public videos start anonymously.  The worker will
-        # retry once with the selected Cookie only when yt-dlp reports that
-        # authentication is required.  Explicit checks from the settings page
-        # still call this function with force=True and therefore remain useful.
-        if (config.get('youtube_cookie_usage', 'auto') in ('auto', 'never')
-                and not config.get('youtube_cookie_pool') and not force):
-            return None
-        options = {'force': force or len(methods) > 1}
+        from webapp.environment import require_native_environment
+        require_native_environment(config)
+        if not force:
+            if not config.get('youtube_cookie_pool'):
+                raise ValueError('当前实例没有账号，请在账号管理中分配并登录账号。')
+            return None  # Each selected account is validated by its worker.
+        options = {'force': force}
         if config.get('proxy_mode') == 'clash':
             snapshot = snapshot or self.context.clash.snapshot()
             options.update(proxy=snapshot['proxy'], node=snapshot['node'])
-        return self.context.youtube_auth.require(config, base, **options)
+        result = self.context.youtube_auth.check_startup(config, base, **options)
+        if result['state'] != 'valid':
+            raise YouTubeAuthRequired(result)
+        return result
 
     def activate_downloads(self, stage, cancelled):
         stage('checking_database')
@@ -66,29 +46,10 @@ class DownloadPreflight:
         stage('reading_queue')
         upcoming = self.context.store.page(limit=1, actions=('download',), status='queued', order='asc')['items']
         urls = [upcoming[0]['url']] if upcoming else ['https://www.youtube.com/']
-        if upcoming:
-            validate_method_urls(config, urls)
         stage('preparing_proxy')
         snapshot = self.context.clash.snapshot() if config.get('proxy_mode') == 'clash' else None
         stage('checking_environment')
-        methods = download_methods(config)
-        if 'yt1d' in methods:
-            self.context.dependencies.require_yt1d_environment(config, base)
-        if 'bergung' in methods:
-            from webapp.bergung import require_environment
-            require_environment(config, base)
-        if 'downmp3' in methods:
-            self.context.dependencies.require_downmp3_environment()
-        if 'yt5s' in methods:
-            (self.context.dependencies.require_fallback_environment if 'yt_dlp' in methods else self.context.dependencies.require_browser_environment)(config, base)
-        elif 'yt_dlp' in methods:
-            from webapp.environment import require_native_environment
-            require_native_environment(config)
-        if ('yt_dlp' in methods and is_youtube(urls) and not config.get('youtube_cookie_pool')
-                and config.get('youtube_cookie_usage', 'auto') == 'always'):
-            stage('checking_login')
-            self.context.youtube_auth.require(config, base, force=True, **(
-                {'proxy': snapshot['proxy'], 'node': snapshot['node']} if snapshot else {}))
+        self.verify_youtube(config, base, urls, snapshot)
         with self.context.media_lock:
             if cancelled.is_set():
                 raise InterruptedError('启动已取消，清单仍在待处理队列。')
@@ -108,26 +69,11 @@ class DownloadPreflight:
             for node in nodes:
                 try:
                     rpc(self.context.fleet, node['id'], '/api/fleet/preflight', method='POST', data={})
-                except (ValueError, YouTubeAuthRequired, BrowserEnvironmentRequired, DownloadEnvironmentRequired) as error:
+                except (ValueError, YouTubeAuthRequired, DownloadEnvironmentRequired) as error:
                     self.context.fleet.quarantine(node['id'], str(error), boot_id=node['boot_id'])
                     warnings.append(f'{node["name"]} 已暂停领取：{error}')
             return warnings
-        methods = download_methods(config)
-        if 'yt1d' in methods:
-            self.context.dependencies.require_yt1d_environment(config, base)
-        if 'bergung' in methods:
-            from webapp.bergung import require_environment
-            require_environment(config, base)
-        if 'downmp3' in methods:
-            self.context.dependencies.require_downmp3_environment()
-        if 'yt5s' in methods:
-            (self.context.dependencies.require_fallback_environment if 'yt_dlp' in methods else self.context.dependencies.require_browser_environment)(config, base)
-        elif 'yt_dlp' in methods:
-            from webapp.environment import require_native_environment
-            require_native_environment(config)
-        if ('yt_dlp' in methods and not config.get('youtube_cookie_pool') and
-                config.get('youtube_cookie_usage', 'auto') == 'always'):
-            self.context.youtube_auth.require(config, base, force=True)
+        self.verify_youtube(config, base, ['https://www.youtube.com/'])
 
     def prepare_system_resume(self):
         if self.context.fleet:
@@ -141,5 +87,5 @@ class DownloadPreflight:
             config, base = self.context.settings()
             self.verify_youtube(config, base,
                 [upcoming.url] if upcoming.url else ['https://www.youtube.com/'],
-                force=not config.get('youtube_cookie_pool') and config.get('youtube_cookie_usage', 'auto') == 'always')
+                force=False)
         self.context.youtube_auth.clear_block()

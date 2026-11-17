@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
-from webapp.channel_scheduler import ChannelScheduler
+from webapp.request_scheduler import RequestScheduler
 from webapp.concurrency_diagnostics import diagnose, read_context
 from webapp.cookie_pool import CookiePool
 from tests.account_cookie_fixture import AccountCookieProfiles as CookieProfiles
@@ -31,9 +31,9 @@ class DownloadDecisionTests(unittest.TestCase):
         profiles = CookieProfiles(self.root, self.store)
         identities = [profiles.add(str(i), (f'# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfixture-{i}\n').encode())['id']
                       for i in range(2)]
-        self.config = dict(download_methods=['yt_dlp'], youtube_cookie_pool=identities,
-            youtube_cookie=str(profiles.require(identities[0])), youtube_pacing_mode='adaptive',
-            youtube_start_interval=45, youtube_throttle_cooldown=300, worker_count=1)
+        self.config = dict(youtube_cookie_pool=identities,
+            youtube_cookie=str(profiles.require(identities[0])),
+            youtube_start_interval=45, youtube_throttle_cooldown=300, download_task_limit=1)
 
     def pool(self):
         task = self.store.create('download', {'base': str(self.root), 'urls': ['https://youtu.be/00000000001']})
@@ -48,9 +48,9 @@ class DownloadDecisionTests(unittest.TestCase):
         pool = self.pool()
         with self.assertRaises(type(error)):
             with pool.assignment() as selected:
-                scheduler = ChannelScheduler(self.store, selected, pool.router.task_id, base=self.root)
+                scheduler = RequestScheduler(self.store, selected, pool.router.task_id, base=self.root)
                 scheduler.clock = lambda db: self.now
-                scheduler.outcome(scheduler.channels[0], success=False, error=error, phase=phase)
+                scheduler.outcome( success=False, error=error, phase=phase)
                 raise error
         return pool, scheduler
 
@@ -59,7 +59,7 @@ class DownloadDecisionTests(unittest.TestCase):
 
     def diagnostic(self, pool):
         summary = pool.status()['capacity_summary']
-        rate = dict(time=self.now, policy=policy_key(self.config), transfers=max(1, summary['capacity']), cookie_pool=summary)
+        rate = dict(time=self.now, policy=policy_key(self.config), workers=max(1, summary['capacity']), cookie_pool=summary)
         with self.store.connect() as db:
             context = read_context(db, [('local', self.config)], self.now)
         return diagnose(self.config, 'local', [], rate, context, self.now, paused=True)
@@ -125,7 +125,6 @@ class DownloadDecisionTests(unittest.TestCase):
     def test_caption_429_uses_the_same_account_recovery_as_other_transfers(self):
         error = RuntimeError('Unable to download video subtitles: HTTP Error 429: Too Many Requests')
         pool, router = self.apply_failure(error, phase='transfer')
-        self.assertIsNone(router.youtube_pacing)  # The pool owns account budgets in both modes.
         for scope in (pool.global_scope, 'channel:yt_dlp', 'quota:yt_dlp'):
             self.assertFalse(self.state(router, scope).get('cooldown_until'))
         scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
@@ -167,12 +166,12 @@ class DownloadDecisionTests(unittest.TestCase):
         error = RuntimeError('HTTP Error 429')
         pool, router = self.apply_failure(error)
         before = self.state(router, 'channel:yt_dlp')
-        router.outcome(router.channels[0], success=False, error=error)
+        router.outcome( success=False, error=error)
         self.assertEqual(self.state(router, 'channel:yt_dlp'), before)
         scope = next(scope for _, _, scope in pool.accounts if self.state(router, scope).get('last_decision'))
         account = self.state(router, scope)
         self.now += 1
-        router.outcome(router.channels[0], success=True, size=100, elapsed=1)
+        router.outcome( success=True)
         pool.outcome(scope, None)
         self.assertFalse(self.state(router, 'channel:yt_dlp').get('cooldown_until'))
         self.assertEqual(self.state(router, scope), account)
@@ -211,25 +210,10 @@ class DownloadDecisionTests(unittest.TestCase):
 
     def test_overlapping_waits_take_latest_deadline_instead_of_adding_durations(self):
         from webapp.decision_diagnostics import explain
-        channels = [dict(resources=[dict(scope='resolver', group='yt_dlp')])]
-        value = explain({'resolver:yt_dlp': {'cooldown_until': self.now + 300}}, channels, None,
-                        dict(next_start_at=self.now + 600, reason='滚动预算已用完'), self.now)
+        value = explain({'source:youtube': {'cooldown_until': self.now + 300}},
+                        dict(session_restrictions=[dict(scope='账号 A', action='cooldown', until=self.now+600, manual=False)]), self.now)
         self.assertEqual(value['longest_wait_until'], self.now + 600)
 
-    def test_ordinary_request_limit_never_clears_a_previous_manual_halt(self):
-        pool = self.pool()
-        router = pool.router
-        def legacy_halt(db, stamp):
-            router._state(db, pool.global_scope)
-            router._save(db, pool.global_scope, dict(halted=True, halt_kind='authentication_required',
-                                                    cooldown_until=stamp - 1))
-        router.transaction_call(legacy_halt)
-        before = self.state(router, pool.global_scope)
-        pool.outcome(pool.accounts[1][2], RuntimeError('HTTP Error 429'))
-        after = self.state(router, pool.global_scope)
-        self.assertTrue(after['halted'])
-        self.assertEqual(after['halt_kind'], 'authentication_required')
-        self.assertGreaterEqual(after['cooldown_until'], before['cooldown_until'])
 
     def test_original_halt_evidence_survives_bounded_recent_history(self):
         error = YouTubeAuthRequired({'state': 'verification_required', 'message': 'Login rejected'})

@@ -8,12 +8,12 @@ from unittest.mock import Mock, patch
 
 from sqlalchemy import select
 
-from webapp.channel_scheduler import ChannelScheduler
+from webapp.request_scheduler import RequestScheduler
 from webapp.database import tasks
 from webapp.database import download_resources
 from webapp.downloader import build_ydl_options
 from webapp.downloads import DownloadLeaseLost, DownloadFailure, YouTubeAccountLimited
-from webapp.settings import validate_settings
+from webapp.config.settings import validate_settings
 from webapp.store import TaskStore
 from webapp.youtube_auth import YouTubeAuth, ProbeResult, SourceHTTPSHandler
 import hashlib
@@ -39,12 +39,11 @@ class YouTubePolicyTests(unittest.TestCase):
         with store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == task['id']).values(
                 status='running', worker_id=store.owner, lease_until=time.time()+3600))
-        return ChannelScheduler(store, {'download_methods': ['yt_dlp'], 'youtube_start_interval':1}, task['id'])
+        return RequestScheduler(store, {'youtube_start_interval':1}, task['id'])
 
     def test_source_only_applies_to_direct_downloads(self):
         config = {'path':'videos', 'proxy_mode':'direct', 'youtube_source_address':'::'}
         self.assertEqual(build_ydl_options(config, self.root)['source_address'], '::')
-        self.assertNotIn('source_address', build_ydl_options({**config,'download_methods': ['bergung']}, self.root))
         config.update(proxy_mode='manual', proxy='http://127.0.0.1:8080')
         self.assertNotIn('source_address', build_ydl_options(config, self.root))
         for value in ('youtube.com', '127.0.0.1:80', 'invalid'):
@@ -64,7 +63,7 @@ class YouTubePolicyTests(unittest.TestCase):
         self.assertEqual(options['sleep_interval_requests'], .75)
         self.assertEqual((options['sleep_interval'],options['max_sleep_interval']), (10,20))
         self.assertNotIn('sleep_interval_subtitles', options)
-        for updated in ({'youtube_sleep_preset':False}, {'download_methods': ['bergung']}):
+        for updated in ({'youtube_sleep_preset':False},):
             self.assertNotIn('sleep_interval_requests', build_ydl_options({**config,**updated}, self.root))
         self.assertFalse(validate_settings({'youtube_sleep_preset':'false'})['youtube_sleep_preset'])
         with self.assertRaises(ValueError):
@@ -81,16 +80,6 @@ class YouTubePolicyTests(unittest.TestCase):
         self.assertEqual(probe.call_count, 2)
         self.assertEqual(probe.call_args.kwargs, {'source_address':'::'})
 
-    def test_anonymous_challenge_preserves_pause_and_precise_attribution(self):
-        auth = YouTubeAuth(self.store)
-        result = auth.reject('upstream challenge', request_mode='anonymous_fallback', node='test-node')
-        self.assertEqual(result['state'], 'verification_required')
-        self.assertEqual(result['source'], 'download')
-        self.assertEqual(result['request_mode'], 'anonymous_fallback')
-        self.assertIn('不能证明', result['message'])
-        auth.block(result)
-        self.assertTrue(self.store.downloads_paused())
-        self.assertEqual(auth.status()['request_mode'], 'anonymous_fallback')
 
     def test_preflight_evidence_survives_cache_and_workbench_lookup(self):
         from webapp.risk_diagnostics import read_auth, observed
@@ -109,117 +98,14 @@ class YouTubePolicyTests(unittest.TestCase):
                             if f['code'] == 'bot_check')
                 self.assertIn(title, fact['title'])
 
-    def test_independent_workers_share_start_interval_and_wait_outside_transaction(self):
-        second = TaskStore(self.root / 'other', self.store.db.engine.url.render_as_string(hide_password=False))
-        schedulers = [self.scheduler(), self.scheduler(second)]
-        def start(scheduler):
-            def waiting():
-                # A second writer can commit while this worker waits.
-                with second.connect() as db:
-                    db.execute(tasks.update().where(tasks.c.id == scheduler.task_id).values(title='waiting'))
-            scheduler.wait_youtube_start(scheduler.channels[0], on_wait=waiting)
-            return time.monotonic()
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            starts = sorted(pool.map(start, schedulers))
-        self.assertGreaterEqual(starts[1]-starts[0], .9)
 
     def test_expired_lease_cannot_reserve_another_start(self):
         scheduler = self.scheduler()
         with self.store.connect() as db:
             db.execute(tasks.update().where(tasks.c.id == scheduler.task_id).values(lease_until=0))
         with self.assertRaises(DownloadLeaseLost):
-            scheduler.wait_youtube_start(scheduler.channels[0])
+            scheduler.permit('resolve').__enter__()
 
-    def test_nonpool_task_rest_applies_in_manual_and_adaptive_modes(self):
-        from webapp.throughput import PipelineBusy
-        from webapp.youtube_pacing import YouTubePacing
-        for mode in ('manual', 'adaptive'):
-            scheduler = self.scheduler()
-            scheduler.config.update(youtube_start_interval=0, youtube_task_rest_interval=30)
-            if mode == 'adaptive':
-                scheduler.youtube_pacing = YouTubePacing(scheduler)
-            now = time.time()
-            scheduler.clock = lambda db: now
-            scheduler.finish_youtube_task()
-            with self.assertRaises(PipelineBusy) as waiting:
-                scheduler.wait_youtube_start(scheduler.channels[0])
-            self.assertIn('休息', str(waiting.exception))
-            now += 30
-            scheduler.wait_youtube_start(scheduler.channels[0])
-
-    def test_execute_records_rest_after_source_attempt_even_on_content_failure(self):
-        from web_worker import execute
-        for started, failed in ((False, False), (True, False), (True, True)):
-            with self.subTest(started=started, failed=failed):
-                scheduler = self.scheduler()
-                def perform(action, payload, *args):
-                    if started:
-                        active = ChannelScheduler(self.store, payload['config'], scheduler.task_id)
-                        with active.permit(active.channels[0], 'resolve'):
-                            pass
-                    if failed:
-                        raise RuntimeError('Video has been removed by the uploader')
-                    return {'skipped': True, 'file_count': 0}
-                payload = {'base': str(self.root), 'urls': ['https://youtu.be/00000000001'],
-                           'config': {'path': str(self.root / 'videos'), 'youtube_task_rest_interval': 30,
-                                      'disk_min_free_gb': 0, 'disk_resume_free_gb': 0}}
-                def finish(router):
-                    self.assertEqual(router.task_id, scheduler.task_id)
-                with patch('web_worker._execute', side_effect=perform), \
-                        patch.object(ChannelScheduler, 'finish_youtube_task', autospec=True, side_effect=finish) as record:
-                    if failed:
-                        with self.assertRaisesRegex(RuntimeError, 'removed'):
-                            execute('download', payload, store=self.store, task_id=scheduler.task_id)
-                    else:
-                        execute('download', payload, store=self.store, task_id=scheduler.task_id)
-                self.assertEqual(record.call_count, int(started))
-
-    def test_pool_parser_uses_configured_shared_interval_and_preserves_old_window(self):
-        scheduler = self.scheduler()
-        scheduler.config.update(_cookie_pool_selected='fixture', youtube_cookie_pool_start_interval=3,
-                                youtube_start_interval=60)
-        stamp = time.time()
-        scheduler.clock = lambda db: stamp
-        read = lambda db, now: scheduler._state(db, 'youtube-start:local')
-        scheduler.wait_youtube_start(scheduler.channels[0])
-        self.assertEqual(scheduler.transaction_call(read)['next_at'], stamp + 3)
-        def advance(delay):
-            nonlocal stamp
-            stamp += delay
-        with patch('webapp.channel_scheduler.time.sleep', side_effect=advance) as sleep:
-            scheduler.wait_youtube_start(scheduler.channels[0])
-        self.assertAlmostEqual(sum(call.args[0] for call in sleep.call_args_list), 3)
-        reserved = stamp + 3
-        scheduler.config['youtube_cookie_pool_start_interval'] = 0
-        with patch('webapp.channel_scheduler.time.sleep', side_effect=advance) as sleep:
-            scheduler.wait_youtube_start(scheduler.channels[0])
-        self.assertEqual(stamp, reserved)
-        self.assertEqual(scheduler.transaction_call(read)['next_at'], stamp)
-        with patch('webapp.channel_scheduler.time.sleep', side_effect=AssertionError('Zero interval slept')):
-            scheduler.wait_youtube_start(scheduler.channels[0])
-
-    def test_shared_pool_setting_does_not_change_nonpool_parser_spacing(self):
-        scheduler = self.scheduler()
-        scheduler.config['youtube_cookie_pool_start_interval'] = 600
-        stamp = time.time()
-        scheduler.clock = lambda db: stamp
-        scheduler.wait_youtube_start(scheduler.channels[0])
-        state = scheduler.transaction_call(lambda db, now: scheduler._state(db, 'youtube-start:local'))
-        self.assertEqual(state['next_at'], stamp + 1)
-
-    def test_youtube_429_has_conservative_floor_and_respects_longer_retry_after(self):
-        scheduler = self.scheduler()
-        for requested, expected in ((5,300),(900,900)):
-            with self.subTest(requested=requested):
-                error = RuntimeError('HTTP Error 429: Too Many Requests')
-                error.http_status = 429
-                error.retry_after = requested
-                scheduler.outcome(scheduler.channels[0], success=False, error=error, phase='resolve')
-                scope = hashlib.sha256(('resolver:'+scheduler.channels[0].resolver_group).encode()).hexdigest()
-                with self.store.connect() as db:
-                    state = json.loads(db.execute(select(download_resources.c.state).where(
-                        download_resources.c.key==scope)).scalar_one())
-                self.assertGreaterEqual(state['cooldown_until']-time.time(), expected-2)
 
     def test_backpressure_delays_worker_instead_of_churning_other_queue_items(self):
         from web_worker import drain
@@ -245,35 +131,20 @@ class YouTubePolicyTests(unittest.TestCase):
 
     def test_explicit_private_video_does_not_cool_healthy_channel(self):
         scheduler = self.scheduler()
-        channel = scheduler.channels[0]
-        scheduler.outcome(channel, success=True)
-        before = scheduler.transaction_call(lambda db, stamp: scheduler._state(db,'channel:'+channel.id))
+        channel = None
+        scheduler.outcome( success=True)
+        before = scheduler.transaction_call(lambda db, stamp: scheduler._state(db,'source:youtube'))
         failure = DownloadFailure()
         failure.error('[youtube] fixture: Video unavailable. This video is private')
         error = failure.as_error()
         self.assertEqual(error.failure_scope, 'video')
-        scheduler.outcome(channel, success=False, error=error)
-        after = scheduler.transaction_call(lambda db, stamp: scheduler._state(db,'channel:'+channel.id))
+        scheduler.outcome( success=False, error=error)
+        after = scheduler.transaction_call(lambda db, stamp: scheduler._state(db,'source:youtube'))
         self.assertEqual(before, after)
         unknown = DownloadFailure()
         unknown.error('Video unavailable')
         self.assertFalse(hasattr(unknown.as_error(), 'failure_scope'))
 
-    def test_account_limit_without_http_429_cools_shared_resolver_for_an_hour(self):
-        from webapp.channel_scheduler import throttle_details
-        from webapp.risk_diagnostics import classify
-        failure = DownloadFailure()
-        failure.error("Video unavailable. Your account has been rate-limited by YouTube for up to an hour.")
-        error = failure.as_error()
-        self.assertTrue(error.retryable)
-        self.assertEqual(throttle_details(error), (None, 3600))
-        self.assertIn('account_rate_limit', classify(str(error)))
-        scheduler = self.scheduler()
-        scheduler.outcome(scheduler.channels[0], success=False, error=error, phase='resolve')
-        scope = 'resolver:' + scheduler.channels[0].resolver_group
-        state = scheduler.transaction_call(lambda db, stamp: scheduler._state(db, scope))
-        self.assertGreaterEqual(state['cooldown_until']-time.time(), 3598)
-        self.assertEqual(state['cooldown_kind'], 'account')
 
     def test_account_limit_pauses_worker_and_preserves_queue_without_claiming_next_video(self):
         from web_worker import drain

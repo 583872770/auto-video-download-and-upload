@@ -1,7 +1,5 @@
 """CookieService operations independent of route registration."""
-import time
 from Utils.config import resolve_path
-from Utils.youtube_login import parse_youtube_cookie_file
 from webapp.youtube_login import LoginBusy
 
 
@@ -54,7 +52,7 @@ class CookieService:
         with self.context.settings_lock:
             config, base = self.context.settings()
             profiles = CookieProfiles(base, self.context.store)
-            items = profiles.items(config.get('youtube_cookie', ''))
+            items = profiles.items()
             for item in items:
                 item['auth'] = self.context.youtube_auth.profile_status(item['id'], base)
                 item['pooled'] = item['id'] in config.get('youtube_cookie_pool', [])
@@ -67,8 +65,7 @@ class CookieService:
                 item['session'] = sessions.get(item['id'])
                 recent = list_events(self.context.store, item['id'], limit=1)
                 item['latest_event'] = recent[0] if recent else None
-        return dict(items=items, pool=pool_status, cookie_path=config.get('youtube_cookie', ''),
-                       custom_active=bool(config.get('youtube_cookie') and not any(item['active'] for item in items)))
+        return dict(items=items, pool=pool_status)
 
     def check_youtube_cookie_profile(self, identity):
         with self.context.media_lock:
@@ -82,85 +79,25 @@ class CookieService:
             result = self.context.youtube_auth.check_profile(identity, config, base, recover=True, **options)
         return dict(auth=result, message=result['message'])
 
-    def recover_youtube_cookie_pool(self):
-        from webapp.cookie_pool import CookiePool
-        with self.context.media_lock, self.context.settings_lock:
-            self.require_login_idle()
-            if self.cookie_update_busy() or not self.context.store.claims_paused():
-                raise LoginBusy('请先停止当前实例，并等待全部下载结束，再检查账号池。')
-            config, base = self.context.settings()
-            if not config.get('youtube_cookie_pool'):
-                raise ValueError('当前未启用 Cookie 账号池。')
-            pool = CookiePool(self.context.store, config, base, None)
-            if pool.status().get('cooldown_until', 0) > time.time():
-                raise ValueError('账号池仍在冷却，请等待冷却结束后再检测和解除拦截。')
-            options = {}
-            if config.get('proxy_mode') == 'clash':
-                snapshot = self.context.clash.snapshot()
-                options.update(proxy=snapshot['proxy'], node=snapshot['node'])
-            for identity in config['youtube_cookie_pool']:
-                result = self.context.youtube_auth.check_profile(identity, config, base, force=True, **options)
-                if result['state'] != 'valid':
-                    return dict(error='账号池登录检查未全部通过，拦截保持有效。', auth=result), 409
-            pool.clear_halt_after_checks()
-        return dict(message='账号池已通过检查并解除拦截，会话重新从 1 个任务预热，池独立调度。请手动恢复下载；源站冷却保持有效。')
-
-    def select_youtube_cookie(self, identity):
-        from webapp.cookie_profiles import CookieProfiles
-        with self.context.media_lock, self.context.settings_lock:
-            self.require_login_idle()
-            if self.cookie_update_busy():
-                raise LoginBusy('请先停止当前实例并等待全部下载结束，再切换 Cookie。')
-            config, base = self.context.settings()
-            target = CookieProfiles(base, self.context.store).require(identity)
-            parse_youtube_cookie_file(target.read_bytes())
-            previous = dict(config)
-            original = self.context.config_path.read_bytes()
-            config['youtube_cookie'] = target.relative_to(base).as_posix()
-            config['youtube_cookie_pool'] = []
-            try:
-                self.context.dependencies.save_settings(self.context.config_path, config)
-                self.context.sync_runtime(config, base)
-            except Exception:
-                self.context.config_path.write_bytes(original)
-                self.context.sync_runtime(previous, base)
-                raise
-            self.context.youtube_auth.invalidate(preserve_block=True)
-        return dict(cookie_path=config['youtube_cookie'], message='已切换为单 Cookie，账号池已关闭。请检查登录状态后恢复下载；已有的限流冷却保持有效。')
 
     def delete_youtube_cookie(self, identity):
         from webapp.cookie_profiles import CookieProfiles
         with self.context.media_lock, self.context.settings_lock:
             config, base = self.context.settings()
             profiles = CookieProfiles(base, self.context.store)
-            items = profiles.items(config.get('youtube_cookie', ''))
+            items = profiles.items()
             item = next((item for item in items if item['id'] == identity), None)
             if item is None:
                 raise ValueError('Cookie 配置不存在。')
             pooled = identity in config.get('youtube_cookie_pool', [])
-            changed = item['active'] or pooled
-            replacement = None
+            changed = pooled
             previous = dict(config)
             original = self.context.config_path.read_bytes()
             if changed:
                 self.require_login_idle()
                 if self.cookie_update_busy():
-                    raise LoginBusy('请先停止当前实例并等待全部下载结束，再删除正在使用的 Cookie。')
-                if item['active']:
-                    config['youtube_cookie'] = ''
-                    for candidate in items:
-                        if candidate['id'] == identity:
-                            continue
-                        try:
-                            target = profiles.require(candidate['id'])
-                        except ValueError:
-                            continue
-                        replacement = candidate
-                        config['youtube_cookie'] = target.relative_to(base).as_posix()
-                        break
-                if pooled:
-                    remaining_pool = [value for value in config['youtube_cookie_pool'] if value != identity]
-                    config['youtube_cookie_pool'] = remaining_pool if len(remaining_pool) >= 2 else []
+                    raise LoginBusy('请停止实例并等待下载结束后，再删除此 Cookie。')
+                config['youtube_cookie_pool'] = [value for value in config['youtube_cookie_pool'] if value != identity]
             try:
                 if changed:
                     self.context.dependencies.save_settings(self.context.config_path, config)
@@ -170,14 +107,6 @@ class CookieService:
             except Exception:
                 if changed:
                     self.context.config_path.write_bytes(original)
-                    profiles.restore_selected(previous.get('youtube_cookie', ''))
                     self.context.sync_runtime(previous, base)
                 raise
-        message = ('Cookie 已删除，已自动选择其他 Cookie 作为当前使用项。' if replacement else
-                   'Cookie 已删除，当前未使用 Cookie。' if item['active'] else 'Cookie 已删除。')
-        return dict(message=message, cookie_path=config.get('youtube_cookie', ''),
-                       cookie_pool=config.get('youtube_cookie_pool', []),
-                       selection_changed=bool(item['active']))
-
-    def add_youtube_cookie(self, data, name, filename, activate=True):
-        raise ValueError('请先新增或导入账号，再在该账号下更新 Cookie。')
+        return dict(message='Cookie 已删除。', cookie_pool=config.get('youtube_cookie_pool', []))

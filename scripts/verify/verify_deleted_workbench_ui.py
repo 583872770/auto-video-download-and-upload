@@ -27,7 +27,7 @@ def main():
     try:
         first = fixture.create('Delete this job', urls='npNnbj46_ik\n2Gu7q-KUXCk')
         second = fixture.create('Delete the other job', urls='WMu6ANTg8mk')
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = fixture.client.post('/api/jobs/workbench', json={
                 'action': 'start', 'job_id': first}, headers=fixture.headers)
         assert response.status_code == 200, response.json

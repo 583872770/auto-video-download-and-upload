@@ -28,7 +28,7 @@ def main():
         apps, stores, servers = [], [], []
         for identity, role in [('alpha', 'hybrid'), ('beta', 'hybrid')]:
             config = root / (identity + '.yaml')
-            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nmin_free_gb: 0\ndownload_methods: [downmp3]\n', encoding='utf-8')
+            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nmin_free_gb: 0\n', encoding='utf-8')
             app = create_app(config, root / identity, start_worker=False, role=role,
                              instance_id=identity, instance_name='Download worker with a long production name ' + identity,
                              instance_url='http://127.0.0.1:1', database_url=database_url)

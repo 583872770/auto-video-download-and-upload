@@ -4,7 +4,6 @@ Account limits cool only the affected account. Verification still requires
 manual handling; content failures do not lower unrelated accounts' capacity.
 """
 from contextlib import contextmanager
-from datetime import datetime, timezone
 import hashlib
 import json
 import random
@@ -14,7 +13,7 @@ from functools import lru_cache
 from sqlalchemy import select
 
 from Utils.youtube_login import parse_youtube_cookie_file
-from webapp.channel_scheduler import ChannelScheduler
+from webapp.request_scheduler import RequestScheduler
 from webapp.download_policy import (RecoveryPolicy, failure_evidence, recovery_policy, cooldown_deadline, remember_decision)
 from webapp.cookie_profiles import CookieProfiles
 from webapp.throughput import PipelineBusy
@@ -26,7 +25,7 @@ from webapp.cookie_policy import (account_interval, start_budget, retry_interval
                                   STABLE_SUCCESSES, STABLE_WINDOW, PROTECTION_INTERVAL,
                                   pacing_progress, task_rest_until, next_account_start,
                                   advance_account_interval)
-from webapp.config_schema import DEFAULTS
+from webapp.config.schema import DEFAULTS
 
 
 @lru_cache(maxsize=256)
@@ -44,26 +43,6 @@ def _member_identity(name, content):
 DENIED_WINDOW = 15 * 60
 DENIED_THRESHOLD = 3
 DENIED_COOLDOWN = 15 * 60
-
-
-def halt_message(state, *, previous=False):
-    """Describe persisted admission state without reasserting a fresh source error."""
-    cause = {'account_rate_limit': 'YouTube 明确提示账号被限流',
-             'request_rate_limit': 'HTTP 429（请求过多）',
-             'authentication_required': '登录检查未通过或需要额外验证',
-             'verification_required': '源站要求额外验证'}[state['halt_kind']]
-    if previous:
-        # The gate is checked before reserving an account or yielding to yt-dlp.
-        # Historical causes remain in status metadata; this is a local refusal.
-        message = 'Cookie 池沿用此前保存的停止状态，本次尚未选择 Cookie 或发起视频下载请求。'
-    else:
-        message = f'Cookie 池已停止。触发原因：{cause}。'
-    stamp = state.get('halted_at')
-    if isinstance(stamp, (int, float)) and 0 < stamp < 253402300800:
-        message += '原停止时间：' + datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec='seconds') + '。'
-    if state.get('limited_profile_name'):
-        message += '触发账号：' + str(state['limited_profile_name']) + '。'
-    return message + '请在停止实例后检查全部账号并解除拦截；冷却到期不会自动恢复。'
 
 
 def credential_key(data):
@@ -126,16 +105,12 @@ def capacity_summary(snapshot, stamp=None):
     active = sum(a.get('active', 0) for a in sessions)
     next_starts = [max(snapshot.get('next_at', 0), a.get('next_at', 0), a.get('cooldown_until', 0), stamp)
                    for a, limit in capacities if not a.get('halted') and a.get('active', 0) < limit]
-    blocked = bool(snapshot.get('halted')) or snapshot.get('cooldown_until', 0) > stamp
-    capacity = 0 if blocked else capacity
     warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
     session_states = snapshot.get('session_states', [])
     cooling_sessions = [s for s in session_states if s['state'] == 'cooldown']
     recovery_sessions = [s for s in session_states if s['state'] == 'recovery']
     manual_sessions = [s for s in session_states if s['state'] == 'manual']
-    reason = ('Cookie 会话池已拦截，需完成检查后人工恢复' if snapshot.get('halted') else
-              'Cookie 会话池临时冷却，到期后重新准入检查' if snapshot.get('cooldown_until', 0) > stamp else
-              '没有可用的 Cookie 会话' if not sessions else
+    reason = ('没有可用的 Cookie 会话' if not sessions else
               '账号需要人工处理登录或验证，请在账号管理中重新检测；其他冷却中的账号到期后可继续'
               if not capacity and manual_sessions else
               '全部账号正在冷却，自动等待最早到期的账号；无需手动恢复' if not capacity else
@@ -157,12 +132,6 @@ def capacity_summary(snapshot, stamp=None):
             'manual_sessions': len(manual_sessions),
             'session_halts': [a['halt_decision'] for a in sessions if a.get('halted') and a.get('halt_decision')],
             'recovery_sessions': len(recovery_sessions),
-            'halted': bool(snapshot.get('halted')), 'cooling': snapshot.get('cooldown_until', 0) > stamp,
-            'cooldown_until': snapshot.get('cooldown_until', 0),
-            'halted_at': snapshot.get('halted_at'), 'halt_kind': snapshot.get('halt_kind'),
-            'halt_decision': snapshot.get('halt_decision'),
-            'limited_profile_id': snapshot.get('limited_profile_id'),
-            'limited_profile_name': snapshot.get('limited_profile_name'),
             'decisions': sorted([*snapshot.get('decisions', []),
                 *(r for a in sessions for r in a.get('decisions', [])),
                 *(a['halt_decision'] for a in sessions if a.get('halted') and a.get('halt_decision'))],
@@ -171,12 +140,12 @@ def capacity_summary(snapshot, stamp=None):
                 until=s['cooldown_until'], manual=False, reason=s['cooldown_kind']) for s in cooling_sessions] + [
                 dict(scope='Cookie：' + s['name'], action='halt', until=0, manual=True,
                      reason=s['halt_kind']) for s in manual_sessions],
-            'next_start_at': min(next_starts) if next_starts and not blocked else None}
+            'next_start_at': min(next_starts) if next_starts else None}
 
 
 class CookiePool:
     def __init__(self, store, config, base, task_id, *, strict=True):
-        self.router = ChannelScheduler(store, config, task_id)
+        self.router = RequestScheduler(store, config, task_id)
         self.config, self.base = config, base
         profiles = CookieProfiles(base, store)
         self.accounts = []
@@ -204,7 +173,7 @@ class CookiePool:
                 self.unavailable.append({'id': identity, 'unavailable': True})
                 continue
             parsed.append((identity, item['path'], group, credential))
-        from webapp.channel_scheduler import _key
+        from webapp.request_scheduler import _key
         from webapp.database import download_resources
         alias_scopes = {_key('youtube-account-alias:' + credential): credential for _, _, _, credential in parsed}
         with self.router.store.connect() as db:
@@ -266,15 +235,7 @@ class CookiePool:
                              for a in accounts]
             profile_views.extend({'id': a['id'], 'name': self.profile_names.get(a['id'], a['id']),
                                   'state': 'unavailable'} for a in self.unavailable)
-            result = {'halted': bool(global_state.get('halted')),
-                    'reason': halt_message(global_state) if global_state.get('halted') else None,
-                    'halted_at': global_state.get('halted_at'), 'halt_kind': global_state.get('halt_kind'),
-                    'halt_decision': global_state.get('halt_decision'),
-                    'limited_profile_id': global_state.get('limited_profile_id'),
-                    'limited_profile_name': global_state.get('limited_profile_name'),
-                    'decisions': global_state.get('decisions', []),
-                    'cooldown_until': global_state.get('cooldown_until', 0),
-                    'next_at': global_state.get('next_at', 0),
+            result = {                    'next_at': global_state.get('next_at', 0),
                     'effective_accounts': len(self.accounts), 'effective_sessions': len(self.accounts),
                     'configured_files': len(self.config.get('youtube_cookie_pool', [])),
                     'execution_limit': MAX_TRANSFERS, 'session_limit': configured,
@@ -284,25 +245,6 @@ class CookiePool:
             return result
         return read(None, sampled_at)
 
-    def clear_halt_after_checks(self):
-        """Called only by the idle-only API after fresh checks of every member."""
-        def clear(db, stamp):
-            gate = self.router._state(db, self.global_scope)
-            if gate.get('cooldown_until', 0) > stamp:
-                raise ValueError('账号池仍在冷却，不能解除拦截。请等待冷却结束。')
-            for _, _, scope in self.accounts:
-                state = self.router._state(db, scope)
-                if state.get('cooldown_until', 0) > stamp or self.router._active(db, scope, stamp):
-                    raise ValueError('账号仍在冷却或有任务运行，不能解除拦截。请等待冷却结束。')
-            for _, _, scope in self.accounts:
-                state = self.router._state(db, scope)
-                state.update(limit=1, streak=0, first_success=0)
-                self.router._save(db, scope, state)
-            gate = self.router._state(db, self.global_scope)
-            gate.update(halted=False, reason=None, halted_at=None, halt_kind=None, halt_decision=None,
-                        limited_profile_id=None, limited_profile_name=None)
-            self.router._save(db, self.global_scope, gate)
-        self.router.transaction_call(clear)
 
     def clear_account_after_check(self, profile_id, incident_id, checked_at):
         """A fresh manual check may clear only the halt it actually observed."""
@@ -332,12 +274,6 @@ class CookiePool:
 
         def reserve(db, stamp):
             gate = router._state(db, self.global_scope)
-            if gate.get('halted'):
-                raise YouTubeAuthRequired({'state': 'verification_required',
-                    'source': 'cookie_pool_halted', 'halted_at': gate.get('halted_at'),
-                    'halt_kind': gate.get('halt_kind'), 'message': halt_message(gate, previous=True)})
-            if gate.get('cooldown_until', 0) > stamp:
-                return None, gate['cooldown_until'] - stamp, 'pool'
             if gate.get('next_at', 0) > stamp:
                 return None, gate['next_at'] - stamp, 'pool'
             if manual_retry and gate.get('retry_next_at', 0) > stamp:
@@ -389,8 +325,7 @@ class CookiePool:
             state['pending_starts'] = pending
             state.update(last_start=stamp, interval=interval, next_at=stamp + interval + random.uniform(0, jitter))
             router._save(db, scope, state)
-            # The same setting also spaces parser starts in ChannelScheduler.
-            # Per-account intervals and cooldowns remain independent.
+            # Account assignment owns the sole instance start interval.
             gate = router._state(db, self.global_scope)
             gate['next_at'] = stamp + cookie_pool_start_interval(self.config)
             if manual_retry:
@@ -464,7 +399,7 @@ class CookiePool:
         policy = recovery_policy(failure, self.config) if failure else None
         if failure and failure.source == 'oss':
             return  # Storage delivery never changes YouTube session health.
-        if failure and failure.kind in ('local_resource', 'local_halt'):
+        if failure and failure.kind == 'local_resource':
             return  # Scheduling/resource waits belong to the task, not Cookie failure history.
         denied = bool(failure and failure.kind == 'access_denied' and failure.http_status == 403
                       and failure.source == 'youtube' and failure.phase == 'transfer' and failure.task_id)
@@ -571,21 +506,7 @@ class CookiePool:
                     cooldown_until=state.get('cooldown_until'),
                     metadata={'action': current_policy.action, 'targets': current_policy.targets,
                               'distinct_failed_tasks': len(state.get('denied_tasks', [])) if denied else None})
-            if failure and 'pool' in current_policy.targets:
-                gate = self.router._state(db, self.global_scope)
-                gate['cooldown_until'] = max(gate.get('cooldown_until', 0), until)
-                first_halt = current_policy.manual and not gate.get('halted')
-                if first_halt:
-                    gate.update(halted=True, halt_kind=failure.kind, halted_at=stamp,
-                                limited_profile_id=failure.profile_id,
-                                limited_profile_name=failure.profile_name)
-                    gate['reason'] = halt_message(gate)
-                decision = remember_decision(gate, failure, layer='pool', scope='当前实例 Cookie 池',
-                    action=current_policy.action, until=gate['cooldown_until'], manual=current_policy.manual, stamp=stamp)
-                if first_halt:
-                    gate['halt_decision'] = decision
-                self.router._save(db, self.global_scope, gate)
-            elif not failure:
+            if not failure:
                 if state.get('halted'):
                     return  # A late completion cannot clear a manual account halt.
                 # A task already in flight cannot undo a newer failure's backoff.

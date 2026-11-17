@@ -200,12 +200,13 @@ class DiagnosticWebTests(unittest.TestCase):
 
     def test_failed_attempt_records_phase_retry_and_safe_database_error(self):
         from web_worker import drain
-        from webapp.downmp3 import Downmp3Error
-        task = self.store.create('download', {'config': {'download_methods': ['downmp3'], 'path': 'videos'},
+        task = self.store.create('download', {'config': {'path': 'videos'},
             'base': str(self.root), 'urls': ['https://www.youtube.com/watch?v=npNnbj46_ik']})
         def fail(action, payload, report, **kwargs):
             report({'stage': 'requesting_api', 'stage_seconds': {'requesting_api': 3.5}})
-            raise Downmp3Error('TLS EOF https://cdn/a?sig=PRIVATE_SIG', retryable=True)
+            error = RuntimeError('TLS EOF https://cdn/a?sig=PRIVATE_SIG')
+            error.retryable = True
+            raise error
         with process_diagnostics(self.store.directory, 0), patch('web_worker.execute', side_effect=fail), \
                 patch('web_worker.os.dup2'), patch('builtins.print'), patch('web_worker.traceback.print_exc'):
             drain(self.store.directory)
@@ -278,8 +279,8 @@ class DiagnosticWebTests(unittest.TestCase):
         self.assertEqual(set(root.rglob('*')), before)
 
     def test_real_supervisor_worker_writes_attempt_and_exit_logs(self):
-        from webapp.tasks import TaskRunner
-        from webapp.settings import DEFAULTS
+        from webapp.runtime.supervisor import TaskRunner
+        from webapp.config.settings import DEFAULTS
         task = self.store.create('index', {'config': {'path': 'videos'}, 'base': str(self.root)})
         runner = TaskRunner(self.store, lambda: {**DEFAULTS, 'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
         thread = threading.Thread(target=runner._watch, daemon=True)

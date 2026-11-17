@@ -21,7 +21,7 @@ class SelectedJobTests(unittest.TestCase):
         self.control(a, 'start')
         self.control(b, 'start')
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.start(b)
         self.assertEqual(response.status_code, 200, response.json)
         self.assertFalse(self.store.downloads_paused())
@@ -34,7 +34,7 @@ class SelectedJobTests(unittest.TestCase):
         a, b = self.create(), self.create('List B')
         self.control(a, 'start')
         task = self.store.claim(self.store.owner)
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.start(b)
         self.assertEqual(response.status_code, 200, response.json)
         self.assertFalse(self.detail(a)['released'])
@@ -44,7 +44,7 @@ class SelectedJobTests(unittest.TestCase):
 
     def test_selection_survives_reload_and_stop(self):
         identity = self.create()
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             self.assertEqual(self.start(identity).status_code, 200)
         self.control(identity, 'stop')
         restored = test_scale.create_app(self.config, self.root / 'state', start_worker=False)
@@ -58,7 +58,7 @@ class SelectedJobTests(unittest.TestCase):
         legacy = self.store.create('download', {'urls':['https://youtu.be/WMu6ANTg8mk']})
         running = self.store.claim(self.store.owner)
         self.assertEqual(running['id'], legacy['id'])
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             self.assertEqual(self.start(b).status_code, 200)
         self.assertFalse(self.store.heartbeat(running['id'], self.store.owner))
         self.control(a, 'start')  # Even older clients may not escape the shared scope.
@@ -71,10 +71,10 @@ class SelectedJobTests(unittest.TestCase):
 
     def test_failed_switch_preserves_current_job_and_lease(self):
         a, b = self.create(), self.create('List B')
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             self.assertEqual(self.start(a).status_code, 200)
         task = self.store.claim(self.store.owner)
-        with patch('app.require_downmp3_environment', side_effect=ValueError('fixture unavailable')):
+        with patch('webapp.environment.require_native_environment', side_effect=ValueError('fixture unavailable')):
             self.assertEqual(self.start(b).status_code, 400)
         self.assertEqual(self.store.selected_download_job(), a)
         self.assertTrue(self.store.heartbeat(task['id'], self.store.owner))
@@ -84,7 +84,7 @@ class SelectedJobTests(unittest.TestCase):
         identity = self.create()
         self.control(identity, 'start')
         task = self.store.claim(self.store.owner)
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.start(identity)
         self.assertEqual(response.status_code, 200, response.json)
         self.assertEqual(self.store.selected_download_job(), identity)
@@ -109,7 +109,7 @@ class SelectedJobTests(unittest.TestCase):
         self.control(a, 'start')
         self.store.claim(self.store.owner)
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment') as preflight:
+        with patch('webapp.environment.require_native_environment') as preflight:
             response = self.start(b)
         self.assertEqual(response.status_code, 409, response.json)
         preflight.assert_not_called()
@@ -120,7 +120,7 @@ class SelectedJobTests(unittest.TestCase):
     def test_selected_policy_is_checked_before_release(self):
         identity = self.create()
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment', side_effect=ValueError('fixture environment unavailable')) as check:
+        with patch('webapp.environment.require_native_environment', side_effect=ValueError('fixture environment unavailable')) as check:
             response = self.start(identity)
         check.assert_called_once()
         self.assertEqual(response.status_code, 400, response.json)
@@ -131,10 +131,10 @@ class SelectedJobTests(unittest.TestCase):
     def test_policy_changed_during_preflight_requires_recheck(self):
         identity = self.create()
         self.store.set_downloads_paused(True)
-        def change_policy():
-            response = self.client.put('/api/config', json={'downmp3_quality': '720'}, headers=self.headers)
+        def change_policy(config):
+            response = self.client.put('/api/config', json={'fragment_concurrency': 8}, headers=self.headers)
             self.assertEqual(response.status_code, 200, response.json)
-        with patch('app.require_downmp3_environment', side_effect=change_policy):
+        with patch('webapp.environment.require_native_environment', side_effect=change_policy):
             response = self.start(identity)
         self.assertEqual(response.status_code, 409, response.json)
         self.assertTrue(self.store.downloads_paused())
@@ -147,7 +147,7 @@ class SelectedJobTests(unittest.TestCase):
         self.control(archived, 'archive')
         self.control(deleted, 'delete')
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment') as check:
+        with patch('webapp.environment.require_native_environment') as check:
             for identity, status in [(archived, 400), (deleted, 404), (empty, 400)]:
                 response = self.start(identity)
                 self.assertEqual(response.status_code, status, response.json)
@@ -165,7 +165,7 @@ class SelectedJobTests(unittest.TestCase):
         a, b = self.create(), self.create('List B')
         self.control(a, 'start')
         self.store.claim(self.store.owner)
-        with patch('app.require_downmp3_environment', side_effect=lambda: self.store.set_downloads_paused(True)):
+        with patch('webapp.environment.require_native_environment', side_effect=lambda config: self.store.set_downloads_paused(True)):
             response = self.start(b)
         self.assertEqual(response.status_code, 409, response.json)
         self.assertTrue(self.store.downloads_paused())
@@ -174,7 +174,7 @@ class SelectedJobTests(unittest.TestCase):
     def test_media_clear_started_during_preflight_blocks_release(self):
         identity = self.create()
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment', side_effect=lambda: self.store.create('clear_media', {})):
+        with patch('webapp.environment.require_native_environment', side_effect=lambda config: self.store.create('clear_media', {})):
             response = self.start(identity)
         self.assertEqual(response.status_code, 400, response.json)
         self.assertTrue(self.store.downloads_paused())
@@ -184,7 +184,7 @@ class SelectedJobTests(unittest.TestCase):
         identity = self.create(urls='')
         task = test_jobs.JobTests.import_file(self, identity)
         self.store.set_downloads_paused(True)
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.start(identity)
         self.assertEqual(response.status_code, 200, response.json)
         test_jobs.run_import(self.store, task['payload'], lambda value: None)

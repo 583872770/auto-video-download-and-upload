@@ -28,8 +28,8 @@ class HybridTests(unittest.TestCase):
             base = self.root / identity
             base.mkdir()
             config = base / 'config.yaml'
-            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\nworker_count: 2\n'
-                              'min_free_gb: 0\ndownload_methods: [downmp3]\n', encoding='utf-8')
+            config.write_text(f'path: videos-{identity}\nproxy_mode: direct\ndownload_task_limit: 2\n'
+                              'min_free_gb: 0\nyoutube_cookie_pool: [' + ', '.join(repr(format(i+1, '032x')) for i in range(2)) + ']\n', encoding='utf-8')
             app = create_app(config, base / 'state', start_worker=False, role='hybrid',
                              instance_id=identity, database_url=self.url)
             app.testing = True
@@ -54,37 +54,37 @@ class HybridTests(unittest.TestCase):
         result = client.get('/api/config', headers={'Authorization': 'Bearer ' + self.a.fleet.token,
                                                    'X-Instance-ID': 'beta'})
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json['config']['path'], 'videos-alpha')
+        self.assertEqual(result.json['config']['download_task_limit'], 2)
 
     def test_local_default_and_remote_settings_are_isolated(self):
         client = self.clients['alpha']
-        self.assertEqual(client.get('/api/config').json['config']['path'], 'videos-alpha')
-        response = client.put('/api/config', json={'path': 'alpha-new', 'worker_count': 1},
+        self.assertEqual(client.get('/api/config').json['config']['download_task_limit'], 2)
+        response = client.put('/api/config', json={'download_task_limit': 1},
                               headers=self.headers['alpha'])
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.a.fleet.local_settings()['config']['path'], 'alpha-new')
-        self.assertEqual(self.a.runtime()['worker_count'], 1)
+        self.assertEqual(self.a.fleet.local_settings()['config']['download_task_limit'], 1)
+        self.assertEqual(self.a.runtime()['download_task_limit'], 1)
         self.assertEqual(self.b.fleet.local_settings()['config']['path'], 'videos-beta')
-        response = client.put('/api/config', json={'path': 'beta-new'},
+        response = client.put('/api/config', json={'download_task_limit': 4},
                               headers={**self.headers['alpha'], 'X-Instance-ID': 'beta'})
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.b.fleet.local_settings()['config']['path'], 'beta-new')
-        self.assertEqual(self.a.fleet.local_settings()['config']['path'], 'alpha-new')
-        response = self.clients['beta'].put('/api/config', json={'downmp3_quality': '1080'},
+        self.assertEqual(self.b.fleet.local_settings()['config']['download_task_limit'], 4)
+        self.assertEqual(self.a.fleet.local_settings()['config']['download_task_limit'], 1)
+        response = self.clients['beta'].put('/api/config', json={'youtube_start_interval': 180},
                                            headers=self.headers['beta'])
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], 'best')
-        self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], '1080')
+        self.assertEqual(self.a.fleet.local_settings()['config']['youtube_start_interval'], 120)
+        self.assertEqual(self.b.fleet.local_settings()['config']['youtube_start_interval'], 180)
 
     def test_node_settings_rpc_is_local_and_cannot_manage_accounts_or_jobs(self):
         client = self.clients['alpha']
         headers = {'Authorization': 'Bearer ' + self.a.fleet.token, 'X-Instance-ID': 'beta'}
-        response = client.put('/api/config', json={'downmp3_quality': '720'}, headers=headers)
+        response = client.put('/api/config', json={'youtube_start_interval': 90}, headers=headers)
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '720')
-        self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], 'best')
-        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '480'}).status_code, 403)
-        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '480'},
+        self.assertEqual(self.a.fleet.local_settings()['config']['youtube_start_interval'], 90)
+        self.assertEqual(self.b.fleet.local_settings()['config']['youtube_start_interval'], 120)
+        self.assertEqual(client.put('/api/config', json={'youtube_start_interval': 60}).status_code, 403)
+        self.assertEqual(client.put('/api/config', json={'youtube_start_interval': 60},
                                     headers={'Authorization': 'Bearer wrong'}).status_code, 403)
         for path in ('/api/jobs', '/api/auth/users'):
             self.assertEqual(client.post(path, json={}, headers=headers).status_code, 403)
@@ -109,15 +109,15 @@ class HybridTests(unittest.TestCase):
             self.assertEqual(result.status_code, 200, result.json)
             page = limited.get('/login')
             token = re.search(r'name="csrf-token" content="([^"]+)"', page.text)[1]
-            result = limited.put('/api/config', json={'downmp3_quality': '720'},
+            result = limited.put('/api/config', json={'youtube_start_interval': 90},
                                  headers={'X-CSRF-Token': token, 'X-Instance-ID': 'beta'})
             self.assertEqual(result.status_code, 403, result.json)
         target = {**headers, 'X-Instance-ID': 'beta'}
-        self.assertEqual(client.put('/api/config', json={'downmp3_quality': '720'},
+        self.assertEqual(client.put('/api/config', json={'youtube_start_interval': 90},
                                     headers={'X-Instance-ID': 'beta'}).status_code, 403)
-        result = client.put('/api/config', json={'downmp3_quality': '720'}, headers=target)
+        result = client.put('/api/config', json={'youtube_start_interval': 90}, headers=target)
         self.assertEqual(result.status_code, 200, result.json)
-        self.assertEqual(self.b.fleet.policy()['config']['downmp3_quality'], '720')
+        self.assertEqual(self.b.fleet.local_settings()['config']['youtube_start_interval'], 90)
 
     def test_cookie_and_media_can_be_accessed_from_either_management_page(self):
         cookie = b'# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tfixture\n'
@@ -210,11 +210,11 @@ class HybridTests(unittest.TestCase):
         # Local reads and writes must work even if all HTTP worker threads are busy.
         with patch('requests.Session.request', side_effect=AssertionError('self HTTP call')):
             self.assertEqual(self.clients['alpha'].get('/api/config').status_code, 200)
-            response = self.clients['alpha'].put('/api/config', json={'path': 'alpha-new'},
+            response = self.clients['alpha'].put('/api/config', json={'download_task_limit': 1},
                                                  headers=self.headers['alpha'])
             self.assertEqual(response.status_code, 200, response.json)
         self.client = self.clients['alpha']
-        with patch('webapp.environment.require_downmp3_environment') as check:
+        with patch('webapp.environment.require_native_environment') as check:
             response = self.client.post('/api/downloads/start', headers=self.headers['alpha'])
             self.assertEqual(response.status_code, 202, response.json)
             result = test_fleet.FleetTests.wait_startup(self)
@@ -230,7 +230,7 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.json)
         identity = response.json['id']
         self.a.set_downloads_paused(False)
-        with patch('webapp.environment.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.clients['beta'].post(f'/api/jobs/{identity}/control', json={'action': 'start'},
                                                 headers=self.headers['beta'])
         self.assertEqual(response.status_code, 200, response.json)
@@ -325,13 +325,13 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(self.b.claim()['id'], task_id)
 
     def test_joining_or_restarting_does_not_copy_peer_policy(self):
-        self.a.fleet.save_policy({'download_methods': ['downmp3'], 'downmp3_quality': '1080'})
+        self.a.fleet.save_policy({'youtube_start_interval': 180})
         with self.a.connect() as db:
             db.execute(instances.update().where(instances.c.id == 'beta').values(heartbeat=0))
         restarted = create_app(self.root / 'beta/config.yaml', self.b.directory, start_worker=False,
             role='hybrid', instance_id='beta', database_url=self.url)
-        self.assertEqual(restarted.extensions['fleet'].policy()['config']['downmp3_quality'], 'best')
-        self.assertEqual(self.a.fleet.policy()['config']['downmp3_quality'], '1080')
+        self.assertEqual(restarted.extensions['fleet'].local_settings()['config']['youtube_start_interval'], 120)
+        self.assertEqual(self.a.fleet.local_settings()['config']['youtube_start_interval'], 180)
 
 
 

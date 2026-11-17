@@ -687,7 +687,7 @@ class ClashManager:
                 raise ClashError('轮换节点已被移除，请更新轮换配置后重试。')
             index = (rotation['start_index'] + completed // rotation['every']) % len(rotation['nodes'])
             from webapp.proxy_health import ProxyHealth
-            node = ProxyHealth(self.directory).select(rotation['nodes'], index, queued.get('health_providers'))
+            node = ProxyHealth(self.directory).select(rotation['nodes'], index)
             self.start()
             if self.api(self._group_path()).get('now') != node:
                 self.select(node, automatic=True)

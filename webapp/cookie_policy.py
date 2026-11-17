@@ -1,5 +1,5 @@
 """Cookie request limits shared by admission, retries and status rendering."""
-from webapp.config_schema import DEFAULTS
+from webapp.config.schema import DEFAULTS
 
 
 DAY = 86400

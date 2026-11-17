@@ -24,7 +24,7 @@ class ApplicationTests(unittest.TestCase):
         directory.mkdir(exist_ok=True)
         config = directory / 'config.yaml'
         if not config.exists():
-            config.write_text('path: videos\nproxy_mode: direct\nworker_count: 2\n',
+            config.write_text('path: videos\nproxy_mode: direct\ndownload_task_limit: 2\n',
                               encoding='utf-8')
         app = create_app(config, directory / 'state', start_worker=start_worker)
         app.testing = True
@@ -42,14 +42,14 @@ class ApplicationTests(unittest.TestCase):
         restarted = self.application('first')
         client = restarted.test_client()
         client.set_cookie(restarted.config['SESSION_COOKIE_NAME'], cookie)
-        self.assertEqual(client.put('/api/config', json={'worker_count': 3},
+        self.assertEqual(client.put('/api/config', json={'download_task_limit': 3},
                                     headers={'X-CSRF-Token': token}).status_code, 200)
         self.assertEqual(first.config['SECRET_KEY'], restarted.config['SECRET_KEY'])
 
         other = self.application('other')
         client = other.test_client()
         client.set_cookie(other.config['SESSION_COOKIE_NAME'], cookie)
-        self.assertEqual(client.put('/api/config', json={'worker_count': 4},
+        self.assertEqual(client.put('/api/config', json={'download_task_limit': 4},
                                     headers={'X-CSRF-Token': token}).status_code, 403)
         self.assertNotEqual(first.config['SECRET_KEY'], other.config['SECRET_KEY'])
 
@@ -57,12 +57,12 @@ class ApplicationTests(unittest.TestCase):
         first = self.application('first')
         other = self.application('other')
         config = self.root / 'first' / 'config.yaml'
-        config.write_text('path: updated\nworker_count: 5\n', encoding='utf-8')
+        config.write_text('path: updated\ndownload_task_limit: 5\n', encoding='utf-8')
         settings, base = first.extensions['settings_func']()
-        self.assertEqual((settings['path'], settings['worker_count']), ('updated', 5))
+        self.assertEqual((settings['path'], settings['download_task_limit']), ('updated', 5))
         self.assertEqual(base, config.parent)
-        self.assertEqual(first.extensions['disk_config']()['worker_count'], 5)
-        self.assertEqual(other.extensions['settings_func']()[0]['worker_count'], 2)
+        self.assertEqual(first.extensions['disk_config']()['download_task_limit'], 5)
+        self.assertEqual(other.extensions['settings_func']()[0]['download_task_limit'], 2)
 
     def test_worker_switch_preserves_settings_and_resume_callback(self):
         with patch('webapp.application.TaskRunner') as runner_type, \

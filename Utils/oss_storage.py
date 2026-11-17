@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from webapp.config_schema import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS, OSS_SECRETS
+from webapp.config.schema import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS, OSS_SECRETS
 
 
 class OSSUploadError(RuntimeError):

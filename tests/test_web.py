@@ -18,7 +18,8 @@ from PIL import Image
 import yaml
 
 from app import create_app
-from webapp.tasks import ROOT, TaskStore
+from Utils.runtime import ROOT
+from webapp.store import TaskStore
 from web_worker import worker_lock
 
 
@@ -35,7 +36,7 @@ class WebTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = self.root / 'config.yaml'
-        self.config.write_text('path: videos\nworker_count: 1\n', encoding='utf-8')
+        self.config.write_text('path: videos\ndownload_task_limit: 1\n', encoding='utf-8')
         self.app = create_app(self.config, self.root / 'state', start_worker=False)
         self.app.testing = True
         self.client = self.app.test_client()
@@ -68,56 +69,29 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/media/covers/..%5cconfig.yaml').status_code, 404)
 
     def test_settings_roundtrip_and_invalid_write_is_atomic(self):
-        response = self.client.put('/api/config', json={'worker_count': 2}, headers=self.headers)
+        response = self.client.put('/api/config', json={'download_task_limit': 2}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         saved = yaml.safe_load(self.config.read_text(encoding='utf-8'))
-        self.assertEqual(saved['worker_count'], 2)
+        self.assertEqual(saved['download_task_limit'], 2)
         before = self.config.read_bytes()
-        for invalid in ({'worker_count': 0}, {'download_method': 'invalid'}, {'path': ''}, {'unknown': 1}):
+        for invalid in ({'download_task_limit': -1}, {'download_method': 'invalid'}, {'path': ''}, {'unknown': 1}):
             response = self.client.put('/api/config', json=invalid, headers=self.headers)
             self.assertEqual(response.status_code, 400, invalid)
             self.assertEqual(self.config.read_bytes(), before)
 
-    def test_task_validation_and_publish_confirmation(self):
-        self.assertEqual(self.post_task('shell').status_code, 400)
-        self.assertEqual(self.post_task('publish').status_code, 400)
-        self.assertEqual(self.post_task('login', platforms=['xigua']).status_code, 400)
-        self.assertEqual(self.post_task('login', platforms=['douyin', 'kuaishou']).status_code, 400)
-        self.assertEqual(self.post_task('download', urls='file:///private').status_code, 400)
-        self.assertEqual(len(self.store.list()), 0)
 
-    def test_pending_task_binds_settings_when_execution_starts(self):
-        task = self.post_task('download', urls='https://example.com/video.mp4').json
-        self.client.put('/api/config', json={'path': 'another-folder'}, headers=self.headers)
-        stored = TaskStore(self.root / 'state').get(task['id'], private=True)
-        self.assertNotIn('config', stored['payload'])
-        started = self.store.claim(self.store.owner)
-        self.assertEqual(started['payload']['config']['path'], 'another-folder')
-        self.assertEqual(stored['payload']['base'], str(self.root))
-        self.assertNotIn('payload', self.client.get(f'/api/tasks/{task["id"]}').json)
-        self.assertEqual(self.client.get('/api/tasks/no-such-task/logs').status_code, 404)
 
     def test_download_scope_hides_unrelated_history_and_counts(self):
         payload = {'config': {}, 'base': str(self.root)}
         self.store.create('legacy', payload)
-        download = self.post_task('download', urls='https://example.com/video.mp4').json
-        self.post_task('check', scope='download')
+        download = self.store.create('download', {**payload, 'urls': ['https://example.com/video.mp4']})
+        self.store.create('check', payload)
         response = self.client.get('/api/tasks?scope=download').json
         self.assertEqual({task['action'] for task in response['items']}, {'download', 'check'})
         self.assertEqual(response['counts']['total'], 2)
         self.assertEqual(self.client.get('/api/tasks').json['counts']['total'], 3)
         self.assertIn(download['id'], {task['id'] for task in response['items']})
 
-    def test_settings_save_keeps_only_download_fields(self):
-        original = yaml.safe_load(self.config.read_text())
-        original['legacy_publish_field'] = 'removed'
-        self.config.write_text(yaml.safe_dump(original), encoding='utf-8')
-        response = self.client.put('/api/config', json={'dir': 'youtube'}, headers=self.headers)
-        self.assertEqual(response.status_code, 200)
-        saved = yaml.safe_load(self.config.read_text())
-        self.assertNotIn('legacy_publish_field', saved)
-        self.assertEqual(self.post_task('download', urls='https://example.com/video.mp4').status_code, 202)
-        self.assertEqual(self.post_task('check', scope='download').status_code, 202)
 
     def test_import_unicode_pair_collision_and_bad_cover_rollback(self):
         response = self.import_video()
@@ -133,7 +107,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(list((self.root / 'videos').iterdir()), [])
 
     def test_queued_work_blocks_media_mutation(self):
-        self.post_task('check')
+        self.store.create('check', {'base': str(self.root), 'config': {}})
         self.assertEqual(self.import_video().status_code, 409)
 
     def test_format_tracks_are_one_item_with_shared_cover_and_finished_video_wins(self):
@@ -195,14 +169,6 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.data, b'valid-file')
 
-    def test_youtube_merge_requires_ffmpeg_but_direct_file_download_does_not(self):
-        from webapp.downloader import build_ydl_options, require_download_tools
-        options = build_ydl_options({}, self.root)
-        with patch('webapp.downloader.shutil.which', return_value=None):
-            with self.assertRaisesRegex(RuntimeError, 'FFmpeg'):
-                require_download_tools(['https://youtu.be/abcdefghijk'], options)
-            require_download_tools(['https://example.com/video.mp4'], options)
-            require_download_tools(['https://www.youtube.com/watch?v=abcdefghijk'], {'format': 'best'})
 
     def test_saved_account_state_does_not_expose_credentials(self):
         response = self.client.get('/api/status')
@@ -228,7 +194,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.upload_cookie(content,headers={}).status_code,403)
 
     def test_persistence_recovery_and_utf8_log_cursor(self):
-        task = self.post_task('check').json
+        task = self.store.create('check', {'base': str(self.root), 'config': {}})
         self.store.claim()
         self.assertEqual(TaskStore(self.root / 'state').get(task['id'])['status'], 'running')
         self.store.recover(expired_only=False)
@@ -252,39 +218,7 @@ class WebTests(unittest.TestCase):
             result = subprocess.run([sys.executable, '-c', code, str(lock)], cwd=ROOT, capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.strip(), 'False')
 
-    def test_real_worker_download_and_failure_keep_queue_moving(self):
-        fixture = self.root / 'http'
-        fixture.mkdir()
-        content = b'local transport fixture, not an encoded video\n' * 100
-        (fixture / 'video.mp4').write_bytes(content)
-
-        class QuietHandler(http.server.SimpleHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-        handler = functools.partial(QuietHandler, directory=str(fixture))
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        # First job fails without networking. The next job must still run.
-        failure = self.store.create('not-supported', {'config': {}, 'base': str(self.root), 'platforms': []})
-        response = self.post_task('download', urls=f'http://127.0.0.1:{server.server_port}/video.mp4')
-        self.assertEqual(response.status_code, 202)
-        task = response.json
-        result = subprocess.run([sys.executable, '-u', str(ROOT / 'web_worker.py'), '--state', str(self.store.directory)],
-                                cwd=ROOT, env=dict(os.environ, PYTHONUTF8='1'), capture_output=True, timeout=45)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.store.get(failure['id'])['status'], 'failed')
-        finished = self.store.get(task['id'])
-        self.assertEqual(finished['status'], 'succeeded', self.store.logs(task['id'])['text'])
-        downloaded = list((self.root / 'videos').rglob('*.mp4'))
-        self.assertEqual(len(downloaded), 1)
-        self.assertEqual(downloaded[0].read_bytes(), content)
-        self.assertIn('任务执行完成', self.store.logs(task['id'])['text'])
-        self.assertTrue(self.store.archive_has('generic video'))
 
 
 if __name__ == '__main__':
     unittest.main()
-

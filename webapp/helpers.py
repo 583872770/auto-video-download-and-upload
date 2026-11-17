@@ -1,7 +1,7 @@
 """Common helper functions for routes."""
 from flask import current_app, jsonify, request
 
-from webapp.settings import DEFAULTS
+from webapp.config.settings import DEFAULTS
 
 
 def json_result(value):
@@ -30,7 +30,5 @@ def sync_runtime(config, base):
         fleet.save_local({**DEFAULTS, **config}, base, clash.directory)
         return
 
-    from Utils.config import resolve_path
-    cookie = str(resolve_path(base, config['youtube_cookie'])) if config.get('youtube_cookie') else ''
-    store.set_runtime({**DEFAULTS, **config, 'youtube_cookie': cookie})
+    store.set_runtime({**DEFAULTS, **config})
     store.set_download_settings({**DEFAULTS, **config}, base, clash.directory)

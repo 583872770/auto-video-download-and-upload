@@ -23,27 +23,21 @@ class DownloadMeter:
         self.path = Path(directory) / 'download-metrics' / f'{slot}.json'
         self.data = {'pid': os.getpid(), 'generation': f'{os.getpid()}-{time.time_ns()}',
                      'received_bytes': 0, 'verified_bytes': 0, 'succeeded': 0, 'failed': 0,
-                     'channels': {}, 'groups': {}}
+                     'resolved': 0, 'resolve_seconds': 0}
         self.last = 0
         self.streams = {}
-        self.channel = self.group = None
         self.resolve_seconds = 0
         self.lock = threading.RLock()
         self.publish_error = None
         self.warned_at = float('-inf')
 
     @synchronized
-    def begin(self, channel):
-        self.channel, self.group = channel.id, channel.upstream_group
+    def begin(self):
         self.streams = {}
         self.resolve_seconds = 0
 
     def _add(self, key, value):
         self.data[key] = self.data.get(key, 0) + value
-        for category, identity in (('channels', self.channel), ('groups', self.group)):
-            if identity:
-                counters = self.data[category].setdefault(identity, {})
-                counters[key] = counters.get(key, 0) + value
 
     @synchronized
     def hook(self, event):

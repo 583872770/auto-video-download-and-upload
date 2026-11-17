@@ -17,6 +17,12 @@ class CurrentContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400, response.json)
         self.assertEqual(self.config.read_bytes(), before)
 
+    def test_download_creation_requires_task_center_contract(self):
+        for path in ('/api/tasks', '/api/downloads', '/api/downloads/queue', '/api/downloads/import'):
+            response = self.client.post(path, json={'urls': 'npNnbj46_ik'}, headers=self.headers)
+            self.assertIn(response.status_code, (404, 405), (path, response.status_code))
+        self.assertEqual(self.store.counts()['total'], 0)
+
     def test_missing_frontend_returns_actionable_503(self):
         from unittest.mock import patch
         from werkzeug.exceptions import ServiceUnavailable

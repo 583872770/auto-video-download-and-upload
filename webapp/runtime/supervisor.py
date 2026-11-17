@@ -42,7 +42,6 @@ class TaskRunner:
         self._settings_ready = threading.Event()
         from webapp.throughput import ThroughputController
         self.throughput = ThroughputController(self.store.directory)
-        self.parser = None
 
     def wake(self):
         """Dispatch committed queue changes without waiting for the next poll."""
@@ -71,8 +70,6 @@ class TaskRunner:
         finally:
             self.stop.set()
             maintenance.join(timeout=2)
-            if self.parser:
-                self.parser.close()
 
     def _maintain(self, diagnostic_log):
         """Directory scans and retention must never hold up queue dispatch."""
@@ -145,11 +142,10 @@ class TaskRunner:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
                         stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
                     cookie_capacity = None
-                    if config.get('youtube_cookie_pool'):
-                        from webapp.cookie_pool import CookiePool
-                        base = self.store.fleet.local_settings()['base'] if self.store.fleet else self.base
-                        if base:
-                            cookie_capacity = CookiePool(self.store, config, base, None, strict=False).status()['capacity_summary']
+                    from webapp.cookie_pool import CookiePool
+                    base = self.store.fleet.local_settings()['base'] if self.store.fleet else self.base
+                    if base:
+                        cookie_capacity = CookiePool(self.store, config, base, None, strict=False).status()['capacity_summary']
                     self.throughput.update(config, stages, cookie_capacity=cookie_capacity)
                     if self.store.fleet:
                         from webapp.risk_diagnostics import local_health
@@ -190,11 +186,6 @@ class TaskRunner:
                     roles.discard('download')
                     roles.discard('regular')
                 if roles:
-                    if (self.parser is None and config.get('shared_parser', True)
-                            and 'bergung' in (config.get('download_methods', ['yt_dlp']))):
-                        from webapp.parser_broker import ParserBroker
-                        self.parser = ParserBroker(self.store.directory, lambda: self._maintenance_config)
-                        self.parser.start()
                     download_starts = role_counts.get('download', 0)
                     local_slots = range(-2, -2 - max(1, min(8, int(config.get('postprocess_limit', 2)))), -1)
                     for slot in [-1, *local_slots, *range(count)]:

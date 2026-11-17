@@ -460,16 +460,9 @@ usePolling(
                   >
                 </td>
                 <td class="account-participation-cell">
-                  <span
-                    :class="{ participating: item.cookies.some((c) => c.pooled || c.active) }"
-                    >{{
-                      item.cookies.some((c) => c.pooled)
-                        ? '账号池'
-                        : item.cookies.some((c) => c.active)
-                          ? '单独使用'
-                          : '未参与'
-                    }}</span
-                  >
+                  <span :class="{ participating: item.cookies.some((c) => c.pooled) }">{{
+                    item.cookies.some((c) => c.pooled) ? '账号池' : '未参与'
+                  }}</span>
                 </td>
                 <td class="account-actions-cell">
                   <button :disabled="pending" @click="selected = item.id">

@@ -16,7 +16,10 @@ from webapp.database import deliveries
 class JobTests(unittest.TestCase):
     def setUp(self):
         test_scale.ScaleTests.setUp(self)
-        response = self.client.put('/api/config', json={'download_methods':['downmp3']}, headers=self.headers)
+        from tests.account_cookie_fixture import AccountCookieProfiles
+        library = AccountCookieProfiles(self.root, self.store)
+        ids = [library.add('Fixture ' + str(i), ('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tjob-fixture-' + str(i) + '\n').encode())['id'] for i in range(4)]
+        response = self.client.put('/api/config', json={'download_task_limit': 4, 'youtube_cookie_pool': ids}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
     def create(self, name='List A', urls='npNnbj46_ik', **extra):
         response = self.client.post('/api/jobs', json={
@@ -26,7 +29,7 @@ class JobTests(unittest.TestCase):
         return response.json['id']
 
     def control(self, identity, action):
-        with patch('app.require_downmp3_environment'):
+        with patch('webapp.environment.require_native_environment'):
             response = self.client.post(f'/api/jobs/{identity}/control', json={'action': action,
                 **({'confirmation':self.detail(identity)['name']} if action=='delete' else {})}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
@@ -56,7 +59,7 @@ class JobTests(unittest.TestCase):
         self.control(a, 'start')
         task = self.store.claim(self.store.owner)
         self.assertEqual(task['batch_id'], a)
-        self.assertEqual(task['payload']['config']['download_methods'], ['downmp3'])
+        self.assertNotIn('download_methods', task['payload']['config'])
         self.assertEqual(task['payload']['config']['dir'], '')
         self.assertIn('_delivery_contract', task['payload']['config'])
         self.store.archive_add('youtube npNnbj46_ik', job_id=a)
@@ -265,7 +268,7 @@ class JobFleetTests(unittest.TestCase):
     setup_fleet = test_fleet.FleetTests.setup_fleet
 
     def test_jobs_keep_worker_paths_and_isolate_remote_cancellation(self):
-        self.b.fleet.save_policy({'downmp3_quality':'1080'})
+        self.b.fleet.save_policy({'youtube_start_interval':180})
         ids=[]
         for name,quality in [('A','720'),('B','1080')]:
             response=self.client.post('/api/jobs',json={'customer':name,'name':name,'urls':'npNnbj46_ik','delivery':{'storage':{'path':'task-'+name,'dir':name}}},headers=self.headers)
@@ -280,8 +283,8 @@ class JobFleetTests(unittest.TestCase):
         self.assertEqual(b['batch_id'],ids[1])
         self.assertEqual(a['payload']['config']['path'],'task-A')
         self.assertEqual(b['payload']['config']['path'],'task-B')
-        self.assertEqual(a['payload']['config']['downmp3_quality'],'720')
-        self.assertEqual(b['payload']['config']['downmp3_quality'],'1080')
+        self.assertEqual(a['payload']['config']['fragment_concurrency'], 4)
+        self.assertEqual(b['payload']['config']['youtube_start_interval'],180)
         response=self.client.post(f'/api/jobs/{ids[0]}/control',json={'action':'stop'},headers=self.headers)
         self.assertEqual(response.status_code,200,response.json)
         self.assertFalse(self.a.heartbeat(a['id'],self.a.owner))

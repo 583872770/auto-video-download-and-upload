@@ -183,12 +183,12 @@ class AccountLibrary:
             linked = db.execute(select(links).where(links.c.account_id == identity).with_for_update()).mappings().first()
             profile = linked['profile_id'] if linked else uuid.uuid4().hex
             if linked and linked['instance_id'] != scope:
-                raise Conflict('账号 Cookie 归属不一致，请先检查历史数据。')
+                raise Conflict('账号 Cookie 与当前绑定实例不一致，请重新读取账号后重试。')
             old = db.execute(select(cookie_profiles).where(cookie_profiles.c.scope == scope,
                 cookie_profiles.c.id == profile).with_for_update()).mappings().first()
             if old and old['content']:
                 from webapp.cookie_pool import account_group_key, credential_key
-                from webapp.channel_scheduler import _key
+                from webapp.request_scheduler import _key
                 from webapp.database import download_resources
                 try:
                     previous = 'credential:' + credential_key(old['content'].encode())
@@ -227,9 +227,8 @@ class AccountLibrary:
                 db.execute(select(instances.c.id).where(instances.c.id == row['instance_id']).with_for_update()).first()
                 node = self.nodes(db).get(row['instance_id'], {})
                 config = node.get('config', {})
-                current = config.get('youtube_cookie', '').replace('\\', '/').rsplit('/', 1)[-1].removesuffix('.txt')
-                if set(bound) & set(config.get('youtube_cookie_pool', [])) or current in bound:
-                    raise Conflict('关联 Cookie 仍在账号池或当前使用中，请先停用再删除账号资料。')
+                if set(bound) & set(config.get('youtube_cookie_pool', [])):
+                    raise Conflict('关联 Cookie 仍在账号池中，请先停用再删除账号资料。')
                 # Conservative fence: no executor tasks may still retain a Cookie snapshot.
                 if db.execute(select(tasks.c.id).where(tasks.c.instance_id == row['instance_id'],
                         tasks.c.status == 'running').limit(1)).first():
@@ -261,7 +260,7 @@ class AccountLibrary:
             node = nodes.get(p['scope'], {})
             config, rate = node.get('config', {}), node.get('throughput', {})
             pool = rate.get('cookie_pool') or {}
-            sessions = pool.get('profiles') or pool.get('sessions') or pool.get('session_states') or []
+            sessions = pool.get('sessions', [])
             session = next((s for s in sessions if s['id'] == p['id'] or p['id'] in s.get('profile_ids', [])), None)
             # Alias map in the capacity snapshot maps duplicate files to a core session.
             alias = pool.get('aliases', {}).get(p['id'])
@@ -269,9 +268,7 @@ class AccountLibrary:
                 session = next((s for s in sessions if s['id'] == alias), None)
             fresh = node.get('online') and 0 <= stamp - rate.get('time', 0) < 20
             pooled = p['id'] in config.get('youtube_cookie_pool', [])
-            current = config.get('youtube_cookie', '').replace('\\', '/').rsplit('/', 1)[-1].removesuffix('.txt')
-            active = not config.get('youtube_cookie_pool') and p['id'] == current
-            download = session.get('state', 'unknown') if fresh and session else 'unknown' if pooled or active else 'inactive'
+            download = session.get('state', 'unknown') if fresh and session else 'unknown' if pooled else 'inactive'
             auth = saved_auth.get((p['scope'], p['id']))
             state, details = 'unchecked', {}
             if auth:
@@ -294,7 +291,7 @@ class AccountLibrary:
             result.append(dict(id=p['id'], instance_id=p['scope'], name=p['name'],
                 instance_name=node.get('name', p['scope']), online=bool(node.get('online')),
                 account_id=(associations.get((p['scope'], p['id'])) or {}).get('account_id'),
-                pooled=pooled, active=active, auth={**details, 'state': state}, download_state=download,
+                pooled=pooled, auth={**details, 'state': state}, download_state=download,
                 session=session if fresh else None, created_at=p['created_at']))
         return nodes, result
 

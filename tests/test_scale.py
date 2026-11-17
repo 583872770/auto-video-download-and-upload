@@ -32,7 +32,11 @@ class ScaleTests(unittest.TestCase):
         self.catalog = self.app.extensions['media_catalog']
 
     def upload(self, content, name='videos.txt'):
-        response = self.client.post('/api/downloads/import', data={'file': (io.BytesIO(content), name)}, headers=self.headers)
+        if not hasattr(self, '_import_job'):
+            created = self.client.post('/api/jobs', json={'customer': 'Fixture', 'name': 'Imported list', 'urls': ''}, headers=self.headers)
+            self.assertEqual(created.status_code, 201, created.json)
+            self._import_job = created.json['id']
+        response = self.client.post(f'/api/jobs/{self._import_job}/imports', data={'file': (io.BytesIO(content), name)}, headers=self.headers)
         self.assertEqual(response.status_code, 202, response.json)
         return self.store.get(response.json['id'], private=True)
 
@@ -85,7 +89,7 @@ class ScaleTests(unittest.TestCase):
         restored = self.store.get(self.store.page(actions=['download'], limit=1)['items'][0]['id'], private=True)
         self.assertNotIn('config', restored['payload'])
         self.assertNotIn('config', task['payload'])
-        self.assertEqual(restored['payload']['batch_id'], task['payload']['import_id'])
+        self.assertEqual(restored['payload']['batch_id'], self._import_job)
 
     def test_failed_import_chunk_rolls_back_tasks_reservations_counters_and_checkpoint(self):
         total = CHUNK + 10
@@ -189,5 +193,3 @@ class ScaleTests(unittest.TestCase):
         self.store.claim('worker')
         self.store.finish(task['id'], error='HTTP Error 503', retryable=True, worker_id='worker')
         self.assertEqual(self.store.get(task['id'])['status'], 'failed')
-
-

@@ -1,6 +1,5 @@
 """Instance-local, bounded preparation/transfer pipeline and resource feedback."""
 from collections import deque
-from contextlib import contextmanager, ExitStack
 import json
 import hashlib
 import math
@@ -11,9 +10,9 @@ import tempfile
 
 import psutil
 
-from webapp.config_schema import PIPELINE_KEY_FIELDS
-from webapp.db_pool_calculator import cookie_pool_worker_limit
-from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, automatic, pool_process_limits
+from webapp.config.schema import PIPELINE_KEY_FIELDS
+from webapp.db_pool_calculator import download_task_limit
+from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, pool_process_limits, fragment_limit
 from webapp.resource_pressure import (CPU_HIGH, CPU_RECOVER, IO_HIGH, WORKER_ADJUST_SECONDS,
                                       WORKER_REDUCTION, memory_thresholds, pressure_state,
                                       sample_io_pressure, worker_control)
@@ -27,12 +26,8 @@ class PipelineBusy(RuntimeError):
 
 
 def policy_key(config):
-    pooled = bool(config.get('youtube_cookie_pool'))
-    return ['cookie_pool' if pooled else config.get('throughput_mode', 'manual'),
-            0 if pooled else int(config.get('worker_count', 1)),
-            int(config.get('yt5s_browser_count', 2)), 0 if pooled else int(config.get('bandwidth_mbps', 0)),
-            hashlib.sha256(json.dumps({key: config.get(key) for key in PIPELINE_KEY_FIELDS},
-                                      sort_keys=True).encode()).hexdigest()[:16]]
+    return hashlib.sha256(json.dumps({key: config.get(key) for key in PIPELINE_KEY_FIELDS},
+                                      sort_keys=True).encode()).hexdigest()[:16]
 
 
 def pool_worker_limits(config, capacity, resources=None):
@@ -123,78 +118,32 @@ def _atomic(path, data):
 
 
 def runtime_limits(config, directory):
-    if config.get('youtube_cookie_pool'):
-        # Before a fresh snapshot, use the conservative configured-file count,
-        # still bounded by the process/resource contract. Admission verifies
-        # deduplication, warmup, ownership and cooling with live database state.
-        target = min(MAX_TRANSFERS, max(1, len(config['youtube_cookie_pool'])))
-        result = {'transfers': target, 'workers': target, 'browsers': 1,
-                  'mode': 'cookie_pool', 'reason': 'Cookie 池独立调度，等待会话容量采样'}
-        try:
-            saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
-            if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
-                    and (saved.get('cookie_pool') or {}).get('known')):
-                target = max(1, min(MAX_TRANSFERS, int(saved['cookie_pool']['capacity'])))
-                if 1 <= int(saved.get('workers', 0)) <= MAX_WORKERS:
-                    from webapp.db_pool_calculator import connection_budget
-                    result.update(saved, transfers=target, mode='cookie_pool')
-                    result['workers'] = min(int(saved['workers']),
-                        cookie_pool_worker_limit(config) or MAX_TRANSFERS,
-                        connection_budget(config)['workers'])
-                    return result
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        result.update(pool_worker_limits(config, target))
-        return result
-    requested = max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1))))
-    from webapp.db_pool_calculator import connection_budget
-    budget = connection_budget(config)
-    if not automatic(config):
-        result = {'transfers': requested, 'workers': min(requested, budget['workers']),
-                  'database_budget': budget,
-                  'browsers': int(config.get('yt5s_browser_count', 2)), 'mode': 'manual'}
-        try:
-            saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
-            if saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20:
-                # Retain fresh diagnostics without applying automatic limits.
-                result.update({key: saved[key] for key in ('policy', 'time', 'cookie_pool', 'reason') if key in saved})
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        return result
+    target = max(1, min(MAX_TRANSFERS, len(config.get('youtube_cookie_pool', [])) *
+                        max(1, int(config.get('youtube_cookie_session_limit', 1)))))
+    result = {'transfers': target, 'mode': 'cookie_pool', 'reason': '账号池调度，等待资源采样'}
+    result.update(pool_worker_limits(config, target))
     try:
         saved = json.loads((Path(directory) / 'throughput.json').read_text(encoding='utf-8'))
-        if (saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20
-                and 1 <= saved['transfers'] <= requested
-                and 1 <= saved['workers'] <= MAX_WORKERS
-                and 1 <= saved['browsers'] <= int(config.get('yt5s_browser_count', 2))):
-            return {**saved, 'workers': min(saved['workers'], budget['workers'])}
+        if saved['policy'] == policy_key(config) and 0 <= time.time() - saved['time'] < 20:
+            result.update(saved, workers=max(1, min(result['workers'], int(saved['workers']))))
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    fallback = 2
-    return {'transfers': min(requested, fallback), 'workers': min(requested, fallback, budget['workers']),
-            'browsers': 1, 'mode': 'auto', 'reason': '等待资源采样'}
+    return result
 
 
 class ThroughputController:
     def __init__(self, directory, clock=time.monotonic):
         self.directory, self.clock = Path(directory), clock
         self.last = 0
-        self.adjusted = 0
         self.previous = None
         self.state = None
-        self.previous_rate = None
-        self.probe_baseline = None
-        self.plateau_until = 0
         self.history = deque(maxlen=6)
         # Keep a three-minute completion window.  A one-minute window made the
         # displayed finished-output rate collapse whenever a large file was
         # still downloading, even while media bytes were arriving steadily.
         self.metric_history = deque(maxlen=36)
         self.metric_previous = None
-        self.group_control = {}
         self.pressure_hits = 0
-        self.browser_trial = None
-        self.browser_until = 0
         self.pool_adjusted = 0
         self.pool_last_reduction = None
         self.pressure_source = None
@@ -220,54 +169,22 @@ class ThroughputController:
         if not force and self.state is not None and tick - self.last < 5 and self.state['policy'] == policy_key(config):
             return self.state
         resources = self.sample()
-        pooled = bool(config.get('youtube_cookie_pool'))
-        if pooled:
-            cookie_capacity = cookie_capacity or {'known': False, 'capacity': 0,
-                'reason': 'Cookie 会话容量尚未采样', 'configured_files': len(config['youtube_cookie_pool'])}
-        requested = (max(1, min(MAX_TRANSFERS, int(cookie_capacity['capacity']))) if pooled else
-                     max(1, min(MAX_TRANSFERS, int(config.get('worker_count', 1)))))
-        browser_requested = max(1, min(16, int(config.get('yt5s_browser_count', 2))))
-        browser_methods = {'yt5s', 'yt1d', 'bergung'} & set(config.get('download_methods', ['yt_dlp']))
-        browser_ceiling = min(browser_requested, max(1, math.floor(resources['cpu_cores'] * .75)),
-                              max(1, int(resources['memory_total'] * .3 / (384 * MIB)))) if browser_methods else 1
+        cookie_capacity = cookie_capacity or {'known': False, 'capacity': 0,
+            'reason': '账号会话容量尚未采样', 'configured_files': len(config.get('youtube_cookie_pool', []))}
+        requested = max(1, min(MAX_TRANSFERS, int(cookie_capacity['capacity'])))
         same = self.state and self.state['policy'] == policy_key(config)
         if not same:
-            self.group_control.clear()
-            self.browser_trial = None
-            self.probe_baseline = None
             self.pool_last_reduction = None
             self.pressure_hits = 0
-        browsers = min(browser_ceiling, self.state['browsers']) if same else min(2, browser_ceiling)
-        nominal_workers = max(1, int((resources['memory_total'] * .65 - 256 * MIB -
-                                     (browsers * 384 * MIB if browser_methods else 0)) / (128 * MIB)))
         from webapp.db_pool_calculator import connection_budget
         db_budget = connection_budget(config)
         db_worker_cap = db_budget['workers']
-        nominal_workers = min(nominal_workers, db_worker_cap)
-        ceiling = min(requested, max(1, nominal_workers - (browsers + 1 if browser_methods else 2)))
-        transfers = (requested if pooled else
-                     min(ceiling, self.state['transfers'] if same else max(1, int(resources['cpu_cores'] * 2))))
         counts = {}
-        group_active = {}
-        group_ready = {}
-        group_demand = {}
         wait_resources = {}
         ready_ages = []
         for item in stages:
             stage = item.get('stage') if isinstance(item, dict) else item
             counts[stage] = counts.get(stage, 0) + 1
-            if isinstance(item, dict) and item.get('upstream_group'):
-                group = item['upstream_group']
-                if stage in ('downloading', 'processing') or item.get('transfer_admitted'):
-                    group_active[group] = group_active.get(group, 0) + 1
-                elif stage == 'waiting_transfer':
-                    # A resolved URL is a real demand signal.  Counting it as
-                    # active work prevents the controller from mistaking a
-                    # full ready queue for an idle downloader.
-                    group_ready[group] = group_ready.get(group, 0) + 1
-                    blocked = item.get('transfer_wait_resource')
-                    if blocked in (None, 'local-upstream', 'upstream'):
-                        group_demand[group] = group_demand.get(group, 0) + 1
             if isinstance(item, dict) and stage == 'waiting_transfer':
                 blocked = item.get('transfer_wait_resource') or 'unknown'
                 wait_resources[blocked] = wait_resources.get(blocked, 0) + 1
@@ -277,30 +194,18 @@ class ThroughputController:
         from webapp.download_metrics import read_counters
         metrics = read_counters(self.directory)
         received = verified = resolved = 0
-        group_deltas = {}
-        channel_deltas = {}
         if self.metric_previous is not None and tick > self.last:
             for identity, value in metrics.items():
                 previous = self.metric_previous.get(identity, {})
                 received += max(0, value.get('received_bytes', 0) - previous.get('received_bytes', 0))
                 verified += max(0, value.get('verified_bytes', 0) - previous.get('verified_bytes', 0))
                 resolved += max(0, value.get('resolved', 0) - previous.get('resolved', 0))
-                for group, current in value.get('groups', {}).items():
-                    before = previous.get('groups', {}).get(group, {})
-                    delta = group_deltas.setdefault(group, {'bytes': 0, 'failed': 0, 'succeeded': 0, 'upstream_failed': 0})
-                    for key, name in (('bytes', 'received_bytes'), ('failed', 'failed'), ('succeeded', 'succeeded'), ('upstream_failed', 'upstream_failed')):
-                        delta[key] += max(0, current.get(name, 0) - before.get(name, 0))
-                for channel, current in value.get('channels', {}).items():
-                    before = previous.get('channels', {}).get(channel, {})
-                    delta = channel_deltas.setdefault(channel, {})
-                    for name in ('received_bytes','verified_bytes','succeeded','failed','resolved','resolve_seconds'):
-                        delta[name] = delta.get(name, 0) + max(0, current.get(name, 0) - before.get(name, 0))
-            self.metric_history.append((tick - self.last, received, verified, group_deltas, resolved, channel_deltas))
+            self.metric_history.append((tick - self.last, received, verified, resolved))
         self.metric_previous = metrics
         metric_seconds = sum(item[0] for item in self.metric_history) or 1
         media_rate = sum(item[1] for item in self.metric_history) / metric_seconds
         verified_rate = sum(item[2] for item in self.metric_history) / metric_seconds
-        resolve_rate = sum(item[4] for item in self.metric_history) / metric_seconds
+        resolve_rate = sum(item[3] for item in self.metric_history) / metric_seconds
         verified_bytes_window = sum(item[2] for item in self.metric_history)
         rate, cpu = 0.0, resources['cpu_percent']
         if self.previous and tick > self.last:
@@ -318,167 +223,39 @@ class ThroughputController:
         self.pressure_hits = self.pressure_hits + 1 if cpu >= CPU_HIGH or io_pressure >= IO_HIGH else 0
         protection = pressure_state(resources, cpu, self.pressure_hits)
         pressure = protection['active']
-        # Host traffic may include image pulls, backups, and unrelated services.
-        # Never use it as evidence that an extra media transfer is productive.
-        control_rate = media_rate
-        reason = '有界解析与传输并行'
-        changed = False
-        if automatic(config) and same and tick - self.adjusted >= 60:
-            active = max(sum(group_active.values()), counts.get('downloading', 0) + counts.get('processing', 0))
-            target = int(config.get('bandwidth_mbps', 0)) * 1e6 / 8
-            if pressure:
-                parsing = sum(counts.get(stage, 0) for stage in ('starting_browser', 'connecting_browser',
-                    'opening_site', 'waiting_verification', 'submitting_site'))
-                if (parsing and browsers > 1 and io_pressure < IO_HIGH
-                        and resources['memory_available'] >= max(384 * MIB, resources['memory_total'] * .08)):
-                    # Retire idle parser slots first; admitted media transfers
-                    # should not be penalized for browser startup CPU spikes.
-                    browsers = max(1, browsers - 1)
-                    reason = '解析阶段 CPU 压力升高，先减少浏览器'
-                else:
-                    transfers = max(1, math.floor(transfers * .8))
-                    if cpu >= 95 or resources['memory_available'] < 384 * MIB:
-                        browsers = max(1, browsers - 1)
-                    reason = '资源压力升高，收敛并发'
-                self.probe_baseline = None
-                self.browser_trial = None
-                self.browser_until = tick + 120
-                changed = True
-            elif self.browser_trial is not None:
-                trial = self.browser_trial
-                if tick - trial['time'] >= 120:
-                    improved = ((control_rate > trial['rate'] * 1.08 and control_rate > 0)
-                                or (resolve_rate > trial['resolve_rate'] * 1.15 and resolve_rate > 0))
-                    if not improved:
-                        browsers = max(1, browsers - 1)
-                        self.browser_until = tick + 180
-                        reason = '增加浏览器未改善解析或媒体吞吐，恢复原额度'
-                    self.browser_trial = None
-                else:
-                    reason = '观察新增浏览器的解析与下载收益'
-                changed = True
-            elif (counts.get('waiting_browser', 0) >= 2 and counts.get('waiting_transfer', 0) <= 1
-                  and cpu < 65 and resources['memory_available'] > 1024 * MIB and browsers < browser_ceiling
-                  and tick >= self.browser_until):
-                browsers += 1
-                self.browser_trial = {'time': tick, 'rate': control_rate, 'resolve_rate': resolve_rate}
-                reason = '解析供给不足且资源充足，试增一个浏览器'
-                changed = True
-            elif self.probe_baseline is not None:
-                # No additional active transfers means an upstream/ready
-                # shortage blocked the experiment.  Do not call it a failed
-                # bandwidth trial or starve the group controller below.
-                if active >= transfers:
-                    if control_rate < self.probe_baseline * 1.05:
-                        transfers = max(1, transfers - 1)
-                        self.plateau_until = tick + 120
-                        reason = '增加并发未提高接收吞吐，等待下一轮探索'
-                        changed = True
-                self.probe_baseline = None
-            elif (transfers < ceiling and (active >= max(1, transfers * .75)
-                  or wait_resources.get('local-transfers', 0))
-                  and control_rate > 0
-                  and (not target or control_rate < target * .9) and tick >= self.plateau_until):
-                self.probe_baseline = control_rate if transfers < ceiling else None
-                transfers = min(ceiling, transfers + 1)
-                reason = ('就绪任务等待传输，探索增加并发'
-                          if counts.get('waiting_transfer', 0) else '传输名额持续繁忙，探索增加并发')
-                changed = True
-            self.adjusted = tick
-        from webapp.channels import group_caps, registry
-        channels = registry(config)
-        channel_rates = {}
-        for channel in channels:
-            total = {name: sum(item[5].get(channel.id, {}).get(name, 0) for item in self.metric_history)
-                     for name in ('received_bytes','verified_bytes','succeeded','failed','resolved','resolve_seconds')}
-            channel_rates[channel.id] = dict(label=channel.label,
-                receive_mbps=round(total['received_bytes'] * 8 / metric_seconds / 1e6, 2),
-                verified_mbps=round(total['verified_bytes'] * 8 / metric_seconds / 1e6, 2),
-                succeeded=total['succeeded'], failed=total['failed'], resolved=total['resolved'],
-                resolve_seconds=round(total['resolve_seconds'] / total['resolved'], 1) if total['resolved'] else None)
-        upstream_caps = {key.split(':', 1)[1]: cap for key, cap in group_caps(channels).items() if key.startswith('upstream:')}
-        if 'youtube-origin' in group_active or 'youtube-origin' in group_ready:
-            upstream_caps.setdefault('youtube-origin', 32 if config.get('scheduler_mode') == 'auto' else 8)
-        if not automatic(config):
-            transfers = requested
-        groups = {}
-        for group, cap in upstream_caps.items():
-            cap = min(cap, transfers) if cap is not None else transfers
-            initial_limit = min(2, cap)
-            control = self.group_control.setdefault(group, {'limit': initial_limit, 'adjusted': tick, 'until': 0})
-            limit = min(control['limit'], cap)
-            total = {name: sum(item[3].get(group, {}).get(name, 0) for item in self.metric_history)
-                     for name in ('bytes', 'failed', 'succeeded', 'upstream_failed')}
-            group_rate = total['bytes'] / metric_seconds
-            if automatic(config) and tick - control['adjusted'] >= 60 and not changed:
-                if pressure or (total['upstream_failed'] >= 3 and total['upstream_failed'] > total['succeeded']):
-                    limit = max(1, limit - 1)
-                    control.pop('baseline', None)
-                    control['until'] = tick + 120
-                elif 'baseline' in control:
-                    baseline = control.pop('baseline')
-                    # A supply gap does not measure the added connection's
-                    # effect. Keep the allowance until enough resolved tasks
-                    # actually use it, rather than repeatedly shrinking a
-                    # group merely because a file ended during the trial.
-                    if group_active.get(group, 0) >= limit and group_rate < baseline * 1.08:
-                        limit = max(1, limit - 1)
-                        control['until'] = tick + 120
-                elif ((group_active.get(group, 0) + group_demand.get(group, 0)) >= limit
-                      and group_rate > 0 and limit < cap
-                      and (not int(config.get('bandwidth_mbps', 0)) or control_rate < int(config['bandwidth_mbps']) * 1e6 / 8 * .9)
-                      and tick >= control['until']):
-                    control['baseline'] = group_rate
-                    limit += 1
-                control['adjusted'] = tick
-                changed = True
-            control['limit'] = limit
-            groups[group] = {'limit': limit if automatic(config) else cap,
-                             'active': group_active.get(group, 0), 'receive_mbps': round(group_rate * 8 / 1e6, 2),
-                             'ready': group_ready.get(group, 0),
-                             'failed': total['failed'], 'upstream_failed': total['upstream_failed'], 'succeeded': total['succeeded']}
-        if not automatic(config):
-            transfers, workers, browsers = requested, min(requested, db_worker_cap), 1 if pooled else browser_requested
-            reason = cookie_capacity.get('reason', 'Cookie 池独立调度') if pooled else '使用手动并发'
-            if pooled:
-                pool_limits = pool_worker_limits(config, requested, resources)
-                workers = pool_limits['workers']
-                if same:
-                    previous_workers = min(workers, self.state['workers'])
-                    workers = previous_workers
-                    if pressure and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS:
-                        workers = max(1, math.floor(previous_workers * WORKER_REDUCTION))
-                        if workers < previous_workers:
-                            self.pool_last_reduction = {'at': time.time(), 'from': previous_workers,
-                                'to': workers, 'reasons': protection['reasons']}
-                    elif (not pressure and cpu < CPU_RECOVER and io_pressure < IO_HIGH
-                          and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS
-                          and resources['memory_available'] >= memory_thresholds(resources['memory_total'])[1]):
-                        workers = min(pool_limits['workers'], previous_workers + 1)
-                    if workers != self.state['workers']:
-                        self.pool_adjusted = tick
-                else:
-                    if resources['memory_available'] < memory_thresholds(resources['memory_total'])[0]:
-                        workers = min(workers, 2)
-                        if workers < pool_limits['workers']:
-                            self.pool_last_reduction = {'at': time.time(), 'from': pool_limits['workers'],
-                                'to': workers, 'reasons': protection['reasons']}
-                    self.pool_adjusted = tick
-                reason += f'；本机下载进程上限 {workers}，额外任务等待空闲进程'
-                if workers < pool_limits['workers']:
-                    reason += '；资源压力收敛后逐步恢复进程'
+        reason = cookie_capacity.get('reason', '账号池调度')
+        pool_limits = pool_worker_limits(config, requested, resources)
+        workers = pool_limits['workers']
+        if same:
+            previous_workers = min(workers, self.state['workers'])
+            workers = previous_workers
+            if pressure and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS:
+                workers = max(1, math.floor(previous_workers * WORKER_REDUCTION))
+                if workers < previous_workers:
+                    self.pool_last_reduction = {'at': time.time(), 'from': previous_workers,
+                        'to': workers, 'reasons': protection['reasons']}
+            elif (not pressure and cpu < CPU_RECOVER and io_pressure < IO_HIGH
+                  and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS
+                  and resources['memory_available'] >= memory_thresholds(resources['memory_total'])[1]):
+                workers = min(pool_limits['workers'], previous_workers + 1)
+            if workers != self.state['workers']:
+                self.pool_adjusted = tick
         else:
-            # Extra preparation workers are bounded; a ready URL waits inside
-            # its owning leased task, never in an unbounded or cross-node cache.
-            preparation = browsers + min(2, browsers) if browser_methods else 2
-            workers = max(transfers, min(MAX_WORKERS, nominal_workers, transfers + preparation))
-            workers = min(workers, nominal_workers, sum(value['limit'] for value in groups.values()) + preparation)
+            if resources['memory_available'] < memory_thresholds(resources['memory_total'])[0]:
+                workers = min(workers, 2)
+                if workers < pool_limits['workers']:
+                    self.pool_last_reduction = {'at': time.time(), 'from': pool_limits['workers'],
+                        'to': workers, 'reasons': protection['reasons']}
+            self.pool_adjusted = tick
+        reason += f'；本机下载进程上限 {workers}，额外任务等待空闲进程'
+        if workers < pool_limits['workers']:
+            reason += '；资源保护已降低上限，压力收敛后逐步恢复进程'
         self.state = {'time': time.time(), 'policy': policy_key(config),
-                      'mode': 'cookie_pool' if pooled else 'auto' if automatic(config) else 'manual',
-                      'transfers': transfers, 'workers': workers, 'browsers': browsers,
+                      'mode': 'cookie_pool',
+                      'transfers': workers, 'workers': workers, 'fragment_limit': fragment_limit(config),
                       'receive_mbps': round(rate * 8 / 1e6, 2), 'cpu_percent': round(cpu, 1),
                       'media_receive_mbps': round(media_rate * 8 / 1e6, 2),
-                      'verified_mbps': round(verified_rate * 8 / 1e6, 2), 'groups': groups, 'channels':channel_rates,
+                      'verified_mbps': round(verified_rate * 8 / 1e6, 2),
                       'verified_window_seconds': round(metric_seconds, 1),
                       'verified_samples': len(self.metric_history),
                       'verified_bytes_window': int(verified_bytes_window),
@@ -488,58 +265,17 @@ class ThroughputController:
                       'memory_available_mb': round(resources['memory_available'] / MIB),
                       'stages': counts, 'ready_transfer_count': counts.get('waiting_transfer', 0),
                       'transfer_wait_resources': wait_resources,
-                      'target_mbps': 0 if pooled else int(config.get('bandwidth_mbps', 0)),
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
                       'reason': reason, 'control_metric': 'media_received_bytes',
-                      'cookie_pool': cookie_capacity if pooled else None,
+                      'cookie_pool': cookie_capacity,
                       'database_budget': db_budget}
-        if pooled:
-            self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
-            self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
-                self.pool_last_reduction,
-                self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)))
+        self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
+        self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
+            self.pool_last_reduction,
+            self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)))
         self.state.update({key: resources.get(key) for key in ('io_pressure_source', 'io_pressure_host')})
-        if pooled:
-            from webapp.download_start_gate import DownloadStartGate
-            self.state['download_start_gate'] = DownloadStartGate(self.directory).status(config, self.state['time'])
+        from webapp.download_start_gate import DownloadStartGate
+        self.state['download_start_gate'] = DownloadStartGate(self.directory).status(config, self.state['time'])
         _atomic(self.directory / 'throughput.json', self.state)
         self.previous, self.last = resources, tick
         return self.state
-
-
-@contextmanager
-def transfer_slot(directory, config, on_wait=None, on_ready=None, timeout=120):
-    """OS locks bound all transfers and survive neither crashes nor restarts."""
-    if not automatic(config):
-        yield
-        return
-    from webapp.disk_budget import file_lock
-    root = Path(directory) / 'transfer-slots'
-    root.mkdir(parents=True, exist_ok=True)
-    deadline, reported = time.monotonic() + timeout, 0
-    while True:
-        with ExitStack() as selected:
-            picked = False
-            with file_lock(root / 'admission.lock') as admitted:
-                if admitted:
-                    limit = runtime_limits(config, directory)['transfers']
-                    busy, free = 0, []
-                    for index in range(MAX_TRANSFERS):
-                        with file_lock(root / f'{index}.lock') as available:
-                            if available:
-                                free.append(index)
-                            else:
-                                busy += 1
-                    if busy < limit and free:
-                        picked = selected.enter_context(file_lock(root / f'{free[0]}.lock'))
-            if picked:
-                if on_ready:
-                    on_ready()
-                yield
-                return
-        if time.monotonic() >= deadline:
-            raise PipelineBusy('传输队列繁忙，释放当前准备结果后稍后重试。')
-        if on_wait and time.monotonic() - reported >= 5:
-            on_wait()
-            reported = time.monotonic()
-        time.sleep(.2)

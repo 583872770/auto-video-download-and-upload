@@ -10,13 +10,6 @@ export interface Field {
   options?: Array<[string | boolean, string]>;
   password?: boolean;
 }
-const select = (
-  key: ConfigKey,
-  label: string,
-  section: Section,
-  options: Field['options'],
-  help?: string,
-): Field => ({ key, label, section, options, help });
 const field = (key: ConfigKey, label: string, section: Section, help?: string): Field => ({
   key,
   label,
@@ -33,61 +26,24 @@ export const groups = {
     ),
   ],
   performance: [
-    select('throughput_mode', '运行模式', 'performance', [
-      ['manual', '自定义'],
-      ['auto', '自动调节'],
-    ]),
     field(
-      'worker_count',
-      '实例并发上限',
+      'download_task_limit',
+      '下载任务并发上限',
       'performance',
-      '启用账号池时按会话容量调度，不使用此值。',
+      '0 表示按可用账号自动确定；资源保护会根据 CPU、内存、I/O 和数据库容量收敛。',
     ),
     field(
-      'bandwidth_mbps',
-      '公网下载带宽目标（Mbps）',
+      'fragment_concurrency',
+      '单文件分片并发上限',
       'performance',
-      '仅自动调节使用，0 表示不设目标。',
+      '只对支持分片的媒体生效，不随任务数量平均分配。资源保护会计入分片缓冲内存。',
     ),
-    field('yt5s_browser_count', '浏览器并发数', 'performance', 'yt5s、yt1d、Bergung 共享。'),
-    field('fragment_concurrency', '分片并发数', 'performance'),
     field(
       'postprocess_limit',
-      '本地后处理并发',
+      '本地处理并发',
       'performance',
-      '独立处理媒体、字幕转换和大文件交付，不占用账号下载名额。',
+      '转换、校验和文件交付使用独立队列，网络下载完成后即释放账号。',
     ),
-  ],
-  strategy: [
-    select('scheduler_mode', '渠道选择策略', 'performance', [
-      ['auto', '自动择优'],
-      ['ordered_fallback', '按顺序尝试'],
-      ['balanced', '同类渠道分流'],
-    ]),
-    field('auto_channel_attempts', '自动策略最多尝试入口', 'performance'),
-    select('shared_parser', '复用解析浏览器', 'performance', [
-      [true, '开启（推荐）'],
-      [false, '关闭'],
-    ]),
-    field('download_connection_limit', '本机下载连接预算', 'performance'),
-    field('builtin_transfer_limit', '内置渠道传输上限', 'performance', '0 表示不设置此项上限。'),
-    field('builtin_resolver_limit', '内置渠道解析上限', 'performance', '0 表示不设置此项上限。'),
-  ],
-  pool: [
-    field(
-      'youtube_cookie_pool_worker_limit',
-      'Cookie 池下载进程上限',
-      'performance',
-      '0 表示不设置此项上限；仍受资源和连接预算约束。',
-    ),
-    field('youtube_cookie_pool_preparation_workers', 'Cookie 池准备进程余量', 'performance'),
-  ],
-  database: [
-    select('db_budget_mode', '预算方式', 'performance', [
-      ['auto', '自动核算（推荐）'],
-      ['manual', '手动指定'],
-    ]),
-    field('db_connection_budget', '手动连接预算', 'performance'),
   ],
   disk: [
     field('disk_min_free_gb', '磁盘暂停水位（GiB）', 'maintenance'),
@@ -120,26 +76,4 @@ export const groups = {
     ),
   ],
 } satisfies Record<string, Field[]>;
-export const qualityFields: Record<string, Field[]> = {};
-for (const [provider, heights] of Object.entries({
-  yt5s: [360, 720],
-  yt1d: [360, 480, 720, 1080, 1440, 2160],
-  bergung: [360, 480, 720, 1080, 1440, 2160, 4320],
-  downmp3: [360, 480, 720, 1080],
-})) {
-  qualityFields[provider] = [
-    select(`${provider}_quality` as ConfigKey, `${provider} 画质`, 'download', [
-      ['best', '尽可能最高画质'],
-      ...heights.map((n) => [String(n), `${n}p`] as [string, string]),
-    ]),
-  ];
-  if (provider !== 'yt5s')
-    qualityFields[provider].push(
-      field(
-        `${provider}_timeout` as ConfigKey,
-        `${provider} 验证 / 转换等待上限（秒）`,
-        'download',
-      ),
-    );
-}
-export const allFields = [...Object.values(groups).flat(), ...Object.values(qualityFields).flat()];
+export const allFields = Object.values(groups).flat();

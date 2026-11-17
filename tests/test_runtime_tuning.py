@@ -13,7 +13,7 @@ from sqlalchemy import event, select
 from sqlalchemy.dialects.mysql import dialect
 
 from tests import test_cookie_pool, test_fleet
-from webapp.channel_scheduler import ChannelScheduler
+from webapp.request_scheduler import RequestScheduler
 from webapp.cookie_pool import CookiePool
 from webapp.database import tasks, runtime_hours, cookie_profiles
 from webapp.db_pool_calculator import calculate_pool_size, connection_budget
@@ -41,7 +41,7 @@ class PoolSamplingTests(unittest.TestCase):
             statements.append(statement)
         event.listen(self.store.db.engine, 'before_cursor_execute', capture)
         try:
-            with patch.object(ChannelScheduler, 'transaction_call', side_effect=AssertionError('display acquired router lock')):
+            with patch.object(RequestScheduler, 'transaction_call', side_effect=AssertionError('display acquired router lock')):
                 result = CookiePool(self.store, config, self.base, None, strict=False).status()
         finally:
             event.remove(self.store.db.engine, 'before_cursor_execute', capture)
@@ -95,22 +95,19 @@ class WorkerBudgetTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.config = dict(youtube_cookie_pool=['fixture'] * 18, builtin_transfer_limit=18,
-                           builtin_connection_limit=16, download_connection_limit=32,
-                           download_methods=['yt_dlp'], fragment_concurrency=4)
+        self.config = dict(youtube_cookie_pool=[str(i) for i in range(36)], fragment_concurrency=4)
         self.resources = dict(cpu_cores=4, memory_total=16384*MIB, memory_available=7000*MIB,
                               cpu_percent=50, io_pressure=0, rx=0)
 
     def test_pool_caps_count_main_auxiliary_and_each_worker_pool(self):
         with patch.dict(os.environ, {'VIDEO_DB_CONNECTION_BUDGET': '48'}):
             state = pool_worker_limits(self.config, 36, self.resources)
-        self.assertEqual(state['worker_transfer_capacity'], 18)
-        self.assertEqual(state['configured_worker_limit'], 20)
+        self.assertEqual(state['configured_worker_limit'], 0)
         self.assertEqual(state['workers'], 16)  # Also reserve four connections for local delivery workers.
         self.assertLessEqual(state['workers'] * state['db_connections_per_worker'] +
                              state['db_main_connections'] + state['db_auxiliary_connections'] + state['db_processing_connections'], 48)
         with patch.dict(os.environ, {'VIDEO_DB_CONNECTION_BUDGET': '64'}):
-            self.assertEqual(pool_worker_limits(self.config, 36, self.resources)['workers'], 20)
+            self.assertEqual(pool_worker_limits(self.config, 36, self.resources)['workers'], 24)
         with patch.dict(os.environ, {'VIDEO_WORKER_DB_POOL_SIZE': '3', 'VIDEO_WORKER_DB_MAX_OVERFLOW': '1'}):
             self.assertEqual(calculate_pool_size(True), (3, 1))
             self.assertEqual(connection_budget()['workers'], 6)
@@ -122,37 +119,17 @@ class WorkerBudgetTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 calculate_pool_size()
 
-    def test_preparation_capacity_counts_upstream_groups_instead_of_aliases(self):
-        def entrance(identity, group, limit):
-            return dict(id=identity, adapter='bergung', upstream_group=group,
-                        resolver_group=group, quota_group=group, transfer_limit=limit)
-        config = dict(self.config, download_methods=['bergung'], download_connection_limit=8,
-                      download_channels=[entrance('bergung', 'shared', 2), entrance('alias', 'shared', 2)])
-        shared = pool_worker_limits(config, 8, self.resources)
-        self.assertEqual((shared['worker_transfer_capacity'], shared['workers']), (2, 6))
-        config['download_channels'].append(entrance('independent', 'other', 3))
-        separate = pool_worker_limits(config, 8, self.resources)
-        self.assertEqual((separate['worker_transfer_capacity'], separate['workers']), (5, 8))
-        config['youtube_cookie_pool_preparation_workers'] = 0
-        self.assertEqual(pool_worker_limits(config, 8, self.resources)['workers'], 5)
-
-    def test_unlimited_builtin_pool_keeps_connection_and_worker_budgets(self):
-        config = dict(self.config, builtin_transfer_limit=0, builtin_resolver_limit=0,
-                      download_connection_limit=34)
-        result = pool_worker_limits(config, 40, self.resources)
-        self.assertEqual(result['worker_transfer_capacity'], 34)
-        self.assertEqual(result['workers'], 20)
 
     def test_low_memory_and_saved_limits_cannot_restore_session_sized_workers(self):
         low = {**self.resources, 'memory_total': 1024*MIB}
         self.assertLessEqual(pool_worker_limits(self.config, 36, low)['workers'], 2)
-        config = {**self.config, 'youtube_cookie_pool_worker_limit': 6}
+        config = {**self.config, 'download_task_limit': 6}
         controller = ThroughputController(self.root)
         with patch.object(controller, 'sample', return_value=self.resources):
             state = controller.update(config, cookie_capacity={'known': True, 'capacity': 36})
         self.assertEqual(state['workers'], 6)
         self.assertEqual(runtime_limits(config, self.root)['workers'], 6)
-        changed = {**config, 'youtube_cookie_pool_worker_limit': 3}
+        changed = {**config, 'download_task_limit': 3}
         with patch('webapp.throughput.resource_limits', return_value=self.resources):
             self.assertEqual(runtime_limits(changed, self.root)['workers'], 3)
 

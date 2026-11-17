@@ -10,7 +10,7 @@ from webapp.console_auth import ConsoleAuth
 from webapp.youtube_auth import YouTubeAuth
 from webapp.startup import DownloadStartup
 from webapp.execution import ExecutionControlService
-from webapp.settings import DEFAULTS
+from webapp.config.settings import DEFAULTS
 
 
 def init_extensions(app, store, config_path, service_role, instance_id, instance_url, instance_name, *, registered):
