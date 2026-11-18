@@ -54,7 +54,9 @@ class CurrentSchemaTests(unittest.TestCase):
         self.assertEqual(indexes['ix_tasks_history_order'], ('status', 'finished_at', 'seq'))
         self.assertEqual(indexes['ix_tasks_instance_lease'], ('instance_id', 'status', 'lease_until'))
         for table in metadata.tables.values():
-            keys = [(tuple(c.name for c in i.columns), bool(i.unique)) for i in table.indexes]
+            # FULLTEXT and B-tree indexes on the same columns serve different queries.
+            keys = [(tuple(c.name for c in i.columns), bool(i.unique),
+                     i.dialect_options['mysql']['prefix']) for i in table.indexes]
             self.assertEqual(len(keys), len(set(keys)), table.name)
 
 

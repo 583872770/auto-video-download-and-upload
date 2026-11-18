@@ -25,6 +25,10 @@ class MySQLSchemaTests(unittest.TestCase):
                 for index in table.indexes:
                     with self.subTest(version=version, index=index.name):
                         ddl = str(CreateIndex(index).compile(dialect=mysql))
+                        if index.dialect_options['mysql']['prefix'] == 'FULLTEXT':
+                            self.assertIn('CREATE FULLTEXT INDEX', ddl)
+                            self.assertIn('WITH PARSER ngram', ddl)
+                            continue
                         lengths = index.dialect_options['mysql']['length']
                         for column in index.columns:
                             if isinstance(column.type.dialect_impl(mysql), (Text, LargeBinary)):
@@ -41,6 +45,12 @@ class MySQLSchemaTests(unittest.TestCase):
                              if index.name == 'ix_tasks_finished_time')
                 self.assertEqual(str(CreateIndex(index).compile(dialect=mysql)),
                                  'CREATE INDEX ix_tasks_finished_time ON tasks (finished_at, seq)')
+
+    def test_job_video_index_ddl(self):
+        schema, mysql = self.schema((8, 4, 0))
+        index = next(i for i in schema.tables['tasks'].indexes if i.name == 'ix_tasks_job_video')
+        self.assertEqual(str(CreateIndex(index).compile(dialect=mysql)),
+            'CREATE INDEX ix_tasks_job_video ON tasks (batch_id, action, video_id, seq)')
 
 
 class MySQLCurrentSchemaTests(StandaloneMySQLFixture, unittest.TestCase):

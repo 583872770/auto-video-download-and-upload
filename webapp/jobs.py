@@ -609,34 +609,10 @@ def register_jobs(app, store, settings, preflight):
 
     @app.get('/api/jobs/<identity>/videos')
     def job_videos(identity):
-        get(identity)
-        state=request.args.get('status')
-        if state not in (None,'queued','running','succeeded','failed','interrupted','removed'):
-            raise ValueError('不支持的视频状态。')
-        statement=select(tasks).where(tasks.c.batch_id==identity,tasks.c.action=='download')
-        delivery_status = request.args.get('delivery_status')
-        if delivery_status:
-            if delivery_status not in ('pending', 'partial', 'review', 'complete', 'accepted'):
-                raise ValueError('不支持的交付状态。')
-            from webapp.database import delivery_runs
-            statement = statement.where(select(delivery_runs.c.task_id).where(
-                delivery_runs.c.job_id == identity, delivery_runs.c.task_id == tasks.c.id,
-                delivery_runs.c.status == delivery_status).exists())
-        if state:
-            statement=statement.where(tasks.c.status==state)
-        else:
-            statement=statement.where(tasks.c.status!='removed')
-        q=request.args.get('q','')[:200]
-        if q:
-            statement=statement.where(or_(tasks.c.video_id.startswith(q,autoescape=True),tasks.c.title.contains(q,autoescape=True)))
-        if request.args.get('cursor'):
-            statement=statement.where(tasks.c.seq>store.statistics.cursor(request.args['cursor']))
-        with store.connect() as db:
-            rows=db.execute(statement.order_by(tasks.c.seq).limit(51)).mappings().all()
-        from webapp.delivery.artifacts import task_details
-        with store.connect() as db:
-            delivery = task_details(db, [r['id'] for r in rows[:50]])
-        return jsonify(items=[{**store.decode(row), 'delivery': delivery[row['id']]} for row in rows[:50]],next_cursor=str(rows[49]['seq']) if len(rows)>50 else None)
+        from webapp.job_videos import page
+        return jsonify(page(store, identity, query=request.args.get('q', ''),
+            search=request.args.get('search', 'video_id'), status=request.args.get('status'),
+            delivery_status=request.args.get('delivery_status'), cursor=request.args.get('cursor')))
 
     @app.post('/api/jobs/<identity>/videos')
     def job_append(identity):

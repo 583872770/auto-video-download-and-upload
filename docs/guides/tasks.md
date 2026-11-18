@@ -16,6 +16,10 @@
 
 ## 已实现
 
+视频清单默认按完整的 11 位视频 ID 精确查询，区分大小写，也接受单条 YouTube 视频链接；未命中直接返回空列表。标题使用独立的“标题关键词”查询，至少输入 2 个字符，生产 MySQL 使用 ngram 全文索引按关键词匹配，不与 ID 查询混合。分页继续沿用提交时的搜索条件，修改输入后需点击“查询 / 刷新”。
+
+查询先通过索引取得最多 51 个条目，只加载本页 50 条的详情和交付要求，并批量读取实时进度；不加载任务执行汇总或下载配置。`ix_tasks_job_video` 与 `ft_tasks_title` 直接定义在当前数据库结构中，开发环境按当前结构初始化测试数据库，不提供旧结构迁移。
+
 - 新建任务时填写客户和任务名称、选择交付内容与文件保存规则，可设置备注和单价；建立空任务后，在任务内统一添加视频。交付要求、版本和补交见 [多类型交付](delivery.md)。
 - 每个任务拥有“任务概览、视频清单、交付与账单、操作记录、任务设置”五个页签。
 - 详情内追加视频 ID、完整 YouTube 视频链接或 TXT/CSV；同任务内去重，不同任务可以下载同一个 ID，并各自登记交付和计费。
@@ -51,6 +55,10 @@
 大文件仍采用分块导入。视频移除使用批量数据库操作；整单清空在一个事务中完成，超大清单的耗时和数据库锁等待需要在目标 MySQL 上验证。
 
 ## 验证
+
+视频查询专项验证：`python -m unittest tests.test_job_videos tests.test_schema_current tests.test_mysql_schema.MySQLSchemaTests -v`。设置测试管理员连接 `VIDEO_TEST_MYSQL_URL` 后，运行 `python -m unittest tests.test_job_videos_mysql tests.test_mysql_schema -v`，每项创建并删除独立测试库，不使用业务库。
+
+构建前端后运行 `python scripts/verify/verify_job_search_ui.py`，检查实际页面的精确链接查询、空结果、错误提示、标题模式、分页条件和手机布局。`python scripts/verify/verify_job_search_scale.py --rows 5000000` 在临时 SQLite 样本上验证联合索引与有界读取量，不能将其耗时当作生产 MySQL 的接口耗时。
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest tests.test_jobs -v

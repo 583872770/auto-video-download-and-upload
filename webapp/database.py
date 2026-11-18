@@ -49,6 +49,10 @@ Index('ix_tasks_history_order', tasks.c.status, tasks.c.finished_at, tasks.c.seq
 Index('ix_tasks_batch_seq', tasks.c.batch_id, tasks.c.seq)
 Index('ix_tasks_batch_ready', tasks.c.batch_id, tasks.c.status, tasks.c.seq)
 Index('ix_tasks_video', tasks.c.video_id)
+Index('ix_tasks_job_video', tasks.c.batch_id, tasks.c.action, tasks.c.video_id, tasks.c.seq)
+# Production title search is independent of ID lookup. SQLite only hosts tests.
+Index('ft_tasks_title', tasks.c.title, mysql_prefix='FULLTEXT',
+      mysql_with_parser='ngram').ddl_if(dialect='mysql')
 Index('ix_tasks_url_prefix', tasks.c.batch_id, tasks.c.url, mysql_length={'url': 128})
 Index('ix_tasks_title_prefix', tasks.c.title, mysql_length=191)
 Index('ix_tasks_lease', tasks.c.status, tasks.c.lease_until)
@@ -511,6 +515,9 @@ class Database:
                 problems.append(f'{table.name}：主键不匹配')
             indexes = {index['name']: index for index in inspector.get_indexes(table.name)}
             for index in table.indexes:
+                fulltext = index.dialect_options['mysql']['prefix'] == 'FULLTEXT'
+                if fulltext and engine.dialect.name != 'mysql':
+                    continue
                 actual = indexes.get(index.name)
                 prefix = index.dialect_options['mysql']['length'] or {}
                 if isinstance(prefix, int):
@@ -518,7 +525,11 @@ class Database:
                 if (not actual or actual['column_names'] != [c.name for c in index.columns]
                         or bool(actual['unique']) != bool(index.unique)
                         or (engine.dialect.name == 'mysql' and
-                            actual.get('dialect_options', {}).get('mysql_length', {}) != prefix)):
+                            (actual.get('dialect_options', {}).get('mysql_length', {}) != prefix
+                             or actual.get('dialect_options', {}).get('mysql_prefix') !=
+                                index.dialect_options['mysql']['prefix']
+                             or actual.get('dialect_options', {}).get('mysql_with_parser') !=
+                                index.dialect_options['mysql']['with_parser']))):
                     problems.append(f'{table.name}.{index.name}：索引不匹配')
             if engine.dialect.name == 'mysql':
                 options = inspector.get_table_options(table.name)

@@ -14,11 +14,18 @@ const props = defineProps<{ job: Job; initialStatus?: string }>();
 const emit = defineEmits<{ changed: []; message: [value: string] }>();
 const editable = computed(() => bootstrap().role !== 'viewer' && !props.job.archived);
 const query = ref(''),
+  search = ref('video_id'),
   status = ref(props.initialStatus || ''),
   deliveryStatus = ref(''),
   cursor = ref<string | null>(null),
   history = ref<Array<string | null>>([]),
   selected = ref<string[]>([]);
+const applied = ref({
+  q: '',
+  search: 'video_id',
+  status: props.initialStatus || '',
+  delivery_status: '',
+});
 const list = useResource<Page<VideoTask>>(),
   busy = ref(false),
   actionError = ref(''),
@@ -32,15 +39,21 @@ const allSelected = computed(
 );
 useLeaveGuard(() => ({ dirty: false, busy: busy.value }));
 async function refresh() {
-  const params = new URLSearchParams({ q: query.value });
-  if (status.value) params.set('status', status.value);
-  if (deliveryStatus.value) params.set('delivery_status', deliveryStatus.value);
+  const params = new URLSearchParams(applied.value);
+  if (!applied.value.status) params.delete('status');
+  if (!applied.value.delivery_status) params.delete('delivery_status');
   if (cursor.value) params.set('cursor', cursor.value);
   await list.load((signal) =>
     api.request(jobEndpoint(props.job.id) + '/videos?' + params, { signal }),
   );
 }
 function filter() {
+  applied.value = {
+    q: query.value.trim(),
+    search: search.value,
+    status: status.value,
+    delivery_status: deliveryStatus.value,
+  };
   cursor.value = null;
   history.value = [];
   selected.value = [];
@@ -133,12 +146,20 @@ async function waive(task: VideoTask, key: string) {
       </div>
     </div>
     <form class="toolbar" @submit.prevent="filter">
+      <select v-model="search" aria-label="视频查询方式">
+        <option value="video_id">视频 ID / 链接</option>
+        <option value="title">标题关键词</option>
+      </select>
       <input
         id="video-query"
         v-model="query"
         aria-label="搜索视频"
-        placeholder="视频 ID 或标题"
-        maxlength="200"
+        :placeholder="
+          search === 'video_id'
+            ? '完整的 11 位视频 ID 或 YouTube 链接'
+            : '标题关键词（至少 2 个字符）'
+        "
+        :maxlength="search === 'video_id' ? 2048 : 200"
       /><select id="video-filter" v-model="status" aria-label="视频状态">
         <option value="">全部有效视频</option>
         <option v-for="(label, key) in videoStates" :key="key" :value="key">
@@ -155,6 +176,13 @@ async function waive(task: VideoTask, key: string) {
         </option></select
       ><button type="submit">查询 / 刷新</button>
     </form>
+    <p class="muted">
+      {{
+        search === 'video_id'
+          ? '按完整视频 ID 精确查询，区分大小写；也可粘贴视频链接。'
+          : '按标题关键词查询，分词匹配；未解析的视频可能尚无标题。'
+      }}
+    </p>
     <div class="toolbar">
       <a class="text-link" :href="jobEndpoint(job.id) + '/export'">导出全部 ID</a
       ><a class="text-link" :href="jobEndpoint(job.id) + '/export?kind=failed'">导出失败 ID</a
