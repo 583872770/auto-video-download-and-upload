@@ -158,6 +158,38 @@ def run(store, task_id, work, report, *, slot=0):
         return result
 
 
+def retains_test_workspace(store, lease):
+    """Retire terminal test plans only after every planned output is durable.
+
+    The caller owns the disk lease lock and has verified the writers stopped.
+    Unfinished conversions, uploads and queued retries must keep their inputs.
+    """
+    with store.connect() as db:
+        task = db.execute(select(tasks).where(tasks.c.id == lease['task']).with_for_update()).mappings().first()
+        work = db.execute(select(delivery_work).where(delivery_work.c.task_id == lease['task'],
+            delivery_work.c.disk_lease == lease['id']).with_for_update()).mappings().first()
+        if not work:
+            return False
+        if (lease['category'] != 'test' or not task or task['status'] not in ('succeeded', 'failed')
+                or work['workspace'] != lease['path']
+                or work['instance_id'] != (store.fleet.id if store.fleet else 'local')):
+            return True
+        plan = json.loads(work['plan'])
+        config = plan['config']
+        if config.get('storage_mode') != 'test':
+            return True
+        for job in plan['jobs']:
+            artifact = dict(kind=job['kind'], language=job.get('language', ''),
+                variant=ledger.variant(config['_delivery_contract'], job['kind']))
+            artifact['id'] = ledger.artifact_identity(task['batch_id'], task['video_id'],
+                config['_delivery_contract'], artifact['kind'], artifact['language'], True)
+            if not ledger.recorded_test_output(db, task, artifact):
+                return True
+        db.execute(delivery_work.delete().where(delivery_work.c.task_id == task['id'],
+            delivery_work.c.disk_lease == lease['id']))
+        return False
+
+
 def cleanup_completed(store, work):
     """Targeted best-effort cleanup after fenced task settlement; sweep retries."""
     with store.connect() as db:
@@ -179,4 +211,9 @@ def cleanup_completed(store, work):
             shutil.rmtree(path)
         with budget.connect() as db:
             db.execute('DELETE FROM leases WHERE id=?', (work['disk_lease'],))
+        if row['category'] == 'test':
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
         return True

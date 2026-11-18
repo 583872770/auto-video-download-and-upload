@@ -114,9 +114,12 @@ class DiskNoticeTests(unittest.TestCase):
         # A denied large task must not block smaller tasks for the whole instance.
         with self.store.connect() as db:
             self.assertFalse(resource_blocked(self.store, db))
-        # Increasing the budget permits a real recovery, even before task pickup.
+        # Capacity fits after the change; recorded waits still need admission recheck.
         larger = self.budget(disk_import_budget_mb=8)
-        self.assertEqual(larger.snapshot()['diagnostic']['severity'], 'normal')
+        changed = larger.snapshot()['diagnostic']
+        self.assertEqual(changed['kind'], 'recheck')
+        self.assertEqual(changed['download']['impact'], 'some_tasks_waiting')
+        self.assertFalse(changed['pressure'])
 
     def test_actual_free_and_reservations_are_separate_and_recovery_keeps_pause(self):
         self.store.set_downloads_paused(True)
@@ -169,6 +172,34 @@ class DiskNoticeTests(unittest.TestCase):
             self.assertEqual(diagnostic['retention']['pending_count'], 0)
             self.assertEqual(diagnostic['retention']['failed_count'], 1)
 
+    def test_retention_notice_explains_pending_processing_without_claiming_downloads_are_blocked(self):
+        budget = self.budget()
+        health = dict(status='ok', sampled_at=time.time(), completed_count=3, completed_bytes=2*GIB,
+            pending_processing_count=2, pending_processing_bytes=GIB, failed_count=0,
+            untracked_overdue=False)
+        with budget.connect() as db:
+            budget._set(db, 'retention_health', health)
+        snapshot = self.snapshot(budget, free=60*GIB)
+        budget.publish(self.store, snapshot)
+        page = self.client.get('/api/notifications').json
+        detail = next(item for item in page['items'] if item['code'] == 'disk_resource')['detail']
+        self.assertEqual(detail['disk']['kind'], 'retention')
+        self.assertIn('3 个已结束测试', detail['reason'])
+        self.assertIn('2 项仍有本地处理计划', detail['reason'])
+        self.assertNotIn('磁盘使用率', detail['reason'])
+        self.assertIn('当前没有任务因磁盘资源等待', detail['next_step'])
+        self.assertNotIn('自动继续', detail['next_step'])
+        with self.store.connect() as db:
+            self.assertFalse(resource_blocked(self.store, db))
+        with budget.connect() as db:
+            budget._set(db, 'retention_health', {**health, 'completed_count': 0,
+                'pending_processing_count': 0})
+        budget.publish(self.store, snapshot)
+        resolved = self.client.get('/api/notifications?state=resolved').json
+        detail = next(item for item in resolved['items'] if item['code'] == 'disk_resource')['detail']
+        self.assertEqual(detail['headline'], '测试临时文件清理告警已解除')
+        self.assertIn('暂停设置', detail['activity'])
+
     def test_successful_readmission_preserves_interruption_history_but_is_not_waiting(self):
         task = self.job_task()
         budget = self.budget(disk_import_budget_mb=4)
@@ -219,6 +250,22 @@ class DiskNoticeTests(unittest.TestCase):
         self.assertEqual(health['failure_checks'], 2)
         self.assertEqual(health['failure_reasons'], ['文件权限不足'])
         self.assertTrue(orphan.is_file())
+
+    def test_empty_directory_metadata_and_active_workspace_growth_are_not_untracked_files(self):
+        budget = self.budget()
+        parent = budget.directory / 'test-downloads' / ('a' * 32)
+        parent.mkdir(parents=True)
+        with budget.lease('test', path=parent / ('b' * 32)) as lease:
+            (lease.path / 'active.bin').write_bytes(b'x' * (2*MIB))
+            # A prior category sample need not match the writer's current size.
+            with budget.connect() as db:
+                budget._set(db, 'usage', {'time': time.time(), 'bytes': {'test': 50*MIB}})
+            budget._retention_health(self.store, 0)
+            health = budget.snapshot()['diagnostic']['retention']
+            self.assertEqual(health['untracked_bytes'], 0)
+            self.assertIsNone(health['untracked_since'])
+        parent.mkdir(exist_ok=True)
+        self.assertEqual(budget._untracked_test_bytes(set()), 0)
 
 
 class CollectorTests(unittest.TestCase):

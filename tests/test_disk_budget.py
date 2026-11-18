@@ -60,6 +60,31 @@ def exercise_disk_worker(directory, ready, start, results):
 
 
 class DiskScanTests(unittest.TestCase):
+    def test_empty_test_parent_cleanup_preserves_files_recent_directories_and_owned_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            budget = DiskBudget(temporary, {'disk_min_free_gb': 0, 'disk_resume_free_gb': 0})
+            root = budget.directory / 'test-downloads'
+            root.mkdir(exist_ok=True)
+            old, recent, nonempty, unknown, owned = [root / (c * 32) for c in 'abcde']
+            for path in (old, recent, nonempty, unknown, owned):
+                path.mkdir()
+            (nonempty / 'keep').write_bytes(b'not a disposable orphan')
+            unknown.rename(root / 'unknown-directory')
+            for path in (old, nonempty, owned, root / 'unknown-directory'):
+                os.utime(path, (time.time()-600, time.time()-600))
+            lease = budget.lease('test', path=owned / 'new-attempt')
+            with lease:
+                # The owner may reserve a path before its first file is written.
+                lease.path.rmdir()
+                os.utime(owned, (time.time()-600, time.time()-600))
+                count, _ = budget._clean_empty_test_directories(300)
+                self.assertEqual(count, 1)
+                self.assertFalse(old.exists())
+                self.assertTrue(owned.exists())
+                self.assertTrue(recent.exists())
+                self.assertTrue((nonempty / 'keep').is_file())
+                self.assertTrue((root / 'unknown-directory').exists())
+
     @unittest.skipUnless(os.name == 'nt', 'Windows extended-path spelling')
     def test_disappearing_directory_extended_prefix_is_not_a_link(self):
         with tempfile.TemporaryDirectory() as temporary:

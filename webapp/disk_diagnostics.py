@@ -61,6 +61,8 @@ def explain(budget, snapshot):
             (pressure.get('task_id') or '',)).fetchone()
         retention = budget._get(db, 'retention_health', {})
         alert = budget._get(db, 'disk_alert', {})
+        retained_bytes = db.execute('SELECT COALESCE(SUM(measured),0) FROM leases WHERE task=? AND reserved=0',
+            (pressure.get('task_id') or '',)).fetchone()[0]
     total, free = snapshot['total_bytes'], snapshot['free_bytes']
     unused = max(0, snapshot['committed_bytes'] - snapshot['used_bytes'])
     minimum = int(budget.config['disk_min_free_gb']) * 1024 ** 3
@@ -89,18 +91,21 @@ def explain(budget, snapshot):
         pressure = {}
     if now - retention.get('sampled_at', 0) > 120:
         retention = dict(status='unavailable')
-    blocked = snapshot['low_space'] or snapshot['committed_bytes'] >= snapshot['budget_bytes']
+    blocked = (snapshot['low_space'] or snapshot['committed_bytes'] >= snapshot['budget_bytes']
+        or any(value['used_bytes'] > value['budget_bytes'] for value in snapshot['categories'].values()))
     severity = 'blocked' if blocked or (pressure and snapshot['waiting_tasks']) else alert.get('severity', 'normal')
     kind = ('space' if snapshot['low_space'] else 'budget' if blocked else
             pressure.get('kind', '') if snapshot['waiting_tasks'] else '')
     headline = ('磁盘空间不足，下载等待恢复' if kind == 'space' else
-                '临时文件预算不足，任务等待资源' if kind == 'budget' else
+                '临时文件额度不足，任务等待空间' if kind == 'budget' else
                 '可分配预留空间不足，任务等待资源' if severity == 'blocked' else
                 '服务器磁盘使用率偏高' if severity in ('warning', 'critical') else '磁盘空间正常')
     if retention.get('completed_count', 0) or retention.get('failed_count', 0) or retention.get('untracked_overdue'):
         if severity == 'normal':
-            severity, headline = 'warning', '测试临时文件清理需要检查'
-    return dict(sampled_at=now, severity=severity, kind=kind, headline=headline,
+            severity, kind, headline = 'warning', 'retention', '测试临时文件清理需要检查'
+    if snapshot['waiting_tasks'] and not pressure and not blocked:
+        severity, kind, headline = 'warning', 'recheck', '任务等待空间复查'
+    result = dict(sampled_at=now, severity=severity, kind=kind, headline=headline,
         budget=dict(limit_bytes=snapshot['budget_bytes'], committed_bytes=snapshot['committed_bytes'],
             category_label=LABELS.get(pressure.get('category'), ''),
             category_limit_bytes=category.get('budget_bytes') if pressure else None,
@@ -111,6 +116,9 @@ def explain(budget, snapshot):
         unwritten_reserved_bytes=unused, allocatable_bytes=max(0, free-unused-minimum),
         waiting_tasks=snapshot['waiting_tasks'], pressure=pressure, retention=retention,
         host_status=host['status'], host_sampled_at=host['sampled_at'], sources=sources)
+    from webapp.disk_explanation import describe
+    result['download'] = describe(snapshot, result, requirement, retained_bytes)
+    return result
 
 
 def evaluate_alert(previous, percent, now):
@@ -152,10 +160,16 @@ def publish(budget, store, snapshot):
         if blocked and selected:
             affected = max(affected, db.execute(select(counters.c.value).where(
                 counters.c.scope == 'batch:'+selected, counters.c.status == 'queued')).scalar_one_or_none() or 0)
+        decision = diagnostic['download']
+        reason = decision['reason']
+        next_step = ' '.join(decision['actions'])
+        if decision['impact'] != 'unaffected':
+            next_step += ('空间条件满足后，仍需手动开启已暂停的任务。' if paused else
+                          '空间条件满足后自动重新检查，符合执行条件的任务继续调度。')
+        else:
+            next_step += '当前没有任务因磁盘资源等待。'
         detail = dict(headline=diagnostic['headline'], phase='实例磁盘资源',
-            reason=snapshot['message'] or diagnostic['pressure'].get('reason') or f'磁盘使用率 {diagnostic["used_percent"]}%，请查看占用来源。',
-            next_step=('查看空间诊断并处理占用；资源恢复后仍需手动开启任务。' if paused else
-                       '查看空间诊断并处理占用；资源恢复且满足执行条件后自动继续。'),
+            reason=reason, next_step=next_step,
             affected_tasks=affected, disk=diagnostic, paused=paused)
         if diagnostic['severity'] != 'normal':
             system_issue(store, db, identity, 'disk_resource', detail)
@@ -166,10 +180,14 @@ def publish(budget, store, snapshot):
             old = db.execute(select(notifications).where(notifications.c.id == key)).mappings().first()
             if old and old['status'] != 'resolved':
                 prior = json.loads(old['detail']).get('disk', {})
-                detail.update(headline='磁盘资源已恢复', reason='空间与临时预算已满足当前检查条件。',
+                detail.update(headline='磁盘资源已恢复', reason='磁盘可用空间与临时文件额度已满足本次检查。',
                     activity='空间已恢复，任务仍处于暂停。' if paused else '空间已恢复，调度器将按执行条件继续领取任务。',
                     recovery=dict(freed_bytes=max(0, diagnostic['free_bytes']-prior.get('free_bytes', diagnostic['free_bytes'])),
                                   recovered_at=now, paused=paused), code='disk_resource', task_id=None, completed=[], missing=[])
+                if prior.get('kind') == 'retention':
+                    detail.update(headline='测试临时文件清理告警已解除',
+                        reason='本次检查未发现超时测试残留、清理失败或持续未归属占用。',
+                        activity='清理检查已恢复正常；任务继续遵循当前执行与暂停设置。')
                 db.execute(notifications.update().where(notifications.c.id == key).values(detail=packed(detail)))
             system_issue(store, db, identity, 'disk_resource')
     return diagnostic

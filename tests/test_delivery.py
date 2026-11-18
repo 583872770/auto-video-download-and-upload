@@ -93,6 +93,8 @@ class DeliveryTests(unittest.TestCase):
                 result=self.run_task(task, report=report)
         self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.cleanup_result(result)
+        if result.get('_processing_workspace') and result.get('test_mode'):
+            self.assertFalse(Path(result['_processing_workspace']['workspace']).parent.exists())
         return task,result
 
     def cleanup_result(self, result):
@@ -292,6 +294,69 @@ class DeliveryTests(unittest.TestCase):
             self.assertFalse(db.execute(select(delivery_work)).first())
         with DiskBudget(self.store.directory,self.store.runtime()).connect(write=False) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0],0)
+
+    def test_sweep_retires_terminal_test_plan_only_after_planned_outputs_are_recorded(self):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['audio_only'])
+        task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=self.run_task(task)
+        work=result['_processing_workspace']
+        # All outputs are durable, but the final local attempt fails before it
+        # removes the plan. Sweeping may retire it without losing statistics.
+        self.store.finish(task['id'],error='local settlement interrupted',worker_id=self.store.owner)
+        before=self.client.get('/api/jobs/'+job).json['test_file_bytes']
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        cleaned=budget.cleanup(self.store,grace=0)
+        self.assertFalse(Path(work['workspace']).exists())
+        self.assertEqual(cleaned['last_cleanup']['removed'],1)
+        self.assertEqual(self.store.get(task['id'])['status'],'failed')
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_bytes'],before)
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(select(delivery_work)).first())
+        self.assertEqual(budget.cleanup(self.store,grace=0)['last_cleanup']['removed'],0)
+
+    def test_sweep_preserves_failed_test_plan_with_unprocessed_media(self):
+        from web_worker import execute
+        from webapp.database import delivery_work, tasks
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        job=self.create(['metadata','audio_only'])
+        task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+        self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+        local=self.store.claim(self.store.owner,processing=True)
+        self.store.finish(local['id'],error='conversion failed',worker_id=self.store.owner)
+        with self.store.connect() as db:
+            work=dict(db.execute(select(delivery_work)).mappings().one())
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(finished_at='2020-01-01T00:00:00+00:00'))
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        cleaned=budget.cleanup(self.store,grace=0)
+        self.assertTrue(Path(work['workspace']).exists())
+        self.assertEqual(cleaned['last_cleanup']['pending_results'],1)
+        self.assertEqual(cleaned['diagnostic']['retention']['pending_processing_count'],1)
+        self.assertEqual(self.client.get('/api/jobs/'+job).json['test_file_count'],1)
+        with self.store.connect() as db:
+            self.assertTrue(db.execute(select(delivery_work)).first())
+
+    def test_sweep_preserves_queued_local_retry_even_with_all_outputs_recorded(self):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget
+        self.storage={'storage_mode':'test'}
+        self.create(['audio_only'])
+        task=self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            result=self.run_task(task)
+        self.store.release(task['id'],self.store.owner,'retry settlement',delay=0)
+        budget=DiskBudget(self.store.directory,self.store.runtime())
+        cleaned=budget.cleanup(self.store,grace=0)
+        self.assertTrue(Path(result['_processing_workspace']['workspace']).exists())
+        self.assertEqual(cleaned['last_cleanup']['pending_results'],1)
+        with self.store.connect() as db:
+            self.assertTrue(db.execute(select(delivery_work)).first())
 
     def test_multiple_subtitle_languages_share_one_task_start_and_keep_metadata(self):
         from web_worker import execute

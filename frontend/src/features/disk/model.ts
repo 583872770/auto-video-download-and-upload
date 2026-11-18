@@ -15,6 +15,30 @@ export interface DiskSource {
   note: string;
 }
 export interface DiskDiagnostic {
+  download: {
+    impact: 'new_downloads_paused' | 'some_tasks_waiting' | 'unaffected';
+    impact_text: string;
+    reason: string;
+    shortfall_bytes: number | null;
+    shortfall_text: string;
+    actions: string[];
+    resume_text: string;
+    physical_shortfall_bytes: number;
+    reservation_shortfall_bytes: number;
+    request_bytes: number | null;
+    request_note: string;
+    constraints: Array<{
+      key: string;
+      label: string;
+      used_bytes: number;
+      reserved_bytes: number;
+      committed_bytes: number;
+      limit_bytes: number;
+      remaining_bytes: number;
+      shortfall_bytes: number;
+      limiting: boolean;
+    }>;
+  };
   sampled_at: number;
   severity: 'normal' | 'warning' | 'critical' | 'blocked';
   kind: string;
@@ -41,6 +65,8 @@ export interface DiskDiagnostic {
     completed_bytes?: number;
     pending_count?: number;
     pending_bytes?: number;
+    pending_processing_count?: number;
+    pending_processing_bytes?: number;
     failed_count?: number;
     failure_reasons?: string[];
     failure_checks?: number;
@@ -60,8 +86,11 @@ export function diskBytes(value?: number | null): string {
 }
 export function diskLabel(disk?: DiskDiagnostic | null): string {
   if (!disk) return '磁盘待更新';
-  const label = { normal: '磁盘', warning: '空间预警', critical: '空间紧张', blocked: '空间受阻' }[
-    disk.severity
-  ];
-  return `${label} ${disk.used_percent.toFixed(1)}%`;
+  if (!disk.download) return '空间待更新';
+  if (disk.download.impact === 'new_downloads_paused') return '空间限制 · 暂缓新下载';
+  if (disk.download.impact === 'some_tasks_waiting')
+    return `空间等待 · ${disk.waiting_tasks} 个任务`;
+  if (disk.kind === 'retention') return '清理待检查 · 未限制下载';
+  if (disk.severity !== 'normal') return '磁盘用量偏高 · 未限制下载';
+  return '空间正常';
 }

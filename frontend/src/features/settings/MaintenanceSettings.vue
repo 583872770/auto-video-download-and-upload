@@ -31,7 +31,6 @@ async function refresh(signal?: AbortSignal) {
   }
 }
 usePolling(active, refresh);
-const gib = (n: number) => (n / 1024 ** 3).toFixed(1) + ' GiB';
 async function cleanup() {
   try {
     await ElMessageBox.confirm(
@@ -78,29 +77,20 @@ async function showReport(kind: 'logs' | 'summary', days = 1) {
 </script>
 <template>
   <section class="card">
-    <h2>当前空间</h2>
+    <h2>空间是否影响下载</h2>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <div v-if="disk" class="metrics">
-      <div>
-        <small>磁盘可用</small><strong>{{ gib(disk.free_bytes) }}</strong>
-      </div>
-      <div>
-        <small>受管临时文件</small><strong>{{ gib(disk.used_bytes) }}</strong>
-      </div>
-      <div>
-        <small>临时文件预算</small><strong>{{ gib(disk.budget_bytes) }}</strong>
-      </div>
-      <div>
-        <small>等待空间任务</small><strong>{{ disk.waiting_tasks }}</strong>
-      </div>
-    </div>
-    <p v-if="disk?.message">{{ disk.message }}</p>
-    <DiskDiagnosis v-if="disk?.diagnostic" :diagnostic="disk.diagnostic" expanded />
-    <p v-if="text" role="status">{{ text }}</p>
+    <p class="hint">先看是否影响下载，再看受限原因和处理方式。磁盘使用率与程序临时额度分别判断。</p>
     <div class="actions">
-      <ElButton :disabled="busy" @click="refresh().catch(() => {})">刷新空间</ElButton
-      ><ElButton :disabled="!admin || busy" @click="cleanup">清理可回收文件</ElButton
-      ><ElButton :disabled="busy" @click="showReport('logs')">近期日志</ElButton
+      <ElButton :disabled="busy" @click="refresh().catch(() => {})">刷新空间</ElButton>
+      <ElButton :disabled="!admin || busy" @click="cleanup">清理可回收文件</ElButton>
+    </div>
+    <DiskDiagnosis v-if="disk?.diagnostic?.download" :diagnostic="disk.diagnostic" expanded />
+    <p v-else role="status">空间状态待更新，请刷新或确认实例在线。</p>
+    <p v-if="text" role="status">{{ text }}</p>
+    <h3>日志与运行排查</h3>
+    <p>技术日志用于排查问题。清理过期日志后，任务记录、统计和正式素材继续保留。</p>
+    <div class="actions">
+      <ElButton :disabled="busy" @click="showReport('logs')">近期日志</ElButton
       ><ElButton :disabled="busy" @click="showReport('summary', 1)">近一天汇总</ElButton
       ><ElButton :disabled="busy" @click="showReport('summary', 7)">近七天汇总</ElButton>
     </div>
@@ -110,8 +100,8 @@ async function showReport(kind: 'logs' | 'summary', days = 1) {
     </details>
   </section>
   <fieldset :disabled="!admin">
-    <FieldGroup title="空间水位与总预算" :fields="groups.disk" />
-    <FieldGroup title="分类空间预算" :fields="groups.budgets" />
+    <FieldGroup title="磁盘保护与临时文件总额度" :fields="groups.disk" />
+    <FieldGroup title="各类临时文件额度" :fields="groups.budgets" />
     <FieldGroup title="日志保留" :fields="groups.logs" />
   </fieldset>
 </template>

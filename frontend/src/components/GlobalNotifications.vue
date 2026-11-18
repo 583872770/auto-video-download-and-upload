@@ -189,7 +189,7 @@ usePolling(
     <div>
       <strong>{{ resource.instance_name }} · {{ resource.detail.headline }}</strong>
       <small
-        >{{ resource.detail.reason
+        >{{ resource.detail.disk?.download?.impact_text }} · {{ resource.detail.reason
         }}<template v-if="resource.detail.affected_tasks">
           · {{ resource.detail.affected_tasks }} 个任务受影响</template
         ><template v-if="notices.resourceAlerts.length > 1">
@@ -390,7 +390,7 @@ usePolling(
                   >! {{ name }}{{ item.status === 'resolved' ? '（当时缺失）' : '待完成' }}</span
                 >
               </div>
-              <dl>
+              <dl v-if="!item.detail.disk?.download">
                 <div>
                   <dt>发生环节：</dt>
                   <dd>
@@ -409,7 +409,11 @@ usePolling(
                   <dd>{{ item.detail.next_step }}</dd>
                 </div>
               </dl>
-              <DiskDiagnosis v-if="item.detail.disk" :diagnostic="item.detail.disk" />
+              <DiskDiagnosis
+                v-if="item.detail.disk?.download"
+                :diagnostic="item.detail.disk"
+                :historical="item.status === 'resolved'"
+              />
               <p v-if="item.detail.recovery" class="notification-activity">
                 本次告警期间可用空间增加 {{ diskBytes(item.detail.recovery.freed_bytes) }}。
               </p>

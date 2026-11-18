@@ -46,19 +46,39 @@ export const groups = {
     ),
   ],
   disk: [
-    field('disk_min_free_gb', '磁盘暂停水位（GiB）', 'maintenance'),
-    field('disk_resume_free_gb', '磁盘恢复水位（GiB）', 'maintenance'),
-    field('disk_budget_gb', '临时文件总预算（GiB）', 'maintenance'),
+    field(
+      'disk_min_free_gb',
+      '可用低于多少时保护（GiB）',
+      'maintenance',
+      '磁盘实际可用低于此值时限制新下载。不是磁盘使用率百分比。',
+    ),
+    field(
+      'disk_resume_free_gb',
+      '可用恢复到多少时继续（GiB）',
+      'maintenance',
+      '触发保护后，实际可用空间需恢复到此值；人工暂停仍需手动开启。',
+    ),
+    field(
+      'disk_budget_gb',
+      '全部临时文件总额度（GiB）',
+      'maintenance',
+      '所有分类合计的实际上盘文件加另行预留不能超过此值。额度用满时，即使磁盘有空闲也可能等待。',
+    ),
     field('disk_upload_limit_mb', '单次清单上传上限（MiB）', 'maintenance'),
   ],
   budgets: [
-    field('disk_test_budget_gb', '测试下载预算（GiB）', 'maintenance'),
-    field('disk_browser_budget_mb', '浏览器缓存预算（MiB）', 'maintenance'),
-    field('disk_import_budget_mb', '导入及上传临时文件预算（MiB）', 'maintenance'),
-    field('disk_cache_budget_mb', '诊断及其他缓存预算（MiB）', 'maintenance'),
+    field(
+      'disk_test_budget_gb',
+      '测试下载临时额度（GiB）',
+      'maintenance',
+      '所有视频的测试文件及预留共用此额度，同时受全部临时文件总额度限制。',
+    ),
+    field('disk_browser_budget_mb', '浏览器缓存额度（MiB）', 'maintenance'),
+    field('disk_import_budget_mb', '导入及上传临时额度（MiB）', 'maintenance'),
+    field('disk_cache_budget_mb', '诊断及其他缓存额度（MiB）', 'maintenance'),
     field(
       'min_free_gb',
-      '下载器预留空间（GB）',
+      '下载器最低可用空间（GiB）',
       'maintenance',
       '额外空间门槛，与实例暂停水位同时生效。',
     ),
@@ -66,7 +86,12 @@ export const groups = {
   logs: [
     field('disk_success_log_hours', '成功任务日志保留（小时）', 'maintenance'),
     field('disk_failure_log_days', '失败任务日志保留（天）', 'maintenance'),
-    field('disk_log_budget_mb', '全部日志预算（MiB）', 'maintenance'),
+    field(
+      'disk_log_budget_mb',
+      '全部日志容量上限（MiB）',
+      'maintenance',
+      '超过后按保留策略清理旧技术日志，任务记录与统计继续保留。',
+    ),
     field('max_log_mb', '单条日志上限（MB）', 'maintenance'),
     field(
       'log_retention_days',

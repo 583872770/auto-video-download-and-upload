@@ -641,19 +641,14 @@ class DiskBudget:
                         if task and task['status'] == 'running':
                             continue
                         self.release_retained(row['id'])
-                        if store and task and task['status'] not in ('removed', 'cancelled'):
-                            from sqlalchemy import select
-                            from webapp.database import delivery_work
-                            with store.connect() as db:
-                                work = db.execute(select(delivery_work.c.task_id).where(
-                                    delivery_work.c.task_id == row['task'],
-                                    delivery_work.c.disk_lease == row['id'])).first()
-                            if work:
-                                pending += 1
-                                continue
                         receipts = path / '.completed-files.json'
                         if receipts.exists():
                             if not store or not self.receipts_recorded(store, row['task'], receipts):
+                                pending += 1
+                                continue
+                        if store and task and task['status'] not in ('removed', 'cancelled'):
+                            from webapp.delivery.processing import retains_test_workspace
+                            if retains_test_workspace(store, row):
                                 pending += 1
                                 continue
                         amount = size_of(path)
@@ -687,6 +682,8 @@ class DiskBudget:
                             tasks.c.status.in_(('queued', 'running')))).scalars())
                 with self.connect() as db:
                     db.executemany('DELETE FROM requirements WHERE task=?', [(identity,) for identity in identities if identity not in retained_tasks])
+            empty_directories, empty_bytes = self._clean_empty_test_directories(grace)
+            freed += empty_bytes
             self._clean_diagnostics(grace)
             with self.connect(write=False) as db:
                 retained = {row[0] for row in db.execute('SELECT id FROM leases')}
@@ -703,29 +700,62 @@ class DiskBudget:
             with self.connect() as db:
                 self._set(db, 'cleanup', dict(time=time.time(), removed=removed, freed_bytes=freed,
                                               failed=failed, pending_results=pending,
+                                              empty_test_directories=empty_directories,
                                               failure_reasons=failure_reasons))
+            self._refresh_usage(force=True)
             self._retention_health(store, failed, failure_reasons)
         return self.snapshot(force=True)
+
+    def _clean_empty_test_directories(self, grace):
+        """Remove only old empty task parents; never recurse into unknown files."""
+        root = safe_path(self.directory / 'test-downloads', self.directory)
+        if not root.is_dir():
+            return 0, 0
+        with self.connect(write=False) as db:
+            owned = [Path(row[0]) for row in db.execute("SELECT path FROM leases WHERE category='test'")]
+        removed, freed = 0, 0
+        for path in root.iterdir():
+            if not re.fullmatch(r'[0-9a-f]{32}', path.name) or any(
+                    lease == path or lease.is_relative_to(path) for lease in owned):
+                continue
+            try:
+                path = safe_path(path, self.directory)
+                info = path.stat()
+                if time.time() - info.st_mtime < grace:
+                    continue
+                path.rmdir()  # Atomic empty-directory check; files are never deleted.
+                freed += max(info.st_size, getattr(info, 'st_blocks', 0)*512)
+                removed += 1
+            except (OSError, ValueError):
+                continue
+        return removed, freed
 
     def _retention_health(self, store, failed, failure_reasons=()):
         from datetime import datetime
         from sqlalchemy import select
-        from webapp.database import tasks
+        from webapp.database import tasks, delivery_work
         with self.connect(write=False) as db:
-            leases = db.execute("SELECT task,measured,created FROM leases WHERE category='test'").fetchall()
+            leases = db.execute("SELECT task,path,measured,created FROM leases WHERE category='test'").fetchall()
             previous = self._get(db, 'retention_health', {})
-            sampled_usage = self._get(db, 'usage', {}).get('bytes', {})
-        untracked = max(0, sampled_usage.get('test', 0)-sum(row['measured'] for row in leases))
+        # Directory entries remain allocated after children are removed. They
+        # are real budget usage, but are not unowned downloaded files. Inspect
+        # only entries outside the retained workspaces; never count live growth
+        # by subtracting two measurements taken at different times.
+        untracked = self._untracked_test_bytes({Path(row['path']) for row in leases})
         untracked_since = (previous.get('untracked_since') or time.time()) if untracked > MIB else None
-        known = {}
+        known, local_work = {}, set()
         identities = [row['task'] for row in leases if row['task']]
         if store:
             for offset in range(0, len(identities), 500):
                 with store.connect() as db:
                     known.update((row['id'], row) for row in db.execute(select(tasks.c.id, tasks.c.status,
                         tasks.c.finished_at).where(tasks.c.id.in_(identities[offset:offset+500]))).mappings())
+                    local_work.update(db.execute(select(delivery_work.c.task_id).where(
+                        delivery_work.c.task_id.in_(identities[offset:offset+500]),
+                        delivery_work.c.instance_id == (store.fleet.id if store.fleet else 'local'))).scalars())
         health = dict(status='ok' if store else 'unavailable', sampled_at=time.time(), completed_count=0,
             completed_bytes=0, pending_count=0, pending_bytes=0, failed_count=failed,
+            pending_processing_count=0, pending_processing_bytes=0,
             failure_reasons=list(failure_reasons), failure_checks=previous.get('failure_checks', 0)+1 if failed else 0,
             untracked_since=untracked_since, untracked_bytes=untracked,
             untracked_overdue=bool(untracked_since and time.time()-untracked_since > 600))
@@ -742,8 +772,25 @@ class DiskBudget:
                 if time.time()-finished > 600:
                     health['completed_count'] += 1
                     health['completed_bytes'] += lease['measured']
+                    if lease['task'] in local_work:
+                        health['pending_processing_count'] += 1
+                        health['pending_processing_bytes'] += lease['measured']
         with self.connect() as db:
             self._set(db, 'retention_health', health)
+
+    def _untracked_test_bytes(self, owned):
+        def visit(path):
+            if path in owned or any(path.is_relative_to(root) for root in owned):
+                return 0
+            try:
+                if path.is_symlink() or path.is_junction():
+                    return 0
+                if path.is_dir():
+                    return sum(visit(child) for child in path.iterdir())
+                return size_of(path)
+            except (FileNotFoundError, NotADirectoryError):
+                return 0
+        return visit(self.directory / 'test-downloads')
 
     @staticmethod
     def receipts_recorded(store, task, path):
@@ -788,6 +835,10 @@ class DiskBudget:
                 shutil.rmtree(root)
                 with self.connect() as db:
                     db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
+                try:
+                    root.parent.rmdir()
+                except OSError:
+                    pass
                 if result:
                     result['files_deleted'] = True
                     return result
