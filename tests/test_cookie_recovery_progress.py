@@ -3,10 +3,24 @@ from copy import deepcopy
 import unittest
 
 from tests import test_cookie_pool
-from webapp.cookie_policy import pacing_progress
+from webapp.cookie_policy import account_interval, advance_account_interval, pacing_progress
+from webapp.youtube_cookie_history import list_events
 
 
 class PacingProgressTests(unittest.TestCase):
+    def test_stable_settlement_stops_at_configured_floor_across_admissions(self):
+        for minimum in (30, 55, 120, 450):
+            with self.subTest(minimum=minimum):
+                config = {'youtube_start_interval': minimum}
+                state = dict(interval=minimum, streak=25, successes=25, first_success=1)
+                for stamp in (10000, 10100, 10200):
+                    state['interval'] = account_interval(config, state)
+                    before = deepcopy(state)
+                    expected = pacing_progress(config, state, stamp)['next_interval']
+                    self.assertEqual(state, before)
+                    advance_account_interval(config, state, stamp)
+                    self.assertEqual((state['interval'], expected), (minimum, minimum))
+
     def test_recovery_requires_both_gates_and_does_not_shorten_interval(self):
         state = dict(interval=450, recovery_mode=True, recovery_started_at=1000,
                      recovery_successes=10, recovery_interval_floor=120)
@@ -55,6 +69,39 @@ class PoolProgressIntegrationTests(unittest.TestCase):
             state.update(values)
             pool.router._save(db, scope, state)
         pool.router.transaction_call(update)
+
+    def test_successful_admissions_at_floor_do_not_repeat_interval_events(self):
+        pool = self.pool({**self.config, 'youtube_start_interval': 55,
+                          'youtube_cookie_pool_start_interval': 0})
+        now = 10000
+        pool.router.clock = lambda db: now
+        identity, _, scope = pool.accounts[0]
+        self.save(pool, scope, interval=55, streak=25, successes=25, first_success=1)
+        for _ in range(3):
+            with pool.assignment(profile_id=identity) as selected:
+                test_cookie_pool.CookiePoolTests.request_source(self, pool, selected)
+            view = next(s for s in pool.status()['session_states'] if s['id'] == identity)
+            self.assertEqual((view['interval'], view['pacing']['saved_interval']), (55, 55))
+            now += 100
+        self.assertEqual(list_events(self.store, identity, event_type='interval_change'), [])
+
+    def test_real_reduction_records_once_and_normalization_below_floor_is_silent(self):
+        pool = self.pool({**self.config, 'youtube_start_interval': 55})
+        now = 10000
+        pool.router.clock = lambda db: now
+        identity, _, scope = pool.accounts[0]
+        self.save(pool, scope, interval=65, streak=25, successes=25, first_success=1)
+        expected = next(s for s in pool.status()['session_states'] if s['id'] == identity)['pacing']['next_interval']
+        pool.outcome(scope, None)
+        pool.outcome(scope, None)
+        events = list_events(self.store, identity, event_type='interval_change')
+        self.assertEqual([(e['previous_interval'], e['new_interval']) for e in events], [(65, expected)])
+        self.assertEqual(expected, 55)
+        self.save(pool, scope, interval=40)
+        pool.outcome(scope, None)
+        self.assertEqual(len(list_events(self.store, identity, event_type='interval_change')), 1)
+        view = next(s for s in pool.status()['session_states'] if s['id'] == identity)
+        self.assertEqual((view['interval'], view['pacing']['saved_interval']), (55, 55))
 
     def test_status_keeps_recorded_interval_separate_from_configuration(self):
         pool = self.pool({**self.config, 'youtube_start_interval': 450})

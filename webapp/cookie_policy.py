@@ -27,10 +27,11 @@ def account_interval(config, state):
                RECOVERY_INTERVAL if state.get('recovery_mode') else 0)
 
 
-def stable_interval_step(state, stamp):
+def stable_interval_step(config, state, stamp):
     mature = (state.get('successes', 0) >= MATURE_SUCCESSES
               and state.get('first_success', 0) and stamp - state['first_success'] >= MATURE_WINDOW)
-    floor = MATURE_ACCOUNT_INTERVAL if mature else STABLE_ACCOUNT_INTERVAL
+    floor = max(30, int(config.get('youtube_start_interval', DEFAULTS['youtube_start_interval'])),
+                MATURE_ACCOUNT_INTERVAL if mature else STABLE_ACCOUNT_INTERVAL)
     step = MATURE_STEP if mature else STABLE_STEP
     return step, max(floor, state.get('recovery_interval_floor', 0), int(state.get('interval', 60)) - step)
 
@@ -79,7 +80,7 @@ def advance_account_interval(config, state, stamp, *, admitted_at=None):
                 _start_protection_stage(state, stage['next_interval'], stage['target'], stamp)
         return 'protection_stage'
     if state.get('streak', 0) >= STABLE_SUCCESSES and stamp - state.get('first_success', stamp) >= STABLE_WINDOW:
-        state['interval'] = stable_interval_step(state, stamp)[1]
+        state['interval'] = stable_interval_step(config, state, stamp)[1]
         # Arriving at 120 establishes a fresh stage; high-interval successes
         # cannot be reused to step below it immediately.
         stage = protection_progress(config, state, stamp)
@@ -104,7 +105,7 @@ def pacing_progress(config, state, stamp):
     # Predict at the earliest time the observation gate can be satisfied,
     # including the success that will cause the transition.
     step, next_saved = ((0, saved) if recovery else stable_interval_step(
-        {**state, 'successes': int(state.get('successes', 0)) + 1},
+        config, {**state, 'successes': int(state.get('successes', 0)) + 1},
         max(stamp, since + window) if since else stamp))
     stage = protection_progress(config, state, stamp)
     if stage is not None:

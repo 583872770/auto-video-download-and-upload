@@ -541,15 +541,18 @@ class CookiePool:
                     # Keep the current warmup ceiling; session_limit() applies
                     # the current per-session configuration after warmup.
                     state['limit'] = 2
-                previous_interval = int(state.get('interval', 60))
+                previous_interval = account_interval(self.config, state)
                 kind = advance_account_interval(self.config, state, stamp, admitted_at=admitted_at)
-                if state.get('interval', 60) != previous_interval:
+                interval = account_interval(self.config, state)
+                # History describes changes to actual admission spacing. Saved
+                # values below a configuration floor do not change that spacing.
+                if interval != previous_interval:
                     record_cookie_event(self.router.store, db=db, profile_id=profile_id,
                         profile_name=self.profile_names.get(profile_id, profile_id),
                         event_type='interval_change', phase='success', kind=kind,
                         message=('本档观察至少 15 分钟且有效成功至少 5 次，降低一档启动间隔。'
                                  if kind == 'protection_stage' else '连续稳定完成任务，逐步缩短启动间隔。'),
-                        previous_interval=previous_interval, new_interval=state['interval'],
+                        previous_interval=previous_interval, new_interval=interval,
                         previous_state='ready', new_state='ready',
                         metadata={'successes': state['successes'], 'streak': state['streak']})
             self.router._save(db, scope, state)
