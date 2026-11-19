@@ -34,9 +34,13 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
         actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
+        from webapp.worker.idle import ProcessingIdle
+        idle = ProcessingIdle(store, slot, name) if role == 'processing' else None
         from webapp.download_start_gate import DownloadStartGate
         start_gate = DownloadStartGate(store.directory)
         while True:
+            if idle and not idle.allowed():
+                break
             from webapp.throughput import worker_should_retire
             if worker_should_retire(store.directory, slot):
                 break  # Complete in-flight work, then retire before claiming again.
@@ -57,7 +61,11 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 if waiting_start:
                     time.sleep(1)  # No task lease, DB transaction or workspace held.
                     continue
+                if idle and idle.wait():
+                    continue
                 break
+            if idle:
+                idle.busy()
             processing_task = bool(task['payload'].get('_processing'))
             config, base = task['payload'].get('config', {}), Path(task['payload']['base'])
             runtime = store.runtime()

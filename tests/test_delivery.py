@@ -155,7 +155,9 @@ class DeliveryTests(unittest.TestCase):
     def drain_role(self, role):
         from web_worker import execute
         from webapp.worker.queue import drain_queue
-        with patch.dict(os.environ, {'VIDEO_WORKER_PROCESS':'true'}):
+        # Finite fixture drains skip the live process's idle reuse grace period.
+        with patch.dict(os.environ, {'VIDEO_WORKER_PROCESS':'true'}), \
+             patch('webapp.worker.idle.PROCESSING_IDLE_SECONDS', 0):
             drain_queue(self.store.directory, slot=-2 if role == 'processing' else 0, role=role,
                         execute_task=execute, store_factory=lambda *args: self.store)
 
@@ -626,9 +628,41 @@ class DeliveryTests(unittest.TestCase):
         with budget.connect(write=False) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM leases').fetchone()[0],0)
 
+    def test_processing_pool_continues_after_local_failure_without_redownloading(self):
+        from web_worker import execute
+        from webapp.worker.queue import drain_queue
+        from webapp.database import delivery_work
+        pending=[]
+        for _ in range(2):
+            self.create(['audio_only']);task=self.store.claim(self.store.owner)
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+                result=execute('download',task['payload'],store=self.store,task_id=task['id'])
+            self.store.finish(task['id'],result=result,worker_id=self.store.owner)
+            pending.append(task['id'])
+        calls=[]
+        def processing(*args, **kwargs):
+            calls.append(kwargs['task_id'])
+            if len(calls)==1:raise RuntimeError('temporary local failure')
+            return execute(*args, **kwargs)
+        self.hits.clear()
+        with patch('webapp.worker.idle.PROCESSING_IDLE_SECONDS',0), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=AssertionError('source requested')):
+            drain_queue(self.store.directory,slot=-2,role='processing',execute_task=processing,
+                        store_factory=lambda *args:self.store)
+        self.assertEqual(set(calls),set(pending))
+        failed,finished=map(self.store.get,calls)
+        self.assertEqual(failed['status'],'queued')
+        self.assertEqual(failed['progress']['stage'],'retrying')
+        self.assertEqual(finished['status'],'succeeded')
+        with self.store.connect() as db:
+            work=db.execute(select(delivery_work).where(delivery_work.c.task_id==calls[0])).mappings().one()
+        self.assertTrue(Path(work['workspace']).exists())
+        self.assertEqual(self.hits,[])
+
     def test_processing_role_completes_in_fresh_process_without_source_or_start_gate(self):
         import sys
         import time
+        import web_worker
         from web_worker import execute
         from webapp.database import delivery_work
         self.storage={'storage_mode':'test'}
@@ -640,11 +674,35 @@ class DeliveryTests(unittest.TestCase):
         self.hits.clear()
         (self.store.directory/'throughput.json').write_text(json.dumps(dict(mode='cookie_pool',time=time.time(),
             cookie_pool={'halted':True,'next_start_at':time.time()+3600})))
-        completed=subprocess.run([sys.executable,'web_worker.py','--state',str(self.store.directory),
-            '--slot','-2','--role','processing'],cwd=Path(__file__).resolve().parents[1],
+        worker=Path(web_worker.__file__).resolve()
+        process=subprocess.Popen([sys.executable,str(worker),'--state',str(self.store.directory),
+            '--slot','-2','--role','processing'],cwd=worker.parent,
             env=dict(os.environ,VIDEO_WORKER_DATABASE_URL=self.store.db.url,PYTHONUTF8='1'),
-            capture_output=True,timeout=25, **({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}))
-        self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+            **({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}))
+        try:
+            def await_done(identity):
+                deadline=time.monotonic()+20
+                while time.monotonic()<deadline:
+                    if self.store.get(identity)['status']=='succeeded':return
+                    self.assertIsNone(process.poll(),'processing worker exited early')
+                    time.sleep(.05)
+                self.fail('processing task did not complete')
+            await_done(task['id'])
+            self.assertIsNone(process.poll(),'empty queue must retain the worker')
+            # Commit a second real source handoff after the queue was empty.
+            self.create(['audio_only']);second=self.store.claim(self.store.owner)
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+                result=execute('download',second['payload'],store=self.store,task_id=second['id'])
+            self.store.finish(second['id'],result=result,worker_id=self.store.owner)
+            self.hits.clear()
+            await_done(second['id'])
+            self.assertIsNone(process.poll(),'the same PID must handle both tasks')
+            self.store.set_downloads_paused(True)
+            out,err=process.communicate(timeout=6)
+            self.assertEqual(process.returncode,0,out+err)
+        finally:
+            if process.poll() is None:process.kill();process.communicate()
         done=self.store.get(task['id'])
         self.assertEqual(done['status'],'succeeded',done['error'])
         self.assertEqual(done['result']['file_count'],2)

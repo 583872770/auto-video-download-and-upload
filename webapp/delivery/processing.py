@@ -30,6 +30,8 @@ def enqueue(session, *, resume_network=False):
             workspace=session.payload['_disk_workspace'], disk_lease=session.payload['_disk_lease'],
             plan=json.dumps(plan, ensure_ascii=False), created_at=time.time(), attempts=0,
             source_attempts=task['attempts']), ['task_id']))
+    from webapp.worker.idle import notify_processing
+    notify_processing(session.store.directory)
     if not resume_network:
         session.progress.state.update(stage='waiting_processing', speed=None, eta=None,
             cookie_profile_id=None, cookie_profile_name=None, wait_reason='网络下载完成，等待本地处理。')

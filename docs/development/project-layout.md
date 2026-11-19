@@ -1,6 +1,6 @@
 # 项目结构与维护边界
 
-更新时间：2026-11-17。命令从项目根目录运行，文档统一从 [文档导航](../README.md) 查阅。
+更新时间：2026-11-19。命令从项目根目录运行，文档统一从 [文档导航](../README.md) 查阅。
 
 ## 开发测试阶段约定
 
@@ -25,12 +25,28 @@
 | `webapp/delivery/` | 交付要求、产物执行、校验、存储与 API |
 | `Utils/` | 路径、配置、存储及工具函数 |
 | `frontend/` | Vue 3 + TypeScript + Vue Router + Vite + Pinia + Element Plus；设置、任务中心、工作台、素材、日志及交付文件 |
-| `templates/`、`static/` | Flask 模板与打包后的静态资源 |
+| `templates/frontend.html` | 当前 Vue 页面入口模板，加载构建资源、初始化信息并提供 `#frontend-app` 挂载位置 |
+| `static/` | 静态资源；其中 `static/frontend/` 为 Vue 构建产物 |
 | `docker/` | 镜像启动、浏览器桌面、健康检查与打包验证 |
 | `scripts/verify/` | 可重复执行的验证脚本 |
 | `tests/`、`.github/workflows/` | 自动化测试与 CI |
 
 独立领域模块负责账号池、请求调度、租约和资源保护。数据访问使用 `webapp/store.py`，进程监督使用 `webapp/runtime/supervisor.py`，配置直接引用 `webapp/config/`；不保留 `tasks.py`、`settings.py`、`config_schema.py` 转发层。下载仅支持 yt-dlp，必须经账号池领取账号；单个账号也可组成账号池。
+
+根目录 `app.py` 是有效入口，业务包名为 `webapp`，不再使用根目录 `app/` 包。容器内的 `/app` 是安装路径，与已移除的本地 `app/` 残留目录不同。
+
+## 本地目录与清理范围
+
+| 路径 | 用途与处理方式 |
+| --- | --- |
+| 源码目录下的 `__pycache__/` | Python 自动生成的字节码缓存，可删除，后续运行会重新生成；Git 和 Docker 已忽略 |
+| `static/frontend/` | 前端构建产物，可通过构建重新生成；本机运行页面时需要，清理后必须重新构建 |
+| `.venv/`、`.tools/`、`frontend/node_modules/` | 开发依赖与工具，不作为普通缓存批量删除 |
+| `.cache/` | 包含实际运行状态和开发缓存，不能整个目录一键清空 |
+| `.runtime/` | 本地部署包、诊断结果及验证材料，按具体发布和回滚用途检查后清理 |
+| `output/design/` | 界面方案与验证截图，仅供参考，不参与构建或运行；当前行为以现行手册及代码为准 |
+
+整理时只清理已核对的源码缓存与废弃空目录，不移动源码入口或实际配置。依赖目录、运行状态和发布备份不与源码缓存一起递归清理。整理缓存后无需重新部署服务器。
 
 ## 前端开发
 
