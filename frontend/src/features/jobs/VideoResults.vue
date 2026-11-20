@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { ElMessageBox } from 'element-plus';
+import { messageBox as ElMessageBox } from '../../composables/dialogs';
 import { api } from '../../api';
 import { bootstrap } from '../../bootstrap';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';

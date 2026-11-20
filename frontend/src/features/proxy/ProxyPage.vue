@@ -8,6 +8,7 @@ import { useResource } from '../../composables/resource';
 import { useOperation } from '../../composables/operation';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
+import { confirmAction } from '../../composables/dialogs';
 interface Rotation {
   enabled: boolean;
   nodes: string[];
@@ -164,7 +165,8 @@ async function saveConnection() {
 }
 async function saveSubscription(actionName: string) {
   await op.run(async () => {
-    if (actionName === 'delete' && !window.confirm(`删除订阅「${subscription.name}」？`)) return;
+    if (actionName === 'delete' && !(await confirmAction(`删除订阅「${subscription.name}」？`)))
+      return;
     const value = await api.request<{ message: string; saved_subscription_id?: string }>(
       '/api/clash/subscription',
       {

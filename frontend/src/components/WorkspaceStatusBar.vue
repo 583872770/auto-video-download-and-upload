@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { ElMessageBox } from 'element-plus';
+import { messageBox as ElMessageBox } from '../composables/dialogs';
 import { bootstrap } from '../bootstrap';
 import { api } from '../api';
 import { useInstances } from '../stores/instances';
@@ -22,7 +22,8 @@ const instances = useInstances(),
   notifications = useNotifications(),
   router = useRouter(),
   route = useRoute();
-const root = ref<HTMLElement>(),
+const pickerRoot = ref<HTMLElement>(),
+  moreRoot = ref<HTMLElement>(),
   picker = ref(false),
   more = ref(false);
 const search = ref(''),
@@ -120,7 +121,8 @@ async function stop() {
   await status.control('stop');
 }
 function outside(event: PointerEvent) {
-  if (!root.value?.contains(event.target as Node)) picker.value = more.value = false;
+  if (!pickerRoot.value?.contains(event.target as Node)) picker.value = false;
+  if (!moreRoot.value?.contains(event.target as Node)) more.value = false;
 }
 function escape(event: KeyboardEvent) {
   if (event.key === 'Escape') picker.value = more.value = false;
@@ -180,7 +182,7 @@ const powerTitle = computed(
 </script>
 
 <template>
-  <header ref="root" class="topbar workspace-statusbar" aria-label="实例任务状态栏">
+  <header class="topbar workspace-statusbar" aria-label="实例任务状态栏">
     <div class="header-controls">
       <button
         type="button"
@@ -211,7 +213,7 @@ const powerTitle = computed(
         <span v-else>{{ instances.name }}</span>
         <span class="header-chevron" aria-hidden="true">⌄</span>
       </div>
-      <div class="header-task-wrap">
+      <div ref="pickerRoot" class="header-task-wrap">
         <button
           id="header-task"
           class="header-task"
@@ -291,7 +293,7 @@ const powerTitle = computed(
         >
           <span></span>
         </button>
-        <div class="header-more-wrap">
+        <div ref="moreRoot" class="header-more-wrap">
           <button
             class="header-more"
             aria-label="更多任务操作"

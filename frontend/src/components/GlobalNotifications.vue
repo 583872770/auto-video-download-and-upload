@@ -23,7 +23,8 @@ const notices = useNotifications(),
   instances = useInstances();
 const editable = bootstrap().role !== 'viewer';
 const now = ref(Date.now() / 1000),
-  closeButton = ref<HTMLButtonElement>();
+  closeButton = ref<HTMLButtonElement>(),
+  drawer = ref<HTMLElement>();
 const states: Array<{ id: NoticeState; label: string }> = [
   { id: 'action', label: '需处理' },
   { id: 'recovering', label: '自动恢复' },
@@ -147,16 +148,24 @@ function escape(event: KeyboardEvent) {
   if (event.key === 'Escape' && notices.open && !document.querySelector('dialog[open]'))
     notices.close();
 }
+function outside(event: PointerEvent) {
+  if (!notices.open || document.querySelector('dialog[open], .el-message-box')) return;
+  const target = event.target as Element;
+  if (!drawer.value?.contains(target) && !target.closest('[aria-controls="notification-center"]'))
+    notices.close();
+}
 onMounted(() => {
   timer = setInterval(() => {
     now.value = Date.now() / 1000;
   }, 1000);
   document.addEventListener('keydown', escape);
+  document.addEventListener('pointerdown', outside);
 });
 onUnmounted(() => {
   clearInterval(timer);
   clearTimeout(searchTimer);
   document.removeEventListener('keydown', escape);
+  document.removeEventListener('pointerdown', outside);
   notices.dispose();
 });
 usePolling(
@@ -213,6 +222,7 @@ usePolling(
   <Teleport to="body">
     <section
       v-if="notices.open"
+      ref="drawer"
       id="notification-center"
       class="notification-drawer"
       role="dialog"

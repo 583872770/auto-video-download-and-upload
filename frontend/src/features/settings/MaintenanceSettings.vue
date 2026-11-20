@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { ElButton, ElMessageBox } from 'element-plus';
+import { ElButton } from 'element-plus';
+import { messageBox as ElMessageBox } from '../../composables/dialogs';
 import 'element-plus/es/components/button/style/css';
 import 'element-plus/es/components/message-box/style/css';
 import { api } from '../../api';

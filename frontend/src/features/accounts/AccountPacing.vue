@@ -5,6 +5,7 @@ import { useInstances } from '../../stores/instances';
 import { useOperation } from '../../composables/operation';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
+import { confirmAction } from '../../composables/dialogs';
 import { constraints, type ConsoleConfig } from '../../generated/config';
 defineProps<{ admin: boolean }>();
 const emit = defineEmits<{ pending: [value: boolean]; saved: [] }>();
@@ -84,7 +85,7 @@ async function load() {
   }
 }
 async function discard() {
-  if (dirty.value && !window.confirm('放弃未保存的节奏修改？')) return;
+  if (dirty.value && !(await confirmAction('放弃未保存的节奏修改？', '有未保存的修改'))) return;
   baseline.value = '';
   await op.run(load);
 }

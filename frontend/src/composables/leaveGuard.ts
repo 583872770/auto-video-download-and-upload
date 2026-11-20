@@ -1,5 +1,5 @@
 import { onUnmounted } from 'vue';
-import { ElMessageBox } from 'element-plus';
+import { messageBox as ElMessageBox } from './dialogs';
 import 'element-plus/es/components/message-box/style/css';
 
 interface PendingEdit {

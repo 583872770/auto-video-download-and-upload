@@ -6,6 +6,7 @@ import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import { useOperation } from '../../composables/operation';
 import { useResource } from '../../composables/resource';
 import { useLeaveGuard } from '../../composables/leaveGuard';
+import { confirmAction } from '../../composables/dialogs';
 import AccountLogin from './AccountLogin.vue';
 import SessionProgress from './SessionProgress.vue';
 import {
@@ -52,7 +53,7 @@ const filteredEvents = computed(() =>
 );
 useLeaveGuard(() => ({ dirty: dirty.value, busy: op.busy.value }));
 async function beforeClose() {
-  return !dirty.value || window.confirm('放弃此账号未保存的修改？');
+  return !dirty.value || (await confirmAction('放弃此账号未保存的修改？', '有未保存的修改'));
 }
 function fill() {
   Object.assign(form, {
@@ -118,9 +119,9 @@ async function save() {
 async function remove() {
   if (
     !item.value ||
-    !window.confirm(
+    !(await confirmAction(
       `删除 ${item.value.email} 的资料、密钥与 Cookie？历史记录和实例归属保留，在用时会拒绝删除。`,
-    )
+    ))
   )
     return;
   await op.run(async () => {
@@ -173,7 +174,7 @@ async function cookieAction(cookie: Cookie, action: 'check' | 'export' | 'delete
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         return;
       }
-      if (!window.confirm(`删除 Cookie「${cookie.name}」？`)) return;
+      if (!(await confirmAction(`删除 Cookie「${cookie.name}」？`))) return;
       await api.request('/api/youtube/cookies/' + action, {
         method: 'POST',
         scope,

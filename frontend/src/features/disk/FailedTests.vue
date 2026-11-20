@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { ElButton, ElMessageBox } from 'element-plus';
+import { ElButton } from 'element-plus';
+import { messageBox as ElMessageBox } from '../../composables/dialogs';
 import { api } from '../../api';
 import { bootstrap } from '../../bootstrap';
 import { useInstances } from '../../stores/instances';

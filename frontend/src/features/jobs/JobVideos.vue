@@ -5,7 +5,7 @@ import { useResource } from '../../composables/resource';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import { bootstrap } from '../../bootstrap';
-import { ElMessageBox } from 'element-plus';
+import { messageBox as ElMessageBox } from '../../composables/dialogs';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import TaskLog from '../../components/TaskLog.vue';
 import TaskConfirmation from './TaskConfirmation.vue';

@@ -7,6 +7,7 @@ import { useResource } from '../../composables/resource';
 import { useOperation } from '../../composables/operation';
 import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
+import { confirmAction } from '../../composables/dialogs';
 import { bootstrap } from '../../bootstrap';
 import { useInstances } from '../../stores/instances';
 interface Instance {
@@ -58,7 +59,7 @@ async function refresh(signal?: AbortSignal) {
 }
 async function save(id: string, action?: string) {
   await op.run(async () => {
-    if (action === 'stop' && !window.confirm(`立即停止「${id}」的当前下载？`)) return;
+    if (action === 'stop' && !(await confirmAction(`立即停止「${id}」的当前下载？`))) return;
     const result = await api.request<{ message: string }>(
       '/api/instances/' + encodeURIComponent(id),
       { method: 'PUT', body: action ? { action } : { name: names[id] }, timeoutMs: 90000 },
