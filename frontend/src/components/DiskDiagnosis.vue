@@ -167,7 +167,7 @@ function time(value: number) {
       <p v-if="diagnostic.retention.pending_processing_count" class="disk-note">
         其中 {{ diagnostic.retention.pending_processing_count }} 项（{{
           diskBytes(diagnostic.retention.pending_processing_bytes || 0)
-        }}）仍需本地处理并登记测试统计，再释放文件。
+        }}）仍保留本地处理计划；失败测试请在“失败测试处理”中选择恢复或放弃并清理。
       </p>
       <p v-if="diagnostic.retention.untracked_overdue" class="disk-note">
         有

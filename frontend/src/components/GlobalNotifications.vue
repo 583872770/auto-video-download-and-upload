@@ -442,7 +442,19 @@ usePolling(
               >
             </div>
             <div class="notification-card-actions">
+              <a
+                v-if="item.code === 'disk' || item.code === 'disk_resource'"
+                class="notification-primary"
+                :href="
+                  '/settings?instance_id=' +
+                  encodeURIComponent(item.instance_id || '') +
+                  '#maintenance'
+                "
+                @click="notices.close()"
+                >前往空间与日志处理</a
+              >
               <RouterLink
+                v-else
                 class="notification-primary"
                 :to="target(item)"
                 @click="notices.close()"

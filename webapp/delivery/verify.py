@@ -11,11 +11,17 @@ class LocalDeliveryError(RuntimeError):
     """Local verification/conversion says nothing about source account health."""
 
 
+class InvalidSourceMedia(LocalDeliveryError):
+    """Repeating conversion cannot repair broken or missing source tracks."""
+    retryable = False
+    recovery = 'redownload'
+
+
 def inspect(path):
     result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)],
                             capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise LocalDeliveryError('交付文件无法解析为有效媒体。')
+    if result.returncode or result.stderr.strip():
+        raise InvalidSourceMedia('媒体文件不完整或无法解析，请重新下载后处理。')
     info = json.loads(result.stdout)
     streams = info.get('streams', [])
     return {s.get('codec_type') for s in streams}, info
@@ -63,6 +69,11 @@ def verify(path, kind, *, media=None):
 def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
     """Inspect once; passthrough requires actual streams AND a suitable container."""
     probes = probes if probes is not None else [inspect(path) for path in inputs]
+    required = [('video', probes[0])] if kind == 'video_only' else [('audio', probes[0])] if kind == 'audio_only' else [
+        ('video', probes[0]), ('audio', probes[-1])]
+    for track, probe in required:
+        if track not in probe[0]:
+            raise InvalidSourceMedia('源文件缺少所需的画面或音轨，请重新下载后处理。')
     types, info = probes[0]
     streams = info.get('streams', [])
     video = next((s.get('codec_name') for s in streams if s.get('codec_type') == 'video'), '')

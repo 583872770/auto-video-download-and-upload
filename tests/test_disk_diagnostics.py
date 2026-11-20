@@ -185,7 +185,9 @@ class DiskNoticeTests(unittest.TestCase):
         detail = next(item for item in page['items'] if item['code'] == 'disk_resource')['detail']
         self.assertEqual(detail['disk']['kind'], 'retention')
         self.assertIn('3 个已结束测试', detail['reason'])
-        self.assertIn('2 项仍有本地处理计划', detail['reason'])
+        self.assertIn('2 项仍保留处理计划', detail['reason'])
+        self.assertIn('失败测试处理', detail['next_step'])
+        self.assertIn('已失败的任务不会自行继续', detail['next_step'])
         self.assertNotIn('磁盘使用率', detail['reason'])
         self.assertIn('当前没有任务因磁盘资源等待', detail['next_step'])
         self.assertNotIn('自动继续', detail['next_step'])

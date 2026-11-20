@@ -756,6 +756,7 @@ class DiskBudget:
         health = dict(status='ok' if store else 'unavailable', sampled_at=time.time(), completed_count=0,
             completed_bytes=0, pending_count=0, pending_bytes=0, failed_count=failed,
             pending_processing_count=0, pending_processing_bytes=0,
+            failed_processing_count=0,
             failure_reasons=list(failure_reasons), failure_checks=previous.get('failure_checks', 0)+1 if failed else 0,
             untracked_since=untracked_since, untracked_bytes=untracked,
             untracked_overdue=bool(untracked_since and time.time()-untracked_since > 600))
@@ -775,6 +776,8 @@ class DiskBudget:
                     if lease['task'] in local_work:
                         health['pending_processing_count'] += 1
                         health['pending_processing_bytes'] += lease['measured']
+                        if task['status'] == 'failed':
+                            health['failed_processing_count'] += 1
         with self.connect() as db:
             self._set(db, 'retention_health', health)
 

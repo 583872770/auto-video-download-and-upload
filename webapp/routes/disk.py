@@ -4,6 +4,33 @@ from flask import Blueprint, current_app, jsonify, request
 bp = Blueprint('disk', __name__, url_prefix='/api/disk')
 
 
+def local_context():
+    store = current_app.extensions['task_store']
+    config = current_app.extensions['settings_func']()[0]
+    return store, config
+
+
+@bp.get('/failed-tests')
+def failed_tests():
+    from webapp.delivery.retention import list_failed
+    store, config = local_context()
+    return jsonify(list_failed(store, config, request.args.get('cursor')))
+
+
+@bp.post('/failed-tests/resolve')
+def resolve_failed_test():
+    from webapp.delivery.retention import resolve
+    data = request.get_json() or {}
+    if data.get('confirmed') is not True:
+        raise ValueError('请先确认对该测试任务的处理方式。')
+    store, config = local_context()
+    result = resolve(store, config, data.get('task_id'), data.get('action'), data.get('version'))
+    runner = current_app.extensions.get('task_runner')
+    if runner and data.get('action') != 'discard':
+        runner.wake()
+    return jsonify(result)
+
+
 @bp.get('')
 def disk_status():
     """Get disk budget status."""

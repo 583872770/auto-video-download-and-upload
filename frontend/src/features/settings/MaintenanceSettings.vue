@@ -10,6 +10,7 @@ import { usePolling } from '../../composables/polling';
 import { groups } from './fields';
 import FieldGroup from './FieldGroup.vue';
 import DiskDiagnosis from '../../components/DiskDiagnosis.vue';
+import FailedTests from '../disk/FailedTests.vue';
 import type { DiskSnapshot, RuntimeSummary } from '../../api/types';
 import { summaryText } from './reports';
 const instances = useInstances();
@@ -87,6 +88,7 @@ async function showReport(kind: 'logs' | 'summary', days = 1) {
     <DiskDiagnosis v-if="disk?.diagnostic?.download" :diagnostic="disk.diagnostic" expanded />
     <p v-else role="status">空间状态待更新，请刷新或确认实例在线。</p>
     <p v-if="text" role="status">{{ text }}</p>
+    <FailedTests @resolved="refresh().catch(() => {})" />
     <h3>日志与运行排查</h3>
     <p>技术日志用于排查问题。清理过期日志后，任务记录、统计和正式素材继续保留。</p>
     <div class="actions">

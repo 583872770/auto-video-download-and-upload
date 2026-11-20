@@ -67,6 +67,7 @@ export interface DiskDiagnostic {
     pending_bytes?: number;
     pending_processing_count?: number;
     pending_processing_bytes?: number;
+    failed_processing_count?: number;
     failed_count?: number;
     failure_reasons?: string[];
     failure_checks?: number;
@@ -90,7 +91,10 @@ export function diskLabel(disk?: DiskDiagnostic | null): string {
   if (disk.download.impact === 'new_downloads_paused') return '空间限制 · 暂缓新下载';
   if (disk.download.impact === 'some_tasks_waiting')
     return `空间等待 · ${disk.waiting_tasks} 个任务`;
-  if (disk.kind === 'retention') return '清理待检查 · 未限制下载';
+  if (disk.kind === 'retention')
+    return disk.retention.failed_processing_count
+      ? `${disk.retention.failed_processing_count} 个失败测试待处理 · 未限制下载`
+      : '清理待检查 · 未限制下载';
   if (disk.severity !== 'normal') return '磁盘用量偏高 · 未限制下载';
   return '空间正常';
 }

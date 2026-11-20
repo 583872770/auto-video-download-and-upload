@@ -32,6 +32,8 @@ LOCAL_RPC_METHODS = {
     '/api/disk/logs': {'GET', 'HEAD'},
     '/api/disk/runtime-summary': {'GET', 'HEAD'},
     '/api/disk/cleanup': {'POST'},
+    '/api/disk/failed-tests': {'GET', 'HEAD'},
+    '/api/disk/failed-tests/resolve': {'POST'},
     '/api/media': {'GET', 'HEAD', 'POST'},
     '/api/media/groups': {'GET', 'HEAD'},
     '/api/media/group-files': {'GET', 'HEAD'},

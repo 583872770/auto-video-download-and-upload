@@ -61,7 +61,7 @@ def describe(snapshot, diagnostic, requirement=None, retained_bytes=0):
         if health.get('completed_count'):
             facts.append(f'{health["completed_count"]} 个已结束测试仍留有 {format_bytes(health["completed_bytes"])} 临时文件')
         if health.get('pending_processing_count'):
-            facts.append(f'其中 {health["pending_processing_count"]} 项仍有本地处理计划，需先完成处理并登记统计')
+            facts.append(f'其中 {health["pending_processing_count"]} 项仍保留处理计划；失败任务需要选择重试、重新下载或放弃并清理')
         if health.get('failed_count'):
             facts.append(f'{health["failed_count"]} 项清理失败：'+('；'.join(health.get('failure_reasons') or []) or '请查看近期日志'))
         if health.get('untracked_overdue'):
@@ -69,7 +69,7 @@ def describe(snapshot, diagnostic, requirement=None, retained_bytes=0):
         reason = '；'.join(facts)+'。'
         actions.append('点击“清理可回收文件”重试安全清理；仍待本地处理或统计核对的文件会继续保留。')
         if health.get('pending_processing_count'):
-            actions.append('仍有本地处理计划的任务需完成处理并登记统计，再清理；持续不减少时查看近期日志排查。')
+            actions.append('打开“空间与日志 → 失败测试处理”，查看具体视频和原因，选择“重新下载”“重试本地处理”或“放弃并清理”。已失败的任务不会自行继续。')
         if health.get('untracked_overdue'):
             actions.append('未确认归属的文件需人工核对，安全清理不会直接删除。')
     elif diagnostic['severity'] in ('warning', 'critical'):

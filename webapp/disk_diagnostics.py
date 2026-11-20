@@ -103,6 +103,8 @@ def explain(budget, snapshot):
     if retention.get('completed_count', 0) or retention.get('failed_count', 0) or retention.get('untracked_overdue'):
         if severity == 'normal':
             severity, kind, headline = 'warning', 'retention', '测试临时文件清理需要检查'
+            if retention.get('failed_processing_count'):
+                headline = f'{retention["failed_processing_count"]} 个失败测试等待处理，可重新下载或清理'
     if snapshot['waiting_tasks'] and not pressure and not blocked:
         severity, kind, headline = 'warning', 'recheck', '任务等待空间复查'
     result = dict(sampled_at=now, severity=severity, kind=kind, headline=headline,

@@ -235,11 +235,12 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         # Local conversion/upload errors never cool YouTube
                         # accounts or discard the acquired source tracks.
                         from webapp.delivery.verify import LocalDeliveryError
-                        local_error = LocalDeliveryError('本地处理失败：' + str(error))
+                        local_error = error if isinstance(error, LocalDeliveryError) else LocalDeliveryError('本地处理失败：' + str(error))
+                        last_progress['local_recovery'] = getattr(local_error, 'recovery', 'retry')
                         record_failure(local_error)
                         traceback.print_exc()
                         lease_guard.settle(store.finish, task['id'], error=safe_text(str(local_error))[:2000],
-                            worker_id=store.owner, retryable=True)
+                            worker_id=store.owner, retryable=getattr(local_error, 'retryable', True))
                         event('local_processing_failed', **error_details(local_error))
                         continue
                     record_failure(error)
