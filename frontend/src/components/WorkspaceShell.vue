@@ -18,7 +18,6 @@ const groups = [
     links: [
       { url: '/jobs', label: '任务中心', icon: 'grid' },
       { url: '/workbench', label: '下载工作台', icon: 'download' },
-      { url: '/media', label: '素材库', icon: 'media' },
       { url: '/statistics', label: '交付与账单', icon: 'chart' },
       { url: '/accounts', label: '账号管理', icon: 'users' },
     ],

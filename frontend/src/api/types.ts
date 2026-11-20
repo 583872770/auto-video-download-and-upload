@@ -35,6 +35,12 @@ export interface ConfigResponse {
   instance_id?: string;
 }
 export interface DiskSnapshot {
+  test_samples?: {
+    count?: number;
+    used_bytes?: number;
+    budget_bytes: number;
+    last_cleanup: { time?: number; bytes?: number; reason?: string; error?: string };
+  };
   diagnostic?: import('../features/disk/model').DiskDiagnostic;
   free_bytes: number;
   used_bytes: number;

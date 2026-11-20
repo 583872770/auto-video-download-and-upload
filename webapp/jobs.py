@@ -607,12 +607,14 @@ def register_jobs(app, store, settings, preflight):
         jobs.update(identity, data, config)
         return jsonify(get(identity))
 
+    @app.get('/api/jobs/videos')
     @app.get('/api/jobs/<identity>/videos')
-    def job_videos(identity):
+    def job_videos(identity=None):
         from webapp.job_videos import page
         return jsonify(page(store, identity, query=request.args.get('q', ''),
             search=request.args.get('search', 'video_id'), status=request.args.get('status'),
-            delivery_status=request.args.get('delivery_status'), cursor=request.args.get('cursor')))
+            delivery_status=request.args.get('delivery_status'), cursor=request.args.get('cursor'),
+            samples_only=request.args.get('samples_only') == '1'))
 
     @app.post('/api/jobs/<identity>/videos')
     def job_append(identity):

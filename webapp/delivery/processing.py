@@ -23,6 +23,7 @@ def enqueue(session, *, resume_network=False):
     plan = dict(jobs=session.local_jobs, config=config, base=str(session.base),
         current_video=session.current_video, output_files=session.output_files,
         billable_bytes=session.billable_bytes, progress=session.progress.state, resume_network=resume_network)
+    plan['progress']['source_account_id'] = session.progress.state.get('cookie_profile_id') or session.progress.state.get('source_account_id')
     with session.store.connect() as db:
         task = ledger.fenced_run(session.store, db, session.payload['_task_id'])
         db.execute(session.store.db.upsert(delivery_work, dict(task_id=session.payload['_task_id'],
@@ -78,8 +79,11 @@ def run(store, task_id, work, report, *, slot=0):
     progress.stage_started_at = time.time()
     progress.state.update(plan['progress'], stage='processing', speed=None, eta=None,
         cookie_profile_id=None, cookie_profile_name=None, wait_reason=None, retry_at=None, worker_slot=slot)
+    if payload.get('_force_test_sample'):
+        progress.state['_sample_requested'] = True
     session = DownloadSession(config=config, base=Path(plan['base']),
-        payload={'_task_id': task_id, '_disk_workspace': work['workspace']}, store=store,
+        payload={'_task_id': task_id, '_disk_workspace': work['workspace'],
+                 '_force_test_sample': payload.get('_force_test_sample', False)}, store=store,
         worker_slot=slot, progress=progress, scheduler=None, meter=meter_for(store.directory, slot),
         youtube=False, test_mode=config.get('storage_mode') == 'test',
         oss_mode=config.get('storage_mode') == 'oss',
@@ -154,6 +158,8 @@ def run(store, task_id, work, report, *, slot=0):
         elif plan['resume_network']:
             result['network_pending'] = True
         result.update(test_mode=session.test_mode, _processing_workspace=work)
+        if payload.get('_force_test_sample'):
+            result['_sample_requested'] = True
         # No new network traffic. Keep the acquisition byte counter for logs.
         if session.test_mode and not plan.get('source_failure'):
             result['message'] = '测试下载完成，处理结果已登记。'
@@ -209,6 +215,9 @@ def cleanup_completed(store, work):
         if not row or alive(json.loads(row['owner'])) or any(alive(c) for c in json.loads(row['children'])):
             return False
         path = safe_path(row['path'], store.directory)
+        if row['category'] == 'test':
+            from webapp.delivery.samples import capture
+            capture(store, budget, row, store.get(work['task_id']))
         if path.exists():
             shutil.rmtree(path)
         with budget.connect() as db:

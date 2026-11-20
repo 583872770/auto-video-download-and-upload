@@ -8,7 +8,6 @@ def register_pages_routes(context):
     @app.get('/')
     @app.get('/settings')
     @app.get('/workbench')
-    @app.get('/media')
     @app.get('/logs')
     @app.get('/accounts')
     @app.get('/instances')

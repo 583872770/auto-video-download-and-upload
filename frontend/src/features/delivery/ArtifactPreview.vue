@@ -10,14 +10,44 @@ const emit = defineEmits<{ close: [] }>();
 const resource = useResource<string>(),
   mediaError = ref('');
 const media = ref<HTMLMediaElement>();
+const mediaInfo = ref('');
+function loaded() {
+  const element = media.value;
+  if (!element) return;
+  mediaInfo.value =
+    `${Number.isFinite(element.duration) ? element.duration.toFixed(1) + ' 秒' : '时长未知'}` +
+    (element instanceof HTMLVideoElement
+      ? ` · ${element.videoWidth} × ${element.videoHeight}`
+      : '');
+}
+const heartbeatController = new AbortController();
+const heartbeat =
+  props.artifact.storage === 'test'
+    ? setInterval(() => {
+        if (!document.hidden)
+          void fetch(url.value, {
+            method: 'HEAD',
+            cache: 'no-store',
+            signal: heartbeatController.signal,
+          }).catch(() => {});
+      }, 45000)
+    : undefined;
 onBeforeUnmount(() => {
+  clearInterval(heartbeat);
+  heartbeatController.abort();
   if (media.value) {
     media.value.pause();
     media.value.removeAttribute('src');
     media.value.load();
   }
 });
-const url = computed(() => '/api/delivery/files/' + encodeURIComponent(props.artifact.id));
+const url = computed(
+  () =>
+    props.artifact.content_url || '/api/delivery/files/' + encodeURIComponent(props.artifact.id),
+);
+const downloadUrl = computed(
+  () => url.value + (url.value.includes('?') ? '&' : '?') + 'download=1',
+);
 const textFile = ['subtitle', 'metadata'].includes(props.artifact.kind);
 const tooLarge = props.artifact.size > 2 * 1024 * 1024;
 const metadataLabels: Record<string, string> = {
@@ -88,10 +118,12 @@ if (textFile && !tooLarge)
       :src="url"
       controls
       preload="metadata"
+      @loadedmetadata="loaded"
       @error="mediaError = '文件不可读取或浏览器不支持此编码，可下载后播放。'"
     />
     <p v-if="mediaError" role="alert" class="form-error">{{ mediaError }}</p>
-    <a class="text-link" :href="url + '?download=1'">下载文件</a></WorkspaceDialog
+    <p v-if="mediaInfo">{{ mediaInfo }}</p>
+    <a class="text-link" :href="downloadUrl">下载文件</a></WorkspaceDialog
   >
 </template>
 <style scoped>

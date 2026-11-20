@@ -78,6 +78,7 @@ SETTINGS = MappingProxyType({
     'postprocess_limit': Setting(2, limits=(1, 8), persist_runtime=True),
     'disk_budget_gb': Setting(20, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_test_budget_gb': Setting(16, limits=(1, 100000), family='disk', persist_runtime=True),
+    'disk_sample_budget_mb': Setting(3072, limits=(0, 102400), family='disk', persist_runtime=True),
     'disk_browser_budget_mb': Setting(1024, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_log_budget_mb': Setting(256, limits=(1, 100000), family='disk', persist_runtime=True),
     'disk_import_budget_mb': Setting(1024, limits=(1, 100000), family='disk', persist_runtime=True),

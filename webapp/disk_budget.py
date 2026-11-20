@@ -283,7 +283,7 @@ class DiskBudget:
                 'downloads': int(self.config['disk_budget_gb']) * GIB}
 
     def roots(self):
-        return {'test': [self.directory / 'test-downloads'],
+        return {'test': [self.directory / 'test-downloads', self.directory / 'test-samples'],
                 'browsers': [self.runtime / 'browser-profiles'],
                 'logs': [self.directory / 'logs'],
                 'imports': [self.directory / 'imports', self.runtime / 'uploads'],
@@ -394,6 +394,8 @@ class DiskBudget:
                         active=dict((r['category'], r['n']) for r in rows),
                         waiting_tasks=waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
+            result['test_samples'] = dict(**self._get(db, 'sample_status', {}), budget_bytes=int(self.config.get('disk_sample_budget_mb', 3072)) * MIB,
+                last_cleanup=self._get(db, 'sample_cleanup', {}))
             samples = [sample for sample in self._get(db, 'video_sizes', []) if sample['time'] > time.time() - 86400]
             if self.config.get('storage_mode') == 'test' and len(samples) >= 3:
                 peaks = sorted(sample['peak'] for sample in samples)
@@ -646,11 +648,17 @@ class DiskBudget:
                             if not store or not self.receipts_recorded(store, row['task'], receipts):
                                 pending += 1
                                 continue
+                        if store and task:
+                            from webapp.delivery.samples import expire_failed
+                            expire_failed(store, self, row, task)
                         if store and task and task['status'] not in ('removed', 'cancelled'):
                             from webapp.delivery.processing import retains_test_workspace
                             if retains_test_workspace(store, row):
                                 pending += 1
                                 continue
+                        if store and task:
+                            from webapp.delivery.samples import capture
+                            capture(store, self, row, task)
                         amount = size_of(path)
                         if path.exists():
                             shutil.rmtree(path)
@@ -668,6 +676,8 @@ class DiskBudget:
                             from webapp.diagnostics import safe_text
                             failure_reasons.append(safe_text(str(error))[:300])
             if store:
+                from webapp.delivery.samples import sweep
+                sweep(store, self)
                 self._clean_imports(store)
                 from webapp.maintenance import prune_disk_logs
                 prune_disk_logs(store, self.config, low_space=self._free() < int(self.config['disk_min_free_gb']) * GIB)

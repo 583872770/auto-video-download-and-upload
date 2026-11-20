@@ -321,6 +321,41 @@ test_totals = Table('download_test_totals', metadata,
     Column('test_file_count', BigInteger, nullable=False, server_default='0'),
     Column('test_file_bytes', BigInteger, nullable=False, server_default='0'))
 
+test_sample_policies = Table('test_sample_policies', metadata,
+    Column('job_id', String(32), primary_key=True), Column('enabled', Integer, nullable=False),
+    Column('maximum', Integer, nullable=False), Column('budget_mb', Integer, nullable=False),
+    Column('hours', Integer, nullable=False), Column('failure_hours', Integer, nullable=False),
+    Column('revision', Integer, nullable=False))
+test_samples = Table('test_samples', metadata,
+    Column('id', String(32), primary_key=True), Column('job_id', String(32), nullable=False),
+    Column('task_id', String(32), nullable=False), Column('instance_id', String(64), nullable=False),
+    Column('video_id', String(256)), Column('title', Text, nullable=False),
+    Column('workspace', Text, nullable=False), Column('files', Text, nullable=False),
+    Column('size', BigInteger, nullable=False), Column('state', String(16), nullable=False),
+    Column('created', Float, nullable=False), Column('expires', Float, nullable=False),
+    Column('view_until', Float, nullable=False), Column('review', String(16), nullable=False),
+    Column('requested', Integer, nullable=False, server_default='0'),
+    Column('reviewed_by', String(64)), Column('reviewed_at', Float), Column('revision', Integer, nullable=False))
+Index('ix_test_samples_instance', test_samples.c.instance_id, test_samples.c.created)
+Index('ix_test_samples_job', test_samples.c.job_id, test_samples.c.created)
+Index('ix_test_samples_task', test_samples.c.task_id)
+test_observation_hours = Table('test_observation_hours', metadata,
+    Column('job_id', String(32), primary_key=True), Column('instance_id', String(64), primary_key=True),
+    Column('account_id', String(64), primary_key=True), Column('hour', BigInteger, primary_key=True),
+    Column('event', String(32), primary_key=True), Column('reason', String(64), primary_key=True),
+    Column('count', BigInteger, nullable=False), Column('size', BigInteger, nullable=False),
+    Column('seconds', Float, nullable=False))
+Index('ix_test_observation_job_time', test_observation_hours.c.job_id, test_observation_hours.c.hour)
+Index('ix_test_observation_instance_time', test_observation_hours.c.instance_id, test_observation_hours.c.hour)
+test_observation_events = Table('test_observation_events', metadata,
+    Column('id', String(64), primary_key=True), Column('job_id', String(32), nullable=False),
+    Column('instance_id', String(64), nullable=False), Column('account_id', String(64), nullable=False),
+    Column('created', Float, nullable=False), Column('task_id', String(32), nullable=False),
+    Column('video_id', String(256)), Column('event', String(32), nullable=False),
+    Column('reason', String(64), nullable=False), Column('message', Text, nullable=False))
+Index('ix_test_events_job_time', test_observation_events.c.job_id, test_observation_events.c.created)
+Index('ix_test_events_instance_time', test_observation_events.c.instance_id, test_observation_events.c.created)
+
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;
     # the NO PAD binary collation also preserves distinct trailing characters.

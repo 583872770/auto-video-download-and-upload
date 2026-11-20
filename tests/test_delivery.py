@@ -334,7 +334,9 @@ class DeliveryTests(unittest.TestCase):
         self.store.finish(local['id'],error='conversion failed',worker_id=self.store.owner)
         with self.store.connect() as db:
             work=dict(db.execute(select(delivery_work)).mappings().one())
-            db.execute(tasks.update().where(tasks.c.id==task['id']).values(finished_at='2020-01-01T00:00:00+00:00'))
+            from datetime import datetime, timezone, timedelta
+            db.execute(tasks.update().where(tasks.c.id==task['id']).values(
+                finished_at=(datetime.now(timezone.utc) - timedelta(minutes=12)).isoformat()))
         budget=DiskBudget(self.store.directory,self.store.runtime())
         cleaned=budget.cleanup(self.store,grace=0)
         self.assertTrue(Path(work['workspace']).exists())

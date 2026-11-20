@@ -128,7 +128,8 @@ class WorkerBudgetTests(unittest.TestCase):
         with patch.object(controller, 'sample', return_value=self.resources):
             state = controller.update(config, cookie_capacity={'known': True, 'capacity': 36})
         self.assertEqual(state['workers'], 6)
-        self.assertEqual(runtime_limits(config, self.root)['workers'], 6)
+        with patch('webapp.throughput.resource_limits', return_value=self.resources):
+            self.assertEqual(runtime_limits(config, self.root)['workers'], 6)
         changed = {**config, 'download_task_limit': 3}
         with patch('webapp.throughput.resource_limits', return_value=self.resources):
             self.assertEqual(runtime_limits(changed, self.root)['workers'], 3)

@@ -10,6 +10,9 @@ export interface VideoTask {
   url: string;
   status: string;
   instance_id: string;
+  batch_id: string;
+  job_name?: string;
+  file_state?: 'sample' | 'stored' | 'cleaned' | 'none';
   error: string;
   progress?: { stage?: string; percent?: number; speed?: number; title?: string };
   result?: { test_mode?: boolean; skipped?: boolean };

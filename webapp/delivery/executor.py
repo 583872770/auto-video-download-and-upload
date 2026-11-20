@@ -63,7 +63,9 @@ def ready(session, kind, language=''):
         return True
     if artifact:
         session.current_video.update(title=artifact['title'])
-    if session.test_mode and artifact and artifact['test_mode']:
+    force_sample = session.payload.get('_force_test_sample')
+    same_workspace = artifact and Path(artifact['path']).is_relative_to(Path(session.payload.get('_disk_workspace') or '/__none__'))
+    if session.test_mode and artifact and artifact['test_mode'] and (not force_sample or same_workspace):
         with session.store.connect() as db:
             ledger.fenced_run(session.store, db, task['id'])
             recorded = ledger.recorded_test_output(db, task, artifact)

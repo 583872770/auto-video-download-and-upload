@@ -32,7 +32,7 @@ class FrontendTests(unittest.TestCase):
     def test_business_pages_share_authenticated_shell_without_legacy_scripts(self):
         self.setup_admin()
         bundle = dict(script='frontend/main.js', styles=[], preload=[])
-        for path in ('/', '/jobs', '/jobs/' + 'a' * 32, '/workbench', '/media', '/logs',
+        for path in ('/', '/jobs', '/jobs/' + 'a' * 32, '/workbench', '/logs',
                      '/accounts', '/instances', '/statistics', '/proxy', '/deployment'):
             with self.subTest(path=path):
                 self.assertEqual(self.app.test_client().get(path).location, '/login')

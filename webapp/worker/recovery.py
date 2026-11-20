@@ -19,6 +19,8 @@ class TaskRecovery:
         evidence = failure_evidence(error)
         last_progress['last_failure'] = evidence.public()
         store.update_progress(task['id'], dict(last_progress), store.owner)
+        from webapp.delivery.observation import incident
+        incident(store, task, evidence, self.config)
 
     def settle_account_failure(self, error):
         store = self.store

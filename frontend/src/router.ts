@@ -50,12 +50,6 @@ export const router = createRouter({
       meta: { title: '下载工作台' },
     },
     {
-      path: '/media',
-      name: 'media',
-      component: () => import('./features/media/MediaPage.vue'),
-      meta: { title: '素材库' },
-    },
-    {
       path: '/logs',
       name: 'logs',
       component: () => import('./features/logs/LogsPage.vue'),

@@ -23,6 +23,7 @@ export interface ConsoleConfig {
   postprocess_limit: number;
   disk_budget_gb: number;
   disk_test_budget_gb: number;
+  disk_sample_budget_mb: number;
   disk_browser_budget_mb: number;
   disk_log_budget_mb: number;
   disk_import_budget_mb: number;
@@ -132,6 +133,10 @@ export const constraints: Partial<Record<ConfigKey, readonly [number, number]>> 
     1,
     100000
   ],
+  "disk_sample_budget_mb": [
+    0,
+    102400
+  ],
   "disk_browser_budget_mb": [
     1,
     100000
@@ -193,6 +198,7 @@ export const defaultConfig: ConsoleConfig = {
   "postprocess_limit": 2,
   "disk_budget_gb": 20,
   "disk_test_budget_gb": 16,
+  "disk_sample_budget_mb": 3072,
   "disk_browser_budget_mb": 1024,
   "disk_log_budget_mb": 256,
   "disk_import_budget_mb": 1024,

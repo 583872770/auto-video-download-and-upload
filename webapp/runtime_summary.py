@@ -19,6 +19,8 @@ def record_terminal(store, db, row, outcome, progress, result, stamp):
     """Caller owns the task row and has decided this is a terminal transition."""
     if row['action'] != 'download':
         return
+    from webapp.delivery.observation import terminal
+    terminal(store, db, row, outcome, progress, result, stamp)
     failure = progress.get('last_failure') or {}
     reason = failure.get('reason') or failure.get('kind') or 'unknown'
     reason = reason if reason in REASONS else 'unknown'
@@ -41,6 +43,8 @@ def record_terminal(store, db, row, outcome, progress, result, stamp):
 
 
 def prune(store, stamp=None):
+    from webapp.delivery.observation import prune as prune_observations
+    prune_observations(store)
     cutoff = int(((time.time() if stamp is None else stamp) - RETENTION_DAYS * 86400) // 3600) * 3600
     scope = store.fleet.id if store.fleet else 'local'
     with store.connect() as db:

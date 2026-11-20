@@ -14,6 +14,8 @@ from webapp.statistics import stamp
 
 
 def register_delivery(app, store):
+    from webapp.delivery.sample_routes import register_samples
+    register_samples(app, store)
     from webapp.jobs import Jobs, event
     jobs = Jobs(store)
 
@@ -74,8 +76,8 @@ def register_delivery(app, store):
                 headers['Content-Range'] = f'bytes {start}-{stop - 1}/{size}'
             headers['Content-Length'] = str(stop - start)
             headers['Content-Disposition'] = ('attachment' if request.args.get('download') == '1' else 'inline') + '; filename="' + row['id'] + Path(row['path']).suffix + '"'
-            import mimetypes
-            mime = mimetypes.guess_type(row['path'])[0] or 'application/octet-stream'
+            from webapp.delivery.storage import content_type
+            mime = content_type(row['path'])
             if request.method == 'HEAD':
                 return Response(status=status, mimetype=mime, headers=headers)
             try:
@@ -97,7 +99,8 @@ def register_delivery(app, store):
         path = Path(row['path'])
         if path.resolve() != path.absolute() or path.is_symlink() or not path.is_file():
             abort(404, description='本地交付文件已清理，请补交。')
-        return send_file(path, as_attachment=request.args.get('download') == '1', conditional=True)
+        from webapp.delivery.storage import content_type
+        return send_file(path, mimetype=content_type(path), as_attachment=request.args.get('download') == '1', conditional=True)
 
     @app.post('/api/jobs/<identity>/redeliver')
     def redeliver(identity):

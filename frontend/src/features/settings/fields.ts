@@ -73,6 +73,12 @@ export const groups = {
       'maintenance',
       '所有视频的测试文件及预留共用此额度，同时受全部临时文件总额度限制。',
     ),
+    field(
+      'disk_sample_budget_mb',
+      '全部测试样本容量上限（MiB）',
+      'maintenance',
+      '当前实例的所有任务共用；包含在测试临时额度内，不另占一份预留。0 表示不保留新样本。',
+    ),
     field('disk_browser_budget_mb', '浏览器缓存额度（MiB）', 'maintenance'),
     field('disk_import_budget_mb', '导入及上传临时额度（MiB）', 'maintenance'),
     field('disk_cache_budget_mb', '诊断及其他缓存额度（MiB）', 'maintenance'),

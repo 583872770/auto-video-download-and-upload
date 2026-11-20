@@ -24,7 +24,7 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     state = store.directory if store else Path(payload['base']) / '.cache'
     workspace = DownloadWorkspace(config, state, task_id, uuid.uuid4().hex)
     budget = DiskBudget(state, config)
-    if workspace.test_mode and store and task_id:
+    if workspace.test_mode and store and task_id and not payload.get('_force_test_sample'):
         recovered = budget.recover_test_result(store, task_id)
         if recovered:
             return recovered
@@ -35,6 +35,8 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                          path=workspace.directory if workspace.test_mode else None)
     from webapp.downloads import initial_progress
     last_progress = initial_progress(config, payload.get('policy_version'))
+    if payload.get('_force_test_sample'):
+        last_progress['_sample_requested'] = True
     if payload.get('_retry_cookie_profile_id'):
         last_progress['retry_cookie_profile_id'] = payload['_retry_cookie_profile_id']
 
@@ -117,6 +119,11 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                 if report_progress:
                     report_progress(dict(last_progress))
                 cleanup_started = time.monotonic()
+                # Publish samples only after the task's terminal commit. The
+                # normal settlement path owns and retires this lease afterwards.
+                lease.preserve = True
+                result['_processing_workspace'] = dict(task_id=task_id, disk_lease=lease.id,
+                    workspace=str(lease.path))
         except BaseException:
             if store:
                 from sqlalchemy import select
@@ -132,12 +139,12 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
                     lease.preserve = True
             raise
     if workspace.test_mode:
+        result['_sample_requested'] = bool(payload.get('_force_test_sample'))
         deleted = not workspace.directory.exists()
         result['local_cleanup_seconds'] = round(time.monotonic() - cleanup_started, 3)
         event('local_cleanup_end', elapsed_seconds=result['local_cleanup_seconds'],
               files_deleted=deleted, file_bytes=result.get('file_bytes', 0))
-        result.update(message=('测试下载完成，临时文件已删除，仅保留任务记录和统计。' if deleted else
-                              '测试下载完成，统计已保留；临时文件清理待重试。'),
+        result.update(message='测试下载完成，结果已登记；结算后按留样设置整理文件。',
                       test_mode=True, files_deleted=deleted, skipped=False)
         print(result['message'], flush=True)
     return result

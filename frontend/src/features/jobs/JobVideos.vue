@@ -2,12 +2,15 @@
 import { computed, ref, watch } from 'vue';
 import { api } from '../../api';
 import { useResource } from '../../composables/resource';
+import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import { bootstrap } from '../../bootstrap';
 import { ElMessageBox } from 'element-plus';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import TaskLog from '../../components/TaskLog.vue';
 import TaskConfirmation from './TaskConfirmation.vue';
+import VideoResults from './VideoResults.vue';
+import { fileStates } from './results';
 import { deliveryStates, outputLabels } from '../delivery/model';
 import { jobEndpoint, videoStates, type Job, type Page, type VideoTask } from './contracts';
 const props = defineProps<{ job: Job; initialStatus?: string }>();
@@ -32,21 +35,33 @@ const list = useResource<Page<VideoTask>>(),
   redelivering = ref(false),
   clearing = ref(false),
   log = ref<VideoTask>();
+const viewing = ref<VideoTask>(),
+  samplesOnly = ref(false);
 const allSelected = computed(
   () =>
     !!list.data.value?.items.length &&
     list.data.value.items.every((item) => selected.value.includes(item.id)),
 );
 useLeaveGuard(() => ({ dirty: false, busy: busy.value }));
-async function refresh() {
+async function refresh(signal?: AbortSignal) {
   const params = new URLSearchParams(applied.value);
   if (!applied.value.status) params.delete('status');
   if (!applied.value.delivery_status) params.delete('delivery_status');
   if (cursor.value) params.set('cursor', cursor.value);
-  await list.load((signal) =>
-    api.request(jobEndpoint(props.job.id) + '/videos?' + params, { signal }),
+  if (samplesOnly.value) params.set('samples_only', '1');
+  await list.load(
+    (requestSignal) =>
+      api.request(jobEndpoint(props.job.id) + '/videos?' + params, { signal: requestSignal }),
+    signal,
   );
 }
+usePolling(
+  computed(
+    () => !busy.value && !viewing.value && !log.value && !redelivering.value && !clearing.value,
+  ),
+  refresh,
+  10000,
+);
 function filter() {
   applied.value = {
     q: query.value.trim(),
@@ -175,6 +190,9 @@ async function waive(task: VideoTask, key: string) {
           {{ deliveryStates[key] }}
         </option></select
       ><button type="submit">查询 / 刷新</button>
+      <label
+        ><input v-model="samplesOnly" type="checkbox" @change="filter" />只看保留测试样本</label
+      >
     </form>
     <p class="muted">
       {{
@@ -210,7 +228,8 @@ async function waive(task: VideoTask, key: string) {
               />
             </th>
             <th>视频 ID / 标题</th>
-            <th>状态</th>
+            <th>执行状态</th>
+            <th>文件状态</th>
             <th>交付 / 执行阶段</th>
             <th>错误</th>
             <th>操作</th>
@@ -238,14 +257,15 @@ async function waive(task: VideoTask, key: string) {
             </td>
             <td>
               <span class="badge">{{
-                video.delivery?.version && video.status === 'succeeded'
-                  ? deliveryStates[video.delivery.status]
-                  : video.result?.test_mode
-                    ? '测试完成'
-                    : video.result?.skipped
-                      ? '已跳过'
-                      : videoStates[video.status] || video.status
+                video.result?.test_mode && video.status === 'succeeded'
+                  ? '测试完成'
+                  : video.result?.skipped
+                    ? '已跳过'
+                    : videoStates[video.status] || video.status
               }}</span>
+            </td>
+            <td>
+              <span class="badge">{{ fileStates[video.file_state || 'none'] }}</span>
             </td>
             <td>
               <template v-if="video.delivery?.version"
@@ -276,6 +296,7 @@ async function waive(task: VideoTask, key: string) {
             <td :title="video.error">{{ video.error?.slice(0, 100) }}</td>
             <td>
               <div class="actions">
+                <button @click="viewing = video">查看结果 / 文件</button>
                 <button
                   :disabled="!editable || busy || video.status === 'removed'"
                   @click="mutate('/videos/remove', { ids: [video.id] }, '视频已移出清单。')"
@@ -299,7 +320,7 @@ async function waive(task: VideoTask, key: string) {
             </td>
           </tr>
           <tr v-if="list.data.value && !list.data.value.items.length">
-            <td colspan="6" class="empty">
+            <td colspan="7" class="empty">
               {{
                 job.total ? '没有符合筛选条件的视频。' : '该任务还没有视频。点击上方“添加视频”。'
               }}
@@ -360,5 +381,16 @@ async function waive(task: VideoTask, key: string) {
       "
     />
     <TaskLog v-if="log" :key="log.id" :task="log" @close="log = undefined" />
+    <VideoResults
+      v-if="viewing"
+      :key="viewing.id"
+      :job-id="job.id"
+      :task-id="viewing.id"
+      @close="viewing = undefined"
+      @changed="
+        refresh();
+        emit('changed');
+      "
+    />
   </section>
 </template>

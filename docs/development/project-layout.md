@@ -24,7 +24,7 @@
 | `webapp/config/` | 参数定义、默认值、校验和保存 |
 | `webapp/delivery/` | 交付要求、产物执行、校验、存储与 API |
 | `Utils/` | 路径、配置、存储及工具函数 |
-| `frontend/` | Vue 3 + TypeScript + Vue Router + Vite + Pinia + Element Plus；设置、任务中心、工作台、素材、日志及交付文件 |
+| `frontend/` | Vue 3 + TypeScript + Vue Router + Vite + Pinia + Element Plus；设置、任务中心、工作台、日志及交付文件 |
 | `templates/frontend.html` | 当前 Vue 页面入口模板，加载构建资源、初始化信息并提供 `#frontend-app` 挂载位置 |
 | `static/` | 静态资源；其中 `static/frontend/` 为 Vue 构建产物 |
 | `docker/` | 镜像启动、浏览器桌面、健康检查与打包验证 |
@@ -50,13 +50,13 @@
 
 ## 前端开发
 
-Vue 工作区统一使用 `components/WorkspaceShell.vue` 和 `router.ts`，覆盖实例设置 `/settings`、任务中心 `/jobs`、任务详情 `/jobs/<任务编号>`、下载工作台 `/workbench`、素材库 `/media`、执行日志 `/logs`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 及部署 `/deployment`。登录与管理账户 `/login`、独立部署恢复 `/setup` 使用独立布局。任务详情使用路径参数，页签使用 `?tab=settings` 等参数。页面按路由分包加载。
+Vue 工作区统一使用 `components/WorkspaceShell.vue` 和 `router.ts`，覆盖实例设置 `/settings`、任务中心 `/jobs`、任务详情 `/jobs/<任务编号>`、下载工作台 `/workbench`、执行日志 `/logs`、账号 `/accounts`、实例 `/instances`、统计账单 `/statistics`、代理 `/proxy` 及部署 `/deployment`。文件查看并入任务中心，独立素材库前端页面及专属组件已移除。登录与管理账户 `/login`、独立部署恢复 `/setup` 使用独立布局。任务详情使用路径参数，页签使用 `?tab=settings` 等参数。页面按路由分包加载。
 
 实例设置组件按下载、并发保护、空间日志和诊断划分；任务组件按列表、详情、表单、视频清单、导入及确认操作划分。交付要求与文件保存由任务表单维护，字幕和媒体预览、执行日志、对话框及离页草稿保护复用公共组件。任务的创建请求编号在失败重试时保持不变；编辑继续携带 `edit_version`，冲突时保留输入，明确核对后才采用新版本。
 
 请求层集中处理 CSRF、权限过期、超时及实例切换。实例设置草稿由 Pinia 管理，任务表单独立管理交付与保存草稿；客户任务和交付清单请求不携带实例选择头。列表查询取消旧请求并忽略过期返回，轮询在隐藏页面、编辑或组件卸载时暂停。上传分步提交，粘贴已成功时只重试未成功的文件上传。
 
-工作台和素材操作绑定当前实例；工作台进度与容量各自轮询，容量请求缓慢不会阻塞执行状态。选择任务只预览，启停后重新读取状态，暂停领取和立即停止分别处理。素材清空需核对实例并输入确认文字，范围包含该实例全部已登记任务目录和默认目录。执行记录列表保持全局汇总，日志按任务来源实例读取，增量追加并限制浏览器保留量；关闭播放器会释放媒体连接。
+工作台操作绑定当前实例；工作台进度与容量各自轮询，容量请求缓慢不会阻塞执行状态。选择任务只预览，启停后重新读取状态，暂停领取和立即停止分别处理。测试样本和正式文件在任务中心跨实例查看，预览和清理按文件所属实例转发；底层素材索引接口继续供内部存储和交付流程使用。执行记录列表保持全局汇总，日志按任务来源实例读取，增量追加并限制浏览器保留量；关闭播放器会释放媒体连接。
 
 账号清单与统计账本请求不携带实例头；账号浏览器登录和检测由后端按所属实例转发，取消登录携带会话 ID。密钥按需显示，导入必须使用服务端签名预览；编辑发生版本冲突时保留输入。账号归属在全局账号清单维护，请求节奏按实例提交与读回。代理、部署与 Cookie 文件导出携带实例范围；切换后忽略旧响应，保存后核对状态。金额使用服务端字符串，字节展示通过 BigInt 保留精度。实例名称与全局并发草稿不被状态轮询覆盖。
 
@@ -104,6 +104,6 @@ cd ..
 
 后端变更按影响运行模块导入、`docker/check_startup.py` 和相应业务回归；前端变更检查 JavaScript 与页面行为；部署变更检查 Compose 解析及打包。单纯文档移动检查本地链接、标题锚点、原型路径和仓库引用，无需启动下载或连接生产服务。
 
-前端浏览器回归使用隔离 SQLite 和临时目录：`python scripts/verify/verify_frontend_workspace_ui.py` 检查路由、未确认写入重试、部分导入失败、文件分页、字幕预览和手机布局；`python scripts/verify/verify_frontend_execution_ui.py` 检查两个实例的工作台启停、过期返回、慢容量请求、日志来源、素材分页、预览及操作确认；`python scripts/verify/verify_frontend_settings_ui.py` 检查设置保存与实例隔离；`python scripts/verify/verify_frontend_management_ui.py` 检查账号冲突、导入预览、密钥、Cookie 导出、账号池与节奏独立保存、代理、实例、账单、部署和独立恢复页。无需启动真实下载或连接业务数据库。
+前端浏览器回归使用隔离 SQLite 和临时目录：`python scripts/verify/verify_frontend_workspace_ui.py` 检查路由、未确认写入重试、部分导入失败、任务中心文件入口和手机布局；`python scripts/verify/verify_frontend_execution_ui.py` 检查两个实例的工作台启停、过期返回、慢容量请求、日志来源及操作确认；`python scripts/verify/verify_task_results_ui.py` 检查真实媒体和字幕预览、验收、留样策略与手机布局；`python scripts/verify/verify_frontend_settings_ui.py` 检查设置保存与实例隔离；`python scripts/verify/verify_frontend_management_ui.py` 检查账号冲突、导入预览、密钥、Cookie 导出、账号池与节奏独立保存、代理、实例、账单、部署和独立恢复页。无需启动真实下载或连接业务数据库。
 
 模块拆分完成后直接维护本手册，不再保留逐批迁移计划和重复验收报告。

@@ -293,6 +293,7 @@ class TaskLeases:
             if result:
                 result = dict(result)
                 result.pop('_processing_workspace', None)
+            sample_requested = (result or {}).pop('_sample_requested', False)
             work = None
             if error or (result or {}).get('source_failed'):
                 work = db.execute(select(delivery_work).where(delivery_work.c.task_id == task_id)).mappings().first()
@@ -388,6 +389,12 @@ class TaskLeases:
                     payload.pop('_retry_cookie_profile_id', None)
                     payload.pop('_retry_cookie_instance_id', None)
                 extra['payload'] = self._pack(db, payload)
+            if not retry and (sample_requested or progress.get('_sample_requested')):
+                progress['_sample_requested'] = True
+                payload = self.decode({**row, 'payload': extra.get('payload', row['payload'])}, private=True, db=db)['payload']
+                if payload.pop('_force_test_sample', False):
+                    progress['_sample_requested'] = True
+                    extra['payload'] = self._pack(db, payload)
             self._transition(db, row, status)
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
                 status=status, finished_at=None if retry else self._timestamp(), result=json.dumps(result, ensure_ascii=False) if result else None,

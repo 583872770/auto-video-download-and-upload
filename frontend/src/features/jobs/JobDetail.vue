@@ -9,6 +9,7 @@ import { usePolling } from '../../composables/polling';
 import { confirmNavigation, useLeaveGuard } from '../../composables/leaveGuard';
 import JobForm from './JobForm.vue';
 import JobVideos from './JobVideos.vue';
+import JobTesting from './JobTesting.vue';
 import AppendVideos from './AppendVideos.vue';
 import TaskConfirmation from './TaskConfirmation.vue';
 import SystemNotice from '../../components/SystemNotice.vue';
@@ -28,6 +29,7 @@ const id = computed(() => String(route.params.id));
 const tabs = {
   overview: '任务概览',
   videos: '视频清单',
+  testing: '测试样本与观察',
   billing: '交付与账单',
   history: '操作记录',
   settings: '任务设置',
@@ -209,7 +211,9 @@ function samples(value: string) {
           <div class="toolbar">
             <a class="text-link" :href="jobEndpoint(job.id) + '/artifacts/export'"
               >导出分类交付清单 CSV</a
-            ><RouterLink class="text-link" :to="{ name: 'delivery', query: { job_id: job.id } }"
+            ><RouterLink
+              class="text-link"
+              :to="{ name: 'job', params: { id: job.id }, query: { tab: 'videos' } }"
               >预览本任务交付文件 →</RouterLink
             >
           </div>
@@ -326,6 +330,15 @@ function samples(value: string) {
           :initial-status="typeof route.query.status === 'string' ? route.query.status : undefined"
           @changed="refresh()"
           @message="message = $event"
+        />
+        <JobTesting
+          v-if="
+            tab === 'testing' ||
+            (tab === 'overview' && job.delivery.contract?.spec.storage.storage_mode === 'test')
+          "
+          :key="job.id + tab"
+          :job="job"
+          :compact="tab === 'overview'"
         />
         <template v-if="tab === 'billing'"
           ><section class="card">

@@ -3,6 +3,15 @@ from flask import Response, request, stream_with_context
 import requests
 
 
+def content_type(path):
+    from pathlib import Path
+    import mimetypes
+    return {'.webp': 'image/webp', '.json': 'application/json', '.vtt': 'text/vtt',
+            '.srt': 'text/plain', '.m4a': 'audio/mp4', '.mp4': 'video/mp4',
+            '.webm': 'video/webm', '.mkv': 'video/x-matroska'}.get(
+                Path(path).suffix.lower()) or mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
+
+
 def remote_content(fleet, identity):
     row = fleet.resolve_target(identity)
     session = requests.Session();session.trust_env = False

@@ -141,77 +141,12 @@ def main():
                 page.get_by_role('button',name='关闭对话框',exact=True).click()
                 assert all('x-instance-id' not in item.headers for item in global_reads)
 
-                # Real per-instance catalog and files exercise media paging, seeking and import.
-                media_root=root/'videos-beta'
-                media_root.mkdir()
-                for index in range(25):
-                    path=media_root/f'clip-{index:02d}.mp4'
-                    path.write_bytes(b'fixture video bytes')
-                    Image.new('RGB',(32,18),(30,80,150)).save(path.with_suffix('.png'))
-                    apps[1].extensions['media_catalog'].index_file(path,media_root)
-                page.goto(base+'/media?instance_id=beta')
-                expect(page.locator('#asset-table tbody tr')).to_have_count(24)
-                page.screenshot(path=str(output/'media-populated.png'),full_page=True,animations='disabled')
-                page.locator('#media-next').click()
-                expect(page.locator('#asset-table tbody tr')).to_have_count(1)
-                page.locator('#media-prev').click()
-                expect(page.locator('#asset-table tbody tr')).to_have_count(24)
-                page.get_by_role('button', name='查看文件', exact=True).first.click()
-                page.locator('[data-preview]').first.click()
-                player=page.locator('dialog video')
-                expect(player).to_have_attribute('src',re.compile('instance_id=beta'))
-                result=page.request.get(base+player.get_attribute('src'),headers={'Range':'bytes=0-4'})
-                assert result.status==206 and len(result.body())==5
-                page.get_by_role('button',name='关闭对话框',exact=True).click()
-                expect(page.locator('video')).to_have_count(0)
-                page.get_by_role('button',name='导入视频',exact=True).click()
-                page.locator('dialog input[type=file]').nth(0).set_input_files({'name':'imported.mp4','mimeType':'video/mp4','buffer':b'isolated import'})
-                page.get_by_role('button',name='确认导入',exact=True).click()
-                expect(page.locator('dialog [role=alert]')).to_contain_text('对应封面')
-                page.locator('dialog input[type=file]').nth(1).set_input_files(str(media_root/'clip-00.png'))
-                # The fixture still has queued downloads: backend must retain its conflict rule.
-                page.get_by_role('button',name='确认导入',exact=True).click()
-                expect(page.locator('dialog [role=alert]')).to_contain_text('等待当前任务结束')
-                page.get_by_role('button',name='关闭对话框',exact=True).click()
-                expect(page.get_by_role('dialog')).to_have_count(0)
-                # Complete the isolated fixture queue, then exercise a successful multipart import.
-                for pending in stores[0].page(status='running',limit=100)['items']:
-                    stores[0].finish(pending['id'],error='fixture end')
-                page.get_by_role('button',name='导入视频',exact=True).click()
-                page.locator('dialog input[type=file]').nth(0).set_input_files({'name':'imported.mp4','mimeType':'video/mp4','buffer':b'isolated import'})
-                page.locator('dialog input[type=file]').nth(1).set_input_files(str(media_root/'clip-00.png'))
-                page.get_by_role('button',name='确认导入',exact=True).click()
-                expect(page.get_by_role('dialog')).to_have_count(0)
-                assert (media_root/'imported.mp4').read_bytes()==b'isolated import'
-
-                page.get_by_role('button',name='清空本地素材',exact=True).click()
-                page.get_by_role('button',name='确认清空',exact=True).click()
-                expect(page.locator('dialog [role=alert]')).to_contain_text('输入“清空”')
-                page.get_by_role('button',name='关闭对话框',exact=True).click()
-                assert all((media_root/f'clip-{index:02d}.mp4').is_file() for index in range(25))
-                alpha_root=root/'videos-alpha'
-                alpha_root.mkdir()
-                sentinel=alpha_root/'keep.mp4'
-                sentinel.write_bytes(b'other executor')
-                page.get_by_role('button',name='清空本地素材',exact=True).click()
-                page.get_by_label('确认清空',exact=True).fill('清空')
-                page.get_by_role('button',name='确认清空',exact=True).click()
-                expect(page.locator('dialog [role=alert]')).to_contain_text('暂停全部下载实例')
-                stores[0].fleet.control('alpha',{'action':'drain'})
-                page.get_by_role('button',name='确认清空',exact=True).click()
-                page.get_by_role('button',name='刷新日志',exact=True).click()
-                expect(page.get_by_role('dialog')).to_contain_text('素材和关联数据已清空',timeout=15000)
-                page.get_by_role('button',name='关闭对话框',exact=True).click()
-                page.get_by_role('button',name='查询',exact=True).click()
-                expect(page.locator('#asset-table')).to_contain_text('暂无符合条件的素材',timeout=10000)
-                assert sentinel.read_bytes()==b'other executor' and not (media_root/'imported.mp4').exists()
-                for path in ('workbench','media','logs'):
+                for path in ('workbench','logs'):
                     page.goto(base+'/'+path+'?instance_id=beta')
                     expect(page.get_by_role('heading',level=1)).to_be_visible()
                     if path=='workbench':
                         expect(page.locator('#download-job-note')).to_have_text('Fixture / Beta order')
                         expect(page.get_by_role('heading',name='执行容量与等待原因',exact=True)).to_be_visible()
-                    elif path=='media': expect(page.locator('main')).to_contain_text('暂无符合条件的素材')
                     else: expect(page.locator('#execution-records')).to_contain_text('beta')
                     for width in (1440,768,390):
                         page.set_viewport_size({'width':width,'height':1050})

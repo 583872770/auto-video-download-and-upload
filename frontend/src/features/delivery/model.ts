@@ -98,6 +98,7 @@ export interface DeliveryArtifact {
   created_at?: string;
 }
 export interface DeliveryRequirement {
+  artifact_id?: string;
   key: string;
   task_id: string;
   kind: OutputKind;
