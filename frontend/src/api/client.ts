@@ -46,7 +46,7 @@ export class ApiClient {
         timedOut = true;
         controller.abort();
       },
-      timeoutMs ?? (writing ? 90000 : 15000),
+      timeoutMs ?? (writing ? 90000 : 45000),
     );
     const current = () => {
       if (scope && !scope.isCurrent())

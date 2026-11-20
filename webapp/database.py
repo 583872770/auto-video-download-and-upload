@@ -582,7 +582,10 @@ class Database:
 
     def _initialize_schema(self, engine):
         self.startup_report('正在检查当前数据库表和索引…')
-        self.validate_schema(engine)
+        # Startup uses NullPool on MySQL; reuse one connection for reflection
+        # instead of paying a remote handshake for every table inspection.
+        with engine.connect() as connection:
+            self.validate_schema(connection)
         metadata.create_all(engine)
         with engine.begin() as db:
             stamp = datetime.now().astimezone().isoformat(timespec='seconds')

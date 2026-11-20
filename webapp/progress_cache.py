@@ -13,6 +13,9 @@ class ProgressCache:
         self.url = os.environ.get('REDIS_URL', '').strip()
         self.enabled = bool(self.url or client is not None)
         self.client = client
+        self.socket_timeout = float(os.environ.get('VIDEO_REDIS_SOCKET_TIMEOUT', '0.2'))
+        if not 0 < self.socket_timeout <= 5:
+            raise ValueError('VIDEO_REDIS_SOCKET_TIMEOUT must be greater than 0 and at most 5 seconds')
         self.prefix = 'frameflow:progress:v1:' + hashlib.sha256(database_url.encode()).hexdigest()[:24] + ':'
         self.retry_at = 0
         self.counts = Counter()
@@ -42,7 +45,7 @@ class ProgressCache:
             if self.client is None:
                 import redis
                 self.client = redis.Redis.from_url(self.url, decode_responses=True,
-                    socket_connect_timeout=.2, socket_timeout=.2, max_connections=4,
+                    socket_connect_timeout=self.socket_timeout, socket_timeout=self.socket_timeout, max_connections=4,
                     retry_on_timeout=False)
             result = getattr(self.client, method)(*args, **kwargs)
             self._count('ok_' + method)

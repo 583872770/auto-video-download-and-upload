@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -34,6 +34,26 @@ class MemoryRedis:
         if self.failed:
             raise OSError('cache unavailable')
         return sum(self.data.pop(key, None) is not None for key in keys)
+
+
+class RemoteRedisTimeoutTests(unittest.TestCase):
+    def test_remote_timeout_reaches_the_real_client_configuration(self):
+        for timeout in ('0.2', '2'):
+            factory = Mock()
+            with self.subTest(timeout=timeout), patch.dict('os.environ', {
+                'REDIS_URL': 'redis://localhost/0', 'VIDEO_REDIS_SOCKET_TIMEOUT': timeout,
+            }), patch.dict('sys.modules', {'redis': SimpleNamespace(Redis=SimpleNamespace(from_url=factory))}):
+                cache = ProgressCache('mysql+pymysql://example/database')
+                cache._call('ping')
+                self.assertEqual(factory.call_args.kwargs['socket_connect_timeout'], float(timeout))
+                self.assertEqual(factory.call_args.kwargs['socket_timeout'], float(timeout))
+
+    def test_invalid_timeout_cannot_create_an_unbounded_connection(self):
+        for timeout in ('0', '-1', '6', 'inf', 'nan', 'invalid'):
+            with self.subTest(timeout=timeout), patch.dict('os.environ', {
+                'VIDEO_REDIS_SOCKET_TIMEOUT': timeout,
+            }), self.assertRaises(ValueError):
+                ProgressCache('mysql+pymysql://example/database')
 
 
 class ProgressCacheTests(unittest.TestCase):

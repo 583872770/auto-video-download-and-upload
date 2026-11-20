@@ -133,7 +133,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       const result = await api.request<HeaderStatus>('/api/jobs/workbench?' + params, {
         scope,
         signal: current.signal,
-        timeoutMs: 10000,
+        timeoutMs: 30000,
       });
       if (ticket !== revision || current.signal.aborted || !scope.isCurrent()) return;
       const changed = lastSelected !== undefined && result.selected_job_id !== lastSelected;

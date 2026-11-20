@@ -4,8 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sqlalchemy import inspect, select
+from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 
 from webapp.database import (Database, SchemaInitializationBusy, SchemaMismatch,
                              metadata, settings, tasks)
@@ -27,6 +28,14 @@ class CurrentSchemaTests(unittest.TestCase):
             self.assertEqual(db.execute(select(settings.c.value).where(
                 settings.c.key == 'application-data')).scalar_one(), 'keep')
         self.assertNotIn('schema_migrations', inspect(self.database.engine).get_table_names())
+
+    def test_remote_startup_does_not_reconnect_for_every_table(self):
+        engine = create_engine(self.database.engine.url, poolclass=NullPool)
+        self.addCleanup(engine.dispose)
+        connections = []
+        event.listen(engine, 'connect', lambda *args: connections.append(1))
+        self.database._initialize_schema(engine)
+        self.assertLessEqual(len(connections), 3)
 
     def test_incomplete_old_table_is_rejected_before_ddl_or_bootstrap_writes(self):
         with self.database.engine.begin() as db:

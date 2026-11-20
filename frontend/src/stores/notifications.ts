@@ -47,7 +47,7 @@ export const useNotifications = defineStore('notifications', () => {
       // Intentionally global: never send the top bar's selected-instance header.
       const value = await api.request<NoticePage>('/api/notifications?' + params, {
         signal: current.signal,
-        timeoutMs: 10000,
+        timeoutMs: 30000,
       });
       if (ticket !== revision || current.signal.aborted) return;
       globalCounts.value = value.global_counts;

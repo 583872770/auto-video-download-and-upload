@@ -64,6 +64,8 @@ docker compose -f compose.remote.yaml logs --tail=100 app
 
 缺少 MySQL 地址、密码或 Redis URL 时，Compose 会在启动前报错。此方案只启动 app，不创建或管理远程数据库。Redis 故障时进度缓存仍会自动降级到 MySQL，恢复后重试缓存连接。
 
+跨地区连接 Redis 时，按实测网络延迟设置 `VIDEO_REDIS_SOCKET_TIMEOUT`（秒），默认 `0.2`，允许大于 `0` 且不超过 `5`。例如链路响应约半秒可设为 `2`，避免正常跨地区请求被误判超时；该设置同时用于建连和读写。
+
 ## 配置文件职责
 
 | 文件 / 位置 | 用途 |
