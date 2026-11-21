@@ -29,6 +29,7 @@ const pickerRoot = ref<HTMLElement>(),
 const search = ref(''),
   jobs = useResource<Page<Job>>();
 const ready = computed(() => !bootstrap().fleetEnabled || !!instances.selectedId);
+const onWorkbench = computed(() => route.path === '/workbench');
 const blocked = computed(() => status.busy);
 useLeaveGuard(() => ({ dirty: false, busy: status.busy }));
 async function loadJobs(append = false) {
@@ -140,7 +141,9 @@ watch(
   },
 );
 onMounted(() => {
-  void instances.load().then(() => status.refresh());
+  void instances.load().then(() => {
+    if (!onWorkbench.value) void status.refresh();
+  });
   timer = setInterval(() => {
     status.now = Date.now() / 1000;
   }, 1000);
@@ -155,9 +158,12 @@ onUnmounted(() => {
   document.removeEventListener('keydown', escape);
 });
 usePolling(
-  computed(() => ready.value && !status.busy),
+  computed(() => ready.value && !status.busy && !onWorkbench.value),
   (signal) => status.refresh(signal, true),
-  5000,
+  computed(() => {
+    if (!status.data?.online || status.data.paused) return 30000;
+    return status.data.running ? 5000 : 15000;
+  }),
 );
 watch(
   () => instances.selectedId,

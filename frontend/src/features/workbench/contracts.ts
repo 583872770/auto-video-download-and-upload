@@ -13,6 +13,12 @@ export interface RuntimeTask extends VideoTask {
   };
 }
 export interface WorkbenchStatus {
+  transfer_summary: {
+    time: number;
+    transferring: number;
+    measured: number;
+    speed: number;
+  };
   disk?: import('../disk/model').DiskDiagnostic | null;
   selected_job_id: string | null;
   job: (Job & { importing?: number }) | null;

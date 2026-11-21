@@ -114,6 +114,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     receivedAt.value = 0;
     loading.value = false;
   }
+  function adopt(value: HeaderStatus | WorkbenchStatus) {
+    const header = { ...value } as HeaderStatus & Partial<WorkbenchStatus>;
+    delete header.active_tasks;
+    data.value = header;
+    error.value = '';
+    receivedAt.value = now.value = Date.now() / 1000;
+  }
   async function refresh(signal?: AbortSignal, poll = false) {
     if (busy.value || (bootstrap().fleetEnabled && !instances.selectedId)) return;
     controller?.abort();
@@ -138,9 +145,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       if (ticket !== revision || current.signal.aborted || !scope.isCurrent()) return;
       const changed = lastSelected !== undefined && result.selected_job_id !== lastSelected;
       lastSelected = result.selected_job_id;
-      data.value = result;
-      error.value = '';
-      receivedAt.value = now.value = Date.now() / 1000;
+      adopt(result);
       if (changed && result.selected_job_id !== requested) {
         selection.value = result.selected_job_id || '';
         clear();
@@ -212,7 +217,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       selection.value = '';
       lastSelected = undefined;
       error.value = message.value = '';
-      void refresh();
+      if (location.pathname !== '/workbench') void refresh();
     },
     { flush: 'sync' },
   );
@@ -238,6 +243,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     refresh,
     choose,
     invalidate,
+    adopt,
     control,
     clear,
   };

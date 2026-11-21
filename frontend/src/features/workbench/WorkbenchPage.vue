@@ -93,11 +93,16 @@ async function refresh(signal?: AbortSignal) {
     selected = selection.value;
   const ticket = ++refreshTicket;
   await workbench.load(
-    (signal) =>
-      api.request(
+    async (signal) => {
+      const value = await api.request<WorkbenchStatus>(
         '/api/jobs/workbench' + (selected ? '?job_id=' + encodeURIComponent(selected) : ''),
         { scope, signal },
-      ),
+      );
+      // The top status bar is mounted on every page. Reuse this full snapshot
+      // while the workbench is open instead of issuing a second compact poll.
+      if (scope.isCurrent()) headerStatus.adopt(value);
+      return value;
+    },
     signal,
   );
   if (
@@ -212,12 +217,15 @@ async function control(action: 'start' | 'pause' | 'stop') {
 usePolling(
   computed(() => ready.value && !busy.value),
   refresh,
-  5000,
+  computed(() => {
+    if (!queue.value?.online || queue.value.paused) return 30000;
+    return queue.value.running ? 5000 : 15000;
+  }),
 );
 usePolling(
   computed(() => ready.value && !busy.value),
   refreshCapacity,
-  10000,
+  computed(() => (queue.value?.running ? 10000 : 30000)),
 );
 </script>
 <template>

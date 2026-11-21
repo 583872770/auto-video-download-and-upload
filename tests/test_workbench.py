@@ -47,6 +47,8 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertEqual(value['transfer_summary']['transferring'], 1)
         full = self.client.get('/api/jobs/workbench?poll=1', headers={'X-Instance-ID': 'alpha'}).json
         self.assertEqual([item['id'] for item in full['active_tasks']], [task['id']])
+        self.assertEqual(full['transfer_summary']['speed'], value['transfer_summary']['speed'])
+        self.assertEqual(full['transfer_summary']['measured'], value['transfer_summary']['measured'])
 
     def test_compact_speed_excludes_stale_samples_and_forwarded_json_is_decodable(self):
         from webapp.workbench import compact_status

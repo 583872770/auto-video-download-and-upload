@@ -13,12 +13,11 @@ from webapp.fleet import DOWNLOAD_ROLES, ONLINE_SECONDS
 from webapp.jobs import Jobs
 
 
-def compact_status(value):
-    """Keep task details in the inspector; the workbench needs one speed sum."""
-    value = dict(value)
-    stamp = time.time()
+def transfer_summary(tasks, stamp=None):
+    """Calculate one server-side transfer snapshot for every workbench view."""
+    stamp = time.time() if stamp is None else stamp
     transferring, measured, speed = 0, 0, 0
-    for task in value.pop('active_tasks', []):
+    for task in tasks:
         progress = task.get('progress') or {}
         if task.get('status') != 'running' or progress.get('stage') != 'downloading':
             continue
@@ -31,7 +30,14 @@ def compact_status(value):
             continue
         measured += 1
         speed += rate
-    value['transfer_summary'] = dict(time=stamp, transferring=transferring, measured=measured, speed=speed)
+    return dict(time=stamp, transferring=transferring, measured=measured, speed=speed)
+
+
+def compact_status(value):
+    """Keep task details in the inspector; the header needs one speed sum."""
+    value = dict(value)
+    value['transfer_summary'] = transfer_summary(value.get('active_tasks', []))
+    value.pop('active_tasks', None)
     if value.get('job'):
         value['job'] = {key: item for key, item in value['job'].items()
                         if key not in ('running_videos', 'imports', 'transfer_speed')}
@@ -130,15 +136,13 @@ class Workbench:
             blocked = resource_blocked(self.store, db, identity)
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
-            accounts = None
-            if compact:
-                local = json.loads(row['config'])
-                config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
-                from webapp.database import delivery_work
-                local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
-                accounts = account_summary(db, config, local.get('throughput'), identity,
-                                           [task for task in active if task['id'] not in local_ids],
-                                           online=online, paused=paused)
+            local = json.loads(row['config'])
+            config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
+            from webapp.database import delivery_work
+            local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
+            accounts = account_summary(db, config, local.get('throughput'), identity,
+                                       [task for task in active if task['id'] not in local_ids],
+                                       online=online, paused=paused)
         if not compact:
             active = self.decorate_cookie_names(active, None, self.store, scope=identity)
             from webapp.notifications import attach_tasks
@@ -156,7 +160,7 @@ class Workbench:
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
                     queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session,
-                    disk=disk_summary, **({'account_summary': accounts} if compact else {}))
+                    disk=disk_summary, account_summary=accounts)
 
     def control(self, identity, action, job_id=None, expected=None):
         if action not in ('start', 'pause', 'stop'):
@@ -244,19 +248,21 @@ def register_workbench(app, store, configuration, preflight):
                 session = store.statistics.current_session(db)
                 from webapp.disk_diagnostics import summary
                 disk_summary = summary(db, 'local')
-                accounts = None
-                if compact:
-                    try:
-                        rate = json.loads((store.directory / 'throughput.json').read_text(encoding='utf-8'))
-                    except (OSError, ValueError):
-                        rate = None
-                    accounts = account_summary(db, config, rate, 'local', active,
-                                               online=True, paused=queue['paused'])
+                try:
+                    rate = json.loads((store.directory / 'throughput.json').read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    rate = None
+                accounts = account_summary(db, config, rate, 'local', active,
+                                           online=True, paused=queue['paused'])
             value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
-                disk=disk_summary, **({'account_summary': accounts} if compact else {}))
-            return jsonify(compact_status(value) if compact else value)
+                disk=disk_summary, account_summary=accounts)
+            if compact:
+                value = compact_status(value)
+            else:
+                value = {**value, 'transfer_summary': transfer_summary(value.get('active_tasks', []))}
+            return jsonify(value)
         if not fleet.can_manage:
             return jsonify(error='此接口仅供管理端使用。'), 403
         from webapp.fleet_routes import selected_id, rpc
@@ -276,4 +282,8 @@ def register_workbench(app, store, configuration, preflight):
         preview = request.args.get('job_id')
         value = views.read(('workbench', identity, preview, compact),
                            lambda: workbench.status(identity, preview, compact=compact))
-        return jsonify(compact_status(value) if compact else value)
+        if compact:
+            value = compact_status(value)
+        else:
+            value = {**value, 'transfer_summary': transfer_summary(value.get('active_tasks', []))}
+        return jsonify(value)

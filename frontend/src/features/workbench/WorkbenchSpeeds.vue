@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import type { WorkbenchStatus } from './contracts';
-import { downloadSpeed, speedNumber } from './speeds';
+import { speedNumber } from './speeds';
 import { formatGB } from '../jobs/contracts';
 
 const props = defineProps<{ status?: WorkbenchStatus; unavailable?: boolean }>();
@@ -18,11 +18,21 @@ const timer = setInterval(() => {
   now.value = Date.now() / 1000;
 }, 1000);
 onUnmounted(() => clearInterval(timer));
-const fresh = computed(
-  () => !props.unavailable && !!props.status?.online && now.value - receivedAt.value <= 15,
+const transfer = computed(
+  () => props.status?.transfer_summary || { time: 0, transferring: 0, measured: 0, speed: 0 },
 );
-const transfer = computed(() => downloadSpeed(props.status?.active_tasks || [], now.value));
-const total = computed(() => (fresh.value ? transfer.value.bytesPerSecond : null));
+const fresh = computed(
+  () =>
+    !props.unavailable &&
+    !!props.status?.online &&
+    now.value - receivedAt.value <= 15 &&
+    now.value - transfer.value.time <= 15,
+);
+const total = computed(() =>
+  fresh.value && (!transfer.value.transferring || transfer.value.measured)
+    ? transfer.value.speed
+    : null,
+);
 const session = computed(() => props.status?.session);
 const output = computed(() => (fresh.value ? session.value?.output_mbps : null));
 const readState = computed(() =>
