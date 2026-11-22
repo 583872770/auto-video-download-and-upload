@@ -3,10 +3,11 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import type { Capacity } from './contracts';
 import AccountTasks from './AccountTasks.vue';
 import { sampleNow } from './waits';
-const props = defineProps<{ status: Capacity; unavailable?: boolean }>();
+const props = defineProps<{ status: Capacity; receivedAt?: number }>();
 const capacity = computed(() => props.status.concurrency);
 let sampledAt = performance.now();
 const tick = ref(sampledAt);
+const wallNow = ref(Date.now() / 1000);
 const now = computed(() => sampleNow(capacity.value.time, sampledAt, tick.value));
 watch(
   () => capacity.value.time,
@@ -17,15 +18,19 @@ watch(
 );
 const timer = setInterval(() => {
   tick.value = performance.now();
+  wallNow.value = Date.now() / 1000;
 }, 1000);
 onUnmounted(() => clearInterval(timer));
 const fresh = computed(
-  () => !props.unavailable && capacity.value.online && now.value - capacity.value.time <= 20,
+  () => capacity.value.online && (!props.receivedAt || wallNow.value - props.receivedAt <= 30),
+);
+const displayFresh = computed(
+  () => capacity.value.online && (!props.receivedAt || wallNow.value - props.receivedAt <= 90),
 );
 const worker = computed(() =>
-  fresh.value &&
+  displayFresh.value &&
   capacity.value.sample_fresh &&
-  (!capacity.value.sample_time || now.value - capacity.value.sample_time <= 20)
+  (!capacity.value.sample_time || now.value - capacity.value.sample_time <= 60)
     ? capacity.value.worker_control
     : undefined,
 );
@@ -60,13 +65,15 @@ const blockers: Record<string, string> = {
       <div class="card">
         <small>下载进程 / 当前额度</small
         ><strong
-          >{{ fresh ? (worker?.used ?? capacity.running) : '—' }} /
-          {{ fresh ? (worker?.dynamic_limit ?? capacity.effective_limit) : '—' }}</strong
+          >{{ displayFresh ? (worker?.used ?? capacity.running) : '—' }} /
+          {{ displayFresh ? (worker?.dynamic_limit ?? capacity.effective_limit) : '—' }}</strong
         >
       </div>
       <div class="card">
         <small>实际传输 / 传输上限</small
-        ><strong>{{ fresh ? capacity.transferring : '—' }} / {{ capacity.transfer_limit }}</strong>
+        ><strong
+          >{{ displayFresh ? capacity.transferring : '—' }} / {{ capacity.transfer_limit }}</strong
+        >
       </div>
       <div class="card">
         <small>单文件分片上限</small><strong>{{ capacity.fragment_limit }}</strong>
@@ -74,15 +81,15 @@ const blockers: Record<string, string> = {
       <div class="card">
         <small>集群下载 / 全局上限</small
         ><strong
-          >{{ fresh ? capacity.global_running : '—' }} /
+          >{{ displayFresh ? capacity.global_running : '—' }} /
           {{ capacity.global_limit || '不额外限制' }}</strong
         >
       </div>
     </div>
     <p v-if="capacity.local_processing" class="notice">
-      本地处理：{{ fresh ? capacity.local_processing.running : '—' }} /
+      本地处理：{{ displayFresh ? capacity.local_processing.running : '—' }} /
       {{ capacity.local_processing.limit }} · 等待处理
-      {{ fresh ? capacity.local_processing.queued : '—' }} 个任务。
+      {{ displayFresh ? capacity.local_processing.queued : '—' }} 个任务。
       网络下载完成即释放账号，格式转换和文件交付使用独立工作池。
     </p>
     <p>{{ capacity.bottleneck }}</p>

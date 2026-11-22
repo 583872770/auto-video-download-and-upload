@@ -200,7 +200,11 @@ const powerTitle = computed(
         <AppIcon name="menu" />
       </button>
       <div class="header-instance" :title="instances.error || '当前查看和操作的下载实例'">
-        <i class="header-dot" :class="{ online: status.fresh }" aria-hidden="true"></i>
+        <i
+          class="header-dot"
+          :class="{ online: status.displayFresh, stale: status.displayFresh && !status.fresh }"
+          aria-hidden="true"
+        ></i>
         <select
           v-if="bootstrap().fleetEnabled"
           id="header-instance"
@@ -355,9 +359,9 @@ const powerTitle = computed(
     </div>
     <button
       class="header-disk"
-      :class="status.fresh && status.data?.disk?.severity"
+      :class="status.displayFresh && status.data?.disk?.severity"
       :title="
-        status.fresh && status.data?.disk
+        status.displayFresh && status.data?.disk
           ? status.data.disk.headline + ' · 点击查看空间诊断'
           : '等待当前实例的空间采样'
       "
@@ -369,7 +373,7 @@ const powerTitle = computed(
         })
       "
     >
-      {{ diskLabel(status.fresh ? status.data?.disk : null) }}
+      {{ diskLabel(status.displayFresh ? status.data?.disk : null) }}
     </button>
     <button
       class="header-notifications"
@@ -496,6 +500,9 @@ const powerTitle = computed(
 }
 .header-dot.online {
   background: #279b85;
+}
+.header-dot.stale {
+  background: #d19a48;
 }
 .header-instance select {
   appearance: none;

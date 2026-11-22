@@ -4,13 +4,32 @@ import type { WorkbenchStatus } from './contracts';
 import { speedNumber } from './speeds';
 import { formatGB } from '../jobs/contracts';
 
-const props = defineProps<{ status?: WorkbenchStatus; unavailable?: boolean }>();
+const props = defineProps<{
+  status?: WorkbenchStatus;
+  receivedAt?: number;
+}>();
+const FRESH_SECONDS = 30;
+const DISPLAY_STALE_SECONDS = 90;
 const now = ref(Date.now() / 1000);
 const receivedAt = ref(0);
+const lastOutput = ref<number | null>(null);
+const lastSessionStartedAt = ref('');
 watch(
   () => props.status,
   (value) => {
     receivedAt.value = value ? Date.now() / 1000 : 0;
+    if (!value) {
+      lastOutput.value = null;
+      lastSessionStartedAt.value = '';
+      return;
+    }
+    const sessionStartedAt = value.session?.started_at || '';
+    if (sessionStartedAt !== lastSessionStartedAt.value) {
+      lastSessionStartedAt.value = sessionStartedAt;
+      lastOutput.value = null;
+    }
+    if (value.session?.output_mbps != null && Number.isFinite(value.session.output_mbps))
+      lastOutput.value = value.session.output_mbps;
   },
   { immediate: true },
 );
@@ -21,27 +40,32 @@ onUnmounted(() => clearInterval(timer));
 const transfer = computed(
   () => props.status?.transfer_summary || { time: 0, transferring: 0, measured: 0, speed: 0 },
 );
+const snapshotAt = computed(() => props.receivedAt || receivedAt.value);
 const fresh = computed(
-  () =>
-    !props.unavailable &&
-    !!props.status?.online &&
-    now.value - receivedAt.value <= 15 &&
-    now.value - transfer.value.time <= 15,
+  () => !!props.status?.online && now.value - snapshotAt.value <= FRESH_SECONDS,
+);
+const displayFresh = computed(
+  () => !!props.status?.online && now.value - snapshotAt.value <= DISPLAY_STALE_SECONDS,
 );
 const total = computed(() =>
-  fresh.value && (!transfer.value.transferring || transfer.value.measured)
-    ? transfer.value.speed
+  displayFresh.value
+    ? transfer.value.transferring && !transfer.value.measured
+      ? 0
+      : transfer.value.speed
     : null,
 );
 const session = computed(() => props.status?.session);
-const output = computed(() => (fresh.value ? session.value?.output_mbps : null));
+const output = computed(() => {
+  if (!displayFresh.value || !session.value) return null;
+  return session.value.output_mbps ?? lastOutput.value ?? 0;
+});
 const readState = computed(() =>
-  props.unavailable
-    ? '读取失败，等待更新'
-    : !props.status
-      ? '正在读取当前实例'
-      : !props.status.online
-        ? '实例离线'
+  !props.status
+    ? '正在读取当前实例'
+    : !props.status.online
+      ? '实例离线'
+      : displayFresh.value && !fresh.value
+        ? '数据稍旧，正在更新'
         : '采样过期，等待更新',
 );
 </script>
@@ -52,6 +76,7 @@ const readState = computed(() =>
       <div class="speed-metric-heading">
         <h2 id="total-download-speed-label">实时总下载速度</h2>
         <span v-if="fresh" class="speed-indicator">{{ transfer.transferring }} 个传输任务</span>
+        <span v-else-if="displayFresh" class="speed-indicator muted">数据稍旧</span>
         <span v-else class="speed-indicator muted">待更新</span>
       </div>
       <div class="speed-reading">
@@ -61,7 +86,8 @@ const readState = computed(() =>
         <span>MB/s</span>
         <small>{{ speedNumber(total == null ? null : (total * 8) / 1e6) }} Mbps</small>
       </div>
-      <p v-if="!fresh">{{ readState }}</p>
+      <p v-if="!displayFresh">{{ readState }}</p>
+      <p v-else-if="!fresh">{{ readState }}</p>
       <p v-else-if="transfer.transferring && transfer.measured < transfer.transferring">
         当前实例 · {{ transfer.measured }} / {{ transfer.transferring }} 个任务有新鲜速度采样{{
           transfer.measured ? '，显示已取得的合计' : ''
@@ -81,11 +107,12 @@ const readState = computed(() =>
         <span>MB/s</span>
         <small>{{ speedNumber(output) }} Mbps</small>
       </div>
-      <p v-if="!fresh">{{ readState }}</p>
+      <p v-if="!displayFresh">{{ readState }}</p>
+      <p v-else-if="!fresh">{{ readState }}</p>
       <p v-else-if="!session">暂无当前会话，启动下载后统计</p>
       <p v-else-if="output == null">会话刚开始，等待有效统计时长</p>
       <p v-else>完成文件量 ÷ 本会话时长 · 含测试产出</p>
-      <small v-if="fresh && session" class="speed-session-total"
+      <small v-if="displayFresh && session" class="speed-session-total"
         >本会话已产出 {{ formatGB(session.downloaded_file_bytes_exact) }}</small
       >
     </article>

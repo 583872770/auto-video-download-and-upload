@@ -74,9 +74,9 @@ describe('shared header execution state', () => {
     expect(store.enabled).toBe(false);
     expect(store.canStart).toBe(true);
     expect(request.mock.calls.every(([, options]) => options?.method !== 'POST')).toBe(true);
-    store.now = time + 16;
+    store.now = time + 31;
     expect(store.canStart).toBe(false);
-    expect(store.download).toBeNull();
+    expect(store.download).toBe(38.6);
     request.mockResolvedValue(snapshot({ online: false }));
     await store.refresh();
     expect(store.canPause).toBe(false);
@@ -139,11 +139,38 @@ describe('shared header execution state', () => {
     await store.refresh();
     expect(store.cooling).toBe(1);
     store.now = time + 21;
-    expect(store.cooling).toBeNull();
+    expect(store.cooling).toBe(1);
     request.mockRejectedValueOnce(new Error('读取超时'));
     await store.refresh();
-    expect(store.label).toBe('读取失败');
-    expect(store.download).toBeNull();
+    expect(store.label).toBe('已启动');
+    expect(store.download).toBe(38.6);
+    expect(store.output).toBe(2.4);
     expect(store.canPause).toBe(false);
+    store.now = time + 91;
+    expect(store.label).toBe('待更新');
+    expect(store.download).toBeNull();
+    expect(store.output).toBeNull();
+    expect(store.cooling).toBeNull();
+  });
+
+  it('shows zero while a transfer has no measured sample yet', async () => {
+    request.mockResolvedValueOnce(
+      snapshot({ transfer_summary: { time, transferring: 2, measured: 0, speed: 0 } }),
+    );
+    const store = useHeaderStatus();
+    await store.refresh();
+    expect(store.download).toBe(0);
+  });
+
+  it('uses the successful response receipt for freshness', async () => {
+    request.mockResolvedValueOnce(
+      snapshot({
+        transfer_summary: { time: time - 120, transferring: 1, measured: 1, speed: 38600000 },
+      }),
+    );
+    const store = useHeaderStatus();
+    await store.refresh();
+    expect(store.fresh).toBe(true);
+    expect(store.download).toBe(38.6);
   });
 });

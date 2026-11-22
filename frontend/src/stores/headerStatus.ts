@@ -11,6 +11,11 @@ export interface HeaderStatus extends Omit<WorkbenchStatus, 'active_tasks'> {
   account_summary: { sample_time: number | null; accounts: RuntimeAccount[] };
 }
 
+// Idle polling is 15 seconds. Keep the control window wider than one poll
+// cycle so normal request latency does not look like an outage.
+const CONTROL_FRESH_SECONDS = 30;
+const DISPLAY_STALE_SECONDS = 90;
+
 export const useHeaderStatus = defineStore('headerStatus', () => {
   const instances = useInstances();
   const data = shallowRef<HeaderStatus>();
@@ -30,8 +35,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       !!data.value &&
       !error.value &&
       !!data.value.online &&
-      now.value - receivedAt.value <= 15 &&
-      now.value - data.value.transfer_summary.time <= 15,
+      now.value - receivedAt.value <= CONTROL_FRESH_SECONDS,
+  );
+  // Display freshness deliberately ignores a single failed poll. Controls still
+  // use `fresh`, while readings can keep the last known snapshot visible briefly.
+  const displayFresh = computed(
+    () =>
+      !!data.value && !!data.value.online && now.value - receivedAt.value <= DISPLAY_STALE_SECONDS,
   );
   const chosen = computed(() => (data.value?.job?.id === selection.value ? data.value.job : null));
   const enabled = computed(
@@ -68,27 +78,26 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   );
   const download = computed(() => {
     const sample = data.value?.transfer_summary;
-    if (!fresh.value || !sample || (sample.transferring && !sample.measured)) return null;
+    if (!displayFresh.value || !sample) return null;
+    if (sample.transferring && !sample.measured) return 0;
     return sample.speed / 1e6;
   });
   const output = computed(() =>
-    fresh.value && data.value?.session?.output_mbps != null
-      ? data.value.session.output_mbps / 8
-      : null,
+    displayFresh.value && data.value?.session ? (data.value.session.output_mbps ?? 0) / 8 : null,
   );
   const cooling = computed(() => {
     const sample = data.value?.account_summary;
     if (
-      !fresh.value ||
+      !displayFresh.value ||
       !sample ||
       (sample.accounts.length &&
         (!sample.sample_time ||
-          now.value - sample.sample_time >= 20 ||
+          now.value - sample.sample_time >= DISPLAY_STALE_SECONDS ||
           sample.accounts.some((a) => !a.known)))
     )
       return null;
     const context = {
-      fresh: true,
+      fresh: displayFresh.value,
       now: now.value,
       pending: data.value?.queued || 0,
       paused: data.value?.paused || false,
@@ -98,13 +107,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   });
   const label = computed(() => {
     if (busy.value) return '处理中';
-    if (error.value) return '读取失败';
     if (!data.value) return '读取中';
     if (!data.value.online) return '实例离线';
-    if (!fresh.value) return '待更新';
     if (data.value.stop_requested && data.value.running) return '停止中';
     if (data.value.paused) return data.value.running ? '收尾中' : '已暂停';
-    return enabled.value ? '已启动' : '待启动';
+    if (!fresh.value && !displayFresh.value) return '待更新';
+    if (enabled.value) return '已启动';
+    return '待启动';
   });
   function clear() {
     revision++;
@@ -121,8 +130,8 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     error.value = '';
     receivedAt.value = now.value = Date.now() / 1000;
   }
-  async function refresh(signal?: AbortSignal, poll = false) {
-    if (busy.value || (bootstrap().fleetEnabled && !instances.selectedId)) return;
+  async function refresh(signal?: AbortSignal, poll = false): Promise<boolean | undefined> {
+    if (busy.value || (bootstrap().fleetEnabled && !instances.selectedId)) return undefined;
     controller?.abort();
     const current = new AbortController(),
       ticket = ++revision,
@@ -142,7 +151,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
         signal: current.signal,
         timeoutMs: 30000,
       });
-      if (ticket !== revision || current.signal.aborted || !scope.isCurrent()) return;
+      if (ticket !== revision || current.signal.aborted || !scope.isCurrent()) return undefined;
       const changed = lastSelected !== undefined && result.selected_job_id !== lastSelected;
       lastSelected = result.selected_job_id;
       adopt(result);
@@ -157,9 +166,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
         selection.value = '';
         message.value = '所选任务已删除，请重新选择。';
       }
+      return true;
     } catch (failure) {
-      if (ticket === revision && !current.signal.aborted && scope.isCurrent())
+      if (ticket === revision && !current.signal.aborted && scope.isCurrent()) {
         error.value = failure instanceof Error ? failure.message : String(failure);
+        return false;
+      }
+      return undefined;
     } finally {
       signal?.removeEventListener('abort', abort);
       if (ticket === revision) loading.value = false;
@@ -230,6 +243,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     message,
     now,
     fresh,
+    displayFresh,
     chosen,
     enabled,
     canStart,

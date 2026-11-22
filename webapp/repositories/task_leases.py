@@ -486,13 +486,30 @@ class TaskLeases:
             return len(rows)
 
     def worker_status(self, worker_id, slot, state, task_id=None, message=''):
+        values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state,
+                      task_id=task_id, message=message)
+        if self.fleet:
+            values['slot'] = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':' + str(slot)
+            values['instance_id'] = self.fleet.id
+        if self.progress_cache.publish_worker(values):
+            return
+        # Redis is the live path. Keep the SQL fallback for local development
+        # and an outage so the dashboard remains useful without stopping work.
         with self.connect() as db:
-            if self.fleet:
-                slot = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':' + str(slot)
-            values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state, task_id=task_id, message=message)
-            db.execute(self.db.upsert(workers, values, ['id']))
+            db.execute(self.db.upsert(workers, {key: values[key] for key in
+                ('id', 'slot', 'pid', 'heartbeat', 'state', 'task_id', 'message')}, ['id']))
 
     def workers(self):
+        live = self.progress_cache.read_workers()
+        if live is not None:
+            result = live
+            if self.fleet and self.fleet.can_download:
+                prefix = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':'
+                result = [row for row in result if str(row.get('slot', '')).startswith(prefix)]
+            latest = {}
+            for row in sorted(result, key=lambda item: item.get('heartbeat', 0), reverse=True):
+                latest.setdefault(row.get('slot'), row)
+            return list(latest.values())[:500]
         with self.connect() as db:
             latest = {}
             statement = select(workers).where(workers.c.heartbeat > time.time() - 90)

@@ -35,6 +35,33 @@ class MemoryRedis:
             raise OSError('cache unavailable')
         return sum(self.data.pop(key, None) is not None for key in keys)
 
+    def mget(self, keys):
+        if self.failed:
+            raise OSError('cache unavailable')
+        return [self.data.get(key) for key in keys]
+
+    def sadd(self, key, *values):
+        if self.failed:
+            raise OSError('cache unavailable')
+        current = self.data.setdefault(key, set())
+        before = len(current)
+        current.update(values)
+        return len(current) - before
+
+    def smembers(self, key):
+        if self.failed:
+            raise OSError('cache unavailable')
+        return set(self.data.get(key, set()))
+
+    def srem(self, key, *values):
+        if self.failed:
+            raise OSError('cache unavailable')
+        current = self.data.get(key, set())
+        removed = len(current.intersection(values)) if isinstance(current, set) else 0
+        if isinstance(current, set):
+            current.difference_update(values)
+        return removed
+
 
 class RemoteRedisTimeoutTests(unittest.TestCase):
     def test_remote_timeout_reaches_the_real_client_configuration(self):
@@ -146,3 +173,15 @@ class ProgressCacheTests(unittest.TestCase):
         key = self.store.progress_cache.prefix + self.task['id']
         self.redis.data[key] = 'broken JSON'
         self.assertEqual(self.store.get(self.task['id'])['progress']['downloaded_bytes'], 10)
+
+    def test_worker_and_instance_telemetry_use_the_live_cache(self):
+        cache = self.store.progress_cache
+        self.assertTrue(cache.publish_worker(dict(id='worker-1', slot='slot-1', state='running',
+                                                   heartbeat=time.time(), task_id=self.task['id'])))
+        workers = cache.read_workers()
+        self.assertEqual(workers[0]['id'], 'worker-1')
+        self.assertEqual(workers[0]['state'], 'running')
+        self.assertTrue(cache.publish_instance('instance-1', time.time(), {'workers': 4}, ''))
+        instances = cache.read_instances(['instance-1', 'missing'])
+        self.assertEqual(instances['instance-1']['throughput']['workers'], 4)
+        self.assertNotIn('missing', instances)

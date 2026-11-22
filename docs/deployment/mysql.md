@@ -31,6 +31,17 @@ REDIS_URL='redis://:经过URL编码的密码@你的Redis地址:6379/0'
 数据库要求 MySQL 8.4+，需预先创建库并给应用账号授予下节中的权限；表和索引会在应用启动时自动创建；已有结构不一致时拒绝启动，详见[当前数据合同](../development/current-schema.md)。
 数据库需允许应用服务器的出口 IP 连接（MySQL 账号来源限制、云数据库白名单和防火墙端口均需匹配）。
 
+### 给现有数据库补充中文注释
+
+当前代码会为新建 MySQL 表和字段写入中文注释。已有数据库可在应用代码更新后执行一次注释脚本；脚本只执行 `ALTER ... COMMENT`，不删除数据、不改变字段类型、默认值、约束或索引：
+
+```bash
+python scripts/apply_schema_comments.py --dry-run  # 先查看将执行的 DDL
+python scripts/apply_schema_comments.py             # 写入表注释和字段注释
+```
+
+脚本使用当前进程中的 `VIDEO_DATABASE_URL` 或 `MYSQL_*` 环境变量连接数据库。执行完成后，在 DataGrip 刷新数据库对象即可看到表说明和字段说明。
+
 ```bash
 docker compose -f compose.remote.yaml config --quiet
 docker compose -f compose.remote.yaml up -d --build

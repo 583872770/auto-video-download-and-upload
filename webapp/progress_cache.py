@@ -17,6 +17,8 @@ class ProgressCache:
         if not 0 < self.socket_timeout <= 5:
             raise ValueError('VIDEO_REDIS_SOCKET_TIMEOUT must be greater than 0 and at most 5 seconds')
         self.prefix = 'frameflow:progress:v1:' + hashlib.sha256(database_url.encode()).hexdigest()[:24] + ':'
+        self.live_prefix = 'frameflow:live:v1:' + hashlib.sha256(database_url.encode()).hexdigest()[:24] + ':'
+        self.worker_index = self.live_prefix + 'workers'
         self.retry_at = 0
         self.counts = Counter()
         self.lock = threading.Lock()
@@ -68,6 +70,81 @@ class ProgressCache:
         if len(value.encode('utf-8')) > 65536:
             return False
         return bool(self._call('set', self.prefix + row['id'], value, ex=120))
+
+    def publish_worker(self, row, ttl=30):
+        """Publish an ephemeral worker status; Redis is the live authority."""
+        if not self.enabled or not row.get('id'):
+            return False
+        value = json.dumps({**dict(row), 'updated_at': time.time()}, ensure_ascii=False)
+        key = self.live_prefix + 'worker:' + str(row['id'])
+        if self._call('set', key, value, ex=ttl) is None:
+            return False
+        # The index is part of the live record contract.  If it cannot be
+        # updated, report failure so callers can use their explicit fallback
+        # instead of publishing a worker that the dashboard cannot discover.
+        return self._call('sadd', self.worker_index, str(row['id'])) is not None
+
+    def read_workers(self):
+        """Return live workers, or None when Redis cannot be used."""
+        if not self.enabled:
+            return None
+        identities = self._call('smembers', self.worker_index)
+        if identities is None:
+            return None
+        identities = [item.decode() if isinstance(item, bytes) else str(item) for item in identities]
+        if not identities:
+            return []
+        values = self._call('mget', [self.live_prefix + 'worker:' + identity for identity in identities])
+        if values is None:
+            return None
+        result, stale = [], []
+        for identity, raw in zip(identities, values):
+            if raw is None:
+                stale.append(identity)
+                continue
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                stale.append(identity)
+                continue
+            if isinstance(value, dict) and value.get('id') == identity:
+                result.append(value)
+            else:
+                stale.append(identity)
+        if stale:
+            self._call('srem', self.worker_index, *stale)
+        return result
+
+    def publish_instance(self, identity, heartbeat, throughput=None, error=''):
+        """Publish live instance telemetry without rewriting instance config."""
+        if not self.enabled or not identity:
+            return False
+        value = json.dumps({'id': identity, 'heartbeat': heartbeat,
+                            'throughput': throughput or {}, 'error': error or '',
+                            'updated_at': time.time()}, ensure_ascii=False)
+        return bool(self._call('set', self.live_prefix + 'instance:' + str(identity), value, ex=60))
+
+    def read_instances(self, identities):
+        """Read live telemetry for known instance IDs; None means Redis failed."""
+        if not self.enabled:
+            return None
+        identities = [str(identity) for identity in identities if identity]
+        if not identities:
+            return {}
+        values = self._call('mget', [self.live_prefix + 'instance:' + identity for identity in identities])
+        if values is None:
+            return None
+        result = {}
+        for identity, raw in zip(identities, values):
+            if raw is None:
+                continue
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                result[identity] = value
+        return result
 
     def discard(self, identities):
         for start in range(0, len(identities), 100):

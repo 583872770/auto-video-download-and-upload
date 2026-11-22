@@ -129,7 +129,9 @@ class Workbench:
             running = db.execute(select(func.count()).select_from(tasks).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
                 tasks.c.status == 'running')).scalar_one()
-            online = row['heartbeat'] > self.store.fleet.clock(db) - ONLINE_SECONDS
+            telemetry = (self.store.progress_cache.read_instances([identity]) or {}).get(identity, {})
+            heartbeat = telemetry.get('heartbeat', row['heartbeat'])
+            online = heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS
             paused = bool(row['paused'])
             enabled = not paused and not row['stop_requested']
             from webapp.disk_budget import resource_blocked
@@ -140,7 +142,7 @@ class Workbench:
             config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
             from webapp.database import delivery_work
             local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
-            accounts = account_summary(db, config, local.get('throughput'), identity,
+            accounts = account_summary(db, config, telemetry.get('throughput') or local.get('throughput'), identity,
                                        [task for task in active if task['id'] not in local_ids],
                                        online=online, paused=paused)
         if not compact:

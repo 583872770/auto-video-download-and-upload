@@ -12,6 +12,7 @@ from sqlalchemy.dialects.mysql import DOUBLE, LONGTEXT, insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import SQLAlchemyError
+from webapp.schema_comments import apply_schema_comments
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -355,6 +356,11 @@ test_observation_events = Table('test_observation_events', metadata,
     Column('reason', String(64), nullable=False), Column('message', Text, nullable=False))
 Index('ix_test_events_job_time', test_observation_events.c.job_id, test_observation_events.c.created)
 Index('ix_test_events_instance_time', test_observation_events.c.instance_id, test_observation_events.c.created)
+
+# Keep schema documentation beside the schema declarations.  SQLAlchemy uses
+# these comments for new MySQL databases; the comment migration applies them
+# to an existing database without changing data or indexes.
+apply_schema_comments(metadata)
 
 for table in metadata.tables.values():
     # YouTube IDs and file paths are case sensitive. InnoDB supplies row locks;

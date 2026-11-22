@@ -87,24 +87,24 @@ onMounted(() => window.addEventListener('focus', refreshJobChoices));
 onUnmounted(() => window.removeEventListener('focus', refreshJobChoices));
 let refreshTicket = 0;
 let lastStarted: string | null | undefined;
-async function refresh(signal?: AbortSignal) {
-  if (!ready.value || busy.value) return;
+async function refresh(signal?: AbortSignal, poll = false): Promise<boolean | undefined> {
+  if (!ready.value || busy.value) return undefined;
   const scope = instances.scope(),
     selected = selection.value;
   const ticket = ++refreshTicket;
-  await workbench.load(
-    async (signal) => {
-      const value = await api.request<WorkbenchStatus>(
-        '/api/jobs/workbench' + (selected ? '?job_id=' + encodeURIComponent(selected) : ''),
-        { scope, signal },
-      );
-      // The top status bar is mounted on every page. Reuse this full snapshot
-      // while the workbench is open instead of issuing a second compact poll.
-      if (scope.isCurrent()) headerStatus.adopt(value);
-      return value;
-    },
-    signal,
-  );
+  let received: WorkbenchStatus | undefined;
+  const loaded = await workbench.load(async (signal) => {
+    const params = new URLSearchParams();
+    if (selected) params.set('job_id', selected);
+    if (poll) params.set('poll', '1');
+    const value = await api.request<WorkbenchStatus>(
+      '/api/jobs/workbench' + (params.size ? '?' + params : ''),
+      { scope, signal, timeoutMs: poll ? 12000 : 30000 },
+    );
+    received = value;
+    return value;
+  }, signal);
+  if (loaded !== true) return loaded;
   if (
     ticket !== refreshTicket ||
     !scope.isCurrent() ||
@@ -112,7 +112,10 @@ async function refresh(signal?: AbortSignal) {
     workbench.error.value ||
     !queue.value
   )
-    return;
+    return undefined;
+  // Adopt only the response that won the resource race. An older request
+  // must never overwrite the shared top-bar snapshot.
+  if (received && scope.isCurrent()) headerStatus.adopt(received);
   const previousStarted = lastStarted;
   lastStarted = queue.value.selected_job_id;
   if (selected && !job.value) {
@@ -120,7 +123,7 @@ async function refresh(signal?: AbortSignal) {
     message.value = '所选任务已删除或不存在，请重新选择任务。';
     void clearPreviewLink();
     await loadJobs();
-    return;
+    return true;
   }
   if (
     (!selected ||
@@ -128,11 +131,15 @@ async function refresh(signal?: AbortSignal) {
     queue.value.selected_job_id
   )
     selection.value = queue.value.selected_job_id;
+  return true;
 }
-async function refreshCapacity(signal?: AbortSignal) {
-  if (!ready.value || busy.value) return;
+async function refreshCapacity(signal?: AbortSignal, poll = false): Promise<boolean | undefined> {
+  if (!ready.value || busy.value) return undefined;
   const scope = instances.scope();
-  await status.load((signal) => api.request('/api/status', { scope, signal }), signal);
+  return status.load(
+    (signal) => api.request('/api/status', { scope, signal, timeoutMs: poll ? 12000 : 30000 }),
+    signal,
+  );
 }
 async function instanceChanged() {
   workbench.clear();
@@ -216,7 +223,7 @@ async function control(action: 'start' | 'pause' | 'stop') {
 }
 usePolling(
   computed(() => ready.value && !busy.value),
-  refresh,
+  (signal) => refresh(signal, true),
   computed(() => {
     if (!queue.value?.online || queue.value.paused) return 30000;
     return queue.value.running ? 5000 : 15000;
@@ -224,8 +231,8 @@ usePolling(
 );
 usePolling(
   computed(() => ready.value && !busy.value),
-  refreshCapacity,
-  computed(() => (queue.value?.running ? 10000 : 30000)),
+  (signal) => refreshCapacity(signal, true),
+  computed(() => (queue.value?.running ? 10000 : 20000)),
 );
 </script>
 <template>
@@ -239,7 +246,7 @@ usePolling(
     </div>
     <InstancePicker :disabled="busy" purpose="operate" @change="instanceChanged" />
     <SystemNotice />
-    <WorkbenchSpeeds :status="queue" :unavailable="!!workbench.error.value" />
+    <WorkbenchSpeeds :status="queue" :received-at="workbench.lastSuccessAt.value" />
     <p v-if="failure" class="form-error" role="alert">{{ failure }}</p>
     <p v-if="message" class="notice" role="status">{{ message }}</p>
     <section class="card download-console">
@@ -420,7 +427,7 @@ usePolling(
       v-if="status.data.value"
       :key="instances.epoch"
       :status="status.data.value"
-      :unavailable="!!status.error.value"
+      :received-at="status.lastSuccessAt.value"
     />
     <section class="card">
       <div class="section-heading">

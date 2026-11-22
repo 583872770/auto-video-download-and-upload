@@ -67,13 +67,16 @@ class AccountLibrary:
             instances.c.heartbeat, instances.c.config)).mappings().all()
         result = {}
         stamp = time.time()
+        telemetry = self.store.progress_cache.read_instances([row['id'] for row in rows]) or {}
         for row in rows:
             if row['role'] != 'hybrid':
                 continue
             local = json.loads(row['config'])
+            live = telemetry.get(row['id'], {})
             result[row['id']] = {'id': row['id'], 'name': row['name'],
-                'online': row['heartbeat'] > stamp - 45, 'config': local.get('config', {}),
-                'throughput': local.get('throughput') or {}}
+                'online': live.get('heartbeat', row['heartbeat']) > stamp - 45,
+                'config': local.get('config', {}),
+                'throughput': live.get('throughput') or local.get('throughput') or {}}
         if not self.store.fleet:
             result[self.local_id] = {'id': self.local_id, 'name': '本机实例', 'online': True,
                 'config': self.local_config, 'throughput': {}}

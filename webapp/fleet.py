@@ -16,6 +16,7 @@ from webapp.service_role import normalize_role
 
 ONLINE_SECONDS = 45
 DOWNLOAD_ROLES = ('hybrid',)
+DB_HEARTBEAT_SECONDS = 15
 
 
 class InstanceIdentityConflict(ValueError):
@@ -53,6 +54,7 @@ class Fleet:
                 raise ValueError('VIDEO_INSTANCE_URL 请填写管理端可访问的实例 HTTP(S) 地址，不带路径或账号。')
         self.name = name or os.environ.get('VIDEO_INSTANCE_NAME') or socket.gethostname()
         self.local = None
+        self._last_db_beat = 0.0
         store.fleet = self
 
     @property
@@ -188,17 +190,23 @@ class Fleet:
         return (int(budget) == 0 or global_count < int(budget)) and local_count < limit
 
     def beat(self, error=None, throughput=None):
+        live = self.store.progress_cache.publish_instance(self.id, time.time(), throughput, error or '')
+        if live and error is None and time.monotonic() - self._last_db_beat < DB_HEARTBEAT_SECONDS:
+            return True
         with self.store.connect() as db:
             values = {'heartbeat': self.clock(db)}
             if error is not None:
                 values['error'] = str(error)[:500]
-            if throughput is not None:
+            if throughput is not None and not live:
                 local = json.loads(db.execute(select(instances.c.config).where(
                     instances.c.id == self.id).with_for_update()).scalar_one())
                 local['throughput'] = throughput
                 values['config'] = json.dumps(local, ensure_ascii=False)
-            return db.execute(instances.update().where(instances.c.id == self.id, instances.c.boot_id == self.boot_id)
-                              .values(**values)).rowcount > 0
+            updated = db.execute(instances.update().where(instances.c.id == self.id, instances.c.boot_id == self.boot_id)
+                                 .values(**values)).rowcount > 0
+            if updated:
+                self._last_db_beat = time.monotonic()
+            return updated
 
     def should_stop(self):
         row = self.row()
@@ -224,6 +232,7 @@ class Fleet:
             from webapp.database import delivery_work
             network_task = ~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists()
             rows = db.execute(select(instances).order_by(instances.c.name, instances.c.id)).mappings().all()
+            live_instances = self.store.progress_cache.read_instances([row['id'] for row in rows]) or {}
             running = db.execute(select(tasks.c.instance_id, func.count()).where(tasks.c.status == 'running',
                 tasks.c.action == 'download', network_task).group_by(tasks.c.instance_id)).all()
             counts = dict(running)
@@ -260,19 +269,25 @@ class Fleet:
             for row in rows:
                 local = json.loads(row['config'])
                 config = {**local.get('config', {}), **self.resource_limits(row)}
+                telemetry = live_instances.get(row['id'], {})
+                heartbeat = telemetry.get('heartbeat', row['heartbeat'])
+                throughput = telemetry.get('throughput') or local.get('throughput')
+                error = telemetry.get('error') or row['error']
                 progress = by_instance.get(row['id'], [])
                 result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
                     'delivery_schema_version': local.get('delivery_schema_version', 0),
-                    'online': row['heartbeat'] > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
+                    'online': heartbeat > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading' and
                         (not p.get('_reported_at') or stamp-p['_reported_at'] <= 10) and
                         (not p.get('last_bytes_at') or stamp-p['last_bytes_at'] <= 10)),
-                    'throughput': local.get('throughput'),
+                    'throughput': throughput,
                     'directory': local.get('directory', ''),
                     'policy': {k: config[k] for k in POLICY_FIELDS if k in config},
                     'policy_version': local.get('policy_version', 1),
                     'min_free_gb': config.get('min_free_gb', 2), 'statistics': totals.get(row['id'], {})})
+                result[-1]['heartbeat'] = heartbeat
+                result[-1]['error'] = error
                 result[-1]['resources'] = {key: config.get(key, DEFAULTS[key]) for key in
                     ('download_task_limit', 'youtube_cookie_session_limit', 'youtube_cookie_pool_start_interval')}
                 result[-1]['cookie_count'] = len(config.get('youtube_cookie_pool', []))

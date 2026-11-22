@@ -1,0 +1,155 @@
+"""Human-readable MySQL table and column comments.
+
+Comments are part of the schema documentation.  They are attached to the
+SQLAlchemy metadata so newly-created databases get them automatically; the
+one-off comment migration applies the same metadata to an existing MySQL
+database.
+"""
+
+TABLE_COMMENTS = {
+    'tasks': '下载与后台操作任务主表',
+    'download_notifications': '下载故障通知聚合表',
+    'download_notification_tasks': '通知与任务关联表',
+    'task_snapshots': '任务共享配置快照表',
+    'task_counters': '任务状态计数表',
+    'rotation_counters': '账号轮换结果计数表',
+    'sequence_counters': '业务序号生成器',
+    'schema_settings': '全局运行设置表',
+    'youtube_cookie_profiles': 'YouTube Cookie 配置表',
+    'youtube_cookie_bindings': 'YouTube 账号与 Cookie 绑定表',
+    'youtube_accounts': 'YouTube 账号主数据表',
+    'youtube_account_owners': 'YouTube 账号实例归属表',
+    'youtube_account_cookies': '实例账号 Cookie 关联表',
+    'youtube_account_audit': '账号管理审计表',
+    'youtube_profile_auth': '账号登录验证状态表',
+    'download_runtime_hours': '下载运行小时统计表',
+    'youtube_cookie_events': 'Cookie 登录、冷却与节奏事件表',
+    'download_resources': '下载资源状态表（账号池、并发资源）',
+    'download_permits': '下载资源占用许可表',
+    'batches': '下载批次表',
+    'download_lists': '任务中心客户任务表',
+    'download_reservations': '视频去重预约表',
+    'download_archive': '下载归档记录表',
+    'job_profiles': '任务中心交付任务配置表',
+    'console_users': '后台控制台用户表',
+    'job_imports': '任务导入记录表',
+    'job_removed': '已移除任务恢复信息表',
+    'job_events': '客户任务操作事件表',
+    'workers': '实例工作进程心跳表',
+    'download_instances': '下载实例注册与运行状态表',
+    'imports': '批量导入作业表',
+    'media_catalog': '本地素材文件索引表',
+    'media_roots': '素材目录索引汇总表',
+    'download_sessions': '下载会话汇总表',
+    'download_session_tasks': '下载会话任务明细表',
+    'download_deliveries': '下载交付文件记录表',
+    'job_delivery_contracts': '任务交付合同版本表',
+    'delivery_runs': '视频交付执行记录表',
+    'delivery_requirements': '视频交付内容要求表',
+    'delivery_work': '本地交付处理工作表',
+    'delivery_artifacts': '素材库交付文件表',
+    'delivery_totals': '任务交付文件汇总表',
+    'download_test_files': '测试下载文件记录表',
+    'download_test_totals': '测试下载文件汇总表',
+    'test_sample_policies': '测试留样策略表',
+    'test_samples': '测试留样记录表',
+    'test_observation_hours': '测试观察小时统计表',
+    'test_observation_events': '测试观察事件表',
+}
+
+COMMON_COLUMN_COMMENTS = {
+    'id': '记录唯一标识', 'seq': '全局递增序号', 'key': '业务键', 'scope': '作用域',
+    'status': '当前状态', 'state': '当前状态或状态快照', 'action': '任务动作类型',
+    'created_at': '创建时间', 'updated_at': '最后更新时间', 'started_at': '开始时间',
+    'finished_at': '结束时间', 'occurred_at': '发生时间', 'created_epoch': '创建时间戳',
+    'first_seen': '首次发现时间', 'last_valid_at': '最近一次验证有效时间',
+    'ended_at': '结束时间', 'stop_requested_at': '请求停止时间', 'available_at': '可执行时间',
+    'expires': '过期时间', 'view_until': '可查看截止时间', 'indexed_at': '索引更新时间',
+    'last_indexed': '最近索引时间', 'heartbeat': '最近心跳时间', 'lease_until': '租约到期时间',
+    'retry_at': '下次重试时间', 'escalate_at': '升级提醒时间', 'cooldown_until': '冷却结束时间',
+    'job_id': '客户任务或批次标识', 'batch_id': '下载批次标识', 'task_id': '下载任务标识',
+    'session_id': '下载会话标识', 'instance_id': '实例标识', 'target_instance_id': '目标实例标识',
+    'account_id': '账号标识', 'profile_id': 'Cookie 配置标识', 'normalized_email': '标准化邮箱',
+    'video_id': '视频平台视频 ID', 'url': '视频地址', 'source_key': '来源去重键',
+    'title': '视频标题', 'name': '名称', 'label': '显示标签', 'note': '备注', 'message': '说明消息',
+    'detail': '详细信息', 'error': '错误信息', 'reason': '原因', 'kind': '内容或记录类型',
+    'variant': '内容变体', 'language': '语言代码', 'phase': '执行阶段', 'event': '事件类型',
+    'event_type': '事件类型', 'action_count': '动作数量', 'active_count': '活跃数量',
+    'count': '数量', 'value': '数值或配置值', 'size': '文件大小（字节）', 'file_count': '文件数量',
+    'file_bytes': '文件总大小（字节）', 'bytes': '字节数', 'elapsed_seconds': '耗时（秒）',
+    'attempts': '已尝试次数', 'max_attempts': '最大尝试次数', 'revision': '配置版本号',
+    'version': '版本号', 'edit_version': '编辑版本号', 'policy_version': '执行策略版本',
+    'deleted': '是否已删除', 'archived': '是否已归档', 'enabled': '是否启用', 'released': '是否已交付',
+    'paused': '是否暂停', 'stop_requested': '是否请求停止', 'test_mode': '是否为测试模式',
+    'available': '文件是否可用', 'playable': '文件是否可播放', 'prepared': '文件是否已准备完成',
+    'requested': '是否请求处理', 'scanned': '是否已扫描', 'skipped': '跳过数量',
+    'path': '本地文件路径', 'root': '素材根目录', 'workspace': '临时工作目录', 'disk_lease': '磁盘租约标识',
+    'object_key': '对象存储键', 'storage': '存储方式', 'config': '实例配置 JSON', 'limits': '资源限制 JSON',
+    'payload': '任务输入 JSON', 'result': '任务结果 JSON', 'progress': '任务进度 JSON', 'spec': '交付配置 JSON',
+    'plan': '本地处理计划 JSON', 'files': '文件清单 JSON', 'metadata': '附加元数据 JSON',
+    'content': '配置内容', 'auth': '认证状态数据', 'context': '认证上下文', 'fingerprint': '认证指纹',
+    'secrets_ciphertext': '加密账号信息', 'password_hash': '密码哈希', 'token': '访问或占用令牌',
+    'owner': '占用者标识', 'worker_id': '工作进程标识', 'pid': '进程号', 'slot': '工作槽位',
+    'host': '主机名', 'url': '地址', 'role': '实例或用户角色', 'username': '登录用户名',
+    'email': '账号邮箱', 'actor': '操作人', 'code': '业务代码', 'http_status': 'HTTP 状态码',
+    'retry_after': '建议等待秒数', 'previous_interval': '变更前间隔秒数', 'new_interval': '变更后间隔秒数',
+    'previous_state': '变更前状态', 'new_state': '变更后状态', 'subtitle_source': '字幕来源',
+    'artifact_id': '交付文件标识', 'waived_by': '豁免操作人', 'waived_reason': '豁免原因',
+    'tracking_since': '统计开始时间', 'price': '任务价格', 'unit': '计价单位', 'customer': '客户名称',
+    'offset': '导入文件偏移量', 'column_index': '导入列索引', 'processed': '已处理数量',
+    'added': '新增数量', 'duplicates': '重复数量', 'invalid': '无效数量', 'samples': '错误样例 JSON',
+    'finished': '是否已完成', 'logical_key': '素材逻辑键', 'search_title': '标准化搜索标题',
+    'modified': '文件修改时间', 'downloaded_at': '下载完成时间', 'cover': '封面图路径', 'scan_id': '扫描批次标识',
+    'outcome': '运行结果', 'file_count': '文件数量', 'test_file_count': '测试文件数量',
+    'test_file_bytes': '测试文件大小（字节）', 'test_succeeded': '测试成功数量', 'budget_mb': '预算（MB）',
+    'maximum': '最大留样数量', 'hours': '保留小时数', 'failure_hours': '失败留样小时数',
+    'review': '审核状态', 'reviewed_by': '审核人', 'reviewed_at': '审核时间', 'created': '创建时间',
+    'size': '大小（字节）', 'seconds': '时长（秒）',
+}
+
+# Ambiguous fields get a table-specific explanation where the common label is
+# too broad for an operator reading the schema in DataGrip.
+COLUMN_COMMENTS = {
+    'tasks': {'payload': '任务输入及执行配置 JSON', 'result': '任务最终结果 JSON', 'progress': '实时/最近持久化进度 JSON',
+              'logs_pruned': '是否已清理过期执行日志',
+              'action': '操作类型（download、import 等）', 'status': '队列状态', 'seq': '任务队列顺序号'},
+    'download_notifications': {'resolved_at': '通知恢复或关闭时间'},
+    'download_notification_tasks': {'group_id': '通知分组标识'},
+    'rotation_counters': {'succeeded': '轮换成功次数', 'failed': '轮换失败次数'},
+    'youtube_cookie_profiles': {'scope': 'Cookie 所属作用域', 'content': '加密 Cookie 内容', 'deleted': '软删除标记'},
+    'youtube_cookie_bindings': {'credential': '绑定凭据标识'},
+    'youtube_accounts': {'instance_id': '当前绑定实例标识', 'version': '账号资料版本', 'key_id': '账号密钥标识'},
+    'youtube_account_cookies': {'confirmed_by': '确认登录状态的操作人或检测来源'},
+    'download_runtime_hours': {'hour': '统计小时（Unix 时间戳）', 'task_count': '该小时任务数量'},
+    'youtube_cookie_events': {'profile_name': '事件发生时的账号配置名称', 'incident_id': '关联故障事件标识'},
+    'download_resources': {'key': '资源唯一键（账号或资源类别）', 'state': '资源并发、冷却与节奏 JSON'},
+    'download_permits': {'resource': '被占用的资源名称', 'units': '占用资源单位数'},
+    'download_lists': {'released': '是否已交付客户', 'tracking_since': '统计起始时间', 'skipped': '跳过文件数量'},
+    'job_profiles': {'price_set': '是否已设置任务价格'},
+    'job_removed': {'previous_status': '移除前的任务状态'},
+    'workers': {'state': '工作进程状态', 'task_id': '当前执行任务'},
+    'download_instances': {'config': '实例本地配置 JSON', 'limits': '实例资源覆盖限制 JSON', 'token': '实例管理令牌',
+                           'boot_id': '本次实例启动标识'},
+    'download_sessions': {'attempted': '已尝试任务数', 'running': '执行中任务数', 'succeeded': '成功任务数', 'failed': '失败任务数'},
+    'media_catalog': {'name': '文件名', 'root': '文件所属素材根目录', 'logical_key': '素材去重逻辑键',
+                      'downloaded_at': '文件实际下载完成时间', 'status': '索引状态'},
+    'delivery_work': {'source_attempts': '源文件处理尝试次数'},
+    'delivery_artifacts': {'kind': '交付内容类型（视频、音频、字幕、封面图等）', 'contract_version': '交付合同版本号',
+                           'language': '字幕语言代码；非字幕为空', 'path': '交付文件路径', 'available': '文件是否仍存在'},
+    'delivery_requirements': {'key': '交付要求键', 'kind': '要求的内容类型', 'status': '要求完成状态'},
+    'test_samples': {'files': '留样文件清单 JSON', 'review': '留样审核状态', 'view_until': '前端可查看截止时间'},
+    'test_observation_hours': {'hour': '统计小时时间戳', 'event': '观察事件类型'},
+}
+
+
+def apply_schema_comments(metadata):
+    """Attach comments to every declared table and column."""
+    missing_tables = set(metadata.tables) - set(TABLE_COMMENTS)
+    if missing_tables:
+        raise RuntimeError('缺少数据库表注释：' + ','.join(sorted(missing_tables)))
+    for table in metadata.tables.values():
+        table.comment = TABLE_COMMENTS[table.name]
+        overrides = COLUMN_COMMENTS.get(table.name, {})
+        for column in table.c:
+            column.comment = overrides.get(column.name, COMMON_COLUMN_COMMENTS.get(column.name,
+                '字段：' + column.name))

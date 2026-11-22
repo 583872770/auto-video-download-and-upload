@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, unref, watch, type Ref } from 'vue';
 /** One in-flight request per owner. Pause hidden pages and dispose on unmount. */
 export function usePolling(
   active: Ref<boolean>,
-  task: (signal: AbortSignal) => Promise<void>,
+  task: (signal: AbortSignal) => Promise<void | boolean>,
   interval: number | Ref<number> = 10000,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -16,8 +16,11 @@ export function usePolling(
     const current = new AbortController();
     controller = current;
     try {
-      await task(current.signal);
-      failures = 0;
+      // Resource-backed polls return false when the request failed. Older
+      // polling tasks return void and are still treated as successful.
+      const result = await task(current.signal);
+      if (result === false) failures++;
+      else failures = 0;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) failures++;
     } finally {
