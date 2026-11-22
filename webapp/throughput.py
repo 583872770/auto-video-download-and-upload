@@ -14,7 +14,7 @@ from webapp.config.schema import PIPELINE_KEY_FIELDS
 from webapp.db_pool_calculator import download_task_limit
 from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, pool_process_limits, fragment_limit
 from webapp.resource_pressure import (CPU_HIGH, CPU_RECOVER, IO_HIGH, WORKER_ADJUST_SECONDS,
-                                      WORKER_REDUCTION, memory_thresholds, pressure_state,
+                                      WORKER_RECOVERY_STEP, WORKER_REDUCTION, memory_thresholds, pressure_state,
                                       sample_io_pressure, worker_control)
 
 MIB = 1024 ** 2
@@ -237,7 +237,7 @@ class ThroughputController:
             elif (not pressure and cpu < CPU_RECOVER and io_pressure < IO_HIGH
                   and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS
                   and resources['memory_available'] >= memory_thresholds(resources['memory_total'])[1]):
-                workers = min(pool_limits['workers'], previous_workers + 1)
+                workers = min(pool_limits['workers'], previous_workers + WORKER_RECOVERY_STEP)
             if workers != self.state['workers']:
                 self.pool_adjusted = tick
         else:

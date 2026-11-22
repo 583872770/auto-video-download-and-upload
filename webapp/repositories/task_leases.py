@@ -6,7 +6,14 @@ import random
 import time
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
+
+
+# Redis carries the high-frequency workbench frame; SQL remains the durable
+# checkpoint used for recovery and audit.  Ten seconds is short enough for a
+# restart to recover a useful progress position while avoiding a commit for
+# every callback from every download worker.
+PROGRESS_SQL_CHECKPOINT_SECONDS = 10
 
 from webapp.database import reservations, rotations, settings, tasks, workers, delivery_work
 
@@ -245,32 +252,41 @@ class TaskLeases:
         values = {'progress': json.dumps(progress, ensure_ascii=False)}
         if progress.get('title'):
             values['title'] = str(progress['title']).casefold()
-        with self.connect() as db:
-            if self.fleet and worker_id:
-                if self.fleet.row(db)['boot_id'] != self.fleet.boot_id:
-                    return False
-                criteria.append(tasks.c.lease_until > self.fleet.clock(db))
-            checkpoint = None
-            if worker_id and self.progress_cache.enabled:
-                # MVCC ownership reads do not wait for task row write locks.
-                # Never let Redis authorize execution or bypass stop/lease checks.
-                row = db.execute(select(tasks.c.id, tasks.c.status, tasks.c.worker_id,
-                    tasks.c.started_at, tasks.c.attempts, tasks.c.lease_until).where(
-                        *criteria)).mappings().first()
-                if not row:
-                    return False
-                if self.progress_cache.publish(row, progress):
-                    checkpoint = (worker_id, row['started_at'], row['attempts'],
-                                  progress.get('stage'), progress.get('download_method'))
-                    previous = self._progress_checkpoints.get(task_id)
-                    if previous and previous[0] == checkpoint and time.monotonic() - previous[1] < 5:
-                        return True
-            updated = db.execute(tasks.update().where(*criteria).values(**values)).rowcount > 0
-            if updated and checkpoint:
-                if len(self._progress_checkpoints) >= 256:
-                    self._progress_checkpoints.clear()
-                self._progress_checkpoints[task_id] = (checkpoint, time.monotonic())
-            return updated
+        try:
+            with self.connect() as db:
+                if self.fleet and worker_id:
+                    if self.fleet.row(db)['boot_id'] != self.fleet.boot_id:
+                        return False
+                    criteria.append(tasks.c.lease_until > self.fleet.clock(db))
+                checkpoint = None
+                if worker_id and self.progress_cache.enabled:
+                    # MVCC ownership reads do not wait for task row write locks.
+                    # Never let Redis authorize execution or bypass stop/lease checks.
+                    row = db.execute(select(tasks.c.id, tasks.c.status, tasks.c.worker_id,
+                        tasks.c.started_at, tasks.c.attempts, tasks.c.lease_until).where(
+                            *criteria)).mappings().first()
+                    if not row:
+                        return False
+                    if self.progress_cache.publish(row, progress):
+                        checkpoint = (worker_id, row['started_at'], row['attempts'],
+                                      progress.get('stage'), progress.get('download_method'))
+                        previous = self._progress_checkpoints.get(task_id)
+                        if previous and previous[0] == checkpoint and time.monotonic() - previous[1] < PROGRESS_SQL_CHECKPOINT_SECONDS:
+                            return True
+                updated = db.execute(tasks.update().where(*criteria).values(**values)).rowcount > 0
+                if updated and checkpoint:
+                    if len(self._progress_checkpoints) >= 256:
+                        self._progress_checkpoints.clear()
+                    self._progress_checkpoints[task_id] = (checkpoint, time.monotonic())
+                return updated
+        except SQLAlchemyTimeoutError:
+            # A saturated connection pool must not turn a successful network
+            # transfer into a failed task merely because a telemetry frame
+            # could not be durably checkpointed.  LeaseHeartbeat remains the
+            # authority for ownership; the next progress frame retries SQL.
+            if worker_id:
+                return True
+            raise
 
     def finish(self, task_id, *, result=None, error=None, worker_id=None, retryable=False, retry_after=None):
         from webapp.db_retry import transaction_retry

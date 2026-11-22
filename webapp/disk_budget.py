@@ -197,6 +197,14 @@ class DiskBudget:
     def __init__(self, directory, config=None):
         self.directory = Path(directory).resolve()
         self.config = {**DISK_DEFAULTS, **(config or {})}
+        # Production downloads are staged beside their final media files.  The
+        # state volume and the media bind mount are separate Docker mounts;
+        # keeping the staging root on the media mount lets publication use an
+        # atomic rename instead of copying every large file across devices.
+        self.external_roots = []
+        media_root = self.config.get('_media_root')
+        if media_root:
+            self.external_roots.append((Path(media_root).resolve() / '.frameflow-tmp').resolve())
         self.runtime = safe_path(self.directory / 'runtime', self.directory)
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.database = safe_path(self.directory / 'disk-budget.sqlite3', self.directory)
@@ -204,6 +212,19 @@ class DiskBudget:
         with self.connect(write=False) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if {'leases', 'state', 'requirements'} <= tables:
+            with self.connect(write=False) as db:
+                saved = self._get(db, 'media_root')
+            configured = str(Path(media_root).resolve()) if media_root else None
+            if not self.external_roots and saved:
+                self.external_roots.append((Path(saved).resolve() / '.frameflow-tmp').resolve())
+            # Persist the active production media mount even when the budget
+            # database predates the same-filesystem staging change.  The
+            # maintenance process is constructed from runtime settings only;
+            # without this checkpoint it cannot rediscover external leases
+            # after a restart.
+            if configured and configured != saved:
+                with self.connect() as db:
+                    self._set(db, 'media_root', configured)
             return
         with self.connect() as db:
             for statement in '''
@@ -219,6 +240,18 @@ class DiskBudget:
             '''.split(';'):
                 if statement.strip():
                     db.execute(statement)
+            if media_root:
+                self._set(db, 'media_root', str(Path(media_root).resolve()))
+
+    def _safe(self, path):
+        """Validate a path against the state root or configured media root."""
+        roots = [self.directory, *self.external_roots]
+        for root in roots:
+            try:
+                return safe_path(path, root)
+            except ValueError:
+                continue
+        raise ValueError('临时文件路径超出受控目录。')
 
     def _configure_journal(self):
         # WAL keeps short read-only budget/progress checks from starving the
@@ -283,12 +316,14 @@ class DiskBudget:
                 'downloads': int(self.config['disk_budget_gb']) * GIB}
 
     def roots(self):
+        downloads = [self.runtime / 'downloads']
+        downloads.extend(self.external_roots)
         return {'test': [self.directory / 'test-downloads', self.directory / 'test-samples'],
                 'browsers': [self.runtime / 'browser-profiles'],
                 'logs': [self.directory / 'logs'],
                 'imports': [self.directory / 'imports', self.runtime / 'uploads'],
                 'cache': [self.runtime / 'cache'],
-                'downloads': [self.runtime / 'downloads']}
+                'downloads': downloads}
 
     def _get(self, db, key, default=None):
         row = db.execute('SELECT value FROM state WHERE key=?', (key,)).fetchone()
@@ -350,7 +385,22 @@ class DiskBudget:
         return usage, committed
 
     def _free(self):
-        return shutil.disk_usage(self.directory).free
+        free = shutil.disk_usage(self.directory).free
+        for root in self.external_roots:
+            # The media directory is created lazily.  Measure the nearest
+            # existing ancestor so first admission works on a fresh VPS and
+            # on Windows test volumes where ``videos/.frameflow-tmp`` does not
+            # exist yet.  All ancestors remain on the same filesystem.
+            candidate = root
+            while not candidate.exists() and candidate != candidate.parent:
+                candidate = candidate.parent
+            try:
+                free = min(free, shutil.disk_usage(candidate).free)
+            except OSError:
+                # A mount can disappear during maintenance; the state volume
+                # is still a valid conservative fallback for this sample.
+                continue
+        return free
 
     def _watermark(self, db, *, persist=True):
         free = self._free()
@@ -443,15 +493,16 @@ class DiskBudget:
             folder = {'test': 'test-downloads', 'browsers': 'runtime/browser-profiles',
                       'imports': 'runtime/uploads', 'cache': 'runtime/cache',
                       'downloads': 'runtime/downloads'}[category]
-            path = self.directory / folder / identity
-        return DiskLease(self, identity, category, safe_path(path, self.directory), task, reserve)
+            path = (self.external_roots[0] if category == 'downloads' and self.external_roots
+                    else self.directory / folder) / identity
+        return DiskLease(self, identity, category, self._safe(path), task, reserve)
 
     def adopt(self, identity, task, path):
         with self.connect(write=False) as db:
             row = db.execute('SELECT * FROM leases WHERE id=? AND task=?', (identity, task)).fetchone()
-        if not row or safe_path(row['path'], self.directory) != safe_path(path, self.directory):
+        if not row or self._safe(row['path']) != self._safe(path):
             raise DiskPressure('待处理文件的空间登记缺失，已停止本地处理，请检查临时目录。')
-        lease = DiskLease(self, identity, row['category'], safe_path(path, self.directory), task, 0)
+        lease = DiskLease(self, identity, row['category'], self._safe(path), task, 0)
         lease.processing = True
         return lease
 
@@ -599,7 +650,7 @@ class DiskBudget:
                 row = db.execute('SELECT * FROM leases WHERE id=?', (identity,)).fetchone()
             if not row or not row['reserved']:
                 return
-            measured = size_of(safe_path(row['path'], self.directory))
+            measured = size_of(self._safe(row['path']))
             with self.connect() as db:
                 cached = self._get(db, 'usage')
                 # Never reduce a sampled category here: overlapping paths and
@@ -638,7 +689,7 @@ class DiskBudget:
                     if any(alive(child) for child in children):
                         continue
                     try:
-                        path = safe_path(row['path'], self.directory)
+                        path = self._safe(row['path'])
                         task = store.get(row['task']) if row['task'] and store else None
                         if task and task['status'] == 'running':
                             continue
@@ -832,7 +883,7 @@ class DiskBudget:
             with file_lock(self.directory / 'disk-locks' / (row['id'] + '.lock')) as owned:
                 if not owned or any(alive(child) for child in json.loads(row['children'])):
                     continue
-                root = safe_path(row['path'], self.directory)
+                root = self._safe(row['path'])
                 self.release_retained(row['id'])
                 receipt_path = root / '.completed-files.json'
                 if not receipt_path.is_file():
@@ -1061,7 +1112,7 @@ class DiskLease:
                 self._retire(quiescent=quiescent)
             else:
                 if self.path.exists():
-                    safe_path(self.path, self.budget.directory)
+                    self.budget._safe(self.path)
                     shutil.rmtree(self.path)
                 with self.budget.connect() as db:
                     db.execute('DELETE FROM leases WHERE id=?', (self.id,))

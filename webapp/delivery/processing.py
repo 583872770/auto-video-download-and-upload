@@ -16,7 +16,7 @@ from webapp.downloads import DownloadProgress
 def enqueue(session, *, resume_network=False):
     # Persist only settings needed for local delivery, never Cookies or resolved
     # source URLs. The parent task retains its pinned contract/session snapshot.
-    keys = ('path', 'dir', 'storage_mode', 'shard_downloads', '_delivery_contract',
+    keys = ('path', 'dir', 'storage_mode', 'shard_downloads', '_media_root', '_delivery_contract',
             '_delivery_version', '_oss_namespace', '_task_storage')
     config = {key: session.config[key] for key in keys if key in session.config}
     config['_delivery_contract'] = {key: value for key, value in config['_delivery_contract'].items() if key != 'storage'}
@@ -214,7 +214,11 @@ def cleanup_completed(store, work):
             row = db.execute('SELECT * FROM leases WHERE id=?', (work['disk_lease'],)).fetchone()
         if not row or alive(json.loads(row['owner'])) or any(alive(c) for c in json.loads(row['children'])):
             return False
-        path = safe_path(row['path'], store.directory)
+        # Production leases live on the media bind mount so publication can
+        # rename without a cross-device copy.  Use the budget's scoped path
+        # validator here; the old state-root-only check rejected valid
+        # external workspaces during cleanup after a restart.
+        path = budget._safe(row['path'])
         if row['category'] == 'test':
             from webapp.delivery.samples import capture
             capture(store, budget, row, store.get(work['task_id']))

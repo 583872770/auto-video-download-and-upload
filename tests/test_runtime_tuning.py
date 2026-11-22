@@ -158,7 +158,7 @@ class WorkerBudgetTests(unittest.TestCase):
             self.assertEqual(held['workers'], reduced['workers'])
             tick[0] += 61
             recovered = controller.update(self.config, cookie_capacity={'known': True, 'capacity': 36})
-            self.assertEqual(recovered['workers'], reduced['workers'] + 1)
+            self.assertEqual(recovered['workers'], reduced['workers'] + 2)
 
 
 class FailureDetailTests(unittest.TestCase):

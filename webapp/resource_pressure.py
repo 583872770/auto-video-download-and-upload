@@ -9,8 +9,14 @@ CPU_HIGH = 90
 CPU_CRITICAL = 97
 CPU_RECOVER = 80
 PRESSURE_SAMPLES = 3
+# Keep resource protection responsive without repeatedly tearing down a large
+# portion of the pool.  A smaller step reduces throughput oscillation when the
+# host is close to its I/O ceiling; recovery adds two slots per stable window
+# so a short pressure event does not leave the pool under-utilised for many
+# minutes.
 WORKER_ADJUST_SECONDS = 60
-WORKER_REDUCTION = .8
+WORKER_REDUCTION = .9
+WORKER_RECOVERY_STEP = 2
 
 
 def _io_average(path):
@@ -94,6 +100,6 @@ def worker_control(workers, limits, resources, cpu, pressure, last_reduction, el
                 'memory_available_mb': round(resources['memory_available'] / MIB),
                 **{key: resources.get(key) for key in ('io_pressure', 'io_pressure_source', 'io_pressure_host')}},
             'recovery': {'eligible_at': eligible_at, 'blocked_by': blocked,
-                'interval_seconds': WORKER_ADJUST_SECONDS, 'step': 1,
+                'interval_seconds': WORKER_ADJUST_SECONDS, 'step': WORKER_RECOVERY_STEP,
                 'cpu_below': CPU_RECOVER, 'io_below': IO_HIGH,
                 'memory_at_least_mb': math.ceil(memory / MIB)}}

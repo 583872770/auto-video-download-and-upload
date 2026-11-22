@@ -92,7 +92,7 @@ class ProgressCacheTests(unittest.TestCase):
         self.assertEqual(self.durable()['downloaded_bytes'], 10)
         self.assertEqual(self.store.get(self.task['id'])['progress']['downloaded_bytes'], 20)
         self.store._progress_checkpoints[self.task['id']] = (
-            self.store._progress_checkpoints[self.task['id']][0], time.monotonic()-6)
+            self.store._progress_checkpoints[self.task['id']][0], time.monotonic()-11)
         self.assertTrue(self.report(30))
         self.assertEqual(self.durable()['downloaded_bytes'], 30)
         self.assertTrue(self.report(40, 'processing'))

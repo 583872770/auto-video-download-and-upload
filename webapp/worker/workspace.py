@@ -17,11 +17,17 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         return _execute(action, payload, report_progress, rotation_completed, store, worker_slot)
     payload = {**payload, '_task_id': task_id}
     from Utils.download_storage import DownloadWorkspace
+    from Utils.config import video_directory
     from webapp.disk_budget import DiskBudget, DISK_FIELDS
     config = dict(payload['config'])
     runtime = store.runtime() if store else config
     config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
     state = store.directory if store else Path(payload['base']) / '.cache'
+    if config.get('storage_mode', 'local') != 'test':
+        # Keep disposable media workspaces on the same bind mount as their
+        # final files. Publication can then rename completed files atomically
+        # without a second full-file copy across Docker mounts.
+        config['_media_root'] = str(video_directory(config, payload['base']))
     workspace = DownloadWorkspace(config, state, task_id, uuid.uuid4().hex)
     budget = DiskBudget(state, config)
     if workspace.test_mode and store and task_id and not payload.get('_force_test_sample'):

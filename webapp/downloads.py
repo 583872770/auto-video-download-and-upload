@@ -135,6 +135,11 @@ def number(value):
 
 
 class DownloadProgress:
+    # Progress is also published to Redis for the live workbench.  Keeping the
+    # durable write cadence a little wider reduces MySQL commit and binlog
+    # pressure when many media transfers emit callbacks at once.
+    SAVE_INTERVAL_SECONDS = 2.5
+
     def __init__(self, write):
         self.write = write
         self.last_write = 0
@@ -166,7 +171,7 @@ class DownloadProgress:
         self.state.update(stage_started_at=self.stage_started_at, elapsed=round(stamp - self.started_at, 1),
                           stage_seconds={**self.stage_seconds, self.state['stage']:
                               round(self.stage_seconds.get(self.state['stage'], 0) + stamp - self.stage_started_at, 1)})
-        if force or time.monotonic() - self.last_write >= 1.5:
+        if force or time.monotonic() - self.last_write >= self.SAVE_INTERVAL_SECONDS:
             self.write(dict(self.state))
             self.last_write = time.monotonic()
 
