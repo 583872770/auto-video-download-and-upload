@@ -78,7 +78,7 @@ def pressure_state(resources, cpu, hits):
             'required_samples': PRESSURE_SAMPLES}
 
 
-def worker_control(workers, limits, resources, cpu, pressure, last_reduction, eligible_at):
+def worker_control(workers, limits, resources, cpu, pressure, last_reduction, eligible_at, *, auto_reduce=True):
     """Publish only observations and eligibility, never promise the next increase."""
     _, memory = memory_thresholds(resources['memory_total'])
     blocked = []
@@ -90,7 +90,8 @@ def worker_control(workers, limits, resources, cpu, pressure, last_reduction, el
         blocked.append('io')
     if resources['memory_available'] < memory:
         blocked.append('memory')
-    return {'dynamic_limit': workers, 'normal_limit': limits['workers'],
+    return {'auto_reduce_enabled': auto_reduce,
+            'dynamic_limit': workers, 'normal_limit': limits['workers'],
             'configured_limit': limits['configured_worker_limit'],
             'bounds': limits.get('worker_bounds', {}),
             'limit_reasons': limits.get('worker_limit_reasons', []),
@@ -102,4 +103,4 @@ def worker_control(workers, limits, resources, cpu, pressure, last_reduction, el
             'recovery': {'eligible_at': eligible_at, 'blocked_by': blocked,
                 'interval_seconds': WORKER_ADJUST_SECONDS, 'step': WORKER_RECOVERY_STEP,
                 'cpu_below': CPU_RECOVER, 'io_below': IO_HIGH,
-                'memory_at_least_mb': math.ceil(memory / MIB)}}
+                'memory_at_least_mb': math.ceil(memory / MIB)} if auto_reduce else None}

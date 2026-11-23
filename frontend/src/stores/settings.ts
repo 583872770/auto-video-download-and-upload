@@ -69,6 +69,8 @@ export const useSettings = defineStore('settings', () => {
         throw new Error('服务器读回值与提交值不一致：' + mismatches.join('、'));
       accept(response);
       message.value = `「${instances.name}」实例设置已保存。后续领取或重试的视频使用新配置。`;
+      if ('download_auto_reduce' in submitted)
+        message.value += '自动降低下载进程上限将在下一次资源采样生效，通常不超过 5 秒。';
     } catch (failure) {
       if (scope.isCurrent())
         error.value =

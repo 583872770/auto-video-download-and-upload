@@ -51,6 +51,8 @@ def validate_settings(config, *, download_only=False):
         config['youtube_sleep_preset'] = sleep_preset == 'true'
     elif type(sleep_preset) is not bool:
         raise ValueError('yt-dlp 请求等待预设必须为开关值。')
+    if type(config.get('download_auto_reduce', True)) is not bool:
+        raise ValueError('自动降低下载进程上限必须为开关值。')
     from Utils.download_storage import storage_mode
     storage_mode(config)
     if config.get('storage_mode') == 'oss':

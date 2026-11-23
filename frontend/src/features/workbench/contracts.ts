@@ -98,6 +98,7 @@ export type RuntimeAccount = Partial<RuntimeSlot> & {
   reasons?: WaitReason[];
 };
 export interface WorkerControl {
+  auto_reduce_enabled: boolean;
   used: number;
   dynamic_limit: number;
   normal_limit: number;
@@ -122,7 +123,7 @@ export interface WorkerControl {
     memory_at_least_mb: number;
     interval_seconds: number;
     step: number;
-  };
+  } | null;
 }
 export interface Capacity extends InstanceStatus {
   concurrency: InstanceStatus['concurrency'] & {

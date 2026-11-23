@@ -30,7 +30,13 @@ export const groups = {
       'download_task_limit',
       '下载任务并发上限',
       'performance',
-      '0 表示按可用账号自动确定；资源保护会根据 CPU、内存、I/O 和数据库容量收敛。',
+      '0 表示按账号容量自动确定；实际还受内存容量预估与数据库连接容量限制。',
+    ),
+    field(
+      'download_auto_reduce',
+      '自动降低下载进程上限',
+      'performance',
+      '开启后，CPU、可用内存或 I/O 压力升高会自动缩容，恢复后逐步增加。关闭后恢复常规上限；账号、数据库连接和磁盘空间限制仍生效。保存后通常 5 秒内生效，无需重启。',
     ),
     field(
       'fragment_concurrency',

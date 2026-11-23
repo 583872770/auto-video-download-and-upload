@@ -18,6 +18,7 @@ export interface ConsoleConfig {
   youtube_cookie_session_limit: number;
   youtube_cookie_pool_start_interval: number;
   download_task_limit: number;
+  download_auto_reduce: boolean;
   youtube_hourly_start_limit: number;
   youtube_daily_start_limit: number;
   postprocess_limit: number;
@@ -193,6 +194,7 @@ export const defaultConfig: ConsoleConfig = {
   "youtube_cookie_session_limit": 1,
   "youtube_cookie_pool_start_interval": 5,
   "download_task_limit": 0,
+  "download_auto_reduce": true,
   "youtube_hourly_start_limit": 30,
   "youtube_daily_start_limit": 720,
   "postprocess_limit": 2,

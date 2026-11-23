@@ -74,7 +74,10 @@ class DatabaseBudgetTests(unittest.TestCase):
             self.assertEqual(unlimited['worker_control']['configured_limit'], 0)
             self.assertIsNone(unlimited['worker_control']['bounds']['configured'])
             self.assertNotIn('configured', unlimited['worker_control']['limit_reasons'])
-            self.assertEqual(runtime_limits(config, self.root)['workers'], 31)
+            # The reader performs its own capacity check; use the same mocked
+            # resources as the controller rather than the test runner's cgroup.
+            with patch('webapp.throughput.resource_limits', return_value=self.sample):
+                self.assertEqual(runtime_limits(config, self.root)['workers'], 31)
             shrunk = controller.update(dict(config, download_task_limit=7),
                                        cookie_capacity=capacity, force=True)
             self.assertEqual(shrunk['workers'], 7)

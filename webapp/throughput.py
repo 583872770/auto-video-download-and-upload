@@ -10,7 +10,7 @@ import tempfile
 
 import psutil
 
-from webapp.config.schema import PIPELINE_KEY_FIELDS
+from webapp.config.schema import DEFAULTS, PIPELINE_KEY_FIELDS
 from webapp.db_pool_calculator import download_task_limit
 from webapp.concurrency_policy import MAX_TRANSFERS, MAX_WORKERS, pool_process_limits, fragment_limit
 from webapp.resource_pressure import (CPU_HIGH, CPU_RECOVER, IO_HIGH, WORKER_ADJUST_SECONDS,
@@ -26,7 +26,7 @@ class PipelineBusy(RuntimeError):
 
 
 def policy_key(config):
-    return hashlib.sha256(json.dumps({key: config.get(key) for key in PIPELINE_KEY_FIELDS},
+    return hashlib.sha256(json.dumps({key: config.get(key, DEFAULTS[key]) for key in PIPELINE_KEY_FIELDS},
                                       sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -226,7 +226,11 @@ class ThroughputController:
         reason = cookie_capacity.get('reason', '账号池调度')
         pool_limits = pool_worker_limits(config, requested, resources)
         workers = pool_limits['workers']
-        if same:
+        auto_reduce = config.get('download_auto_reduce', True)
+        if not auto_reduce:
+            self.pool_last_reduction = None
+            self.pool_adjusted = tick
+        elif same:
             previous_workers = min(workers, self.state['workers'])
             workers = previous_workers
             if pressure and tick - self.pool_adjusted >= WORKER_ADJUST_SECONDS:
@@ -248,6 +252,8 @@ class ThroughputController:
                         'to': workers, 'reasons': protection['reasons']}
             self.pool_adjusted = tick
         reason += f'；本机下载进程上限 {workers}，额外任务等待空闲进程'
+        if not auto_reduce:
+            reason += '；自动降低下载进程上限已关闭'
         if workers < pool_limits['workers']:
             reason += '；资源保护已降低上限，压力收敛后逐步恢复进程'
         self.state = {'time': time.time(), 'policy': policy_key(config),
@@ -272,7 +278,8 @@ class ThroughputController:
         self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
         self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
             self.pool_last_reduction,
-            self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)))
+            self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)),
+            auto_reduce=auto_reduce)
         self.state.update({key: resources.get(key) for key in ('io_pressure_source', 'io_pressure_host')})
         from webapp.download_start_gate import DownloadStartGate
         self.state['download_start_gate'] = DownloadStartGate(self.directory).status(config, self.state['time'])

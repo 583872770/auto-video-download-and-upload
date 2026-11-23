@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from webapp.concurrency_diagnostics import diagnose
 from webapp.resource_pressure import sample_io_pressure
-from webapp.throughput import MIB, ThroughputController
+from webapp.throughput import MIB, ThroughputController, policy_key
 
 
 class ScopedPressureTests(unittest.TestCase):
@@ -136,6 +136,74 @@ class ScopedPressureTests(unittest.TestCase):
         fallback = update(61)
         self.assertEqual(fallback['workers'], 16)
         self.assertEqual(fallback['worker_control']['pressure']['high_samples'], 1)
+
+    def test_disabling_reduction_restores_capacity_immediately_and_reenables_protection(self):
+        controller, resources, config, update = self.controller()
+        initial = update()
+        resources['cpu_percent'] = 97
+        reduced = update(61)
+        self.assertLess(reduced['workers'], initial['workers'])
+        config['download_auto_reduce'] = False
+        restored = update()  # Policy change bypasses the five-second sample cache.
+        self.assertEqual(restored['workers'], 16)
+        self.assertFalse(restored['worker_pressure_limited'])
+        control = restored['worker_control']
+        self.assertFalse(control['auto_reduce_enabled'])
+        self.assertFalse(control['resource_limited'])
+        self.assertIsNone(control['last_reduction'])
+        self.assertIsNone(control['recovery'])
+        self.assertIn('已关闭', restored['reason'])
+        self.write_pressure(self.group / 'io.pressure', 30)
+        resources['memory_available'] = 100 * MIB
+        for _ in range(4):
+            self.assertEqual(update(61)['workers'], 16)
+        resources['memory_available'] = 11000 * MIB
+        config['download_auto_reduce'] = True
+        self.assertTrue(update()['worker_control']['auto_reduce_enabled'])
+        enabled = update(61)
+        self.assertLess(enabled['workers'], 16)
+        self.assertIn('cpu', [r['code'] for r in enabled['worker_control']['last_reduction']['reasons']])
+        saved = json.loads((controller.directory / 'throughput.json').read_text())
+        self.assertTrue(saved['worker_control']['auto_reduce_enabled'])
+
+    def test_disabled_reduction_skips_startup_emergency_but_keeps_static_bounds(self):
+        controller, resources, config, update = self.controller()
+        config['download_auto_reduce'] = False
+        resources.update(cpu_percent=99, memory_available=100 * MIB)
+        self.write_pressure(self.group / 'io.pressure', 30)
+        self.assertEqual(update()['workers'], 16)
+        config['download_task_limit'] = 8
+        self.assertEqual(update()['workers'], 8)
+        limited = controller.update(config, force=True,
+            cookie_capacity={'known': True, 'capacity': 3, 'reason': 'ready'})
+        self.assertEqual(limited['workers'], 3)
+        with patch.dict(os.environ, {'VIDEO_WORKER_DB_CONNECTION_BUDGET': '4'}):
+            database_limited = update(61)
+        self.assertEqual(database_limited['workers'], database_limited['db_worker_cap'])
+        self.assertLess(database_limited['workers'], 8)
+        resources['memory_total'] = 512 * MIB
+        bounded = update(61)
+        self.assertEqual(bounded['workers'], 1)
+        self.assertIn('memory', bounded['worker_limit_reasons'])
+        self.assertFalse(bounded['worker_pressure_limited'])
+
+    def test_enabled_by_default_keeps_low_memory_startup_protection(self):
+        _, resources, _, update = self.controller()
+        resources['memory_available'] = 100 * MIB
+        state = update()
+        self.assertEqual(state['workers'], 2)
+        self.assertTrue(state['worker_control']['auto_reduce_enabled'])
+        self.assertEqual(state['worker_control']['last_reduction']['reasons'][0]['code'], 'memory')
+
+    def test_default_switch_matches_fleet_projection_and_keeps_diagnostics_fresh(self):
+        controller, _, config, _ = self.controller()
+        projected = {**config, 'download_auto_reduce': True}
+        self.assertEqual(policy_key(config), policy_key(projected))
+        self.assertNotEqual(policy_key(config), policy_key({**config, 'download_auto_reduce': False}))
+        rate = controller.update(projected, cookie_capacity={'known': True, 'capacity': 18, 'reason': 'ready'})
+        view = diagnose(config, 'node', [], rate, ({}, {}, {}, {}), rate['time'])
+        self.assertIsNotNone(view['worker_control'])
+        self.assertTrue(view['worker_control']['auto_reduce_enabled'])
 
     def test_missing_io_is_unknown_and_cpu_protection_still_works(self):
         (self.group / 'io.pressure').unlink()

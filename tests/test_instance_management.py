@@ -28,6 +28,7 @@ class InstanceManagementTests(unittest.TestCase):
                 with self.subTest(source=source, target=target):
                     selected = {**headers, 'X-Instance-ID': target}
                     saved = {'postprocess_limit': 3, 'disk_log_budget_mb': 72,
+                             'download_auto_reduce': False,
                              'youtube_cookie_pool_start_interval': 7, 'download_task_limit': 4}
                     before = {name: app.extensions['fleet'].local_settings()['config'].copy()
                               for name, app in self.apps.items()}

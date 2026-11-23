@@ -59,4 +59,19 @@ describe('instance settings drafts', () => {
     store.reset();
     expect(store.dirty).toBe(false);
   });
+  it('saves the reduction switch as a boolean and confirms its readback', async () => {
+    request.mockResolvedValueOnce(response());
+    const store = useSettings();
+    await store.load();
+    expect(store.draft.download_auto_reduce).toBe(true);
+    store.update('download_auto_reduce', false);
+    request
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(response({ ...defaultConfig, download_auto_reduce: false }));
+    await store.save();
+    expect(request.mock.calls[1]![1]?.body).toEqual({ download_auto_reduce: false });
+    expect(store.draft.download_auto_reduce).toBe(false);
+    expect(store.error).toBe('');
+    expect(store.dirty).toBe(false);
+  });
 });

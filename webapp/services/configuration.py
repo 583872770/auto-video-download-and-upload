@@ -62,5 +62,8 @@ class ConfigurationService:
             self.context.sync_runtime(config, self.context.config_path.parent)
             if any(key in data for key in ('proxy', 'proxy_mode', 'youtube_source_address')):
                 self.context.youtube_auth.invalidate()
-        return dict(message='配置已保存；下载与资源策略从后续领取的视频生效，无需暂停或重启。'
-                       '配置仅作用于当前实例，正在执行的视频保持本次配置。')
+        message = ('配置已保存；下载与资源策略从后续领取的视频生效，无需暂停或重启。'
+                   '配置仅作用于当前实例，正在执行的视频保持本次配置。')
+        if 'download_auto_reduce' in data:
+            message += '自动降低下载进程上限将在下一次资源采样生效，通常不超过 5 秒。'
+        return dict(message=message)

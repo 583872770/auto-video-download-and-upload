@@ -73,6 +73,7 @@ SETTINGS = MappingProxyType({
                                                 persist_runtime=True, pipeline_key=True),
     'download_task_limit': Setting(0, limits=(0, 64), resource_override=True,
                                               persist_runtime=True, pipeline_key=True),
+    'download_auto_reduce': Setting(True, persist_runtime=True, pipeline_key=True),
     'youtube_hourly_start_limit': Setting(30, limits=(0, 5000), family='pacing'),
     'youtube_daily_start_limit': Setting(720, limits=(0, 5000), family='pacing'),
     'postprocess_limit': Setting(2, limits=(1, 8), persist_runtime=True),

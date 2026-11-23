@@ -12,6 +12,10 @@ const configured = computed(
 );
 function change(event: Event) {
   const input = event.target as HTMLInputElement;
+  if (input.type === 'checkbox') {
+    store.update(props.field.key, input.checked as ConsoleConfig[typeof props.field.key]);
+    return;
+  }
   const selected = props.field.options?.find(([key]) => String(key) === input.value);
   const next = selected
     ? selected[0]
@@ -27,8 +31,21 @@ function change(event: Event) {
 <template>
   <div class="field" :class="{ invalid: store.issues[field.key] }">
     <label :for="'setting-' + field.key">{{ field.label }}</label>
+    <div v-if="typeof value === 'boolean' && !field.options" class="switch-control">
+      <input
+        :id="'setting-' + field.key"
+        :name="field.key"
+        type="checkbox"
+        role="switch"
+        :checked="value"
+        :disabled="disabled"
+        :aria-describedby="field.key + '-help'"
+        @change="change"
+      />
+      <span>{{ value ? '已开启' : '已关闭' }}</span>
+    </div>
     <select
-      v-if="field.options"
+      v-else-if="field.options"
       :id="'setting-' + field.key"
       :name="field.key"
       :value="String(value)"
@@ -59,3 +76,43 @@ function change(event: Event) {
     <small :id="field.key + '-help'">{{ store.issues[field.key] || field.help }}</small>
   </div>
 </template>
+
+<style scoped>
+.switch-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 39px;
+}
+.switch-control input {
+  appearance: none;
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 1px solid #94a3b8;
+  border-radius: 14px;
+  background: #94a3b8;
+  cursor: pointer;
+}
+.switch-control input::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+}
+.switch-control input:checked {
+  border-color: var(--accent, #2563eb);
+  background: var(--accent, #2563eb);
+}
+.switch-control input:checked::after {
+  left: 20px;
+}
+.switch-control input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+</style>

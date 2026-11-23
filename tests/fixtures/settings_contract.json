@@ -22,11 +22,13 @@
     "youtube_cookie_session_limit": 1,
     "youtube_cookie_pool_start_interval": 5,
     "download_task_limit": 0,
+    "download_auto_reduce": true,
     "youtube_hourly_start_limit": 30,
     "youtube_daily_start_limit": 720,
     "postprocess_limit": 2,
     "disk_budget_gb": 20,
     "disk_test_budget_gb": 16,
+    "disk_sample_budget_mb": 3072,
     "disk_browser_budget_mb": 1024,
     "disk_log_budget_mb": 256,
     "disk_import_budget_mb": 1024,
@@ -56,10 +58,12 @@
     "disk_log_budget_mb",
     "disk_min_free_gb",
     "disk_resume_free_gb",
+    "disk_sample_budget_mb",
     "disk_success_log_hours",
     "disk_test_budget_gb",
     "disk_upload_limit_mb",
     "download_attempts",
+    "download_auto_reduce",
     "download_task_limit",
     "fragment_concurrency",
     "log_retention_days",
@@ -203,6 +207,10 @@
     "oss_upload_limit": [
       1,
       8
+    ],
+    "disk_sample_budget_mb": [
+      0,
+      102400
     ]
   },
   "policy_fields": [
@@ -219,9 +227,11 @@
     "disk_log_budget_mb",
     "disk_min_free_gb",
     "disk_resume_free_gb",
+    "disk_sample_budget_mb",
     "disk_success_log_hours",
     "disk_test_budget_gb",
     "disk_upload_limit_mb",
+    "download_auto_reduce",
     "download_task_limit",
     "js_runtimes",
     "log_retention_days",
@@ -262,6 +272,7 @@
   "disk_defaults": {
     "disk_budget_gb": 20,
     "disk_test_budget_gb": 16,
+    "disk_sample_budget_mb": 3072,
     "disk_browser_budget_mb": 1024,
     "disk_log_budget_mb": 256,
     "disk_import_budget_mb": 1024,
@@ -310,9 +321,11 @@
     "disk_log_budget_mb",
     "disk_min_free_gb",
     "disk_resume_free_gb",
+    "disk_sample_budget_mb",
     "disk_success_log_hours",
     "disk_test_budget_gb",
     "disk_upload_limit_mb",
+    "download_auto_reduce",
     "download_task_limit",
     "fragment_concurrency",
     "log_retention_days",
@@ -325,6 +338,7 @@
     "youtube_task_rest_interval"
   ],
   "policy_hash_fields": [
+    "download_auto_reduce",
     "download_task_limit",
     "fragment_concurrency",
     "youtube_cookie_pool",

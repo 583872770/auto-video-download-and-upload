@@ -108,7 +108,14 @@ const blockers: Record<string, string> = {
             : worker.measurements?.io_pressure_source === 'cgroup'
               ? '（本实例）'
               : ''
-        }}。降低上限后，已有任务完成才释放名额。
+        }}。
+      </p>
+      <p v-if="worker.auto_reduce_enabled">
+        自动降低下载进程上限已开启；缩容后，已有任务继续执行，完成后才释放名额。
+      </p>
+      <p v-else class="notice">
+        自动降低下载进程上限已关闭；CPU、可用内存或 I/O 压力升高时不自动缩容。
+        账号容量、内存容量预估、数据库连接容量与磁盘空间保护仍生效。
       </p>
       <p>
         CPU {{ worker.measurements?.cpu_percent ?? '—' }}% · 可用内存

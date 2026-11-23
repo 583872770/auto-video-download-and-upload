@@ -7,6 +7,16 @@ class SettingsSaveContract:
     def save(self, values):
         return self.client.put('/api/config', json=values, headers=self.headers)
 
+    def test_auto_reduce_switch_roundtrips_strict_booleans_and_runtime(self):
+        self.assertTrue(self.client.get('/api/config').json['config']['download_auto_reduce'])
+        for value in (False, True, False):
+            self.assertEqual(self.save({'download_auto_reduce': value}).status_code, 200)
+            self.assertIs(self.client.get('/api/config').json['config']['download_auto_reduce'], value)
+            self.assertIs(self.store.runtime()['download_auto_reduce'], value)
+        for invalid in (0, 1, 'false', None, []):
+            self.assertEqual(self.save({'download_auto_reduce': invalid}).status_code, 400)
+            self.assertIs(self.client.get('/api/config').json['config']['download_auto_reduce'], False)
+
     def test_zero_limits_and_invalid_save_is_atomic(self):
         keys = ('download_task_limit', 'youtube_hourly_start_limit', 'youtube_daily_start_limit')
         self.assertEqual(self.save(dict.fromkeys(keys, 0)).status_code, 200)
