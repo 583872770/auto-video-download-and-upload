@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from tests import test_delivery as fixture, test_console_auth
 from webapp.database import test_samples as samples, delivery_artifacts, tasks
 from webapp.delivery import samples as retention
@@ -99,6 +99,35 @@ class SampleTests(unittest.TestCase):
         self.assertNotIn('_force_test_sample', self.store.get(task['id'], private=True)['payload'])
         self.assertEqual(retention.sweep(self.store, self.budget()), 0)
         self.assertEqual(self.client.get('/api/jobs/' + job).json['test_file_count'], before)
+
+    def test_fast_mode_and_ready_sample_do_not_query_all_artifact_receipts(self):
+        self.storage = {'storage_mode': 'test'}
+        job = self.create(['metadata'])
+        self.configure(job, enabled=False)
+        statements = []
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith('SELECT') and 'delivery_artifacts' in statement:
+                statements.append(statement)
+        event.listen(self.store.db.engine, 'before_cursor_execute', capture)
+        try:
+            task, _ = self.execute()
+        finally:
+            event.remove(self.store.db.engine, 'before_cursor_execute', capture)
+        self.assertFalse(any('delivery_artifacts.task_id =' in s and
+                             'delivery_artifacts.instance_id =' in s for s in statements), statements)
+        self.assertFalse(self.kept(job))
+        self.resample(job, task)
+        with self.store.connect() as db:
+            sample = db.execute(select(samples).where(samples.c.task_id == task['id'],
+                samples.c.state == 'ready')).mappings().one()
+        statements.clear()
+        event.listen(self.store.db.engine, 'before_cursor_execute', capture)
+        try:
+            retention.capture(self.store, self.budget(),
+                {'category': 'test', 'path': sample['workspace'], 'id': sample['id']}, self.store.get(task['id']))
+        finally:
+            event.remove(self.store.db.engine, 'before_cursor_execute', capture)
+        self.assertEqual(statements, [])
 
     def test_quantity_rotation_and_global_zero_limit(self):
         self.storage = {'storage_mode': 'test'}

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TransferProgress from '../../components/TransferProgress.vue';
 import ScopePanel from '../../components/ScopePanel.vue';
 import { computed, nextTick, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
@@ -274,9 +275,7 @@ function samples(value: string) {
                   >{{ video.progress?.stage || '准备中' }} ·
                   {{ video.instance_id || '本机' }}</small
                 ></span
-              ><span>{{
-                video.progress?.percent == null ? '—' : video.progress.percent + '%'
-              }}</span>
+              ><span><TransferProgress :progress="video.progress" /></span>
             </div>
             <p v-if="!job.running_videos.length">
               当前没有正在执行的视频。在下载工作台选择此任务后开始。

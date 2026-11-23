@@ -166,14 +166,19 @@ def capture(store, budget, lease, task):
             if (task.get('progress') or {}).get('_sample_requested'):
                 p['enabled'] = True
             previous = db.execute(select(samples).where(samples.c.id == lease['id'])).mappings().first()
+            if previous and previous['state'] == 'ready':
+                return
+            # A building sample already has its manifest. A fast test does not
+            # need file discovery at all; neither path should scan receipts.
             outputs = list(db.execute(select(artifacts).where(artifacts.c.task_id == task['id'],
                 artifacts.c.job_id == task['batch_id'], artifacts.c.test_mode == 1,
-                artifacts.c.instance_id == local_id(store))).mappings())
-        if previous and previous['state'] == 'ready':
-            return
+                artifacts.c.instance_id == local_id(store))).mappings()) if not previous and p['enabled'] else []
         if previous:
             candidate = dict(previous)
         else:
+            if not p['enabled']:
+                task_note(store, task['id'], '快速测试：校验结果已登记，真实文件已按设置清理。')
+                return
             files = []
             for output in outputs:
                 try:
@@ -187,9 +192,6 @@ def capture(store, budget, lease, task):
                     size=path.stat().st_size, extension=path.suffix.lower(), name=output['id'] + path.suffix.lower(),
                     source=str(path), storage='test', instance_id=local_id(store), available=True))
             size = sum(f['size'] for f in files)
-            if not p['enabled']:
-                task_note(store, task['id'], '快速测试：校验结果已登记，真实文件已按设置清理。')
-                return
             if not files:
                 return
             cap = min(p['budget_mb'], int(budget.config.get('disk_sample_budget_mb', 3072))) * MIB

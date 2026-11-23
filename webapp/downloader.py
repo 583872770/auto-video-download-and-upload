@@ -58,6 +58,10 @@ def build_ydl_options(config, base):
         'retries': 3,
         'extractor_retries': 2,
         'socket_timeout': 20,
+        # Limit terminal formatting only. Structured hooks still receive every
+        # native event, including fragment progress and completion.
+        'progress_delta': 1,
+        'noprogress': True,
         # Subtitle outputs are selected by the job delivery contract only.
         'writesubtitles': False,
         'writeautomaticsub': False,
@@ -99,4 +103,6 @@ def build_ydl_options(config, base):
             raise FileNotFoundError(f'YouTube Cookie 文件不存在：{cookie}')
         options['cookiefile'] = str(cookie)
     from webapp.subtitle_tracks import provider_options
+    from webapp.player_cache import cache_options
+    options.update(cache_options(config))
     return provider_options(options)

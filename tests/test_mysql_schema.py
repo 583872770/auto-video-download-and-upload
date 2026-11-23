@@ -2,12 +2,12 @@
 import unittest
 from types import SimpleNamespace
 
-from sqlalchemy import Text, LargeBinary
+from sqlalchemy import Text, LargeBinary, select
 from sqlalchemy.dialects.mysql import dialect
 from sqlalchemy.schema import CreateIndex
 
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.database import Database, SchemaMismatch
+from webapp.database import Database, SchemaMismatch, delivery_artifacts
 
 
 class MySQLSchemaTests(unittest.TestCase):
@@ -54,6 +54,27 @@ class MySQLSchemaTests(unittest.TestCase):
 
 
 class MySQLCurrentSchemaTests(StandaloneMySQLFixture, unittest.TestCase):
+    def test_sample_receipts_use_task_index_in_a_large_shared_job(self):
+        import json
+        job, instance = 'a' * 32, 'node'
+        records = [dict(id=f'{i:064x}', seq=i + 1, job_id=job, task_id=f'{i // 4:032x}',
+            contract_version=1, video_id='fixture', title='fixture', kind='metadata', language='',
+            subtitle_source='', variant='fixture', path='fixture.json', size=1, instance_id=instance,
+            storage='test', available=0, test_mode=1, created_at='2026-11-23T00:00:00+08:00')
+            for i in range(12000)]
+        with self.store.connect() as db:
+            for start in range(0, len(records), 500):
+                db.execute(delivery_artifacts.insert(), records[start:start + 500])
+            statement = select(delivery_artifacts).where(delivery_artifacts.c.task_id == f'{42:032x}',
+                delivery_artifacts.c.job_id == job, delivery_artifacts.c.test_mode == 1,
+                delivery_artifacts.c.instance_id == instance)
+            sql = str(statement.compile(dialect=db.dialect, compile_kwargs={'literal_binds': True}))
+            plan = json.loads(db.exec_driver_sql('EXPLAIN FORMAT=JSON ' + sql).scalar_one())
+            table = plan['query_block']['table']
+            self.assertEqual(table['key'], 'ix_delivery_artifacts_task', plan)
+            self.assertLessEqual(table['rows_examined_per_scan'], 8, plan)
+            self.assertEqual(len(db.execute(statement).all()), 4)
+
     def test_reopen_accepts_reflected_current_types_and_index_prefixes(self):
         self.store.db.initialize()
 

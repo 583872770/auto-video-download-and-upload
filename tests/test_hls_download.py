@@ -14,6 +14,7 @@ from unittest.mock import PropertyMock, patch
 from yt_dlp.networking.exceptions import HTTPError
 
 from webapp.hls_download import empty_tail_candidate
+from webapp.downloader import build_ydl_options
 from webapp.parallel_http import ParallelYoutubeDL
 
 
@@ -219,6 +220,19 @@ class HlsDownloadTests(unittest.TestCase):
             self.assertEqual(ydl._download_retcode, 0)
         self.assertEqual(calls['/video.m3u8'], 1)
         self.assertNotIn('/tail.ts', calls)
+
+    def test_production_progress_limit_preserves_hls_hooks_and_file_bytes(self):
+        events = []
+        options = {**build_ydl_options({'youtube_sleep_preset': False}, Path(self.temp.name)),
+                   **self.options, 'progress_hooks': [lambda value: events.append(dict(value))]}
+        self.assertEqual(options['progress_delta'], 1)
+        with source(self.base_manifest, self.segments) as (url, _, _), ParallelYoutubeDL(options) as ydl:
+            self.assertTrue(ydl.dl(str(self.path), self.info(url))[0])
+            self.assertEqual(ydl._download_retcode, 0)
+        self.assertEqual(self.path.read_bytes(), b''.join(self.segments.values()))
+        self.assertTrue(any(v['status'] == 'downloading' for v in events))
+        self.assertEqual(events[-1]['status'], 'finished')
+        self.assertEqual(events[-1]['downloaded_bytes'], self.path.stat().st_size)
 
 
 if __name__ == '__main__':

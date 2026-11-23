@@ -21,7 +21,19 @@ max(1, min(16, 分片并发数))
 
 进度和速度在主线程汇总，速度采用跨块的约 5 秒窗口。取消会停止提交新块、关闭正在读取的响应并等待线程退出，只留下连续的部分文件用于恢复。重新分配任务时，继续遵守已有的重新下载策略。
 
+`DownloadProgress` 优先使用进度回调的数值 `speed`、`eta`，缺失或无效时才按当前文件的字节增量估算。`percent` 由同一事件的 `downloaded_bytes / (total_bytes or total_bytes_estimate)` 计算，不读取受终端限频影响的 `_percent_str` 等格式化字段。`current_downloaded_bytes`、`current_total_bytes` 和 `current_total_estimated` 供页面显示当前文件；原有 `downloaded_bytes` 保持各文件累计口径，用于健康检查与统计，`total_bytes` 保持空间预留口径。
+
+生产参数统一使用 `progress_delta=1`、`noprogress=True`，降低原生分片终端模板计算频率，不对结构化回调限频。持久化仍按 2.5 秒间隔或阶段边界写入，前端沿用现有缓存与轮询。留样文件回执按 `delivery_artifacts.task_id` 索引查询；快速测试及已有就绪样本不再执行文件回执发现查询。
+
 日志中出现 `HTTP 分块并行：最多 2 个连接，每块 10 MiB` 表示已进入并行路径。并行可能改善请求等待造成的空闲，但实际收益取决于 CDN、线路和限流状态，不保证随连接数等比例提高。
+
+## 公共播放器缓存
+
+通过 `ParallelYoutubeDL` 给每个任务安装独立的 YouTube 提取器和 Node provider，保留 yt-dlp 原有格式解析、PO Token、请求会话和挑战验证。只共享版本化公共播放器源码和 EJS 预处理代码，不共享下载器、Cookie、代理、挑战输入/结果或媒体 URL；原有 `cachedir=False` 继续关闭其他未纳入本项目额度管理的缓存。
+
+缓存位于实例 `runtime/cache/youtube-players`，计入“运行缓存”分类。源码与预处理合计最多 128 MiB、16 个版本/变体、24 小时过期，并受实例缓存剩余额度及最低磁盘空间约束。命中只更新访问时间，后台每约 30 秒淘汰过期/超额条目，低空间时回收可删除缓存；写入前也检查额度，额度不足则继续无缓存求解。固定数量的文件锁避免锁文件随播放器版本无限增长，同键首次构建在多个工作进程之间串行，其余条目的求解不持有全局额度锁或数据库事务。
+
+缓存校验内容摘要和结构；预处理兼容键包含项目协议、yt-dlp、EJS 和 Node 版本。异常命中至多回退原路径重建一次，持续的源站或解析失败按原逻辑报告。实现及测试见 `webapp/player_cache.py`、`tests/test_player_cache.py` 和需要公开脚本 fixture 的 `tests/test_player_cache_runtime.py`。不得通过重用整个下载器对象来共享账号会话。
 
 ## 传输异常的有限恢复
 

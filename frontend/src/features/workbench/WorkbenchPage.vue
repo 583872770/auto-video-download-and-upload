@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TransferProgress from '../../components/TransferProgress.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../../api';
@@ -464,7 +465,7 @@ usePolling(
                 <p v-if="task.notification" class="cell-note">{{ task.notification.reason }}</p>
               </td>
               <td>
-                {{ task.progress?.percent == null ? '—' : task.progress.percent.toFixed(1) + '%' }}
+                <TransferProgress :progress="task.progress" />
               </td>
               <td>
                 <button

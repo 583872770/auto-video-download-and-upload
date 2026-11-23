@@ -14,7 +14,16 @@ export interface VideoTask {
   job_name?: string;
   file_state?: 'sample' | 'stored' | 'cleaned' | 'none';
   error: string;
-  progress?: { stage?: string; percent?: number; speed?: number; title?: string };
+  progress?: {
+    stage?: string;
+    percent?: number;
+    speed?: number;
+    title?: string;
+    current_downloaded_bytes?: number | null;
+    current_total_bytes?: number | null;
+    current_total_estimated?: boolean;
+    eta?: number | null;
+  };
   result?: { test_mode?: boolean; skipped?: boolean };
   delivery: SourceDelivery;
 }

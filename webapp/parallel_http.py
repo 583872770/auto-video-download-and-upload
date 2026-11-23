@@ -253,6 +253,11 @@ class ParallelHttpFD(HttpFD):
 
 class ParallelYoutubeDL(yt_dlp.YoutubeDL):
     """Use bounded HTTP transfers and verified empty-tail HLS recovery."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from webapp.player_cache import install
+        install(self)
+
     def dl(self, name, info, subtitle=False, test=False):
         if subtitle:
             # yt-dlp uses a separate parameter for captions. Derive it from

@@ -745,6 +745,14 @@ class DiskBudget:
                     db.executemany('DELETE FROM requirements WHERE task=?', [(identity,) for identity in identities if identity not in retained_tasks])
             empty_directories, empty_bytes = self._clean_empty_test_directories(grace)
             freed += empty_bytes
+            from webapp.player_cache import PlayerCache
+            try:
+                cache_cleanup = PlayerCache(self.directory, self.config).prune(
+                    pressure=self._free() < int(self.config['disk_min_free_gb']) * GIB)
+                removed += cache_cleanup['removed']
+                freed += cache_cleanup['freed_bytes']
+            except (OSError, ValueError):
+                pass  # Optional cache paths cannot block task/file cleanup.
             self._clean_diagnostics(grace)
             with self.connect(write=False) as db:
                 retained = {row[0] for row in db.execute('SELECT id FROM leases')}

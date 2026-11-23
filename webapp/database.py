@@ -301,6 +301,7 @@ delivery_artifacts = Table('delivery_artifacts', metadata,
     Column('created_at', String(40), nullable=False))
 Index('ix_delivery_artifacts_job_seq', delivery_artifacts.c.job_id, delivery_artifacts.c.seq)
 Index('ix_delivery_artifacts_instance_seq', delivery_artifacts.c.instance_id, delivery_artifacts.c.seq)
+Index('ix_delivery_artifacts_task', delivery_artifacts.c.task_id)
 delivery_totals = Table('delivery_totals', metadata,
     Column('job_id', String(32), primary_key=True), Column('kind', String(24), primary_key=True),
     Column('test_mode', Integer, primary_key=True),

@@ -41,7 +41,9 @@ class DownloadTests(unittest.TestCase):
                       'total_bytes': 1000, 'speed': 200, 'eta': 3, 'info_dict': info})
         tracker.save(force=True)
         data = self.client.get(f'/api/tasks/{task["id"]}').json['progress']
-        self.assertEqual(data['percent'], 25)
+        self.assertEqual(data['percent'], 50)
+        self.assertEqual(data['current_downloaded_bytes'], 500)
+        self.assertEqual(data['current_total_bytes'], 1000)
         self.assertEqual(data['downloaded_bytes'], 500)
         self.assertEqual(data['total_bytes'], 1500)
         self.assertEqual(data['speed'], 200)
@@ -107,6 +109,29 @@ class DownloadTests(unittest.TestCase):
 
 
 class DownloadRateTests(unittest.TestCase):
+    def test_current_file_uses_numeric_event_counters_not_stale_terminal_fields(self):
+        tracker = DownloadProgress(lambda value: None)
+        tracker.hook({'status': 'finished', 'filename': 'video', 'downloaded_bytes': 1000,
+                      'total_bytes': 1000})
+        tracker.hook({'status': 'downloading', 'filename': 'audio', 'downloaded_bytes': 25,
+                      'total_bytes_estimate': 100, 'speed': 777, 'eta': 9,
+                      '_percent': 99, '_percent_str': '99.0%',
+                      'info_dict': {'requested_formats': [{'filesize': 1000}, {'filesize': 100}]}})
+        value = tracker.state
+        self.assertEqual(value['percent'], 25)
+        self.assertEqual(value['current_downloaded_bytes'], 25)
+        self.assertEqual(value['current_total_bytes'], 100)
+        self.assertTrue(value['current_total_estimated'])
+        self.assertEqual((value['speed'], value['eta']), (777, 9))
+        self.assertEqual(value['downloaded_bytes'], 1025)
+        tracker.hook({'status': 'downloading', 'filename': 'audio', 'downloaded_bytes': 50,
+                      'total_bytes': 200, 'speed': 0, 'eta': 0})
+        self.assertEqual(tracker.state['percent'], 25)
+        self.assertFalse(tracker.state['current_total_estimated'])
+        self.assertEqual((tracker.state['speed'], tracker.state['eta']), (0, 0))
+        tracker.begin_video({'title': 'Next'})
+        self.assertIsNone(tracker.state['current_downloaded_bytes'])
+
     def test_missing_speed_uses_new_bytes_and_time_with_a_resumed_file(self):
         clock = [10.0]
         values = []

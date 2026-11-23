@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TransferProgress from './TransferProgress.vue';
 import { computed, watch } from 'vue';
 import { api } from '../api';
 import { useResource } from '../composables/resource';
@@ -113,6 +114,7 @@ usePolling(
           · {{ detail.progress.percent.toFixed(1) }}%</span
         >
       </p>
+      <TransferProgress :progress="detail.progress" :show-percent="false" />
       <p class="cell-note">
         创建 {{ logTime(detail.created_at)
         }}<template v-if="detail.started_at"> · 开始 {{ logTime(detail.started_at) }}</template

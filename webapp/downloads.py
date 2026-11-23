@@ -150,14 +150,17 @@ class DownloadProgress:
         self.current_stage = None
         self.stage_seconds = {}
         self.state = {'stage': 'extracting', 'percent': 0, 'downloaded_bytes': 0,
-                      'total_bytes': None, 'speed': None, 'eta': None, 'title': '', 'format': ''}
+                      'total_bytes': None, 'current_downloaded_bytes': None, 'current_total_bytes': None,
+                      'current_total_estimated': False, 'speed': None, 'eta': None, 'title': '', 'format': ''}
         self.save(force=True)
 
     def begin_video(self, info):
         self.formats = info.get('requested_formats') or []
         self.streams = {}
         self.state.update(stage='extracting', title=str(info.get('title') or ''), percent=0,
-                          downloaded_bytes=0, total_bytes=None, speed=None, eta=None, format='')
+                          downloaded_bytes=0, total_bytes=None, current_downloaded_bytes=None,
+                          current_total_bytes=None, current_total_estimated=False,
+                          speed=None, eta=None, format='')
         self.save(force=True)
 
     def save(self, force=False):
@@ -185,7 +188,8 @@ class DownloadProgress:
             downloaded = previous.get('downloaded', 0)
         if downloaded > previous.get('downloaded', 0):
             self.state['last_bytes_at'] = time.time()
-        total = number(event.get('total_bytes')) or number(event.get('total_bytes_estimate'))
+        exact_total = number(event.get('total_bytes'))
+        total = exact_total or number(event.get('total_bytes_estimate'))
         finished = event.get('status') == 'finished'
         # Some downloaders omit speed on progress events. Measure only new bytes
         # in this stream, so resumed files and format/provider changes cannot
@@ -198,11 +202,10 @@ class DownloadProgress:
             samples.popleft()
         if not samples or stamp - samples[-1][0] >= 0.25:
             samples.append((stamp, downloaded))
-        elapsed = stamp - samples[0][0]
-        measured_speed = max(0, downloaded - samples[0][1]) / elapsed if elapsed >= 0.5 else None
         speed = number(event.get('speed'))
         if speed is None:
-            speed = measured_speed
+            elapsed = stamp - samples[0][0]
+            speed = max(0, downloaded - samples[0][1]) / elapsed if elapsed >= 0.5 else None
         eta = number(event.get('eta'))
         if eta is None and total is not None and speed:
             eta = max(0, total - downloaded) / speed
@@ -211,9 +214,11 @@ class DownloadProgress:
         output_label = {'subtitle': '字幕', 'thumbnail': '封面图', 'metadata': '视频信息'}.get(self.state.get('output_kind'))
         formats = [] if output_label else info.get('requested_formats') or self.formats
         count = max(len(formats), len(self.streams), 1)
-        fraction = min(downloaded / total, 1) if total else 0
-        completed = sum(stream['finished'] for stream in self.streams.values())
-        percent = 100 * (completed + (0 if finished else fraction)) / count
+        # yt-dlp's numeric byte counters describe this file. Formatted _percent
+        # values can be stale when terminal updates are throttled, so derive
+        # the ratio from the same current event, never from output text or an
+        # equal-weight average of video/audio/subtitle streams.
+        percent = 100 if finished else 100 * min(downloaded / total, 1) if total else None
         estimates = [number(fmt.get('filesize')) or number(fmt.get('filesize_approx')) for fmt in formats]
         all_total = sum(estimates) if estimates and all(size is not None for size in estimates) else None
         if all_total is None and count == 1:
@@ -223,9 +228,11 @@ class DownloadProgress:
         format_name = (output_label if output_label else
                        '音频' if info.get('vcodec') == 'none' else '视频')
         self.state.update(stage='processing' if finished else 'downloading',
-                          percent=round(min(percent, 100), 1) if total or finished else None,
+                          percent=round(percent, 1) if percent is not None else None,
                           downloaded_bytes=sum(stream['downloaded'] for stream in self.streams.values()),
-                          total_bytes=all_total, speed=None if finished else speed,
+                          total_bytes=all_total, current_downloaded_bytes=downloaded,
+                          current_total_bytes=total, current_total_estimated=bool(total and not exact_total),
+                          speed=None if finished else speed,
                           eta=None if finished else eta, title=str(info.get('title') or self.state['title']),
                           format=f'{format_name} · {info.get("format_id", "")}')
         self.save(force=finished or previous_stage != self.state['stage'])

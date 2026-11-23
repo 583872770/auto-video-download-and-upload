@@ -867,7 +867,11 @@ class DiskWebTests(unittest.TestCase):
             with patch('web_worker._execute', side_effect=download):
                 result = execute('download', task['payload'], store=self.store, task_id=task['id'])
         self.assertEqual(result['file_count'], 1)
-        self.assertTrue(result['files_deleted'])
+        # Test files retire after terminal settlement and sample handling.
+        # A late watchdog observation must not cancel that valid handoff.
+        self.assertFalse(result['files_deleted'])
+        self.assertIn('_processing_workspace', result)
+        self.assertIsNone(running[0].error)
 
     def test_pressure_wrapped_by_downloader_remains_resource_wait(self):
         from web_worker import execute
