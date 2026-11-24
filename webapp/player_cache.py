@@ -12,6 +12,12 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+import yt_dlp.version
+from yt_dlp.extractor.youtube import YoutubeIE
+from yt_dlp.extractor.youtube.jsc._builtin.node import NodeJCP
+from yt_dlp.extractor.youtube.jsc._director import validate_response
+from yt_dlp.extractor.youtube.jsc.provider import JsChallengeProviderError
+
 from webapp.disk_budget import MIB, GIB, file_lock, safe_path, size_of
 
 MAX_BYTES = 128 * MIB
@@ -248,137 +254,147 @@ def cache_options(config):
     return {}
 
 
+
+class CachedNodeJCP(NodeJCP):
+    PROVIDER_NAME = 'node'
+    PROVIDER_KEY = 'Node'
+
+    def _get_player(self, video_id, player_url):
+        if self.prepared:
+            return ''
+        self.source = super()._get_player(video_id, player_url)
+        return self.source
+
+    def _construct_stdin(self, player, preprocessed, requests):
+        return super()._construct_stdin(self.prepared or player, bool(self.prepared), requests)
+
+    def _run_js_runtime(self, stdin):
+        output = super()._run_js_runtime(stdin)
+        self.built = json.loads(output).get('preprocessed_player')
+        return output
+
+    def _solve(self, group):
+        replies = list(super()._real_bulk_solve(group))
+        valid = len(replies) == len(group) and all(r.response is not None and r.error is None
+            and validate_response(r.response, r.request) is True for r in replies)
+        return replies, valid
+
+    def _build(self, url, group, compat):
+        cache = self.ie.public_player_cache
+        replies, valid = self._solve(group)
+        if valid and isinstance(self.built, str) and self.built:
+            cache.write(url, self.source, self.built, compat)
+        return replies
+
+    def _real_bulk_solve(self, requests):
+        try:
+            yield from self._cached_bulk_solve(requests)
+        finally:
+            # Large task-local strings must not survive until cyclic GC.
+            self.prepared = self.source = self.built = None
+
+    def _cached_bulk_solve(self, requests):
+        cache = self.ie.public_player_cache
+        groups = defaultdict(list)
+        for request in requests:
+            groups[request.input.player_url].append(request)
+        for url, group in groups.items():
+            self.prepared = self.source = self.built = None
+            if not cache.active or not public_player(url):
+                with cache.bypass():
+                    yield from super()._real_bulk_solve(group)
+                continue
+            started = time.monotonic()
+            compat = f'1:{yt_dlp.version.__version__}:{self._SCRIPT_VERSION}:{self.runtime_info.version_tuple}'
+            replies = None
+            with cache.lock(url) as owned:
+                if not owned:
+                    with cache.bypass():
+                        yield from super()._real_bulk_solve(group)
+                    continue
+                saved = cache.read(url)
+                item = (saved or {}).get('prepared') or {}
+                self.prepared = item.get('code') if item.get('compat') == compat else None
+                hit = bool(self.prepared)
+                note('hit' if hit else 'miss', kind='prepared')
+                if not hit:
+                    replies = self._build(url, group, compat)
+            # Code has been copied into this task's memory. Warm solving
+            # must not hold the file lock or serialize other task inputs.
+            if hit:
+                failed_code = self.prepared
+                try:
+                    replies, valid = self._solve(group)
+                    if not valid:
+                        raise JsChallengeProviderError('Cached player result failed validation')
+                except (JsChallengeProviderError, ValueError, KeyError, TypeError):
+                    self.prepared = self.source = self.built = None
+                    self.ie._code_cache.pop(self.ie._player_js_cache_key(url), None)
+                    note('rebuild', reason='cached_solver_failed')
+                    with cache.lock(url) as owned:
+                        if owned:
+                            # A different task may already have replaced
+                            # the bad entry while this one was computing.
+                            saved = cache.read(url)
+                            item = (saved or {}).get('prepared') or {}
+                            if item.get('compat') == compat and item.get('code') != failed_code:
+                                self.prepared = item.get('code')
+                                replies = None
+                            else:
+                                cache.discard(url)
+                                replies = self._build(url, group, compat)
+                        else:
+                            with cache.bypass():
+                                replies, _ = self._solve(group)
+                    if replies is None:
+                        replies, _ = self._solve(group)
+                    hit = False
+            note('solved', hit=hit, seconds=round(time.monotonic()-started, 4))
+            yield from replies
+
+class CachedYoutubeIE(YoutubeIE):
+    def __init__(self, downloader, cache):
+        super().__init__(downloader)
+        self.public_player_cache = cache
+
+    @classmethod
+    def ie_key(cls):
+        return 'Youtube'
+
+    def _real_initialize(self):
+        super()._real_initialize()
+        original = self._jsc_director.providers.get('Node')
+        if original is not None:
+            self._jsc_director.providers['Node'] = CachedNodeJCP(self, original.logger, original.settings)
+
+    def _load_player(self, video_id, player_url, fatal=True):
+        cache = self.public_player_cache
+        key = self._player_js_cache_key(player_url)
+        if key in self._code_cache or not cache.active or not public_player(player_url):
+            return super()._load_player(video_id, player_url, fatal=fatal)
+        with cache.lock(player_url) as owned:
+            if not owned:
+                with cache.bypass():
+                    return super()._load_player(video_id, player_url, fatal=fatal)
+            saved = cache.read(player_url)
+            if saved:
+                self._code_cache[key] = saved['source']['code']
+                note('hit', kind='source')
+                return self._code_cache[key]
+            note('miss', kind='source')
+            source = super()._load_player(video_id, player_url, fatal=fatal)
+            if source:
+                cache.write(player_url, source)
+            return source
+
+
 def install(downloader):
     options = downloader.params.get('_player_cache')
     if not options:
         return
-    from yt_dlp.extractor.youtube import YoutubeIE
-    from yt_dlp.extractor.youtube.jsc._builtin.node import NodeJCP
-    from yt_dlp.extractor.youtube.jsc._director import validate_response
-    from yt_dlp.extractor.youtube.jsc.provider import JsChallengeProviderError
-    import yt_dlp.version
     try:
         cache = PlayerCache(options['state'], options['config'])
     except (OSError, ValueError) as error:
         note('unavailable', reason=type(error).__name__)
         return
-
-    class CachedNodeJCP(NodeJCP):
-        PROVIDER_NAME = 'node'
-        PROVIDER_KEY = 'Node'
-
-        def _get_player(self, video_id, player_url):
-            if self.prepared:
-                return ''
-            self.source = super()._get_player(video_id, player_url)
-            return self.source
-
-        def _construct_stdin(self, player, preprocessed, requests):
-            return super()._construct_stdin(self.prepared or player, bool(self.prepared), requests)
-
-        def _run_js_runtime(self, stdin):
-            output = super()._run_js_runtime(stdin)
-            self.built = json.loads(output).get('preprocessed_player')
-            return output
-
-        def _solve(self, group):
-            replies = list(super()._real_bulk_solve(group))
-            valid = len(replies) == len(group) and all(r.response is not None and r.error is None
-                and validate_response(r.response, r.request) is True for r in replies)
-            return replies, valid
-
-        def _build(self, url, group, compat):
-            replies, valid = self._solve(group)
-            if valid and isinstance(self.built, str) and self.built:
-                cache.write(url, self.source, self.built, compat)
-            return replies
-
-        def _real_bulk_solve(self, requests):
-            groups = defaultdict(list)
-            for request in requests:
-                groups[request.input.player_url].append(request)
-            for url, group in groups.items():
-                self.prepared = self.source = self.built = None
-                if not cache.active or not public_player(url):
-                    with cache.bypass():
-                        yield from super()._real_bulk_solve(group)
-                    continue
-                started = time.monotonic()
-                compat = f'1:{yt_dlp.version.__version__}:{self._SCRIPT_VERSION}:{self.runtime_info.version_tuple}'
-                replies = None
-                with cache.lock(url) as owned:
-                    if not owned:
-                        with cache.bypass():
-                            yield from super()._real_bulk_solve(group)
-                        continue
-                    saved = cache.read(url)
-                    item = (saved or {}).get('prepared') or {}
-                    self.prepared = item.get('code') if item.get('compat') == compat else None
-                    hit = bool(self.prepared)
-                    note('hit' if hit else 'miss', kind='prepared')
-                    if not hit:
-                        replies = self._build(url, group, compat)
-                # Code has been copied into this task's memory. Warm solving
-                # must not hold the file lock or serialize other task inputs.
-                if hit:
-                    failed_code = self.prepared
-                    try:
-                        replies, valid = self._solve(group)
-                        if not valid:
-                            raise JsChallengeProviderError('Cached player result failed validation')
-                    except (JsChallengeProviderError, ValueError, KeyError, TypeError):
-                        self.prepared = self.source = self.built = None
-                        self.ie._code_cache.pop(self.ie._player_js_cache_key(url), None)
-                        note('rebuild', reason='cached_solver_failed')
-                        with cache.lock(url) as owned:
-                            if owned:
-                                # A different task may already have replaced
-                                # the bad entry while this one was computing.
-                                saved = cache.read(url)
-                                item = (saved or {}).get('prepared') or {}
-                                if item.get('compat') == compat and item.get('code') != failed_code:
-                                    self.prepared = item.get('code')
-                                    replies = None
-                                else:
-                                    cache.discard(url)
-                                    replies = self._build(url, group, compat)
-                            else:
-                                with cache.bypass():
-                                    replies, _ = self._solve(group)
-                        if replies is None:
-                            replies, _ = self._solve(group)
-                        hit = False
-                note('solved', hit=hit, seconds=round(time.monotonic()-started, 4))
-                yield from replies
-
-    class CachedYoutubeIE(YoutubeIE):
-        @classmethod
-        def ie_key(cls):
-            return 'Youtube'
-
-        def _real_initialize(self):
-            super()._real_initialize()
-            original = self._jsc_director.providers.get('Node')
-            if original is not None:
-                self._jsc_director.providers['Node'] = CachedNodeJCP(self, original.logger, original.settings)
-
-        def _load_player(self, video_id, player_url, fatal=True):
-            key = self._player_js_cache_key(player_url)
-            if key in self._code_cache or not cache.active or not public_player(player_url):
-                return super()._load_player(video_id, player_url, fatal=fatal)
-            with cache.lock(player_url) as owned:
-                if not owned:
-                    with cache.bypass():
-                        return super()._load_player(video_id, player_url, fatal=fatal)
-                saved = cache.read(player_url)
-                if saved:
-                    self._code_cache[key] = saved['source']['code']
-                    note('hit', kind='source')
-                    return self._code_cache[key]
-                note('miss', kind='source')
-                source = super()._load_player(video_id, player_url, fatal=fatal)
-                if source:
-                    cache.write(player_url, source)
-                return source
-
-    downloader.add_info_extractor(CachedYoutubeIE(downloader))
+    downloader.add_info_extractor(CachedYoutubeIE(downloader, cache))

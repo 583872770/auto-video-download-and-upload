@@ -1259,12 +1259,12 @@ class DeliveryTests(unittest.TestCase):
 
     def test_rejected_cookie_warning_stops_before_anonymous_fallback(self):
         from types import SimpleNamespace
-        from webapp.delivery.executor import reporting_downloader
+        from webapp.delivery.executor import DeliveryDownloader
         from webapp.downloads import DownloadFailure
         from webapp.youtube_auth import YouTubeAuthRequired
         session=SimpleNamespace(failure=DownloadFailure(),progress=SimpleNamespace(state={}),config={'_cookie_pool_selected':'fixture'},store=self.store)
         with patch('webapp.youtube_auth.YouTubeAuth.reject',return_value={'state':'invalid','message':'rejected'}) as reject:
-            with reporting_downloader(session)({'quiet':True}) as downloader:
+            with DeliveryDownloader(session, {'quiet':True}) as downloader:
                 with self.assertRaises(YouTubeAuthRequired):downloader.report_warning('The provided YouTube account cookies are no longer valid')
             self.assertEqual(reject.call_args.kwargs['profile_id'],'fixture')
 

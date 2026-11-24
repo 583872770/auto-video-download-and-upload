@@ -20,31 +20,41 @@ from webapp.parallel_http import ParallelYoutubeDL
 from webapp.subtitle_tracks import SubtitleSession, caption_plan, translated, provider_options
 
 
-def reporting_downloader(session):
-    class DeliveryDownloader(ParallelYoutubeDL):
-        def to_screen(self, message, *args, **kwargs):
-            if str(message).startswith('[download] Sleeping '):
-                sleeping = re.match(r'\[download\] Sleeping (\d+(?:\.\d+)?) seconds\b', str(message))
-                session.progress.state.update(stage='waiting_request', speed=None, eta=None,
-                    request_wait_until=time.time() + float(sleeping[1]) if sleeping else None)
-                session.progress.save(force=True)
-            return super().to_screen(message, *args, **kwargs)
+class DeliveryDownloader(ParallelYoutubeDL):
+    def __init__(self, session, options):
+        self.session = session
+        super().__init__(options)
 
-        def report_warning(self, message, *args, **kwargs):
-            session.failure.warning(message)
-            session.progress.state['warning_counts'] = dict(session.failure.warnings)
-            if session.failure.cookie_rejected:
-                from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired
-                raise YouTubeAuthRequired(YouTubeAuth(session.store).reject(session.failure.message(),
-                    node=session.config.get('_resolved_clash_node', ''),
-                    profile_id=session.config.get('_cookie_pool_selected')))
-            return super().report_warning(message, *args, **kwargs)
+    def close(self):
+        try:
+            super().close()
+        finally:
+            self.session = None
 
-        def report_error(self, message, *args, **kwargs):
-            session.failure.error(message)
-            return super().report_error(message, *args, **kwargs)
-    return DeliveryDownloader
+    def to_screen(self, message, *args, **kwargs):
+        session = self.session
+        if str(message).startswith('[download] Sleeping '):
+            sleeping = re.match(r'\[download\] Sleeping (\d+(?:\.\d+)?) seconds\b', str(message))
+            session.progress.state.update(stage='waiting_request', speed=None, eta=None,
+                request_wait_until=time.time() + float(sleeping[1]) if sleeping else None)
+            session.progress.save(force=True)
+        return super().to_screen(message, *args, **kwargs)
 
+    def report_warning(self, message, *args, **kwargs):
+        session = self.session
+        session.failure.warning(message)
+        session.progress.state['warning_counts'] = dict(session.failure.warnings)
+        if session.failure.cookie_rejected:
+            from webapp.youtube_auth import YouTubeAuth, YouTubeAuthRequired
+            raise YouTubeAuthRequired(YouTubeAuth(session.store).reject(session.failure.message(),
+                node=session.config.get('_resolved_clash_node', ''),
+                profile_id=session.config.get('_cookie_pool_selected')))
+        return super().report_warning(message, *args, **kwargs)
+
+    def report_error(self, message, *args, **kwargs):
+        session = self.session
+        session.failure.error(message)
+        return super().report_error(message, *args, **kwargs)
 
 def require_key(session, kind, language=''):
     with session.store.connect() as db:
@@ -254,7 +264,7 @@ def acquire(executor, addresses):
     session.meter.begin()
     try:
         with download_cookie_session(options) as safe:
-            with reporting_downloader(session)(safe) as downloader:
+            with DeliveryDownloader(session, safe) as downloader:
                 with session.scheduler.permit('resolve'):
                     progress.state.update(stage='extracting');progress.save(force=True)
                     started = time.monotonic()
@@ -435,7 +445,7 @@ def subtitles(executor, info, safe, temporary, caption_session):
         session.progress.save(force=True)
         try:
             with executor.transmitting():
-                with reporting_downloader(session)(options) as downloader:
+                with DeliveryDownloader(session, options) as downloader:
                     caption_session.attach(downloader)
                     downloader.process_ie_result(subtitle_info, download=True)
             files = [p for p in directory.iterdir() if p.suffix in ('.vtt', '.srt', '.ttml', '.srv3', '.json3')]

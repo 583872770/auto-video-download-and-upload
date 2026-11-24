@@ -42,12 +42,20 @@ def clean_download_error(message):
     return ' '.join(message.split())[:1000]
 
 
+class PlayerExtractionError(RuntimeError):
+    """A solver failure is not evidence that the video is DRM protected."""
+    player_extraction_failed = True
+    retryable = True
+    retry_after = 60
+
+
 class DownloadFailure:
     """Retain yt-dlp's cause even when download() only returns a failure code."""
     def __init__(self):
         self.cookie_rejected = False
         self.errors = []
         self.warnings = Counter()
+        self.player_error = ''
 
     def warning(self, message):
         text = str(message).lower()
@@ -56,6 +64,9 @@ class DownloadFailure:
                     'drm_formats_skipped' if 'drm protected' in text and 'skipped' in text else
                     'signature_challenge' if 'signature' in text or 'challenge' in text else 'other')
         self.warnings[category] += 1
+        if re.search(r'(?:n challenge solving|signature (?:solving|extraction)) failed|'
+                     r'error solving .{0,80}challenge requests? using', text):
+            self.player_error = clean_download_error(str(message).splitlines()[0])[:400]
         if category == 'invalid_session':
             self.cookie_rejected = True
 
@@ -74,6 +85,7 @@ class DownloadFailure:
                     '请使用当前节点在浏览器打开视频，完成登录验证后重新导出并上传 Cookie；仍失败可更换节点。')
         detail = self.reason(reason)
         explanation = {
+            'player_challenge': '播放器 JavaScript 解析失败，无法确认可用音视频格式；不能据此认定视频受 DRM 限制。',
             'drm_only': '源站明确提示该视频只有图片可用，没有可下载的非 DRM 音视频；这是视频内容限制。',
             'format_unavailable': '当前未找到符合条件的音视频格式，原因尚未确认。',
             'no_data': '媒体请求未收到数据块，属于临时传输故障；是否重试受任务尝试次数限制。',
@@ -101,6 +113,10 @@ class DownloadFailure:
             return 'deleted'
         if 'not available in your country' in text:
             return 'geo_blocked'
+        if self.player_error and any(term in text for term in (
+                'drm protected', 'no video formats', 'requested format is not available',
+                'only images are available')):
+            return 'player_challenge'
         if 'requested format is not available' in text or ('drm protected' in text and 'only images' in text):
             return ('drm_only' if self.warnings['drm_only'] or ('drm protected' in text and 'only images' in text)
                     else 'format_unavailable')
@@ -110,7 +126,9 @@ class DownloadFailure:
         """Only explicit content restrictions are scoped to an individual video."""
         message = self.message(exception)
         text = message.lower()
-        error = (YouTubeAccountLimited(message) if 'your account has been rate-limited' in text
+        detail = self.reason(self.errors[-1] if self.errors else clean_download_error(exception or ''))
+        error = (PlayerExtractionError(message) if detail == 'player_challenge' else
+                 YouTubeAccountLimited(message) if 'your account has been rate-limited' in text
                  else RuntimeError(message))
         if exception:
             # Wrapping yt-dlp's message must retain an already scheduled cooldown.
@@ -118,7 +136,7 @@ class DownloadFailure:
                 value = getattr(exception, field, None)
                 if isinstance(value, (int, float)):
                     setattr(error, field, max(value, getattr(error, field, 0) or 0))
-        error.failure_reason = self.reason(self.errors[-1] if self.errors else clean_download_error(exception or ''))
+        error.failure_reason = detail
         if error.failure_reason == 'drm_only':
             error.failure_scope = 'video'
             error.retryable = False

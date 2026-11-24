@@ -2,6 +2,7 @@
 from collections import Counter
 from contextlib import contextmanager
 import hashlib
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ import yt_dlp
 
 from webapp.downloader import build_ydl_options
 from webapp.downloads import DownloadLeaseLost
-from webapp.parallel_http import ParallelYoutubeDL
+from webapp.parallel_http import ParallelYoutubeDL, ParallelHttpFD
 
 
 CHUNK = 64 * 1024
@@ -25,7 +26,8 @@ DATA = bytes(range(251)) * 3000 + b'last partial chunk'
 @contextmanager
 def source(mode='ranges', *, size=CHUNK):
     state = dict(active=0, peak=0, calls=[], counts=Counter(), if_ranges=[],
-                 fixture_headers=[], stopped=threading.Event())
+                 fixture_headers=[], stopped=threading.Event(), half_sent=threading.Event(),
+                 continue_range=threading.Event())
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -83,7 +85,13 @@ def source(mode='ranges', *, size=CHUNK):
                     content = content[:len(content)//2]
                 if mode == 'read-timeout' and not probe and start == size and call <= 2:
                     state['stopped'].wait(.6)
-                if mode == 'slow' and not probe:
+                if mode == 'streaming' and not probe and start == 0:
+                    half = len(content)//2
+                    self.wfile.write(content[:half]);self.wfile.flush()
+                    state['half_sent'].set()
+                    state['continue_range'].wait(5)
+                    self.wfile.write(content[half:]);self.wfile.flush()
+                elif mode == 'slow' and not probe:
                     for offset in range(0, len(content), 4096):
                         self.wfile.write(content[offset:offset+4096])
                         self.wfile.flush()
@@ -106,6 +114,7 @@ def source(mode='ranges', *, size=CHUNK):
         yield f'http://127.0.0.1:{server.server_port}/video.mp4', state
     finally:
         state['stopped'].set()
+        state['continue_range'].set()
         server.shutdown()
         server.server_close()
         thread.join()
@@ -133,6 +142,19 @@ class ParallelHttpTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.path.read_bytes()).digest(), hashlib.sha256(DATA).digest())
         self.assertFalse(Path(str(self.path) + '.part').exists())
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX advisory file locks')
+    def test_competing_range_writer_cannot_truncate_locked_partial(self):
+        self.path.write_bytes(DATA[:CHUNK])
+        with ParallelYoutubeDL({'quiet':True}) as downloader:
+            fd = ParallelHttpFD(downloader, {'file_access_retries':0})
+            stream, _ = fd.open_range_file(str(self.path), CHUNK)
+            try:
+                with self.assertRaises(OSError):
+                    fd.open_range_file(str(self.path), 0)
+                self.assertEqual(self.path.read_bytes(), DATA[:CHUNK])
+            finally:
+                stream.close()
+
     def test_ranges_overlap_within_limit_and_assemble_out_of_order_results(self):
         values = []
         with source() as (url, state):
@@ -149,6 +171,23 @@ class ParallelHttpTests(unittest.TestCase):
         self.assertEqual(counters, sorted(counters))
         self.assertEqual(values[-1]['status'], 'finished')
         self.assertEqual(counters[-1], len(DATA))
+
+    def test_range_is_written_before_the_whole_response_is_buffered(self):
+        # The server withholds the second half until the first half reaches
+        # disk. Retaining a complete range in a Future would fail this check.
+        chunk = 512 * 1024
+        observed = []
+        with source('streaming', size=chunk) as (url, state):
+            def hook(value):
+                if not state['half_sent'].is_set() or state['continue_range'].is_set():
+                    return
+                partial = Path(str(self.path) + '.part')
+                observed.append(partial.stat().st_size)
+                state['continue_range'].set()
+            self.assertTrue(self.download(url, hook=hook, overrides={'http_chunk_size':chunk})[0])
+        self.assertTrue(observed)
+        self.assertGreater(observed[0], 0)
+        self.assert_file()
 
     def test_concurrency_one_keeps_native_sequential_downloader(self):
         with source() as (url, state):

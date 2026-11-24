@@ -139,14 +139,14 @@ class DashboardAccountTaskTests(unittest.TestCase):
 
     def test_file_sleep_reports_its_actual_deadline_and_clears_unrecognized_durations(self):
         from types import SimpleNamespace
-        from webapp.delivery.executor import reporting_downloader
+        from webapp.delivery.executor import DeliveryDownloader
         from webapp.wait_diagnostics import task_wait
         progress = SimpleNamespace(state={}, save=lambda **kwargs: None)
-        downloader_type = reporting_downloader(SimpleNamespace(
+        session = SimpleNamespace(
             config={}, base=Path('.'), payload={}, store=None, progress=progress,
             test_mode=False, oss_mode=False, current_video={}, output_files=set(),
-            existing_files=set(), deferred_archives={}))
-        with downloader_type({'quiet': True}) as downloader, patch('webapp.delivery.executor.time.time', return_value=100):
+            existing_files=set(), deferred_archives={})
+        with DeliveryDownloader(session, {'quiet': True}) as downloader, patch('webapp.delivery.executor.time.time', return_value=100):
             downloader.to_screen('[download] Sleeping 12.50 seconds as required by the site...')
             waiting = task_wait(progress.state, stamp=100)
             self.assertEqual(waiting['code'], 'file_interval')

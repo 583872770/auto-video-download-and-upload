@@ -91,6 +91,31 @@ class PlayerCacheTests(unittest.TestCase):
             self.assertTrue(owned)
             return self.cache.write(url,source,prepared,compat)
 
+    def test_finished_downloader_releases_player_code_callbacks_and_session(self):
+        from webapp.delivery.executor import DeliveryDownloader
+        session = SimpleNamespace()
+        options = build_ydl_options({'_disk_state':str(self.state)}, self.state)
+        hook = lambda value: session
+        options['progress_hooks'] = [hook]
+        with fixtures([]):
+            downloader = DeliveryDownloader(session, options)
+            ie = downloader.get_info_extractor('Youtube');ie.initialize()
+            request = JsChallengeRequest(type=JsChallengeType.N,video_id='fixture',
+                input=NChallengeInput(player_url=URL,challenges=['private-challenge']))
+            self.assertEqual(len(ie._jsc_director.bulk_solve([request])), 1)
+            provider = ie._jsc_director.providers['Node']
+            self.assertIsNone(provider.source)
+            self.assertIsNone(provider.prepared)
+            self.assertIsNone(provider.built)
+            self.assertTrue(ie._code_cache)
+            downloader.close()
+            downloader.close()
+        self.assertIsNone(downloader.session)
+        self.assertFalse(ie._code_cache)
+        self.assertFalse(downloader._ies_instances)
+        self.assertFalse(downloader._progress_hooks)
+        self.assertNotIn('progress_hooks', downloader.params)
+
     def test_fresh_downloaders_reuse_public_source_and_prepared_but_solve_each_challenge(self):
         calls=[]
         with fixtures(calls):

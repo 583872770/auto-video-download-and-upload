@@ -14,7 +14,7 @@ from yt_dlp.downloader.http import HttpFD
 from yt_dlp.downloader.hls import HlsFD
 from yt_dlp.networking import Request
 from yt_dlp.networking.exceptions import CertificateVerifyError, HTTPError, IncompleteRead, TransportError
-from yt_dlp.utils import parse_http_range
+from yt_dlp.utils import parse_http_range, sanitize_path
 from yt_dlp.utils.networking import HTTPHeaderDict
 from webapp.diagnostics import safe_text
 from webapp.hls_download import YoutubeHlsFD
@@ -39,6 +39,25 @@ def transport_error_message(error):
 
 class ParallelHttpFD(HttpFD):
     FD_NAME = 'parallel-http'
+
+    @HttpFD.wrap_file_access('open', fatal=True)
+    def open_range_file(self, filename, resume):
+        # yt-dlp's locked_file supports only r/w/a, not update modes. Open
+        # without O_APPEND or O_TRUNC, acquire the exclusive lock, then reset
+        # fresh downloads. This also preserves an existing resume prefix.
+        filename = sanitize_path(filename)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_CLOEXEC', 0)
+        stream = os.fdopen(os.open(filename, flags, 0o666), 'r+b')
+        try:
+            if os.name != 'nt':
+                import fcntl
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not resume:
+                stream.truncate(0)
+            return stream, filename
+        except BaseException:
+            stream.close()
+            raise
 
     def real_download(self, filename, info_dict):
         try:
@@ -105,7 +124,10 @@ class ParallelHttpFD(HttpFD):
             raise RangeUnsupported()
         if resume:
             self.report_resuming_byte(resume)
-        stream, tmpfilename = self.sanitize_open(tmpfilename, 'ab' if resume else 'wb')
+        # Positional writes must not use O_APPEND: Linux pwrite on an append
+        # descriptor ignores its offset. Only a verified contiguous prefix is
+        # retained on cancellation, so the next attempt can resume by length.
+        stream, tmpfilename = self.open_range_file(tmpfilename, resume)
         self.report_destination(filename)
         workers = min(16, max(1, int(self.params.get('concurrent_fragment_downloads', 1))))
         self.to_screen(f'[download] HTTP 分块并行：最多 {workers} 个连接，每块 {chunk_size / 1024**2:g} MiB。')
@@ -113,6 +135,9 @@ class ParallelHttpFD(HttpFD):
         lock = threading.Lock()
         responses = set()
         received = {}
+        completed = {}
+        contiguous = resume
+        incompatible = False
         started = time.monotonic()
         samples = deque([(started, resume)])
         last_progress = started - 1
@@ -151,20 +176,31 @@ class ParallelHttpFD(HttpFD):
                                     or response.headers.get('Content-Encoding', 'identity').lower() != 'identity'
                                     or (validator and response.headers.get(validator_header) not in (None, validator))):
                                 raise RangeUnsupported()
-                            data = bytearray()
                             expected = end - offset + 1
-                            while len(data) < expected and not stop.is_set():
-                                block = response.read(min(256 * 1024, expected - len(data)))
+                            written = 0
+                            while written < expected and not stop.is_set():
+                                block = response.read(min(256 * 1024, expected - written))
                                 if not block:
                                     raise TransportError('Incomplete HTTP range')
-                                data.extend(block)
+                                # Bound retained media to one small block per
+                                # connection instead of a whole 10 MiB range.
+                                # The lock covers only local seek/write, never
+                                # network reads or callbacks.
                                 with lock:
-                                    received[offset] = max(received.get(offset, 0), len(data))
+                                    stream.seek(offset + written)
+                                    view = memoryview(block)
+                                    while view:
+                                        count = stream.write(view)
+                                        if not count:
+                                            raise OSError('无法写入下载临时文件。')
+                                        view = view[count:]
+                                    written += len(block)
+                                    received[offset] = max(received.get(offset, 0), written)
                             if stop.is_set():
                                 return
                             if response.read(1):
                                 raise RangeUnsupported()
-                            return data
+                            return offset, end + 1
                         finally:
                             with lock:
                                 responses.discard(response)
@@ -187,8 +223,8 @@ class ParallelHttpFD(HttpFD):
                 if stop.wait(min(2, .25 * attempt)):
                     return
 
-        # Keep at most `workers` chunks in flight/buffered. Unlike submitting
-        # the whole file, a slow first chunk cannot exhaust memory or disk.
+        # Keep at most `workers` range requests in flight. Futures retain only
+        # offsets; data goes straight into the temporary file in small blocks.
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='http-range')
         pending = deque()
         next_offset = resume
@@ -207,25 +243,27 @@ class ParallelHttpFD(HttpFD):
             while pending:
                 future = pending[0]
                 try:
-                    data = future.result(timeout=.2)
+                    result = future.result(timeout=.2)
                 except FutureTimeout:
                     if future.done():
-                        data = future.result()
+                        result = future.result()
                     else:
                         progress()
                         continue
-                stream.write(data)
+                offset, end = result
+                completed[offset] = end
+                while contiguous in completed:
+                    contiguous = completed.pop(contiguous)
                 pending.popleft()
                 submit()
                 progress()
             stream.flush()
-            if stream.tell() != total:
+            if contiguous != total:
                 raise RangeUnsupported()
         except RangeUnsupported:
             # The native fallback must restart, not append to an object whose
             # identity/range support was disproven by one of the responses.
-            stream.seek(0)
-            stream.truncate()
+            incompatible = True
             raise
         finally:
             stop.set()
@@ -237,7 +275,12 @@ class ParallelHttpFD(HttpFD):
                 with suppress(Exception):
                     response.close()
             pool.shutdown(wait=True, cancel_futures=True)
-            stream.close()
+            try:
+                # No writer is alive now. Discard sparse/unverified suffixes;
+                # they must never masquerade as a complete resumable prefix.
+                stream.truncate(0 if incompatible else contiguous)
+            finally:
+                stream.close()
 
         self.try_rename(tmpfilename, filename)
         if ((tmpfilename != filename and os.path.exists(tmpfilename))
@@ -257,6 +300,32 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
         super().__init__(*args, **kwargs)
         from webapp.player_cache import install
         install(self)
+
+    def close(self):
+        if getattr(self, '_delivery_closed', False):
+            return
+        self._delivery_closed = True
+        try:
+            super().close()
+        finally:
+            # Native close handles sockets/cookies but retains extractors,
+            # public player code and callbacks. Workers reuse the process,
+            # never the downloader: end those object graphs at this boundary.
+            for ie in self._ies_instances.values():
+                for name in ('_code_cache', '_player_cache'):
+                    value = getattr(ie, name, None)
+                    if isinstance(value, dict):
+                        value.clear()
+            self._ies.clear()
+            self._ies_instances.clear()
+            self._pps.clear()
+            self._progress_hooks.clear()
+            self._postprocessor_hooks.clear()
+            self._post_hooks.clear()
+            self._close_hooks.clear()
+            self.format_selector = None
+            for key in ('progress_hooks', 'postprocessor_hooks', 'post_hooks', 'logger'):
+                self.params.pop(key, None)
 
     def dl(self, name, info, subtitle=False, test=False):
         if subtitle:

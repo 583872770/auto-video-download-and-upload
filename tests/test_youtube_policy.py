@@ -41,6 +41,35 @@ class YouTubePolicyTests(unittest.TestCase):
                 status='running', worker_id=store.owner, lease_until=time.time()+3600))
         return RequestScheduler(store, {'youtube_start_interval':1}, task['id'])
 
+    def test_solver_failure_is_not_misreported_as_drm_or_account_throttle(self):
+        from webapp.download_policy import failure_evidence, recovery_policy
+        for terminal in ('This video is DRM protected', 'No video formats found!',
+                         'Requested format is not available'):
+            with self.subTest(terminal=terminal):
+                failure = DownloadFailure()
+                failure.warning('Error solving n challenge request using "node" provider: TypeError')
+                failure.warning('n challenge solving failed: Some formats may be missing')
+                failure.error(terminal)
+                evidence = failure_evidence(failure.as_error())
+                self.assertEqual((evidence.kind,evidence.reason),('extractor_failure','player_challenge'))
+                self.assertEqual(evidence.phase,'resolve')
+                self.assertTrue(evidence.retryable)
+                self.assertIsNone(evidence.http_status)
+                self.assertEqual(recovery_policy(evidence,{}).targets,('task',))
+                self.assertIn('不能据此认定',evidence.message)
+
+    def test_solver_warning_never_overrides_access_or_rate_limits_and_real_content_restrictions(self):
+        from webapp.download_policy import failure_evidence
+        for message,kind in (('HTTP Error 403: Forbidden','access_denied'),
+                             ('HTTP Error 429: Too Many Requests','request_rate_limit'),
+                             ('Your account has been rate-limited','account_rate_limit'),
+                             ('This video is private','content_restriction')):
+            failure=DownloadFailure();failure.warning('n challenge solving failed: Some formats may be missing')
+            failure.error(message)
+            self.assertEqual(failure_evidence(failure.as_error()).kind,kind)
+        failure=DownloadFailure();failure.error('This video is DRM protected')
+        self.assertEqual(failure_evidence(failure.as_error()).kind,'content_restriction')
+
     def test_source_only_applies_to_direct_downloads(self):
         config = {'path':'videos', 'proxy_mode':'direct', 'youtube_source_address':'::'}
         self.assertEqual(build_ydl_options(config, self.root)['source_address'], '::')

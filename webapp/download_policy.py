@@ -135,6 +135,8 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
     elif result and not transient:
         kind = 'authentication_required'
         phase = phase or 'auth'
+    elif any(getattr(c, 'player_extraction_failed', False) for c in chain) and status not in (401, 403):
+        kind, phase, evidence = 'extractor_failure', 'resolve', 'typed_exception'
     elif any(getattr(c, 'failure_scope', None) == 'video' for c in chain) or any(term in lower for term in (
             'private video', 'this video is private', 'members-only content', 'not available in your country',
             'requested format is not available', 'drm protected', 'video has been deleted',
@@ -152,7 +154,7 @@ def failure_evidence(error, *, phase=None, source=None, task_id=None, profile_id
         kind = 'transient_failure'
     else:
         kind = 'unknown'
-    retryable = kind in ('request_rate_limit', 'transient_failure') or kind == 'storage_failure' and transient
+    retryable = kind in ('request_rate_limit', 'transient_failure', 'extractor_failure') or kind == 'storage_failure' and transient
     reason = next((getattr(c, 'failure_reason') for c in chain if getattr(c, 'failure_reason', None)), None)
     if kind == 'content_restriction' and not reason:
         reason = ('private' if 'private video' in lower or 'this video is private' in lower else
@@ -208,6 +210,8 @@ def recovery_policy(failure, config, *, youtube=True):
             return RecoveryPolicy('retry', max(15, failure.retry_after or 0),
                                   targets=('task', 'source') if failure.http_status >= 500 else ('task',))
         return RecoveryPolicy()
+    if failure.kind == 'extractor_failure':
+        return RecoveryPolicy('retry', max(60, failure.retry_after or 0), targets=('task',))
     return RecoveryPolicy()
 
 

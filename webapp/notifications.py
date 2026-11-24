@@ -187,6 +187,8 @@ def settle_task(store, db, row, *, error=None, result=None, progress=None, retry
         code, headline, reason, next_step = 'rate_limit', '上游请求受限', '账号限额或请求过于频繁。', '等待冷却后自动重试；重试用尽时需检查账号和请求节奏。'
     elif kind == 'access_denied':
         code, headline, reason, next_step = 'access_denied', '下载请求被拒绝', '上游拒绝了本次下载请求。', '结合出错环节检查账号、网络和下载器状态，再重试该视频。'
+    elif kind == 'extractor_failure':
+        code, headline, reason, next_step = 'extractor', '播放器解析未完成', '播放器 JavaScript 解算失败，可用格式不完整；不能据此判断视频存在 DRM 限制。', '系统按任务重试上限延迟重试；持续出现时检查下载器、解算器版本和播放器缓存。'
     elif kind == 'content_restriction':
         code, headline, reason, next_step = 'content_restriction', '来源内容或格式不可用', '来源存在访问限制、已删除或不提供所选格式。', '查看原始信息，核对来源访问权限与任务交付要求。'
     elif kind == 'storage_failure':
