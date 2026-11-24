@@ -166,7 +166,7 @@ class DeliveryTests(unittest.TestCase):
         from webapp.disk_budget import DiskBudget
         job=self.create(['video_only','audio_only','subtitle'])
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
-             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+             patch('webapp.subtitle_tracks.SubtitleSession.download',return_value=[]):
             self.drain_role('download')
         task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
         pending=self.store.get(task['id'])
@@ -262,7 +262,7 @@ class DeliveryTests(unittest.TestCase):
         from webapp.database import delivery_work
         job=self.create(['video_only','audio_only','subtitle'])
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
-             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+             patch('webapp.subtitle_tracks.SubtitleSession.download',return_value=[]):
             self.drain_role('download')
         task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
         response=self.client.post('/api/jobs/'+job+'/redeliver',json={'ids':[task['id']]},headers=self.headers)
@@ -283,7 +283,7 @@ class DeliveryTests(unittest.TestCase):
         self.storage={'storage_mode':'test'}
         job=self.create(['video_only','audio_only','subtitle'])
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
-             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result',return_value=None):
+             patch('webapp.subtitle_tracks.SubtitleSession.download',return_value=[]):
             self.drain_role('download')
         self.drain_role('processing')
         task=self.client.get('/api/jobs/'+job+'/videos').json['items'][0]
@@ -370,7 +370,8 @@ class DeliveryTests(unittest.TestCase):
         task=self.store.claim(self.store.owner)
         updates=[]
         with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=info) as extract, \
-             patch('webapp.cookie_pool.CookiePool.outcome', autospec=True) as start:
+             patch('webapp.cookie_pool.CookiePool.outcome', autospec=True) as start, \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.process_ie_result', side_effect=AssertionError('video reprocessed')):
             result=self.run_task(task, report=updates.append)
             self.store.finish(task['id'],result=result,worker_id=self.store.owner)
         self.assertEqual(extract.call_count,1)
@@ -385,6 +386,79 @@ class DeliveryTests(unittest.TestCase):
         files=self.client.get('/api/media/assets?type=subtitle').json['artifacts']['items']
         self.assertEqual({(row['language'],row['subtitle_source']) for row in files},
                          {('en','manual'),('fr','manual')})
+
+    def test_caption_files_keep_the_same_start_delays_and_one_connection_pool(self):
+        from webapp.delivery.executor import DeliveryDownloader
+        self.create(['subtitle'], {'subtitles': {'format': 'vtt'}})
+        info = self.info()
+        info['subtitles']['ja'] = [{'url': self.url+'/en.vtt', 'ext': 'vtt'}]
+        self.server.RequestHandlerClass.func.protocol_version = 'HTTP/1.1'
+        cookies, connections, delays, downloaders = [], [], [], []
+        native_get = self.server.RequestHandlerClass.func.do_GET
+        native_init = DeliveryDownloader.__init__
+        def get(handler):
+            cookies.append(handler.headers.get('Cookie'))
+            connections.append(handler.client_address)
+            return native_get(handler)
+        def init(downloader, *args, **kwargs):
+            downloaders.append(downloader)
+            native_init(downloader, *args, **kwargs)
+        def extract(downloader, *args, **kwargs):
+            downloader._load_cookies('caption_session=shared', autoscope=self.url)
+            # Exercise the existing sleep path without making the test wait.
+            downloader.params.update(sleep_interval=10, max_sleep_interval=20)
+            return info
+        with patch.object(self.server.RequestHandlerClass.func, 'do_GET', get), \
+             patch.object(DeliveryDownloader, '__init__', init), \
+             patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', extract), \
+             patch('yt_dlp.downloader.common.time.sleep', side_effect=delays.append), \
+             patch('webapp.parallel_http.random.uniform', return_value=15):
+            task = self.store.claim(self.store.owner)
+            result = self.run_task(task)
+            self.store.finish(task['id'], result=result, worker_id=self.store.owner)
+            self.cleanup_result(result)
+        self.assertEqual(result['file_count'], 2)
+        self.assertEqual(delays, [15, 15])
+        self.assertEqual(cookies, ['caption_session=shared']*2)
+        self.assertEqual(len(downloaders), 1)
+        self.assertEqual(len(set(connections)), 1, 'captions must reuse the HTTP keep-alive connection')
+
+    def test_queued_plan_reconciles_reservations_only_after_writer_releases_lock(self):
+        from web_worker import execute
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget, GIB, MIB, file_lock
+        self.storage = {'storage_mode': 'test'}
+        self.create(['subtitle'], {'subtitles': {'format': 'vtt'}})
+        task = self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=self.info()):
+            result = execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.assertTrue(result['processing_pending'])
+        self.store.finish(task['id'], result=result, worker_id=self.store.owner)
+        with self.store.connect() as db:
+            work = dict(db.execute(select(delivery_work)).mappings().one())
+            plan = json.loads(work['plan'])
+            plan['jobs'][0].pop('output_estimate', None)
+            db.execute(delivery_work.update().values(plan=json.dumps(plan)))
+        budget = DiskBudget(self.store.directory, self.store.runtime())
+        with budget.connect() as db:
+            db.execute('UPDATE leases SET reserved=? WHERE id=?', (GIB, work['disk_lease']))
+            budget._set(db, 'completion:'+work['disk_lease'], GIB)
+        with file_lock(self.store.directory/'disk-locks'/(work['disk_lease']+'.lock')) as owned:
+            self.assertTrue(owned)
+            budget.refresh_processing(self.store)
+            with budget.connect(write=False) as db:
+                self.assertEqual(db.execute('SELECT reserved FROM leases').fetchone()[0], GIB)
+        budget.refresh_processing(self.store)
+        with budget.connect(write=False) as db:
+            row = db.execute('SELECT reserved,measured FROM leases').fetchone()
+            self.assertLess(row['reserved'], 20*MIB)
+            self.assertGreater(row['reserved'], row['measured'])
+        with self.store.connect() as db:
+            updated = json.loads(db.execute(select(delivery_work.c.plan)).scalar_one())
+        self.assertEqual(updated['jobs'][0]['output_estimate'], MIB)
+        self.assertTrue(Path(plan['jobs'][0]['inputs'][0]).is_file())
+        _, finished = self.execute()
+        self.assertEqual(finished['delivery_status'], 'complete')
 
     def test_mixed_delivery_starts_once_and_uses_common_transfer_admission_for_every_output(self):
         from webapp.worker.pipeline import SourceExecution
@@ -661,6 +735,25 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(Path(work['workspace']).exists())
         self.assertEqual(self.hits,[])
 
+    def test_source_handoff_does_not_consume_a_processing_slot(self):
+        from web_worker import execute
+        self.store.set_runtime({**self.store.runtime(), 'postprocess_limit': 1})
+        pending = []
+        for _ in range(2):
+            self.create(['audio_only']); task = self.store.claim(self.store.owner)
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=self.info()):
+                result = execute('download', task['payload'], store=self.store, task_id=task['id'])
+            pending.append((task, result))
+        # Acquisition has persisted its work but has not settled its source lease.
+        # This overlap must not occupy an actual local processing slot.
+        self.store.finish(pending[1][0]['id'], result=pending[1][1], worker_id=self.store.owner)
+        local = self.store.claim(self.store.owner, processing=True)
+        self.assertIsNotNone(local)
+        self.assertEqual(local['id'], pending[1][0]['id'])
+        self.store.finish(pending[0][0]['id'], result=pending[0][1], worker_id=self.store.owner)
+        self.assertIsNone(self.store.claim('another-local-worker', processing=True),
+                          'an actual local worker must still occupy the configured slot')
+
     def test_processing_role_completes_in_fresh_process_without_source_or_start_gate(self):
         import sys
         import time
@@ -694,7 +787,12 @@ class DeliveryTests(unittest.TestCase):
             self.assertIsNone(process.poll(),'empty queue must retain the worker')
             # Commit a second real source handoff after the queue was empty.
             self.create(['audio_only']);second=self.store.claim(self.store.owner)
-            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()):
+            # The controller simulates acquisition in-process, unlike production's
+            # independent source worker. Its already-running processing child is
+            # not an acquisition descendant. Isolate that controller-only watcher;
+            # the real processing subprocess retains its own unpatched monitor.
+            with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',return_value=self.info()), \
+                 patch('webapp.disk_budget.DiskLease.track_children'):
                 result=execute('download',second['payload'],store=self.store,task_id=second['id'])
             self.store.finish(second['id'],result=result,worker_id=self.store.owner)
             self.hits.clear()

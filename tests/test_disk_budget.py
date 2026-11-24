@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import time
 import traceback
 import unittest
 from unittest.mock import patch
@@ -391,6 +392,19 @@ class DiskBudgetTests(unittest.TestCase):
             with self.budget.connect(), patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03):
                 lease.check(force=True)
                 self.assertEqual(self.budget.snapshot()['active']['imports'], 1)
+
+    def test_existing_promise_does_not_scan_but_growth_and_low_watermark_still_check(self):
+        with self.assertRaises(DiskPressure):
+            with self.budget.lease('imports') as lease:
+                lease.check(force=True)
+                with patch.object(self.budget, '_refresh_usage', side_effect=AssertionError('unneeded scan')):
+                    lease.check(force=True)
+                with patch.object(self.budget, '_refresh_usage', wraps=self.budget._refresh_usage) as refresh:
+                    lease.check(lease.reserved + MIB, force=True)
+                    self.assertTrue(refresh.called)
+                self.budget.config['disk_min_free_gb'] = 1
+                with patch.object(self.budget, '_free', return_value=0):
+                    lease.check(force=True)
 
     def test_watchdog_reports_lock_pressure_and_cleanup_preserves_original_error(self):
         notified = threading.Event()
@@ -821,7 +835,9 @@ class DiskWebTests(unittest.TestCase):
         saved = self.store.get(task['id'])
         self.assertEqual(saved['status'], 'queued')
         self.assertEqual(saved['attempts'], 0)
-        self.assertEqual(saved['progress']['stage'], 'disk_wait')
+        self.assertEqual(saved['progress']['stage'], 'scheduling_wait')
+        self.assertIsNone(saved['progress']['disk_pressure'])
+        self.assertLessEqual(saved['progress']['retry_at'] - time.time(), 5)
         self.assertIn('协调繁忙', saved['error'])
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
 

@@ -96,15 +96,36 @@ def caption_plan(info, config):
 
 class SubtitleSession:
     def __init__(self, downloader):
-        self.cookiejar = downloader.cookiejar
+        # The originating downloader owns the cookie jar, connection pool,
+        # progress hooks and error handling for the entire acquisition.
+        self.downloader = downloader
 
-    def attach(self, downloader):
-        # Set the cached property before creating any network request handler.
-        # Verbose initialization may already have built handlers for its header.
-        director = downloader.__dict__.pop('_request_director', None)
-        if director is not None:
-            director.close()
-        downloader.cookiejar = self.cookiejar
+    def download(self, info, language, tracks, directory):
+        """Write one caption without reprocessing video formats or extractors.
+
+        Use yt-dlp's caption selector/writer so format preference, inline data,
+        existing files, headers and network errors keep their native semantics.
+        File-start pacing still runs through the same dl(subtitle=True) path.
+        """
+        downloader = self.downloader
+        params = downloader.params
+        downloader.params = {**params, 'writesubtitles': True, 'writeautomaticsub': True,
+            'subtitleslangs': [language], 'subtitlesformat': 'vtt/best',
+            'outtmpl': {'default': str(directory / 'caption.%(ext)s')},
+            'max_filesize': 8 * 1024 * 1024}
+        try:
+            manual, automatic = tracks
+            selected = downloader.process_subtitles(info['id'],
+                {language: manual} if manual else {},
+                {language: automatic} if not manual and automatic else {})
+            # A tiny caption-only information object avoids copying the format
+            # list and prevents video selection/postprocessors from running.
+            caption = {key: info[key] for key in ('id', 'title', 'http_headers') if key in info}
+            caption.update(ext='vtt', requested_subtitles={k: dict(v) for k, v in (selected or {}).items()})
+            written = downloader._write_subtitles(caption, str(directory / 'caption.vtt'))
+            return [path for path, _ in written or []]
+        finally:
+            downloader.params = params
 
 
 def provider_options(options, *, force_subs=False):

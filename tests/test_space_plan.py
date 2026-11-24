@@ -5,11 +5,50 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from webapp.delivery.space import acquisition_peak, output_bytes, source_bytes, unused_inputs, processing_peak
+from webapp.delivery.space import (acquisition_peak, output_bytes, source_bytes, unused_inputs,
+                                  processing_peak, refine_processing_estimates)
 from webapp.disk_budget import DiskBudget, DiskPressure, GIB, MIB
 
 
 class SpacePlanTests(unittest.TestCase):
+    def test_youtube_codec_labels_do_not_turn_stream_copy_into_transcode_forecast(self):
+        source = dict(path=Path('shared'), bytes=100*MIB, format=dict(filesize=100*MIB,
+            vcodec='avc1.640028', acodec='mp4a.40.2', ext='mp4', protocol='https'))
+        jobs = [dict(kind='av', inputs=['shared'], mp4=True, mp3=False)]
+        plan = acquisition_peak([source], jobs, 60, test_mode=True)
+        self.assertEqual(plan['processing_bytes'], 0)
+        source['format']['vcodec'] = 'vp09.00.50.08'
+        plan = acquisition_peak([source], jobs, 60, test_mode=True)
+        self.assertGreater(plan['processing_bytes'], 300*MIB)
+
+    def test_fifty_small_captions_reserve_real_conversion_cost_instead_of_24_mib_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'caption.vtt'; path.write_bytes(b'x'*4096)
+            jobs = [dict(kind='subtitle', inputs=[str(path)]) for _ in range(50)]
+            self.assertEqual(processing_peak(jobs, test_mode=True), 1200*MIB)
+            self.assertTrue(refine_processing_estimates(jobs))
+            self.assertEqual(processing_peak(jobs, test_mode=True), 50*MIB)
+            self.assertFalse(refine_processing_estimates(jobs))
+
+    def test_real_inputs_shrink_forecasts_without_dropping_transcode_or_prepared_cost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)/'source';source.write_bytes(b'x'*MIB)
+            jobs = [dict(kind=k, inputs=[str(source)], output_estimate=100*MIB, mp4=mp4, mp3=False)
+                    for k,mp4 in [('video_only',False),('av',True)]]
+            refine_processing_estimates(jobs)
+            self.assertLess(jobs[0]['output_estimate'], 2*MIB)
+            self.assertEqual(jobs[1]['output_estimate'], 3*MIB)
+            jobs[1]['prepared'] = 'ready';jobs[1]['output_estimate'] = 100*MIB
+            refine_processing_estimates(jobs)
+            self.assertEqual(jobs[1]['output_estimate'], 100*MIB)
+
+    def test_direct_publication_keeps_its_zero_extra_write_estimate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)/'source'; source.write_bytes(b'x'*MIB)
+            job = dict(kind='video_only', inputs=[str(source)], output_estimate=0)
+            self.assertFalse(refine_processing_estimates([job]))
+            self.assertEqual(processing_peak([job], test_mode=True), 0)
+
     def test_exact_approximate_and_rate_estimates_are_distinguished(self):
         self.assertEqual(source_bytes({'filesize': 1000}), 1000)
         self.assertEqual(source_bytes({'filesize_approx': 1000}), 1200)

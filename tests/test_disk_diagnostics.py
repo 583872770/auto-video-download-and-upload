@@ -58,7 +58,8 @@ class DiskNoticeTests(unittest.TestCase):
         return DiskBudget(self.store.directory, dict(disk_min_free_gb=0, disk_resume_free_gb=0, **config))
 
     def snapshot(self, budget, free=10*GIB, total=100*GIB):
-        value = budget.snapshot()
+        with patch.object(budget, '_free', return_value=free):
+            value = budget.snapshot()
         return {**value, 'free_bytes': free, 'total_bytes': total, 'low_space': False}
 
     def job_task(self):
@@ -114,11 +115,12 @@ class DiskNoticeTests(unittest.TestCase):
         # A denied large task must not block smaller tasks for the whole instance.
         with self.store.connect() as db:
             self.assertFalse(resource_blocked(self.store, db))
-        # Capacity fits after the change; recorded waits still need admission recheck.
+        # Recovered requests are not counted as current space blockage.
         larger = self.budget(disk_import_budget_mb=8)
         changed = larger.snapshot()['diagnostic']
-        self.assertEqual(changed['kind'], 'recheck')
-        self.assertEqual(changed['download']['impact'], 'some_tasks_waiting')
+        self.assertEqual(changed['waiting_tasks'], 0)
+        self.assertEqual(changed['download']['impact'], 'unaffected')
+        self.assertEqual(larger.snapshot()['recheck_tasks'], 1)
         self.assertFalse(changed['pressure'])
 
     def test_actual_free_and_reservations_are_separate_and_recovery_keeps_pause(self):
@@ -202,7 +204,7 @@ class DiskNoticeTests(unittest.TestCase):
         self.assertEqual(detail['headline'], '测试临时文件清理告警已解除')
         self.assertIn('暂停设置', detail['activity'])
 
-    def test_successful_readmission_preserves_interruption_history_but_is_not_waiting(self):
+    def test_successful_readmission_clears_wait_record_and_new_pressure_is_independent(self):
         task = self.job_task()
         budget = self.budget(disk_import_budget_mb=4)
         with budget.connect() as db:
@@ -211,11 +213,11 @@ class DiskNoticeTests(unittest.TestCase):
         with budget.lease('imports', task=task['id'], reserve=MIB) as lease:
             self.assertEqual(budget.snapshot()['waiting_tasks'], 0)
             with budget.connect(write=False) as db:
-                self.assertEqual(db.execute('SELECT interruptions FROM requirements').fetchone()[0], 2)
+                self.assertIsNone(db.execute('SELECT interruptions FROM requirements').fetchone())
             with self.assertRaises(DiskPressure):
                 budget._reserve(lease, 5*MIB)
             with budget.connect(write=False) as db:
-                self.assertEqual(db.execute('SELECT interruptions FROM requirements').fetchone()[0], 3)
+                self.assertEqual(db.execute('SELECT interruptions FROM requirements').fetchone()[0], 1)
 
     def test_retained_receipt_does_not_hide_waiting_task_or_pressure(self):
         task = self.job_task()

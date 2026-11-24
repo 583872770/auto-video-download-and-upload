@@ -157,6 +157,9 @@ def capture(store, budget, lease, task):
     """
     if lease['category'] != 'test' or not task or task['status'] != 'succeeded' or not task.get('batch_id'):
         return
+    if (task.get('progress') or {}).get('_test_files_reclaimed'):
+        task_note(store, task['id'], '快速测试文件已逐批回收，结果已登记；留样设置变更对后续完整测试生效。')
+        return
     workspace = safe_path(lease['path'], store.directory / 'test-downloads')
     with file_lock(store.directory / 'sample-maintenance.lock') as owned:
         if not owned:

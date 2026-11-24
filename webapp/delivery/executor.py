@@ -135,7 +135,33 @@ def ready(session, kind, language=''):
     return False
 
 
-def publish(session, source, kind, language='', *, retained=False, subtitle_source='', verified=False, destination=None):
+def commit_publications(session, items):
+    """One recovery manifest and one ledger transaction per bounded batch."""
+    task_id = session.payload['_task_id']
+    if session.test_mode and session.payload.get('_disk_workspace'):
+        receipt = Path(session.payload['_disk_workspace']) / '.completed-files.json'
+        existing = json.loads(receipt.read_text()) if receipt.is_file() else []
+        identities = {item['artifact']['id'] for item in items}
+        existing = [r for r in existing if r.get('artifact', {}).get('id') not in identities]
+        existing.extend(dict(**item, complete=True, method='yt_dlp') for item in items)
+        temporary = receipt.with_suffix('.tmp')
+        with temporary.open('w', encoding='utf-8') as output:
+            json.dump(existing, output);output.flush();os.fsync(output.fileno())
+        temporary.replace(receipt)
+    if len(items) == 1:
+        item = items[0]
+        recorded = [session.store.statistics.record_file(task_id, item['path'], item['video_id'],
+            item['title'], test_mode=session.test_mode, artifact=item['artifact'])]
+    else:
+        recorded = session.store.statistics.record_files(task_id, items, test_mode=session.test_mode)
+    for item, fresh in zip(items, recorded):
+        if fresh and not session.test_mode:
+            session.billable_bytes += item['size']
+        session.output_files[item['path']] = item['size']
+        session.meter.verified(item['size'])
+
+
+def publish(session, source, kind, language='', *, retained=False, subtitle_source='', verified=False, destination=None, batch=None):
     spec = session.config['_delivery_contract']
     task_id = session.payload['_task_id']
     with session.store.connect() as db:
@@ -174,23 +200,12 @@ def publish(session, source, kind, language='', *, retained=False, subtitle_sour
         uploaded = OSSStorage(storage_config).upload_files([target], root,
             lambda value: (session.progress.state.update(value), session.progress.save(force=True)))
         artifact['object_key'] = uploaded[0]['key']
-    # Crash recovery carries the same semantic receipt as normal registration.
-    if session.test_mode and session.payload.get('_disk_workspace'):
-        receipt = Path(session.payload['_disk_workspace']) / '.completed-files.json'
-        existing = json.loads(receipt.read_text()) if receipt.is_file() else []
-        existing = [r for r in existing if r.get('artifact', {}).get('id') != identity]
-        existing.append(dict(path=str(target), size=target.stat().st_size, complete=True, method='yt_dlp',
-                             video_id=task['video_id'], title=artifact['title'], artifact=artifact))
-        temporary = receipt.with_suffix('.tmp')
-        with temporary.open('w', encoding='utf-8') as output:
-            json.dump(existing, output);output.flush();os.fsync(output.fileno())
-        temporary.replace(receipt)
-    new = session.store.statistics.record_file(task_id, target, task['video_id'], artifact['title'],
-        test_mode=session.test_mode, artifact=artifact)
-    if new and not session.test_mode:
-        session.billable_bytes += target.stat().st_size
-    session.output_files[str(target)] = target.stat().st_size
-    session.meter.verified(target.stat().st_size)
+    item = dict(path=str(target), size=target.stat().st_size, video_id=task['video_id'],
+                title=artifact['title'], artifact=artifact)
+    if batch is None:
+        commit_publications(session, [item])
+    else:
+        batch.append(item)
 
 
 def choose(info, kind, max_height):
@@ -335,10 +350,19 @@ def acquire(executor, addresses):
                         raise RuntimeError('来源媒体轨道下载失败。')
                     downloaded.add(str(path))
                     session.local_jobs = [job for job in media_jobs if set(job['inputs']) <= downloaded]
+                    # Refine the extraction estimate at a file boundary, before
+                    # long multi-language caption waits retain unused capacity.
+                    source['bytes'] = path.stat().st_size
+                    source['format'] = {**selected, 'filesize': source['bytes']}
+                    forecast = acquisition_peak(sources, media_jobs, info.get('duration'), test_mode=session.test_mode)
+                    if not sub_done:
+                        forecast['peak_bytes'] += 24 * 1024**2
+                    progress.state['space_plan'] = forecast
+                    progress.save(force=True)
                 # Acquisition ends here. Conversion, verification and large-file
                 # publication run in independent local workers, without Cookies.
                 if not sub_done:
-                    subtitles(executor, info, safe, temporary, caption_session)
+                    subtitles(executor, info, temporary, caption_session)
     except (yt_dlp.utils.DownloadError, HTTPError) as error:
         raise session.failure.as_error(error) from error
     return False
@@ -395,7 +419,7 @@ def thumbnail(executor, info, downloader, temporary, key):
     print('封面图已保存：来源最佳封面，保留原始图片格式。', flush=True)
 
 
-def subtitles(executor, info, safe, temporary, caption_session):
+def subtitles(executor, info, temporary, caption_session):
     session = executor.session
     spec = session.config['_delivery_contract']
     config = spec['subtitles']
@@ -430,25 +454,18 @@ def subtitles(executor, info, safe, temporary, caption_session):
             continue
         directory = temporary / language
         directory.mkdir(exist_ok=True)
-        options = {**safe, 'skip_download': True, 'writesubtitles': True, 'writeautomaticsub': True,
-                   'subtitleslangs': [language], 'subtitlesformat': 'vtt/best',
-                   'outtmpl': str(directory / 'caption.%(ext)s'),
-                   'post_hooks': [], 'postprocessors': [], 'max_filesize': 8 * 1024 * 1024}
         manual, automatic = available[language]
         from webapp.diagnostics import event
         source_kind = 'translated' if any(translated(track) for track in (manual or automatic)) else 'manual' if manual else 'original_auto'
         event('subtitle_selected', language=language, source=source_kind)
-        subtitle_info = {**info, 'subtitles': {language: manual} if manual else {},
-                         'automatic_captions': {language: automatic} if not manual and automatic else {}}
         session.progress.state.update(output_kind='subtitle', output_language=language,
                                       subtitle_source=source_kind)
         session.progress.save(force=True)
         try:
             with executor.transmitting():
-                with DeliveryDownloader(session, options) as downloader:
-                    caption_session.attach(downloader)
-                    downloader.process_ie_result(subtitle_info, download=True)
-            files = [p for p in directory.iterdir() if p.suffix in ('.vtt', '.srt', '.ttml', '.srv3', '.json3')]
+                written = caption_session.download(info, language, (manual, automatic), directory)
+            files = [Path(p) for p in written if Path(p).is_file()
+                     and Path(p).suffix in ('.vtt', '.srt', '.ttml', '.srv3', '.json3')]
             if not files:
                 raise RuntimeError('字幕请求未生成可用文件。')
             source = files[0]

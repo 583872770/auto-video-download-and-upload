@@ -141,3 +141,32 @@ def split_copy(source, outputs):
         raise LocalDeliveryError('音视频拆轨失败，请检查源文件和 FFmpeg 环境。')
     for kind, target in outputs.items():
         verify(target, kind)
+
+
+def convert_subtitles(items):
+    """Convert up to eight independent captions with one FFmpeg invocation.
+
+    Fall back per file only when a failed batch needs precise error isolation.
+    Valid results are reused, so a bad caption never discards its neighbours.
+    """
+    if not items or len(items) > 8:
+        raise ValueError('字幕转换批次无效。')
+    command = ['ffmpeg', '-nostdin', '-v', 'error', '-y']
+    for source, target in items:
+        command += ['-i', str(source)]
+    for index, (source, target) in enumerate(items):
+        command += ['-map', f'{index}:s:0', '-threads', '1', str(target)]
+    try:
+        subprocess.run(command, capture_output=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        pass  # Keep valid partial outputs and isolate the remaining failures.
+    failures = {}
+    for source, target in items:
+        try:
+            verify(target, 'subtitle')
+        except LocalDeliveryError:
+            try:
+                convert([source], target, 'subtitle')
+            except (LocalDeliveryError, subprocess.SubprocessError) as error:
+                failures[str(target)] = error
+    return failures

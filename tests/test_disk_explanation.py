@@ -50,7 +50,7 @@ class DiskExplanationTests(unittest.TestCase):
         budget=self.budget(disk_budget_gb=100,disk_test_budget_gb=80)
         self.require(budget,2*GIB)
         snapshot=self.snapshot(budget,free=60*GIB)
-        snapshot.update(used_bytes=int(99.5*GIB),committed_bytes=int(99.75*GIB))
+        snapshot.update(used_bytes=int(99.5*GIB),committed_bytes=int(99.75*GIB),waiting_tasks=1)
         snapshot['categories']['test'].update(used_bytes=int(79.25*GIB),committed_bytes=int(79.5*GIB))
         snapshot['categories']['downloads'].update(used_bytes=int(20.25*GIB),committed_bytes=int(20.25*GIB))
         decision=explain(budget,snapshot)['download']
@@ -76,7 +76,7 @@ class DiskExplanationTests(unittest.TestCase):
             db.execute('INSERT INTO requirements VALUES (?,?,?,?,?)',('another-video',budget._version(),100*GIB,0,0))
         decision=explain(budget,self.snapshot(budget,free=60*GIB))['download']
         self.assertEqual(decision['impact'],'some_tasks_waiting')
-        self.assertIn('2 个任务等待空间复查',decision['impact_text'])
+        self.assertIn('1 个任务等待空间复查',decision['impact_text'])
         self.assertIsNone(decision['shortfall_bytes'])
 
     def test_high_disk_usage_alone_does_not_claim_downloads_stopped(self):
@@ -90,7 +90,7 @@ class DiskExplanationTests(unittest.TestCase):
         budget=self.budget(disk_min_free_gb=10,disk_resume_free_gb=15,disk_budget_gb=100,disk_test_budget_gb=80)
         self.require(budget,4*GIB)
         snapshot=self.snapshot(budget,free=20*GIB)
-        snapshot.update(used_bytes=GIB,committed_bytes=9*GIB)
+        snapshot.update(used_bytes=GIB,committed_bytes=9*GIB,waiting_tasks=1)
         decision=explain(budget,snapshot)['download']
         self.assertEqual(decision['shortfall_bytes'],2*GIB)
         self.assertEqual(decision['reservation_shortfall_bytes'],2*GIB)

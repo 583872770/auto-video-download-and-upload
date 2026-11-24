@@ -1,5 +1,7 @@
 """Caption provenance and the shared originating HTTP session."""
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -88,19 +90,40 @@ class SubtitleTrackTests(unittest.TestCase):
         self.assertFalse(translated({**ORIGINAL, 'url': ORIGINAL['url'] + '&tlang=en'}))
         self.assertFalse(translated({'url': 'https://other.test/subs?lang=en&tlang=fr'}))
 
-    def test_caption_downloads_reuse_updated_cookiejar_without_reloading_login(self):
+    def test_caption_downloads_reuse_downloader_and_restore_parameters(self):
         with yt_dlp.YoutubeDL({'quiet': True}) as original:
             original._load_cookies('VISITOR_INFO1_LIVE=first', autoscope='https://www.youtube.com')
             session = SubtitleSession(original)
-            with yt_dlp.YoutubeDL({'quiet': True}) as child:
-                session.attach(child)
-                self.assertIs(child.cookiejar, original.cookiejar)
-                child._load_cookies('VISITOR_INFO1_LIVE=second', autoscope='https://www.youtube.com')
-            with yt_dlp.YoutubeDL({'quiet': True}) as another:
-                session.attach(another)
-                self.assertIs(another.cookiejar, original.cookiejar)
-                visitor = another.cookiejar.get_cookies_for_url('https://www.youtube.com/')
-                self.assertTrue(any(cookie.value == 'second' for cookie in visitor))
+            params = original.params
+            director = original._request_director
+            with tempfile.TemporaryDirectory() as tmp, \
+                 patch.object(original, 'process_ie_result', side_effect=AssertionError('video reprocessed')), \
+                 patch.object(original, 'dl') as download:
+                for lang in ('en', 'ja'):
+                    paths = session.download({'id': 'fixture', 'title': 'Fixture'}, lang,
+                        ([ORIGINAL], None), Path(tmp))
+                    self.assertEqual(Path(paths[0]).name, f'caption.{lang}.vtt')
+                    self.assertTrue(download.call_args.kwargs['subtitle'])
+                    self.assertIs(original.params, params)
+                    self.assertIs(original._request_director, director)
+                self.assertEqual(download.call_count, 2)
+                with patch.object(original, '_write_subtitles', side_effect=RuntimeError('failure')):
+                    with self.assertRaises(RuntimeError):
+                        session.download({'id': 'fixture'}, 'en', ([ORIGINAL], None), Path(tmp))
+                self.assertIs(original.params, params)
+
+    def test_caption_format_preference_headers_and_inline_data_match_native_writer(self):
+        with yt_dlp.YoutubeDL({'quiet': True}) as downloader, tempfile.TemporaryDirectory() as tmp:
+            session = SubtitleSession(downloader)
+            tracks = [{**ORIGINAL, 'ext': 'srt'}, {**ORIGINAL, 'data': 'WEBVTT\ninline\n'}]
+            paths = session.download({'id': 'fixture', 'http_headers': {'X-Fixture': 'shared'}},
+                'en', (tracks, None), Path(tmp))
+            self.assertEqual(Path(paths[0]).read_text(), 'WEBVTT\ninline\n')
+            with patch.object(downloader, 'dl') as download:
+                session.download({'id': 'fixture', 'http_headers': {'X-Fixture': 'shared'}},
+                    'ja', (None, [{**ORIGINAL, 'ext': 'srt'}]), Path(tmp))
+                self.assertEqual(Path(download.call_args.args[0]).name, 'caption.ja.srt')
+                self.assertEqual(download.call_args.args[1]['http_headers'], {'X-Fixture': 'shared'})
 
     def test_optional_provider_keeps_other_extractor_arguments(self):
         original = {'extractor_args': {'youtube': {'player_client': ['web']}}}

@@ -20,6 +20,17 @@ def enqueue(session, *, resume_network=False):
             '_delivery_version', '_oss_namespace', '_task_storage')
     config = {key: session.config[key] for key in keys if key in session.config}
     config['_delivery_contract'] = {key: value for key, value in config['_delivery_contract'].items() if key != 'storage'}
+    from webapp.delivery.space import refine_processing_estimates, processing_peak
+    refine_processing_estimates(session.local_jobs)
+    # Acquisition now knows the actual files. Release the larger extraction
+    # estimate before captions/local work can strand its unwritten promise.
+    from webapp.disk_budget import size_of, MIB
+    used = size_of(Path(session.payload['_disk_workspace']))
+    extra = processing_peak(session.local_jobs, test_mode=session.test_mode)
+    session.progress.state['space_plan'] = dict(source_bytes=used, processing_bytes=extra,
+        peak_bytes=used + extra + 16 * MIB, estimated=bool(extra))
+    if not resume_network:
+        session.progress.save(force=True)
     plan = dict(jobs=session.local_jobs, config=config, base=str(session.base),
         current_video=session.current_video, output_files=session.output_files,
         billable_bytes=session.billable_bytes, progress=session.progress.state, resume_network=resume_network)
@@ -94,105 +105,148 @@ def run(store, task_id, work, report, *, slot=0):
         lease.start_monitor(terminate_own_descendants)
         source_probes = {}
         prepared_verified = set()
-        # A progressive file already contains both tracks. Extract any requested
-        # separate tracks before moving that shared source as the AV output.
-        ordered = sorted(plan['jobs'], key=lambda j: j['kind'] == 'av' and len(set(j['inputs'])) == 1)
+        from webapp.delivery.batches import units, test_readiness, Dependencies, retain_test_files, reclaim_test_files
+        from webapp.delivery.executor import commit_publications
+        from webapp.delivery.verify import convert_subtitles
+        dependencies = Dependencies(plan['jobs'], lease.path)
+        ordered = plan['jobs']
+        root = video_directory(config, plan['base'])
+        if config.get('shard_downloads'):
+            root /= store.get(task_id)['video_id']
         def completed(job):
-            job['done'] = True
+            committed_jobs.append(job)
+
+        for unit in units(ordered):
+            publications, committed_jobs = [], []
+            known_ready = test_readiness(session, unit) if session.test_mode else {}
+            caption_inputs = []
+            caption_jobs = {}
+            for item in unit:
+                if item['kind'] != 'subtitle' or known_ready.get(('subtitle', item.get('language', ''))):
+                    continue
+                source = safe_path(item['inputs'][0], lease.path)
+                if not item.get('destination'):
+                    item['destination'] = str(root / (uuid.uuid4().hex + '.' + item['format']))
+                if Path(item['destination']).is_file() or source.suffix == '.' + item['format']:
+                    continue
+                target = source.parent / ('processed-subtitle.' + item['format'])
+                if item.get('prepared') == str(target) and target.is_file():
+                    continue
+                caption_inputs.append((source, target))
+                caption_jobs[str(target)] = item
+            # Destination names become durable before any input is moved.
+            if unit[0]['kind'] == 'subtitle':
+                checkpoint(store, task_id, plan)
+            errors = {}
+            if caption_inputs:
+                from webapp.delivery.space import output_bytes
+                extra = sum(output_bytes([source], 'subtitle') for source, target in caption_inputs)
+                lease.check(size_of(lease.path) + extra, force=True)
+                errors = convert_subtitles(caption_inputs)
+                for source, target in caption_inputs:
+                    if str(target) not in errors:
+                        caption_jobs[str(target)]['prepared'] = str(target)
+                        prepared_verified.add(str(target))
+                checkpoint(store, task_id, plan)
+            for job in unit:
+                if job['kind'] == 'subtitle' and str(Path(job['inputs'][0]).parent / ('processed-subtitle.' + job['format'])) in errors:
+                    continue
+                kind, language = job['kind'], job.get('language', '')
+                progress.state.update(stage='processing', output_kind=kind, output_language=language)
+                progress.save(force=kind != 'subtitle')
+                if (known_ready.get((kind, language), False) if session.test_mode else ready(session, kind, language)):
+                    completed(job)
+                    continue
+                inputs = [safe_path(path, lease.path) for path in job['inputs']]
+                destination = Path(job['destination']) if job.get('destination') else None
+                if destination and destination.is_file():
+                    # A crash can happen after the atomic move, before the receipt.
+                    publish(session, destination, kind, language, retained=True,
+                            subtitle_source=job.get('subtitle_source', ''), batch=publications)
+                    completed(job)
+                    continue
+                if not all(path.is_file() for path in inputs):
+                    raise LocalDeliveryError('本地处理所需源文件缺失，请清理该来源的待处理内容后重新下载。')
+                if kind == 'subtitle':
+                    extension = '.' + job['format']
+                    direct = inputs[0].suffix == extension
+                    media, mp4 = None, False
+                    if direct:
+                        verify(inputs[0], kind)
+                else:
+                    mp4 = job['mp4']
+                    for path in inputs:
+                        if path not in source_probes:
+                            source_probes[path] = inspect(path)
+                    probes = [source_probes[path] for path in inputs]
+                    if job.get('auto'):
+                        video = next((s.get('codec_name') for s in probes[0][1]['streams'] if s.get('codec_type') == 'video'), '')
+                        audio = next((s.get('codec_name') for s in probes[-1][1]['streams'] if s.get('codec_type') == 'audio'), '')
+                        mp4 = video in ('h264', 'hevc', 'av1', 'mpeg4') and audio in ('aac', 'alac', 'mp3')
+                    media = media_output(inputs, kind, mp4=mp4, mp3=job['mp3'], probes=probes)
+                    extension, direct = media['extension'], media['direct']
+                output = inputs[0] if direct else inputs[0].parent / ('processed-' + kind + extension)
+                if not direct:
+                    from webapp.delivery.space import output_bytes
+                    transcode = kind != 'subtitle' and (
+                        kind in ('video_only', 'av') and mp4 and media['video_codec'] not in ('h264', 'hevc', 'av1', 'mpeg4') or
+                        kind == 'av' and mp4 and media['audio_codec'] not in ('aac', 'alac', 'mp3'))
+                    job['output_estimate'] = output_bytes(inputs, kind,
+                        probes=media.get('probes') if media else None,
+                        mp3=job.get('mp3', False), transcode=transcode)
+                    if job.get('prepared') == str(output) and output.is_file():
+                        if str(output) not in prepared_verified:
+                            verify(output, kind)
+                    else:
+                        partner = next((j for j in ordered if len(inputs) == 1 and j['inputs'] == job['inputs']
+                            and not j.get('done') and {j['kind'], kind} == {'video_only', 'audio_only'}), None)
+                        can_copy = (partner and not transcode and not job.get('mp3') and not partner.get('mp3')
+                            and (not partner.get('mp4') or media['video_codec'] in ('h264', 'hevc', 'av1', 'mpeg4'))
+                            and not partner.get('prepared') and not partner.get('destination'))
+                        if can_copy and not ready(session, partner['kind']):
+                            from webapp.delivery.verify import split_copy
+                            other_media = media_output(inputs, partner['kind'], mp4=partner['mp4'],
+                                                       mp3=False, probes=probes)
+                            other = inputs[0].parent / ('processed-' + partner['kind'] + other_media['extension'])
+                            partner['output_estimate'] = output_bytes(inputs, partner['kind'], probes=probes)
+                            lease.check(size_of(lease.path) + job['output_estimate'] + partner['output_estimate'], force=True)
+                            split_copy(inputs[0], {kind: output, partner['kind']: other})
+                            job['prepared'], partner['prepared'] = str(output), str(other)
+                            prepared_verified.update((str(output), str(other)))
+                            checkpoint(store, task_id, plan)
+                        else:
+                            lease.check(size_of(lease.path) + job['output_estimate'], force=True)
+                            convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media)
+                print(f'{LABELS[kind]}：' + ('原始文件符合要求，直接交付。' if direct else '格式处理完成，正在交付。'), flush=True)
+                if not destination:
+                    root = video_directory(config, plan['base'])
+                    if config.get('shard_downloads'):
+                        root /= store.get(task_id)['video_id']
+                    destination = root / (uuid.uuid4().hex + extension)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    job['destination'] = str(destination)
+                    checkpoint(store, task_id, plan)
+                progress.state.update(local_operation='原始文件直接交付' if direct else '格式处理完成')
+                publish(session, output, kind, language, verified=True, destination=destination,
+                        subtitle_source=job.get('subtitle_source', ''), batch=publications)
+                completed(job)
+            if publications:
+                commit_publications(session, publications)
+            for job in committed_jobs:
+                job['done'] = True
+            discard = not plan['resume_network'] and not retain_test_files(session)
+            if discard:
+                progress.state['_test_files_reclaimed'] = True
             plan.update(output_files=session.output_files, billable_bytes=session.billable_bytes,
                         progress=dict(progress.state))
-            # The receipt commits before dependencies can be retired. A crash
-            # after this checkpoint resumes by checking the durable receipt.
             checkpoint(store, task_id, plan)
-            from webapp.delivery.space import unused_inputs
-            for name in unused_inputs(plan['jobs']):
-                source = safe_path(name, lease.path)
-                if str(source) not in session.output_files:
-                    source.unlink(missing_ok=True)
+            dependencies.retire(committed_jobs, session.output_files)
+            if discard:
+                reclaim_test_files(committed_jobs, dependencies)
             from webapp.delivery.space import processing_peak
-            extra = processing_peak(plan['jobs'], test_mode=session.test_mode)
-            lease.checkpoint_space(extra)
-
-        for job in ordered:
-            kind, language = job['kind'], job.get('language', '')
-            progress.state.update(stage='processing', output_kind=kind, output_language=language)
-            progress.save(force=True)
-            if ready(session, kind, language):
-                completed(job)
-                continue
-            inputs = [safe_path(path, lease.path) for path in job['inputs']]
-            destination = Path(job['destination']) if job.get('destination') else None
-            if destination and destination.is_file():
-                # A crash can happen after the atomic move, before the receipt.
-                publish(session, destination, kind, language, retained=True,
-                        subtitle_source=job.get('subtitle_source', ''))
-                completed(job)
-                continue
-            if not all(path.is_file() for path in inputs):
-                raise LocalDeliveryError('本地处理所需源文件缺失，请清理该来源的待处理内容后重新下载。')
-            if kind == 'subtitle':
-                extension = '.' + job['format']
-                direct = inputs[0].suffix == extension
-                media, mp4 = None, False
-                if direct:
-                    verify(inputs[0], kind)
-            else:
-                mp4 = job['mp4']
-                for path in inputs:
-                    if path not in source_probes:
-                        source_probes[path] = inspect(path)
-                probes = [source_probes[path] for path in inputs]
-                if job.get('auto'):
-                    video = next((s.get('codec_name') for s in probes[0][1]['streams'] if s.get('codec_type') == 'video'), '')
-                    audio = next((s.get('codec_name') for s in probes[-1][1]['streams'] if s.get('codec_type') == 'audio'), '')
-                    mp4 = video in ('h264', 'hevc', 'av1', 'mpeg4') and audio in ('aac', 'alac', 'mp3')
-                media = media_output(inputs, kind, mp4=mp4, mp3=job['mp3'], probes=probes)
-                extension, direct = media['extension'], media['direct']
-            output = inputs[0] if direct else inputs[0].parent / ('processed-' + kind + extension)
-            if not direct:
-                from webapp.delivery.space import output_bytes
-                transcode = kind != 'subtitle' and (
-                    kind in ('video_only', 'av') and mp4 and media['video_codec'] not in ('h264', 'hevc', 'av1', 'mpeg4') or
-                    kind == 'av' and mp4 and media['audio_codec'] not in ('aac', 'alac', 'mp3'))
-                job['output_estimate'] = output_bytes(inputs, kind,
-                    probes=media.get('probes') if media else None,
-                    mp3=job.get('mp3', False), transcode=transcode)
-                if job.get('prepared') == str(output) and output.is_file():
-                    if str(output) not in prepared_verified:
-                        verify(output, kind)
-                else:
-                    partner = next((j for j in ordered if len(inputs) == 1 and j['inputs'] == job['inputs']
-                        and not j.get('done') and {j['kind'], kind} == {'video_only', 'audio_only'}), None)
-                    can_copy = (partner and not transcode and not job.get('mp3') and not partner.get('mp3')
-                        and (not partner.get('mp4') or media['video_codec'] in ('h264', 'hevc', 'av1', 'mpeg4'))
-                        and not partner.get('prepared') and not partner.get('destination'))
-                    if can_copy and not ready(session, partner['kind']):
-                        from webapp.delivery.verify import split_copy
-                        other_media = media_output(inputs, partner['kind'], mp4=partner['mp4'],
-                                                   mp3=False, probes=probes)
-                        other = inputs[0].parent / ('processed-' + partner['kind'] + other_media['extension'])
-                        partner['output_estimate'] = output_bytes(inputs, partner['kind'], probes=probes)
-                        lease.check(size_of(lease.path) + job['output_estimate'] + partner['output_estimate'], force=True)
-                        split_copy(inputs[0], {kind: output, partner['kind']: other})
-                        job['prepared'], partner['prepared'] = str(output), str(other)
-                        prepared_verified.update((str(output), str(other)))
-                        checkpoint(store, task_id, plan)
-                    else:
-                        lease.check(size_of(lease.path) + job['output_estimate'], force=True)
-                        convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media)
-            print(f'{LABELS[kind]}：' + ('原始文件符合要求，直接交付。' if direct else '格式处理完成，正在交付。'), flush=True)
-            if not destination:
-                root = video_directory(config, plan['base'])
-                if config.get('shard_downloads'):
-                    root /= store.get(task_id)['video_id']
-                destination = root / (uuid.uuid4().hex + extension)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                job['destination'] = str(destination)
-                checkpoint(store, task_id, plan)
-            progress.state.update(local_operation='原始文件直接交付' if direct else '格式处理完成')
-            publish(session, output, kind, language, verified=True, destination=destination,
-                    subtitle_source=job.get('subtitle_source', ''))
-            completed(job)
+            lease.checkpoint_space(processing_peak(plan['jobs'], test_mode=session.test_mode))
+            if errors:
+                raise next(iter(errors.values()))
         result = finish(session)
         if result.get('file_count'):
             budget.record_video_size(max(result['file_bytes'], lease.estimate), merged=False)
@@ -202,6 +256,8 @@ def run(store, task_id, work, report, *, slot=0):
         elif plan['resume_network']:
             result['network_pending'] = True
         result.update(test_mode=session.test_mode, _processing_workspace=work)
+        if progress.state.get('_test_files_reclaimed'):
+            result['_test_files_reclaimed'] = True
         if payload.get('_force_test_sample'):
             result['_sample_requested'] = True
         # No new network traffic. Keep the acquisition byte counter for logs.

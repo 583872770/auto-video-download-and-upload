@@ -1,5 +1,6 @@
 """Transactional session totals and a ledger of completed video files."""
 from datetime import datetime
+from contextlib import nullcontext
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
@@ -301,11 +302,31 @@ class DownloadStatistics:
             self._dashboard_cache.clear()
         return recorded
 
-    def _record_file(self, task_id, path, size, video_id, title, *, test_mode, artifact=None):
+    def record_files(self, task_id, files, *, test_mode=False):
+        """Register a bounded publication batch in one retriable transaction."""
+        from webapp.db_retry import transaction_retry
+        prepared = [{**item, 'path': Path(item['path']).resolve(),
+                     'size': Path(item['path']).stat().st_size} for item in files]
+        if len(prepared) > 16 or any(item['size'] <= 0 for item in prepared):
+            raise ValueError('文件登记批次无效。')
+        def commit():
+            with self.store.connect() as db:
+                if self.db.sqlite:
+                    db.exec_driver_sql('BEGIN IMMEDIATE')
+                return [self._record_file(task_id, item['path'], item['size'],
+                    item.get('video_id', ''), item.get('title', ''), test_mode=test_mode,
+                    artifact=item.get('artifact'), _db=db) for item in prepared]
+        result = transaction_retry(commit)
+        if any(result):
+            self._history_cache.clear()
+            self._dashboard_cache.clear()
+        return result
+
+    def _record_file(self, task_id, path, size, video_id, title, *, test_mode, artifact=None, _db=None):
         # A delivered path is registered once across retries and sessions.
         ledger = test_files if test_mode else deliveries
-        with self.store.connect() as db:
-            if self.db.sqlite:
+        with (self.store.connect() if _db is None else nullcontext(_db)) as db:
+            if self.db.sqlite and _db is None:
                 db.exec_driver_sql('BEGIN IMMEDIATE')
             task = db.execute(self.store._locked(select(tasks).where(tasks.c.id == task_id))).mappings().first()
             if not task or task['status'] != 'running' or task['worker_id'] != self.store.owner:

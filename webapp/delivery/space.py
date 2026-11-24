@@ -14,6 +14,25 @@ def positive(value):
         return 0
 
 
+def codec_family(codec):
+    """Normalize extractor codec labels only for space forecasts."""
+    value = str(codec or '').lower()
+    prefix = value.split('.', 1)[0]
+    if prefix in ('avc1', 'avc3'):
+        return 'h264'
+    if prefix in ('hvc1', 'hev1'):
+        return 'hevc'
+    if prefix == 'av01':
+        return 'av1'
+    if prefix == 'mp4v':
+        return 'mpeg4'
+    if value.startswith('mp4a.40'):
+        return 'aac'
+    if value in ('mp4a.69', 'mp4a.6b'):
+        return 'mp3'
+    return value
+
+
 def source_bytes(fmt, duration=0):
     exact = positive(fmt.get('filesize'))
     approximate = positive(fmt.get('filesize_approx'))
@@ -57,7 +76,7 @@ def acquisition_peak(sources, jobs, duration, *, test_mode):
         selected = [by_path[path] for path in dict.fromkeys(job['inputs'])]
         kind = job['kind']
         fmt = selected[0]['format']
-        compatible = fmt.get('vcodec') in ('h264', 'hevc', 'av1', 'mpeg4') and fmt.get('acodec') in ('aac', 'alac', 'mp3')
+        compatible = codec_family(fmt.get('vcodec')) in ('h264', 'hevc', 'av1', 'mpeg4') and codec_family(fmt.get('acodec')) in ('aac', 'alac', 'mp3')
         mp4_output = job['mp4'] or job.get('auto') and compatible
         av_container = fmt.get('ext') in (('mp4', 'mov') if mp4_output else ('mkv', 'webm'))
         direct_av = (kind == 'av' and len(selected) == 1 and av_container and
@@ -69,8 +88,8 @@ def acquisition_peak(sources, jobs, duration, *, test_mode):
             job['output_estimate'] = 0
             continue
         amount = sum(item['bytes'] for item in selected)
-        video = selected[0]['format'].get('vcodec')
-        audio = selected[-1]['format'].get('acodec')
+        video = codec_family(selected[0]['format'].get('vcodec'))
+        audio = codec_family(selected[-1]['format'].get('acodec'))
         transcode = (job['mp4'] and (kind in ('video_only', 'av') and video not in ('h264', 'hevc', 'av1', 'mpeg4') or
                      kind == 'av' and audio not in ('aac', 'alac', 'mp3')))
         if transcode:
@@ -87,6 +106,33 @@ def acquisition_peak(sources, jobs, duration, *, test_mode):
     return dict(source_bytes=original, processing_bytes=scratch,
                 peak_bytes=original + scratch + 16 * MIB,
                 estimated=any(not positive(s['format'].get('filesize')) for s in sources))
+
+
+def refine_processing_estimates(jobs):
+    """Bound pending writes by actual acquired files, without network or probes.
+
+    Codec-sensitive MP4/MP3 conversions retain a conservative transcode bound.
+    A caption no longer reserves 24 MiB merely because its estimate is absent.
+    """
+    changed = False
+    for job in jobs:
+        if job.get('done') or job.get('prepared'):
+            continue
+        paths = [Path(p) for p in dict.fromkeys(job['inputs'])]
+        if not all(p.is_file() for p in paths):
+            continue
+        if job['kind'] == 'subtitle':
+            amount = output_bytes(paths, 'subtitle')
+        else:
+            total = sum(p.stat().st_size for p in paths)
+            factor = 3 if job.get('mp4') or job.get('mp3') else 1.05
+            amount = max(MIB, math.ceil(total * factor))
+            if job.get('output_estimate') is not None:
+                amount = min(amount, int(job['output_estimate']))
+        if job.get('output_estimate') != amount:
+            job['output_estimate'] = amount
+            changed = True
+    return changed
 
 
 def unused_inputs(jobs):

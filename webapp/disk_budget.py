@@ -1,6 +1,7 @@
 """Instance-local, crash-safe reservations for disposable files (software limits)."""
 from contextlib import contextmanager
 import errno
+import hashlib
 import json
 import logging
 import math
@@ -393,17 +394,27 @@ class DiskBudget:
         from sqlalchemy import select
         from webapp.database import tasks, delivery_work
         with store.connect() as db:
-            work = list(db.execute(select(delivery_work.c.disk_lease, delivery_work.c.plan).select_from(
+            work = [dict(row) for row in db.execute(select(delivery_work).select_from(
                 delivery_work.join(tasks, tasks.c.id == delivery_work.c.task_id)).where(
                 delivery_work.c.instance_id == (store.fleet.id if store.fleet else 'local'),
-                tasks.c.status.in_(('queued', 'running'))).order_by(delivery_work.c.created_at).limit(512)).mappings())
+                tasks.c.status.in_(('queued', 'running'))).order_by(delivery_work.c.created_at).limit(512)).mappings()]
         with self.connect(write=False) as db:
             leases = {row['id']: dict(row) for row in db.execute('SELECT * FROM leases')}
+            refined = {row['key']: json.loads(row['value']) for row in db.execute(
+                "SELECT key,value FROM state WHERE key LIKE 'refinement:%'")}
         scratch = []
         for item in work:
             row = leases.get(item['disk_lease'])
             if not row:
                 continue
+            fingerprint = hashlib.sha256(item['plan'].encode()).hexdigest()
+            if refined.get('refinement:' + row['id']) != [fingerprint, row['reserved']]:
+                self._refine_queued_plan(store, item, row)
+                # Refinement may shrink the promise; refresh only that row.
+                with self.connect(write=False) as db:
+                    row = db.execute('SELECT * FROM leases WHERE id=?', (item['disk_lease'],)).fetchone()
+                if not row:
+                    continue
             plan = json.loads(item['plan'])
             pending = []
             for job in plan['jobs']:
@@ -427,7 +438,62 @@ class DiskBudget:
                 scratch.append(additional)
         slots = max(1, min(8, int(self.config.get('postprocess_limit', 2))))
         with self.connect() as db:
-            self._set(db, 'processing_scratch', sum(scratch[:slots]))
+            amount = sum(sorted(scratch, reverse=True)[:slots])
+            if self._get(db, 'processing_scratch', 0) != amount:
+                self._set(db, 'processing_scratch', amount)
+            db.execute("DELETE FROM state WHERE key LIKE 'refinement:%' AND substr(key,12) NOT IN (SELECT id FROM leases)")
+
+    def _refine_queued_plan(self, store, item, lease):
+        """Reconcile a stopped acquisition's promise with its real inputs.
+
+        Both new and interrupted work use the same path. Never probe or touch
+        a running writer, and commit the plan before lowering its reservation.
+        """
+        if alive(json.loads(lease['owner'])) or any(alive(c) for c in json.loads(lease['children'])):
+            return
+        from sqlalchemy import select
+        from webapp.database import tasks, delivery_work
+        from webapp.delivery.space import refine_processing_estimates, processing_peak
+        with file_lock(self.directory / 'disk-locks' / (lease['id'] + '.lock')) as owned:
+            if not owned:
+                return
+            with store.connect() as db:
+                task = db.execute(select(tasks.c.status).where(tasks.c.id == item['task_id']).with_for_update()).first()
+                work = db.execute(select(delivery_work).where(delivery_work.c.task_id == item['task_id'],
+                    delivery_work.c.disk_lease == lease['id']).with_for_update()).mappings().first()
+                if not task or task[0] != 'queued' or not work:
+                    return
+                plan = json.loads(work['plan'])
+                # Validate every path before reading file metadata.
+                for job in plan['jobs']:
+                    for path in job['inputs']:
+                        safe_path(path, self._safe(lease['path']))
+                if refine_processing_estimates(plan['jobs']):
+                    db.execute(delivery_work.update().where(delivery_work.c.task_id == item['task_id']).values(
+                        plan=json.dumps(plan, ensure_ascii=False)))
+                item['plan'] = json.dumps(plan, ensure_ascii=False)
+            used = size_of(self._safe(lease['path']))
+            extra = processing_peak(plan['jobs'], test_mode=plan['config'].get('storage_mode') == 'test')
+            needed = used + extra + 16 * MIB
+            # Releasing a promise must use the same scanner coordination as
+            # release_retained. Removed bytes remain conservatively counted.
+            with file_lock(self.directory / 'disk-usage.lock', blocking=True) as acquired:
+                if not acquired:
+                    return
+                with self.connect() as db:
+                    row = db.execute('SELECT * FROM leases WHERE id=?', (lease['id'],)).fetchone()
+                    if not row:
+                        return
+                    fingerprint = hashlib.sha256(item['plan'].encode()).hexdigest()
+                    reserved = min(needed, row['reserved'])
+                    self._set(db, 'refinement:' + lease['id'], [fingerprint, reserved])
+                    if needed >= row['reserved']:
+                        return
+                    cached = self._get(db, 'usage', {'time': 0, 'bytes': {}})
+                    cached['bytes'][row['category']] = cached['bytes'].get(row['category'], 0) + max(0, used-row['measured'])
+                    self._set(db, 'usage', cached)
+                    db.execute('UPDATE leases SET reserved=?,measured=? WHERE id=?', (needed, used, lease['id']))
+                    self._set(db, 'completion:' + lease['id'], needed)
 
     def _free(self):
         free = shutil.disk_usage(self.directory).free
@@ -477,8 +543,20 @@ class DiskBudget:
             if not waiting and not any(committed[k] >= v for k, v in self.limits.items()) and sum(committed.values()) < int(self.config['disk_budget_gb']) * GIB:
                 blocked = ''
             rows = db.execute('SELECT category,COUNT(*) n FROM leases WHERE reserved > 0 GROUP BY category').fetchall()
-            waiting_tasks = db.execute('SELECT COUNT(*) FROM requirements WHERE task NOT IN '
-                '(SELECT task FROM leases WHERE task IS NOT NULL AND reserved > 0)').fetchone()[0]
+            pending = db.execute('SELECT * FROM requirements WHERE task NOT IN '
+                '(SELECT task FROM leases WHERE task IS NOT NULL AND reserved > 0)').fetchall()
+            pressure = self._get(db, 'pressure', {})
+            protected = self._get(db, 'processing_scratch', 0)
+            unused = sum(max(0, r['reserved']-r['measured']) for r in db.execute('SELECT reserved,measured FROM leases'))
+            waiting_tasks = 0
+            for request in pending:
+                category = (pressure['category'] if pressure.get('task_id') == request['task'] and pressure.get('category') in self.limits
+                    else 'test' if json.loads(request['version'])['policy'].get('storage_mode') == 'test' else 'downloads')
+                available = min(free-unused-int(self.config['disk_min_free_gb'])*GIB,
+                    self.limits[category]-committed[category],
+                    int(self.config['disk_budget_gb'])*GIB-sum(committed.values())) - protected
+                if waiting or request['needed'] > available or any(usage[k] > v for k,v in self.limits.items()):
+                    waiting_tasks += 1
             result = dict(mode='software', directory=str(self.directory), free_bytes=free,
                         total_bytes=shutil.disk_usage(self.directory).total,
                         used_bytes=sum(usage.values()), committed_bytes=sum(committed.values()),
@@ -488,7 +566,7 @@ class DiskBudget:
                         low_space=waiting, message=('磁盘剩余空间不足，正在等待自动恢复。' if waiting else blocked),
                         processing_scratch_bytes=self._get(db, 'processing_scratch', 0),
                         active=dict((r['category'], r['n']) for r in rows),
-                        waiting_tasks=waiting_tasks,
+                        waiting_tasks=waiting_tasks, recheck_tasks=len(pending)-waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
             result['test_samples'] = dict(**self._get(db, 'sample_status', {}), budget_bytes=int(self.config.get('disk_sample_budget_mb', 3072)) * MIB,
                 last_cleanup=self._get(db, 'sample_cleanup', {}))
@@ -589,18 +667,19 @@ class DiskBudget:
         return blocked
 
     def _reserve(self, lease, needed):
-        self._refresh_usage()
         if lease.reserved >= needed:
             # The common progress/watchdog path only validates an existing
             # promise. It must not queue for a writer or generate journal I/O.
             with self.connect(write=False) as db:
-                usage, committed = self._usage(db)
                 waiting, free = self._watermark(db, persist=False)
                 old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
                 if (old and old[0] >= needed and free >= int(self.config['disk_min_free_gb']) * GIB
                         and waiting == self._get(db, 'low_space', False)):
                     lease.reserved = old[0]
                     return
+        # Directory scans and aggregate accounting are admission work. An
+        # unchanged, persisted promise above the low watermark needs neither.
+        self._refresh_usage()
         for attempt in range(2):
             if attempt:
                 self._refresh_usage(force=True)
@@ -681,6 +760,8 @@ class DiskBudget:
                                    (lease.id, lease.category, str(lease.path), lease.task,
                                     json.dumps(process_identity()), needed, time.time()))
                     lease.reserved = max(previous, needed)
+                    if lease.task:
+                        db.execute('DELETE FROM requirements WHERE task=?', (lease.task,))
             break
         if reason:
             raise DiskPressure(reason, pressure)

@@ -18,7 +18,7 @@ from webapp.worker.heartbeat import LeaseHeartbeat
 def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     execute = execute_task
     TaskStore = store_factory
-    from webapp.disk_budget import DiskPressure, is_disk_full, MIB
+    from webapp.disk_budget import DiskPressure, DiskCoordinationBusy, is_disk_full, MIB
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost, YouTubeAccountLimited
@@ -182,6 +182,15 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         event('attempt_released', reason='pipeline_backpressure', message=str(error),
                               retry_after=error.retry_after, worker_delay_seconds=worker_delay,
                               wait_scope=getattr(error, 'wait_scope', None))
+                        continue
+                    except DiskCoordinationBusy as error:
+                        store.update_progress(task['id'], {**last_progress,
+                            'stage': 'waiting_processing' if processing_task else 'scheduling_wait',
+                            'speed': None, 'eta': None, 'wait_reason': str(error),
+                            'retry_at': time.time() + 5, 'disk_pressure': None}, store.owner)
+                        lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=5)
+                        next_claim_after = time.monotonic() + 1
+                        event('attempt_released', reason='disk_coordination_busy', message=str(error), retry_after=5)
                         continue
                     except DiskPressure as error:
                         resource_wait = str(error)

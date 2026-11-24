@@ -64,7 +64,10 @@ class TaskLeases:
                     json.loads(db.execute(select(settings.c.value).where(settings.c.key == 'runtime')).scalar_one_or_none() or '{}'))
                 active = db.execute(select(func.count()).select_from(tasks.join(delivery_work,
                     tasks.c.id == delivery_work.c.task_id)).where(tasks.c.status == 'running',
-                    tasks.c.lease_until > stamp, delivery_work.c.instance_id == local_id)).scalar_one()
+                    tasks.c.lease_until > stamp, delivery_work.c.instance_id == local_id,
+                    # Persisting a handoff still runs under the source lease.
+                    # A local claim increments this counter atomically below.
+                    delivery_work.c.attempts > 0)).scalar_one()
                 if active >= max(1, min(8, int(config.get('postprocess_limit', 2)))):
                     return None
             else:
@@ -105,7 +108,17 @@ class TaskLeases:
             ordering = ((delivery_work.c.created_at, tasks.c.seq) if processing else
                         (tasks.c.seq,) if workbench_download else (tasks.c.available_at, tasks.c.seq))
             if row is None:
-                row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
+                if processing:
+                    from webapp.delivery.batches import select_work
+                    candidates = db.execute(self._locked(statement.add_columns(
+                        delivery_work.c.plan.label('_work_plan'),
+                        delivery_work.c.created_at.label('_work_created'))
+                        .order_by(*ordering).limit(16), skip=True)).mappings().all()
+                    if candidates:
+                        row = {key: value for key, value in select_work(candidates, stamp).items()
+                               if key not in ('_work_plan', '_work_created')}
+                else:
+                    row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
             if row is None:
                 return None
             self._transition(db, row, 'running')
@@ -310,6 +323,7 @@ class TaskLeases:
                 result = dict(result)
                 result.pop('_processing_workspace', None)
             sample_requested = (result or {}).pop('_sample_requested', False)
+            test_files_reclaimed = (result or {}).pop('_test_files_reclaimed', False)
             work = None
             if error or (result or {}).get('source_failed'):
                 work = db.execute(select(delivery_work).where(delivery_work.c.task_id == task_id)).mappings().first()
@@ -375,6 +389,8 @@ class TaskLeases:
             status = 'queued' if retry else 'failed' if error else 'succeeded'
             live = self.progress_cache.read(row)
             progress = live['progress'] if live else json.loads(row['progress']) if row['progress'] else {}
+            if test_files_reclaimed:
+                progress['_test_files_reclaimed'] = True
             if source_failure:
                 progress.update(source_failure['progress'])
                 # The account is no longer held by a local worker. Retry
