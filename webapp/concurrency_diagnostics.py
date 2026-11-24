@@ -4,7 +4,7 @@ import json
 import math
 from collections import Counter
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 
 from webapp.database import download_permits, download_resources, settings, tasks
 from webapp.concurrency_policy import cookie_pool_start_interval, fragment_limit
@@ -19,26 +19,22 @@ def read_context(db, configurations, stamp):
     """Batch only known resource identities, and count permits with valid leases."""
     scopes = set().union(*(scopes_for(config, identity) for identity, config in configurations))
     keys = {hashlib.sha256(scope.encode()).hexdigest(): scope for scope in scopes}
-    local_keys = [key for key, scope in keys.items() if scope.startswith('source-transfer:')]
-    holder = case((download_permits.c.resource.in_(local_keys), download_permits.c.task_id), else_='')
     states = {keys[key]: json.loads(value) for key, value in db.execute(
         select(download_resources.c.key, download_resources.c.state).where(download_resources.c.key.in_(keys)))}
-    usage, holders = Counter(), {}
-    for key, task_id, value in db.execute(
-        select(download_permits.c.resource, holder,
+    usage = Counter()
+    for key, value in db.execute(
+        select(download_permits.c.resource,
                func.sum(download_permits.c.units)).select_from(
             download_permits.join(tasks, (download_permits.c.task_id == tasks.c.id)
                                   & (download_permits.c.owner == tasks.c.worker_id))).where(
             download_permits.c.resource.in_(keys), tasks.c.status == 'running', tasks.c.lease_until > stamp
-        ).group_by(download_permits.c.resource, holder)):
+        ).group_by(download_permits.c.resource)):
         scope = keys[key]
         usage[scope] += int(value)
-        if task_id:
-            holders.setdefault(scope, {})[task_id] = int(value)
     disk_keys = ['disk:' + identity for identity, _ in configurations]
     disk = {key.removeprefix('disk:'): json.loads(value) for key, value in db.execute(
         select(settings.c.key, settings.c.value).where(settings.c.key.in_(disk_keys)))}
-    return states, usage, disk, holders
+    return states, usage, disk, {}
 
 
 def cookie_allocation(config, identity, pool, allocation, context, stamp, current_tasks, profiles, *,
@@ -145,8 +141,7 @@ def cookie_allocation(config, identity, pool, allocation, context, stamp, curren
 
 
 def scopes_for(config, identity):
-    return {'source-transfer:' + identity, 'source-resolve:' + identity,
-            'source:youtube', 'youtube-cookie-pool:' + identity, 'execution:' + identity}
+    return {'source:youtube', 'youtube-cookie-pool:' + identity, 'execution:' + identity}
 
 
 def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0, global_running=0,
@@ -166,7 +161,9 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
     if disk_fresh and disk.get('blocked') or not online or paused:
         upper = 0
     stages = Counter(p.get('stage', 'preparing') for p in progress)
-    holders = context[3].get('source-transfer:' + identity, {}) if len(context) > 3 else {}
+    holders = {task['id']: 1 for task in current_tasks if
+        (task.get('progress') or {}).get('transfer_admitted') and
+        task.get('lease_until', stamp + 1) and task.get('lease_until', stamp + 1) > stamp}
     by_id = {task['id']: task for task in current_tasks}
     occupied = []
     for task_id in holders:

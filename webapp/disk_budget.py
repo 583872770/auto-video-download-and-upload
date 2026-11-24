@@ -23,7 +23,7 @@ from webapp.db_pool_calculator import target_workers
 GIB = 1024 ** 3
 MIB = 1024 ** 2
 COORDINATION_TIMEOUT = 5
-USAGE_INTERVAL = 5
+USAGE_INTERVAL = 30
 
 
 class DiskPressure(RuntimeError):
@@ -384,6 +384,51 @@ class DiskBudget:
             committed[category] = committed.get(category, 0) + max(0, row['reserved'] - row['measured'])
         return usage, committed
 
+    def refresh_processing(self, store):
+        """Protect shared scratch for queued plans that have no completion promise.
+
+        Inspect the small local work table, not the millions of source tasks.
+        New acquisitions already hold their own completion reservation.
+        """
+        from sqlalchemy import select
+        from webapp.database import tasks, delivery_work
+        with store.connect() as db:
+            work = list(db.execute(select(delivery_work.c.disk_lease, delivery_work.c.plan).select_from(
+                delivery_work.join(tasks, tasks.c.id == delivery_work.c.task_id)).where(
+                delivery_work.c.instance_id == (store.fleet.id if store.fleet else 'local'),
+                tasks.c.status.in_(('queued', 'running'))).order_by(delivery_work.c.created_at).limit(512)).mappings())
+        with self.connect(write=False) as db:
+            leases = {row['id']: dict(row) for row in db.execute('SELECT * FROM leases')}
+        scratch = []
+        for item in work:
+            row = leases.get(item['disk_lease'])
+            if not row:
+                continue
+            plan = json.loads(item['plan'])
+            pending = []
+            for job in plan['jobs']:
+                if job.get('done'):
+                    continue
+                hint = job.get('output_estimate')
+                if hint is None:
+                    # An unplanned/interrupted acquisition is costed from its
+                    # actual files. The processing worker refines track rates.
+                    hint = 0
+                    for name in set(job['inputs']):
+                        try:
+                            hint += self._safe(name).stat().st_size
+                        except FileNotFoundError:
+                            pass  # A processing worker may just have retired it.
+                pending.append({**job, 'output_estimate': int(hint)})
+            from webapp.delivery.space import processing_peak
+            peak = processing_peak(pending, test_mode=plan['config'].get('storage_mode') == 'test')
+            additional = max(0, peak - max(0, row['reserved'] - row['measured']))
+            if additional:
+                scratch.append(additional)
+        slots = max(1, min(8, int(self.config.get('postprocess_limit', 2))))
+        with self.connect() as db:
+            self._set(db, 'processing_scratch', sum(scratch[:slots]))
+
     def _free(self):
         free = shutil.disk_usage(self.directory).free
         for root in self.external_roots:
@@ -441,6 +486,7 @@ class DiskBudget:
                         categories={key: dict(used_bytes=usage[key], committed_bytes=committed[key],
                                               budget_bytes=limit) for key, limit in self.limits.items()},
                         low_space=waiting, message=('磁盘剩余空间不足，正在等待自动恢复。' if waiting else blocked),
+                        processing_scratch_bytes=self._get(db, 'processing_scratch', 0),
                         active=dict((r['category'], r['n']) for r in rows),
                         waiting_tasks=waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
@@ -523,6 +569,7 @@ class DiskBudget:
             usage, committed = self._usage(db)
             waiting, free = self._watermark(db, persist=False)
             unused = sum(max(0, r['reserved'] - r['measured']) for r in db.execute('SELECT reserved,measured FROM leases'))
+            protected = self._get(db, 'processing_scratch', 0)
             recoverable = {r[0] for r in db.execute('SELECT task FROM leases WHERE reserved=0 AND task IS NOT NULL')}
         blocked = set()
         current = json.loads(self._version())
@@ -536,7 +583,7 @@ class DiskBudget:
                 continue
             available = min(free-unused-int(self.config['disk_min_free_gb'])*GIB,
                 self.limits[category]-committed[category],
-                int(self.config['disk_budget_gb'])*GIB-sum(committed.values()))
+                int(self.config['disk_budget_gb'])*GIB-sum(committed.values())) - protected
             if waiting or row['needed'] > available or any(usage[k] > v for k, v in self.limits.items()):
                 blocked.add(row['task'])
         return blocked
@@ -551,10 +598,7 @@ class DiskBudget:
                 waiting, free = self._watermark(db, persist=False)
                 old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
                 if (old and old[0] >= needed and free >= int(self.config['disk_min_free_gb']) * GIB
-                        and waiting == self._get(db, 'low_space', False)
-                        and committed[lease.category] <= self.limits[lease.category]
-                        and sum(committed.values()) <= int(self.config['disk_budget_gb']) * GIB
-                        and all(usage[key] <= limit for key, limit in self.limits.items() if key != lease.category)):
+                        and waiting == self._get(db, 'low_space', False)):
                     lease.reserved = old[0]
                     return
         for attempt in range(2):
@@ -583,6 +627,7 @@ class DiskBudget:
                 # Existing reservations can finish below the resume watermark, but
                 # never below the low watermark or by extending an exhausted budget.
                 low = int(self.config['disk_min_free_gb']) * GIB
+                protected = 0 if lease.processing else self._get(db, 'processing_scratch', 0)
                 reason = ''
                 if free < low:
                     reason = '磁盘实际剩余空间不足，等待释放空间。'
@@ -590,15 +635,19 @@ class DiskBudget:
                     reason = f'磁盘空间尚未达到恢复水位 {format_bytes(int(self.config["disk_resume_free_gb"]) * GIB)}，新任务等待恢复。'
                 elif extra and free - unused - extra < low:
                     reason = '磁盘可分配的预留空间不足，等待其他任务释放空间。'
-                elif committed[lease.category] + extra > self.limits[lease.category]:
+                elif extra and protected and min(free-unused-low,
+                        self.limits[lease.category]-committed[lease.category],
+                        int(self.config['disk_budget_gb'])*GIB-sum(committed.values())) - extra < protected:
+                    reason = f'优先完成已下载文件，保留 {format_bytes(protected)} 后处理周转额度；本任务等待空间。'
+                elif extra and committed[lease.category] + extra > self.limits[lease.category]:
                     category = {'test': '测试下载', 'downloads': '下载临时文件', 'cache': '缓存',
                                 'imports': '导入文件', 'browsers': '浏览器', 'logs': '日志'}[lease.category]
                     reason = (f'本机临时文件分类预算不足（{category}）：已占用及预留 {format_bytes(committed[lease.category])}，'
                               f'分类上限 {format_bytes(self.limits[lease.category])}；等待空间或提高预算。')
-                elif sum(committed.values()) + extra > int(self.config['disk_budget_gb']) * GIB:
+                elif extra and sum(committed.values()) + extra > int(self.config['disk_budget_gb']) * GIB:
                     reason = (f'本机临时文件总预算不足：已占用及预留 {format_bytes(sum(committed.values()))}，'
                               f'总上限 {format_bytes(int(self.config["disk_budget_gb"]) * GIB)}；等待其他任务完成或清理。')
-                elif any(usage[key] > maximum for key, maximum in self.limits.items() if key != lease.category):
+                elif extra and any(usage[key] > maximum for key, maximum in self.limits.items() if key != lease.category):
                     reason = '其他临时文件分类超出预算，等待自动清理。'
                 if reason and not attempt:
                     # Refresh stale measurements once before interrupting work;
@@ -620,7 +669,8 @@ class DiskBudget:
                         free_bytes=free, unwritten_reserved_bytes=unused, requested_bytes=extra,
                         minimum_free_bytes=low, allocatable_bytes=max(0, min(free-unused-low,
                             self.limits[lease.category]-committed[lease.category],
-                            int(self.config['disk_budget_gb'])*GIB-sum(committed.values()))))
+                            int(self.config['disk_budget_gb'])*GIB-sum(committed.values())) - protected))
+                    pressure['processing_scratch_bytes'] = protected
                     self._set(db, 'pressure', pressure)
                 else:
                     if old:
@@ -657,7 +707,8 @@ class DiskBudget:
                 # removed entries are reconciled by the next full traversal.
                 cached['bytes'][row['category']] += max(0, measured - row['measured'])
                 self._set(db, 'usage', cached)
-                db.execute('UPDATE leases SET reserved=0,measured=? WHERE id=?', (measured, identity))
+                planned = self._get(db, 'completion:' + identity, 0)
+                db.execute('UPDATE leases SET reserved=?,measured=? WHERE id=?', (planned, measured, identity))
 
     def cleanup(self, store=None, *, grace=300):
         """Only delete owned, unlocked directories after verifying all owners."""
@@ -715,6 +766,7 @@ class DiskBudget:
                             shutil.rmtree(path)
                         with self.connect() as db:
                             db.execute('DELETE FROM leases WHERE id=?', (row['id'],))
+                            db.execute('DELETE FROM state WHERE key=?', ('completion:' + row['id'],))
                         try:
                             path.parent.rmdir()
                         except OSError:
@@ -756,6 +808,10 @@ class DiskBudget:
             self._clean_diagnostics(grace)
             with self.connect(write=False) as db:
                 retained = {row[0] for row in db.execute('SELECT id FROM leases')}
+            with self.connect() as db:
+                stale = [row[0] for row in db.execute("SELECT key FROM state WHERE key LIKE 'completion:%'")
+                         if row[0].removeprefix('completion:') not in retained]
+                db.executemany('DELETE FROM state WHERE key=?', [(key,) for key in stale])
             for lock in (self.directory / 'disk-locks').glob('*.lock'):
                 if lock.stem in retained:
                     continue
@@ -972,6 +1028,44 @@ class DiskLease:
         self.config_reader = None
         self.media_directory = None
         self.processing = False
+        self.planned = None
+        self.measured_at = float('-inf')
+        self.measured_bytes = 0
+
+    def plan(self, peak):
+        with self.check_lock:
+            return self._plan(peak)
+
+    def _plan(self, peak):
+        """Reserve completion before downloading, retain it across handoff."""
+        peak = max(0, int(peak))
+        if self.planned == peak:
+            return
+        if peak > min(self.budget.limits[self.category], int(self.budget.config['disk_budget_gb']) * GIB):
+            from webapp.delivery.verify import LocalDeliveryError
+            raise LocalDeliveryError('单个视频的预计完成峰值超过本实例临时空间额度，请提高额度或调整任务交付要求。')
+        self.check(peak, force=True)
+        peak = max(peak, self.measured_bytes)
+        with self.budget.connect() as db:
+            self.budget._set(db, 'completion:' + self.id, peak)
+            db.execute('UPDATE leases SET reserved=? WHERE id=?', (peak, self.id))
+        self.planned = self.reserved = self.estimate = peak
+
+    def checkpoint_space(self, extra=0):
+        with self.check_lock:
+            return self._checkpoint_space(extra)
+
+    def _checkpoint_space(self, extra):
+        """Release unused promises at file boundaries, never per byte event."""
+        used = size_of(self.path)
+        needed = used + max(0, int(extra))
+        if needed > self.reserved:
+            self.check(needed, force=True)
+        with self.budget.connect() as db:
+            self.budget._set(db, 'completion:' + self.id, needed)
+            db.execute('UPDATE leases SET reserved=? WHERE id=?', (needed, self.id))
+        self.planned = self.reserved = self.estimate = needed
+        self.measured_bytes, self.measured_at = used, time.monotonic()
 
     def __enter__(self):
         self.lock = file_lock(self.budget.directory / 'disk-locks' / (self.id + '.lock'))
@@ -1036,11 +1130,12 @@ class DiskLease:
             if shutil.disk_usage(self.media_directory).free < max(
                     int(self.budget.config.get('min_free_gb', 2)), int(self.budget.config['disk_min_free_gb'])) * GIB:
                 raise DiskPressure('素材目录所在磁盘剩余空间不足。')
-        used = size_of(self.path)
+        if time.monotonic() - self.measured_at >= 5:
+            self.measured_bytes = size_of(self.path)
+            self.measured_at = time.monotonic()
+        used = self.measured_bytes
         unit = min(16 * MIB, max(4096, self.budget.limits[self.category] // 16))
         needed = max(self.reserved, self.estimate, used if self.processing else math.ceil((used + unit) / unit) * unit)
-        if self.processing and needed <= self.reserved:
-            return  # Existing files can be moved out even under budget pressure.
         try:
             self.budget._reserve(self, needed)
         except DiskPressure as error:
@@ -1124,6 +1219,7 @@ class DiskLease:
                     shutil.rmtree(self.path)
                 with self.budget.connect() as db:
                     db.execute('DELETE FROM leases WHERE id=?', (self.id,))
+                    db.execute('DELETE FROM state WHERE key=?', ('completion:' + self.id,))
                 try:
                     self.path.parent.rmdir()
                 except OSError:

@@ -232,7 +232,7 @@ def capture(store, budget, lease, task):
 
 def expire_failed(store, budget, lease, task):
     """Only terminal, unlocked test plans with settled receipts may be abandoned."""
-    if lease['category'] != 'test' or not task or task['status'] != 'failed':
+    if lease['category'] != 'test' or not task or task['status'] not in ('failed', 'interrupted'):
         return
     from datetime import datetime
     with store.connect() as db:
@@ -245,7 +245,8 @@ def expire_failed(store, budget, lease, task):
         pressure = budget._free() < int(budget.config['disk_resume_free_gb']) * GIB
         snapshot = budget.snapshot()
         pressure |= (snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
-            snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'])
+            snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'] or
+            snapshot['waiting_tasks'] > 0)
         if not pressure and time.time() - finished < p['failure_hours'] * 3600:
             return
         db.execute(delivery_work.delete().where(delivery_work.c.task_id == task['id']))

@@ -105,7 +105,8 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
     compatible_video = media.get('video_codec') in ('h264', 'hevc', 'av1', 'mpeg4')
     compatible_audio = media.get('audio_codec') in ('aac', 'alac', 'mp3')
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-y']
-    for source in inputs:
+    unique_inputs = list(dict.fromkeys(map(str, inputs)))
+    for source in unique_inputs:
         command += ['-i', str(source)]
     if kind == 'subtitle':
         command += ['-map', '0:s:0']
@@ -114,7 +115,8 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
     elif kind == 'audio_only':
         command += ['-map', '0:a:0', '-vn', '-c:a', 'libmp3lame' if mp3 and media.get('audio_codec') != 'mp3' else 'copy']
     else:
-        command += ['-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
+        audio_input = unique_inputs.index(str(inputs[-1]))
+        command += ['-map', '0:v:0', '-map', f'{audio_input}:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
                     '-c:a', 'aac' if mp4 and not compatible_audio else 'copy']
     if target.suffix == '.mp4':
         command += ['-movflags', '+faststart']
@@ -123,3 +125,19 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
     if result.returncode:
         raise LocalDeliveryError('交付文件转换失败，请检查源轨道、格式与 FFmpeg 环境。')
     return verify(target, kind)
+
+
+def split_copy(source, outputs):
+    """Read a progressive source once when both separate tracks use copy."""
+    command = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(source)]
+    for kind, target in outputs.items():
+        command += (['-map', '0:v:0', '-an', '-c:v', 'copy'] if kind == 'video_only' else
+                    ['-map', '0:a:0', '-vn', '-c:a', 'copy'])
+        if target.suffix == '.mp4':
+            command += ['-movflags', '+faststart']
+        command += ['-threads', '1', str(target)]
+    result = subprocess.run(command, capture_output=True, timeout=1800)
+    if result.returncode:
+        raise LocalDeliveryError('音视频拆轨失败，请检查源文件和 FFmpeg 环境。')
+    for kind, target in outputs.items():
+        verify(target, kind)

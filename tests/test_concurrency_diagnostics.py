@@ -59,7 +59,7 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
             store = TaskStore(root)
             try:
                 jobs = [store.create('download', {'urls': ['https://youtu.be/jNQXAC9IVRw']}) for _ in range(3)]
-                scope = 'source-transfer:node'
+                scope = 'youtube-cookie-pool:node'
                 key = hashlib.sha256(scope.encode()).hexdigest()
                 with store.connect() as db:
                     for index, job in enumerate(jobs):
@@ -71,7 +71,7 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
                 with store.connect() as db:
                     states, usage, _, holders = read_context(db, [('node', self.config)], self.stamp)
                     self.assertEqual(usage[scope], 1)
-                    self.assertEqual(holders[scope], {jobs[0]['id']: 1})
+                    self.assertEqual(holders, {})
                     self.assertEqual(states[scope], {'policies': {}})
             finally:
                 store.db.engine.dispose()
@@ -82,7 +82,7 @@ class ConcurrencyDiagnosticsTests(unittest.TestCase):
         if pool:
             self.config['youtube_cookie_pool'] = ['account-a', 'account-b']
         tasks = [{'id': str(index), 'video_id': 'video-' + str(index),
-                  'progress': {'stage': stage, 'cookie_profile_name': 'Account A'}}
+                  'progress': {'stage': stage, 'cookie_profile_name': 'Account A', 'transfer_admitted': index < 3}}
                  for index, stage in enumerate(stages)]
         holders = {'source-transfer:node': {str(index): 1 for index in range(min(3, len(tasks)))}}
         rate = {'policy': policy_key(self.config), 'time': self.stamp, 'workers': effective if effective is not None else limit, 'cookie_pool': {'known': True, 'capacity': limit, 'reason': 'ready'}}

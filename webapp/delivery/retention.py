@@ -32,7 +32,7 @@ def list_failed(store, config, cursor=None):
         delivery_work.c.disk_lease, download_lists.c.name.label('job_name')).select_from(
             delivery_work.join(tasks, tasks.c.id == delivery_work.c.task_id).outerjoin(
                 download_lists, download_lists.c.id == tasks.c.batch_id)).where(
-        delivery_work.c.instance_id == identity, tasks.c.status == 'failed',
+        delivery_work.c.instance_id == identity, tasks.c.status.in_(('failed', 'interrupted')),
         delivery_work.c.disk_lease.in_(list(leases) or ['']))
     if cursor:
         query = query.where(tasks.c.id > cursor)
@@ -88,7 +88,7 @@ def resolve(store, config, task_id, action, expected_version):
                 task = db.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()).mappings().first()
                 current = db.execute(select(delivery_work).where(delivery_work.c.task_id == task_id,
                     delivery_work.c.instance_id == identity).with_for_update()).mappings().first()
-                if (not task or task['status'] != 'failed' or not current
+                if (not task or task['status'] not in ('failed', 'interrupted') or not current
                         or current['disk_lease'] != lease['id'] or version(task, current) != expected_version):
                     raise Conflict('任务状态已变化，本次操作未执行，请刷新列表。')
                 progress = json.loads(task['progress'] or '{}')
@@ -129,6 +129,7 @@ def resolve(store, config, task_id, action, expected_version):
                         shutil.rmtree(path)
                     with budget.connect() as db:
                         db.execute('DELETE FROM leases WHERE id=?', (lease['id'],))
+                        db.execute('DELETE FROM state WHERE key=?', ('completion:' + lease['id'],))
                     removed = True
                 except OSError:
                     pass

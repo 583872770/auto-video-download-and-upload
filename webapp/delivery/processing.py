@@ -93,14 +93,32 @@ def run(store, task_id, work, report, *, slot=0):
         from webapp.control import terminate_own_descendants
         lease.start_monitor(terminate_own_descendants)
         source_probes = {}
+        prepared_verified = set()
         # A progressive file already contains both tracks. Extract any requested
         # separate tracks before moving that shared source as the AV output.
         ordered = sorted(plan['jobs'], key=lambda j: j['kind'] == 'av' and len(set(j['inputs'])) == 1)
+        def completed(job):
+            job['done'] = True
+            plan.update(output_files=session.output_files, billable_bytes=session.billable_bytes,
+                        progress=dict(progress.state))
+            # The receipt commits before dependencies can be retired. A crash
+            # after this checkpoint resumes by checking the durable receipt.
+            checkpoint(store, task_id, plan)
+            from webapp.delivery.space import unused_inputs
+            for name in unused_inputs(plan['jobs']):
+                source = safe_path(name, lease.path)
+                if str(source) not in session.output_files:
+                    source.unlink(missing_ok=True)
+            from webapp.delivery.space import processing_peak
+            extra = processing_peak(plan['jobs'], test_mode=session.test_mode)
+            lease.checkpoint_space(extra)
+
         for job in ordered:
             kind, language = job['kind'], job.get('language', '')
             progress.state.update(stage='processing', output_kind=kind, output_language=language)
             progress.save(force=True)
             if ready(session, kind, language):
+                completed(job)
                 continue
             inputs = [safe_path(path, lease.path) for path in job['inputs']]
             destination = Path(job['destination']) if job.get('destination') else None
@@ -108,6 +126,7 @@ def run(store, task_id, work, report, *, slot=0):
                 # A crash can happen after the atomic move, before the receipt.
                 publish(session, destination, kind, language, retained=True,
                         subtitle_source=job.get('subtitle_source', ''))
+                completed(job)
                 continue
             if not all(path.is_file() for path in inputs):
                 raise LocalDeliveryError('本地处理所需源文件缺失，请清理该来源的待处理内容后重新下载。')
@@ -131,9 +150,36 @@ def run(store, task_id, work, report, *, slot=0):
                 extension, direct = media['extension'], media['direct']
             output = inputs[0] if direct else inputs[0].parent / ('processed-' + kind + extension)
             if not direct:
-                # Reserve the temporary conversion peak before invoking FFmpeg.
-                lease.check(size_of(lease.path) + sum(p.stat().st_size for p in set(inputs)))
-                convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media)
+                from webapp.delivery.space import output_bytes
+                transcode = kind != 'subtitle' and (
+                    kind in ('video_only', 'av') and mp4 and media['video_codec'] not in ('h264', 'hevc', 'av1', 'mpeg4') or
+                    kind == 'av' and mp4 and media['audio_codec'] not in ('aac', 'alac', 'mp3'))
+                job['output_estimate'] = output_bytes(inputs, kind,
+                    probes=media.get('probes') if media else None,
+                    mp3=job.get('mp3', False), transcode=transcode)
+                if job.get('prepared') == str(output) and output.is_file():
+                    if str(output) not in prepared_verified:
+                        verify(output, kind)
+                else:
+                    partner = next((j for j in ordered if len(inputs) == 1 and j['inputs'] == job['inputs']
+                        and not j.get('done') and {j['kind'], kind} == {'video_only', 'audio_only'}), None)
+                    can_copy = (partner and not transcode and not job.get('mp3') and not partner.get('mp3')
+                        and (not partner.get('mp4') or media['video_codec'] in ('h264', 'hevc', 'av1', 'mpeg4'))
+                        and not partner.get('prepared') and not partner.get('destination'))
+                    if can_copy and not ready(session, partner['kind']):
+                        from webapp.delivery.verify import split_copy
+                        other_media = media_output(inputs, partner['kind'], mp4=partner['mp4'],
+                                                   mp3=False, probes=probes)
+                        other = inputs[0].parent / ('processed-' + partner['kind'] + other_media['extension'])
+                        partner['output_estimate'] = output_bytes(inputs, partner['kind'], probes=probes)
+                        lease.check(size_of(lease.path) + job['output_estimate'] + partner['output_estimate'], force=True)
+                        split_copy(inputs[0], {kind: output, partner['kind']: other})
+                        job['prepared'], partner['prepared'] = str(output), str(other)
+                        prepared_verified.update((str(output), str(other)))
+                        checkpoint(store, task_id, plan)
+                    else:
+                        lease.check(size_of(lease.path) + job['output_estimate'], force=True)
+                        convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media)
             print(f'{LABELS[kind]}：' + ('原始文件符合要求，直接交付。' if direct else '格式处理完成，正在交付。'), flush=True)
             if not destination:
                 root = video_directory(config, plan['base'])
@@ -146,9 +192,7 @@ def run(store, task_id, work, report, *, slot=0):
             progress.state.update(local_operation='原始文件直接交付' if direct else '格式处理完成')
             publish(session, output, kind, language, verified=True, destination=destination,
                     subtitle_source=job.get('subtitle_source', ''))
-            plan.update(output_files=session.output_files, billable_bytes=session.billable_bytes,
-                        progress=dict(progress.state))
-            checkpoint(store, task_id, plan)
+            completed(job)
         result = finish(session)
         if result.get('file_count'):
             budget.record_video_size(max(result['file_bytes'], lease.estimate), merged=False)
@@ -226,6 +270,7 @@ def cleanup_completed(store, work):
             shutil.rmtree(path)
         with budget.connect() as db:
             db.execute('DELETE FROM leases WHERE id=?', (work['disk_lease'],))
+            db.execute('DELETE FROM state WHERE key=?', ('completion:' + work['disk_lease'],))
         if row['category'] == 'test':
             try:
                 path.parent.rmdir()

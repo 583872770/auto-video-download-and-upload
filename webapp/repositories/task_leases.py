@@ -468,8 +468,9 @@ class TaskLeases:
             scopes = set()
             for row in rows:
                 scopes.add(row.get('instance_id'))
-                retry = expired_only and row['action'] in ('download', 'import', 'index') and row['attempts'] < row['max_attempts']
-                status = 'queued' if retry else 'interrupted'
+                local = db.execute(select(delivery_work.c.attempts).where(delivery_work.c.task_id == row['id'])).scalar_one_or_none()
+                retry = expired_only and row['action'] in ('download', 'import', 'index') and (local if local is not None else row['attempts']) < row['max_attempts']
+                status = 'queued' if retry else 'failed' if local is not None else 'interrupted'
                 self._transition(db, row, status)
                 db.execute(tasks.update().where(tasks.c.id == row['id']).values(status=status, lease_until=None, worker_id=None,
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + 2 if retry else 0, finished_at=None if retry else self._timestamp(),

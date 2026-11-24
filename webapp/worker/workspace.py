@@ -48,7 +48,10 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
 
     def report(value):
         estimate = value.get('total_bytes') or 0
-        if workspace.test_mode:
+        forecast = value.get('space_plan') or {}
+        if forecast:
+            lease.plan(forecast['peak_bytes'])
+        elif workspace.test_mode:
             # Typed delivery reserves conversion peaks in the local pool. Its
             # acquisition phase stores only the original tracks, without copies.
             lease.check(estimate)

@@ -34,8 +34,10 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
         actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
-        from webapp.worker.idle import ProcessingIdle
-        idle = ProcessingIdle(store, slot, name) if role == 'processing' else None
+        from webapp.worker.idle import ProcessingIdle, DownloadIdle
+        idle = (ProcessingIdle(store, slot, name) if role == 'processing' else
+            DownloadIdle(store, slot, name) if role in ('download', 'regular') and
+            os.environ.get('VIDEO_REUSE_DOWNLOAD_WORKERS') == '1' else None)
         from webapp.download_start_gate import DownloadStartGate
         start_gate = DownloadStartGate(store.directory)
         while True:

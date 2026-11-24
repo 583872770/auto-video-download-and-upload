@@ -49,13 +49,17 @@ class SharedOutputAdmissionTests(unittest.TestCase):
 
     def test_accounts_transfer_all_output_types_without_a_second_cap(self):
         with ExitStack() as stack:
+            executors = []
             for kind in ('video_only','audio_only','subtitle'):
                 pool = self.pool();config = stack.enter_context(pool.assignment())
                 executor = self.executor(pool,config,kind)
                 stack.enter_context(executor.transmitting())
                 self.assertEqual(executor.session.progress.state['stage'],'downloading')
-            _,active,_=pool.router.snapshot(['source-transfer:local'])
-            self.assertEqual(active['source-transfer:local'],3)
+                executors.append(executor)
+            self.assertTrue(all(e.session.progress.state['transfer_admitted'] for e in executors))
+            _, active, _ = pool.router.snapshot([pool.global_scope, 'source-transfer:local'])
+            self.assertEqual(active[pool.global_scope], 3)
+            self.assertNotIn('source-transfer:local', active)
         with self.store.connect() as db:self.assertEqual(db.execute(select(download_permits)).all(),[])
 
     def test_video_and_subtitle_share_account_start_interval(self):

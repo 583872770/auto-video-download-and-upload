@@ -716,7 +716,7 @@ class DeliveryTests(unittest.TestCase):
             self.assertFalse(db.execute(select(delivery_work)).first())
         self.assertFalse(any((self.store.directory/'test-downloads').rglob('*.mp4')))
 
-    def test_delivery_space_reserves_original_tracks_without_copy_multiplier(self):
+    def test_delivery_forecasts_completion_before_media_transfer(self):
         from webapp.disk_budget import DiskLease
         self.storage={'storage_mode':'test'}
         self.create(['video_only','audio_only'])
@@ -727,7 +727,9 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(DiskLease,'check',checked):
             _,result=self.execute()
         self.assertGreater(max(requested),0)
-        self.assertLessEqual(max(requested),result['file_bytes'])
+        # The fixture omits source sizes; bounded unknown-size reservations
+        # replace the previous late progress-only estimate.
+        self.assertLess(max(requested),3 * 1024**3)
         self.assertTrue(result['files_deleted'])
 
     def test_progressive_av_already_matching_container_never_invokes_ffmpeg(self):
@@ -1147,6 +1149,28 @@ class DeliveryTests(unittest.TestCase):
         info=self.info(False);info['formats']=[dict(format_id='combined',url=self.url+'/combined.mp4',ext='mp4',vcodec='h264',acodec='aac',height=120,width=160,protocol='http',http_headers={})]
         self.create(['video_only','audio_only','av']);_,result=self.execute(info)
         self.assertEqual(result['file_count'],3);self.assertEqual(self.hits,['/combined.mp4'])
+
+    def test_progressive_split_reads_source_once_and_retires_it_after_last_consumer(self):
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(self.media/'video.mp4'),
+            '-i',str(self.media/'audio.m4a'),'-c','copy',str(self.media/'combined.mp4')],check=True,capture_output=True)
+        info=self.info(False)
+        info['formats']=[dict(format_id='combined',url=self.url+'/combined.mp4',ext='mp4',
+            vcodec='h264',acodec='aac',height=120,width=160,protocol='http',http_headers={},
+            filesize=(self.media/'combined.mp4').stat().st_size)]
+        self.storage={'storage_mode':'test'}
+        self.create(['video_only','audio_only','av'])
+        run=subprocess.run;commands=[]
+        def capture(command,*args,**kwargs):
+            if Path(command[0]).stem=='ffmpeg':commands.append(command)
+            return run(command,*args,**kwargs)
+        with patch('webapp.delivery.verify.subprocess.run',side_effect=capture):
+            task,result=self.execute(info)
+        self.assertEqual(result['file_count'],3)
+        self.assertEqual(self.hits,['/combined.mp4'])
+        self.assertEqual(len(commands),1,commands)
+        self.assertEqual(commands[0].count('-i'),1)
+        self.assertEqual(commands[0].count('copy'),2)
+        self.assertTrue(result['files_deleted'])
 
     def test_shared_transfer_busy_preserves_delivered_media_for_subtitle_retry(self):
         from web_worker import execute

@@ -212,23 +212,20 @@ class RequestScheduler:
             # Account assignment and supervisor sizing already admit the task.
             # In-flight tasks finish after a resource reduction; do not create
             # a second transfer queue or charge fragments as task slots.
-            requirements = [('source-' + phase + ':' + self.instance, None, 1)]
             def admit(db, stamp):
+                if not self._owned(db, stamp):
+                    from webapp.downloads import DownloadLeaseLost
+                    raise DownloadLeaseLost('请求准入时任务租约已失效。')
                 self._check_cookie_cooldown(db, stamp)
                 health = self._state(db, 'source:youtube')
                 if health.get('cooldown_until', 0) > stamp:
                     self.blocked_resource = 'source:youtube'
                     return None, health['cooldown_until'] - stamp
-                token, delay = self._admit(db, stamp, requirements)
-                scope = self.config.get('_cookie_pool_scope')
-                if token and phase == 'resolve' and scope:
-                    state = self._state(db, scope)
-                    pending = state.get('pending_starts', {})
-                    if pending.get(self.task_id) == self.config.get('_cookie_pool_admitted_at'):
-                        pending.pop(self.task_id)
-                        self._save(db, scope, state)
-                return token, delay
-            token, delay = self.transaction_call(admit)
+                return True, 0
+            # Read-only admission has no router lock, no resource-row writes,
+            # and no SQL permit rows. Account assignment owns the sole slot.
+            with self.store.connect() as db:
+                token, delay = admit(db, self.clock(db))
             if token:
                 break
             if on_wait:
@@ -239,10 +236,25 @@ class RequestScheduler:
                 error.retry_after = max(2, min(60, delay)) + random.uniform(0, 2)
                 raise error
             time.sleep(.5 + random.uniform(0, .2))
+        from webapp.request_activity import RequestActivity
+        activity = RequestActivity(self.store)
+        token = activity.enter(self.task_id, self.store.owner, self.instance, phase)
         try:
+            scope = self.config.get('_cookie_pool_scope')
+            if phase == 'resolve' and scope:
+                def consume(db, stamp):
+                    if not self._owned(db, stamp):
+                        from webapp.downloads import DownloadLeaseLost
+                        raise DownloadLeaseLost('解析前任务租约已失效。')
+                    state = self._state(db, scope)
+                    pending = state.get('pending_starts', {})
+                    if pending.get(self.task_id) == self.config.get('_cookie_pool_admitted_at'):
+                        pending.pop(self.task_id)
+                        self._save(db, scope, state)
+                self.transaction_call(consume)
             yield
         finally:
-            self._release(token)
+            activity.leave(token)
 
     def outcome(self, *, success, error=None, phase='resolve'):
         if not self.enabled:

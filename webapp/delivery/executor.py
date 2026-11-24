@@ -263,6 +263,45 @@ def acquire(executor, addresses):
                 caption_session = SubtitleSession(downloader)
                 if not info or info.get('_type') in ('playlist', 'multi_video'):
                     raise RuntimeError('来源不是可处理的单条媒体。')
+                # Build one acquisition/processing plan before any large write.
+                # Signed URLs remain in memory; only byte estimates and local
+                # file dependencies are handed to durable processing workers.
+                from webapp.delivery.space import source_bytes, acquisition_peak
+                tracks, acquired, sources, media_jobs = {}, {}, [], []
+                for kind, needed in (('video_only', any(k in remaining for k in ('video_only', 'av'))),
+                                     ('audio_only', any(k in remaining for k in ('audio_only', 'av')))):
+                    if not needed:
+                        continue
+                    selected = choose(info, kind, spec['video']['max_height'])
+                    if not selected:
+                        tracks[kind] = None
+                        continue
+                    source_key = (selected.get('format_id'), selected['url'])
+                    if source_key not in acquired:
+                        ext = selected.get('ext', 'mkv')
+                        if not re.fullmatch(r'[a-zA-Z0-9]{1,8}', ext):
+                            raise RuntimeError('来源格式扩展名无效。')
+                        path = temporary / ('source-' + kind + '.' + ext)
+                        acquired[source_key] = path
+                        sources.append(dict(kind=kind, path=path, format=selected,
+                                            bytes=source_bytes(selected, info.get('duration'))))
+                    tracks[kind] = acquired[source_key]
+                for kind in sorted(remaining, key=lambda kind: kind != 'av'):
+                    if kind in ('thumbnail', 'metadata'):
+                        continue
+                    inputs = [tracks.get('video_only'), tracks.get('audio_only')] if kind == 'av' else [tracks.get(kind)]
+                    if not all(inputs):
+                        ledger.mark(session.store, task_id, keys[kind], 'missing', '来源没有符合要求的画面或音轨。')
+                        continue
+                    media_jobs.append(dict(kind=kind, inputs=[str(p) for p in inputs],
+                        mp4=spec['av']['container'] == 'mp4' if kind == 'av' else kind == 'video_only' and spec['video']['container'] == 'mp4',
+                        mp3=kind == 'audio_only' and spec['audio']['format'] == 'mp3',
+                        auto=kind == 'av' and spec['av']['container'] == 'auto'))
+                forecast = acquisition_peak(sources, media_jobs, info.get('duration'), test_mode=session.test_mode)
+                if not sub_done:
+                    forecast['peak_bytes'] += 24 * 1024**2
+                progress.state['space_plan'] = forecast
+                progress.save(force=True)
                 session.current_video.update(id=info.get('id'), title=info.get('title', ''))
                 progress.state['title'] = info.get('title', '')
                 if 'metadata' in remaining:
@@ -274,25 +313,9 @@ def acquire(executor, addresses):
                     print('视频信息已保存：JSON，包含标题、简介、频道等来源资料。', flush=True)
                 if 'thumbnail' in remaining:
                     thumbnail(executor, info, downloader, temporary, keys['thumbnail'])
-                tracks = {}
-                acquired = {}
-                need_video = any(k in remaining for k in ('video_only', 'av'))
-                need_audio = any(k in remaining for k in ('audio_only', 'av'))
-                for kind, needed in (('video_only', need_video), ('audio_only', need_audio)):
-                    if not needed:
-                        continue
-                    selected = choose(info, kind, spec['video']['max_height'])
-                    if not selected:
-                        tracks[kind] = None
-                        continue
-                    source_key = (selected.get('format_id'), selected['url'])
-                    if source_key in acquired:
-                        tracks[kind] = acquired[source_key]
-                        continue
-                    ext = selected.get('ext', 'mkv')
-                    if not re.fullmatch(r'[a-zA-Z0-9]{1,8}', ext):
-                        raise RuntimeError('来源格式扩展名无效。')
-                    path = temporary / ('source-' + kind + '.' + ext)
+                downloaded = set()
+                for source in sources:
+                    kind, selected, path = source['kind'], source['format'], source['path']
                     progress.state.update(output_kind=kind, stage='downloading');progress.save(force=True)
                     session.failure_phase = 'transfer'
                     transfer_info = {**info, **selected}
@@ -300,21 +323,10 @@ def acquire(executor, addresses):
                         success, _ = downloader.dl(str(path), transfer_info)
                     if not success:
                         raise RuntimeError('来源媒体轨道下载失败。')
-                    tracks[kind] = path
-                    acquired[source_key] = path
+                    downloaded.add(str(path))
+                    session.local_jobs = [job for job in media_jobs if set(job['inputs']) <= downloaded]
                 # Acquisition ends here. Conversion, verification and large-file
                 # publication run in independent local workers, without Cookies.
-                for kind in sorted(remaining, key=lambda kind: kind != 'av'):
-                    if kind in ('thumbnail', 'metadata'):
-                        continue
-                    inputs = [tracks.get('video_only'), tracks.get('audio_only')] if kind == 'av' else [tracks.get(kind)]
-                    if not all(inputs):
-                        ledger.mark(session.store, task_id, keys[kind], 'missing', '来源没有符合要求的画面或音轨。')
-                        continue
-                    mp4 = spec['av']['container'] == 'mp4' if kind == 'av' else kind == 'video_only' and spec['video']['container'] == 'mp4'
-                    mp3 = kind == 'audio_only' and spec['audio']['format'] == 'mp3'
-                    session.local_jobs.append(dict(kind=kind, inputs=[str(p) for p in inputs],
-                        mp4=mp4, mp3=mp3, auto=kind == 'av' and spec['av']['container'] == 'auto'))
                 if not sub_done:
                     subtitles(executor, info, safe, temporary, caption_session)
     except (yt_dlp.utils.DownloadError, HTTPError) as error:

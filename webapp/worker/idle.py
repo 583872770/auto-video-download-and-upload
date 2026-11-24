@@ -41,21 +41,25 @@ class ProcessingIdle:
         self.idle_since = None
 
     def allowed(self):
+        config = self.configuration()
+        return config is not None and max(0, -self.slot - 2) < max(1, min(8, int(config.get('postprocess_limit', 2))))
+
+    def configuration(self):
         # Only read control/configuration, never take the admission/queue locks.
         with self.store.connect() as db:
             if self.store.fleet:
                 fleet = self.store.fleet
                 row = fleet.row(db)
                 if row['paused'] or row['stop_requested'] or row['boot_id'] != fleet.boot_id:
-                    return False
+                    return None
                 config = {**json.loads(row['config']).get('config', {}), **fleet.resource_limits(row)}
             else:
                 values = dict(db.execute(select(settings.c.key, settings.c.value).where(
                     settings.c.key.in_(('downloads_paused', 'runtime')))).all())
                 if values.get('downloads_paused') == 'true':
-                    return False
+                    return None
                 config = json.loads(values.get('runtime') or '{}')
-        return max(0, -self.slot - 2) < max(1, min(8, int(config.get('postprocess_limit', 2))))
+        return config
 
     def wait(self):
         now = self.clock()
@@ -80,3 +84,13 @@ class ProcessingIdle:
             self.sleep(min(WAKE_SECONDS, deadline - now, next_poll - now))
             now = self.clock()
         return False
+
+
+class DownloadIdle(ProcessingIdle):
+    """Reuse an idle network worker; every task still has isolated context."""
+    def allowed(self):
+        config = self.configuration()
+        if config is None:
+            return False
+        from webapp.throughput import runtime_limits
+        return self.slot < runtime_limits(config, self.store.directory)['workers']

@@ -63,7 +63,7 @@ class MetricTests(unittest.TestCase):
 
 
 class TransactionTests(unittest.TestCase):
-    def test_permit_deadlock_retries_rolled_back_db_work_not_transfer(self):
+    def test_transfer_activity_uses_redis_without_sql_permits_or_router_lock(self):
         from webapp.request_scheduler import RequestScheduler
         with tempfile.TemporaryDirectory() as root:
             store = TaskStore(root)
@@ -72,22 +72,15 @@ class TransactionTests(unittest.TestCase):
                 with store.connect() as db:
                     db.execute(tasks.update().where(tasks.c.id == job['id']).values(status='running', worker_id=store.owner, lease_until=time.time()+60))
                 scheduler = RequestScheduler(store, {'download_methods': ['yt_dlp']}, job['id'])
-                admit = scheduler._admit
-                calls = []
-                def deadlock(db, stamp, requirements):
-                    value = admit(db, stamp, requirements)
-                    calls.append(value)
-                    if len(calls) == 1:
-                        raise OperationalError('fixture', {}, Exception(1213, 'Deadlock'))
-                    return value
                 transfers = []
-                with patch.object(scheduler, '_admit', side_effect=deadlock):
+                with patch.object(scheduler, 'transaction_call', side_effect=AssertionError('router lock')), \
+                     patch.object(store.progress_cache, '_call', return_value=True) as redis:
                     with scheduler.permit('transfer'):
                         transfers.append('download')
                         with store.connect() as db:
                             tokens = set(db.execute(select(download_permits.c.token)).scalars())
-                            self.assertEqual(len(tokens), 1)
-                self.assertEqual(len(calls), 2)
+                            self.assertEqual(len(tokens), 0)
+                    self.assertEqual([call.args[0] for call in redis.call_args_list], ['set', 'delete'])
                 self.assertEqual(transfers, ['download'])
                 with store.connect() as db:
                     self.assertEqual(db.execute(select(download_permits)).all(), [])

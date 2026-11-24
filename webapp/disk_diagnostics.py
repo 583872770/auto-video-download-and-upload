@@ -83,12 +83,15 @@ def explain(budget, snapshot):
     sources.sort(key=lambda s: (s['key'] == 'other',
         0 if (s['used_bytes'] or 0) > 0 else 1 if s['used_bytes'] is None else 2, -(s['used_bytes'] or 0)))
     category = snapshot['categories'].get(pressure.get('category'), {})
+    protected = snapshot.get('processing_scratch_bytes', 0)
     available = max(0, min(free-unused-minimum,
         category.get('budget_bytes', snapshot['budget_bytes'])-category.get('committed_bytes', 0),
-        snapshot['budget_bytes']-snapshot['committed_bytes']))
+        snapshot['budget_bytes']-snapshot['committed_bytes']) - protected)
     held = bool(requirement and requirement['needed'] > available)
     if not held:
         pressure = {}
+    elif protected:
+        pressure = {**pressure, 'processing_scratch_bytes': protected}
     if now - retention.get('sampled_at', 0) > 120:
         retention = dict(status='unavailable')
     blocked = (snapshot['low_space'] or snapshot['committed_bytes'] >= snapshot['budget_bytes']
@@ -115,7 +118,8 @@ def explain(budget, snapshot):
         used_percent=round(100*(total-free)/total, 1) if total else 0,
         total_bytes=total, free_bytes=free, minimum_free_bytes=minimum,
         resume_free_bytes=int(budget.config['disk_resume_free_gb'])*1024**3,
-        unwritten_reserved_bytes=unused, allocatable_bytes=max(0, free-unused-minimum),
+        unwritten_reserved_bytes=unused, allocatable_bytes=max(0, free-unused-minimum-protected),
+        processing_scratch_bytes=protected,
         waiting_tasks=snapshot['waiting_tasks'], pressure=pressure, retention=retention,
         host_status=host['status'], host_sampled_at=host['sampled_at'], sources=sources)
     from webapp.disk_explanation import describe

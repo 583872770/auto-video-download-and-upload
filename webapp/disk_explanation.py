@@ -15,6 +15,7 @@ def describe(snapshot, diagnostic, requirement=None, retained_bytes=0):
     global_limit = (snapshot['low_space'] or snapshot['committed_bytes'] >= snapshot['budget_bytes']
         or any(value['used_bytes'] > value['budget_bytes'] for value in snapshot['categories'].values()))
     demand = requirement['needed'] if requirement and diagnostic['pressure'] and not retained_bytes else None
+    protected = diagnostic.get('processing_scratch_bytes', 0)
     # Retained inputs can complete locally without another download allocation.
     # Do not claim an exact restart demand until that recovery is checked.
     rows = []
@@ -22,14 +23,14 @@ def describe(snapshot, diagnostic, requirement=None, retained_bytes=0):
         ('total', '全部临时文件', snapshot['used_bytes'], snapshot['committed_bytes'], snapshot['budget_bytes']),
         *[(key, diagnostic_label(key), value['used_bytes'], value['committed_bytes'], value['budget_bytes'])
           for key, value in snapshot['categories'].items()]]:
-        available = max(0, limit-committed)
         relevant = key == 'total' or key == diagnostic['pressure'].get('category')
-        shortage = max(0, committed + (demand or 0)-limit) if relevant else max(0, used-limit)
+        available = max(0, limit-committed-(protected if relevant else 0))
+        shortage = max(0, committed + (demand or 0) + protected-limit) if relevant else max(0, used-limit)
         rows.append(dict(key=key, label=label, used_bytes=used, reserved_bytes=max(0, committed-used),
             committed_bytes=committed, limit_bytes=limit, remaining_bytes=available,
             shortfall_bytes=shortage, limiting=bool(shortage or (relevant and committed >= limit))))
     physical_gap = max(0, (resume if snapshot['low_space'] else minimum)-free)
-    reservation_gap = max(0, minimum+unused+(demand or 0)-free) if requirement else 0
+    reservation_gap = max(0, minimum+unused+(demand or 0)+protected-free) if requirement else 0
     limits = [row for row in rows if row['limiting']]
     affected = global_limit or bool(waiting)
     impact = 'new_downloads_paused' if global_limit else 'some_tasks_waiting' if affected else 'unaffected'
@@ -49,6 +50,9 @@ def describe(snapshot, diagnostic, requirement=None, retained_bytes=0):
         reason = f'{names}的设置额度不足；磁盘本身还有 {format_bytes(free)} 可用。'
         actions.append('等待正在执行的任务处理完成、释放临时文件，或点击“清理可回收文件”。')
         actions.append('需要继续增加并发时，到“空间与日志”中提高受限的临时文件额度；分类额度和总额度都要满足。')
+    elif diagnostic['pressure'].get('processing_scratch_bytes') and waiting:
+        reason = f'正在为已下载内容保留 {format_bytes(diagnostic["pressure"]["processing_scratch_bytes"])} 后处理周转额度。'
+        actions.append('系统优先完成已有文件并释放空间，条件满足后自动继续下载，无需重启。')
     elif diagnostic['pressure'] and waiting:
         reason = '其他执行已预留部分空间，当前不能满足最近等待任务的申请。'
         actions.append('等待其他执行释放预留；也可减少并发，避免同时申请过多空间。')

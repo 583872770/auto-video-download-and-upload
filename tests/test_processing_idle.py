@@ -7,7 +7,7 @@ from sqlalchemy import event, select
 
 from tests import test_scale, test_fleet
 from webapp.database import workers, instances, settings
-from webapp.worker.idle import ProcessingIdle, notify_processing
+from webapp.worker.idle import ProcessingIdle, DownloadIdle, notify_processing
 
 
 class ProcessingIdleTests(unittest.TestCase):
@@ -30,8 +30,13 @@ class ProcessingIdleTests(unittest.TestCase):
             while idle.wait():pass
             self.assertEqual(beat.call_count, 3)
         self.assertEqual(clock[0], 25)
-        with self.store.connect() as db:
-            row = db.execute(select(workers).where(workers.c.id == self.store.owner)).mappings().one()
+        if self.store.progress_cache.enabled:
+            row = next(row for row in self.store.progress_cache.read_workers() if row['id'] == self.store.owner)
+            with self.store.connect() as db:
+                self.assertIsNone(db.execute(select(workers).where(workers.c.id == self.store.owner)).first())
+        else:
+            with self.store.connect() as db:
+                row = db.execute(select(workers).where(workers.c.id == self.store.owner)).mappings().one()
         self.assertEqual(row['state'], 'idle')
         self.assertIsNone(row['task_id'])
 
@@ -84,6 +89,17 @@ class ProcessingIdleTests(unittest.TestCase):
 class ProcessingFleetIdleTests(unittest.TestCase):
     setUp = test_fleet.FleetTests.setUp
     setup_fleet = test_fleet.FleetTests.setup_fleet
+
+    def test_network_reuse_respects_instance_slot_limit_pause_and_boot(self):
+        primary = DownloadIdle(self.a, 0, 'first')
+        self.assertTrue(primary.allowed())
+        self.assertFalse(DownloadIdle(self.a, 2, 'removed').allowed())
+        self.a.fleet.control('alpha', {'action': 'drain'})
+        self.assertFalse(primary.allowed())
+        self.assertTrue(DownloadIdle(self.b, 0, 'other').allowed())
+        with self.a.connect() as db:
+            db.execute(instances.update().where(instances.c.id == 'alpha').values(paused=0, boot_id='replacement'))
+        self.assertFalse(primary.allowed())
 
     def test_fleet_pause_stop_boot_fence_and_shrinking_slots_are_scoped(self):
         primary = ProcessingIdle(self.a, -2, 'first')

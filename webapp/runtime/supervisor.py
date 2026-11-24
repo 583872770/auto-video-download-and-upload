@@ -97,6 +97,7 @@ class TaskRunner:
                 if time.monotonic() - last_disk >= 30:
                     last_disk = time.monotonic()
                     disk.cleanup(self.store)
+                    disk.refresh_processing(self.store)
                 if self.stop.is_set():
                     break
                 if time.monotonic() - last_snapshot >= 5:
@@ -207,6 +208,7 @@ class TaskRunner:
                         # settings to calculate the same aggregate budget.
                         env['VIDEO_WORKER_DB_POOL_SIZE'] = os.environ.get('VIDEO_WORKER_DB_POOL_SIZE', '2')
                         env['VIDEO_WORKER_DB_MAX_OVERFLOW'] = os.environ.get('VIDEO_WORKER_DB_MAX_OVERFLOW', '0')
+                        env['VIDEO_REUSE_DOWNLOAD_WORKERS'] = '1'
                         from webapp.database import schema_token
                         env['VIDEO_WORKER_SCHEMA_READY'] = schema_token(self.store.db.url)
                         from webapp.disk_budget import safe_path
