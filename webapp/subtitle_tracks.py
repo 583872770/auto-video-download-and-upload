@@ -1,5 +1,35 @@
 """Select caption provenance and reuse the originating download's HTTP session."""
+import json
 from urllib.parse import parse_qs, urlsplit
+from xml.etree import ElementTree
+
+
+def empty_caption(path):
+    """Recognize empty caption payloads without treating malformed files as missing."""
+    content = path.read_bytes()
+    try:
+        if path.suffix == '.vtt':
+            from yt_dlp.webvtt import CueBlock, ParseError, parse_fragment
+            try:
+                return not any(isinstance(block, CueBlock) for block in parse_fragment(content))
+            except ParseError:
+                return not content.decode('utf-8-sig').strip()
+        if path.suffix == '.srt':
+            return not content.decode('utf-8-sig').strip()
+        if path.suffix == '.json3':
+            document = json.loads(content)
+            if not isinstance(document, dict) or document.get('wireMagic') != 'pb3':
+                return False
+            events = document.get('events', [])
+            return isinstance(events, list) and all(isinstance(event, dict) and 'segs' not in event for event in events)
+        if path.suffix in ('.ttml', '.srv3'):
+            xml = ElementTree.fromstring(content)
+            root, cue = ('tt', 'p') if path.suffix == '.ttml' else ('timedtext', 'p')
+            return xml.tag.rsplit('}', 1)[-1] == root and not any(
+                node.tag.rsplit('}', 1)[-1] in (cue, 'text') for node in xml.iter())
+    except (ValueError, ElementTree.ParseError):
+        pass
+    return False
 
 
 def translated(track):

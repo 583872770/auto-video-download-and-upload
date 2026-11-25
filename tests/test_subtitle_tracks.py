@@ -8,7 +8,7 @@ from unittest.mock import patch
 import yt_dlp
 
 from webapp.subtitle_tracks import (SubtitleSession, automatic_tracks, select_tracks,
-                                   translated, provider_options, original_tracks, caption_plan)
+                                   translated, provider_options, original_tracks, caption_plan, empty_caption)
 from webapp.delivery.contracts import normalize
 
 
@@ -17,6 +17,25 @@ TRANSLATED = {'url': ORIGINAL['url'] + '&tlang=zh-Hans', 'ext': 'vtt'}
 
 
 class SubtitleTrackTests(unittest.TestCase):
+    def test_empty_caption_checks_format_without_accepting_error_pages(self):
+        cases = (
+            ('.vtt', b'WEBVTT\nKind: captions\nLanguage: en\n\n', True),
+            ('.vtt', b'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n', False),
+            ('.vtt', b'<html>Unavailable</html>', False),
+            ('.vtt', b'WEBVTT\n\nInvalid cue\n', False),
+            ('.srt', b'', True),
+            ('.json3', b'{"wireMagic":"pb3","events":[]}', True),
+            ('.json3', b'{"wireMagic":"pb3","events":[{"segs":[{"utf8":"Hi"}]}]}', False),
+            ('.ttml', b'<tt xmlns="http://www.w3.org/ns/ttml"><body><div/></body></tt>', True),
+            ('.srv3', b'<timedtext format="3"><body><p>Hello</p></body></timedtext>', False),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix, payload, expected in cases:
+                with self.subTest(suffix=suffix, payload=payload):
+                    path = Path(directory) / ('caption' + suffix)
+                    path.write_bytes(payload)
+                    self.assertIs(empty_caption(path), expected)
+
     def test_language_scope_is_independent_of_source_priority_and_translation(self):
         info = {'language': 'en', 'subtitles': {'ja': [{**ORIGINAL, 'url': ORIGINAL['url'].replace('en', 'ja')}]},
                 'automatic_captions': {'en-orig': [ORIGINAL], 'zh-Hans': [TRANSLATED]}}

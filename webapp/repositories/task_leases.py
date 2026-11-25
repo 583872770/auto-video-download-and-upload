@@ -213,6 +213,11 @@ class TaskLeases:
             return db.execute(statement).rowcount
 
     def release(self, task_id, worker_id, reason, delay=30, *, resource=False, resource_detail=None):
+        from webapp.db_retry import transaction_retry
+        return transaction_retry(lambda: self._release(task_id, worker_id, reason, delay,
+                                                       resource=resource, resource_detail=resource_detail))
+
+    def _release(self, task_id, worker_id, reason, delay, *, resource, resource_detail):
         with self.connect() as db:
             row = db.execute(self._locked(select(tasks).where(tasks.c.id == task_id,
                              tasks.c.worker_id == worker_id, tasks.c.status == 'running'))).mappings().first()

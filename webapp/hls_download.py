@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+from threading import get_ident
 from urllib.parse import urljoin
 
 from yt_dlp.downloader.hls import HlsFD
@@ -81,7 +82,7 @@ def verify_tail_media(filename, info, duration, executable):
     if not executable:
         raise ValueError('需要 ffprobe 校验空尾片下载结果')
     result = subprocess.run([executable, '-v', 'error', '-show_entries',
-        'stream=codec_type,codec_name,duration', '-of', 'json', str(filename)],
+        'stream=codec_type,codec_name,duration:stream_disposition=attached_pic', '-of', 'json', str(filename)],
         capture_output=True, text=True, timeout=30)
     if result.returncode or result.stderr.strip():
         raise ValueError('音视频文件未通过 ffprobe 校验')
@@ -91,7 +92,8 @@ def verify_tail_media(filename, info, duration, executable):
     if not expected:
         expected = {'video', 'audio'}
     for kind in expected:
-        matching = [stream for stream in streams if stream.get('codec_type') == kind]
+        matching = [stream for stream in streams if stream.get('codec_type') == kind
+                    and not stream.get('disposition', {}).get('attached_pic')]
         if not matching:
             raise ValueError('下载结果缺少所需音视频轨道')
         for stream in matching:
@@ -101,7 +103,53 @@ def verify_tail_media(filename, info, duration, executable):
                 raise ValueError('音视频轨道时长与完整分片清单不符')
 
 
-class YoutubeHlsFD(HlsFD):
+class _AssemblyStream:
+    """Only the assembler may close the file shared by fragment workers."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.owner = get_ident()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+    def close(self):
+        # A later fragment may exhaust its retries while an earlier fragment
+        # is still being appended. The assembler will observe the failure.
+        if get_ident() == self.owner:
+            self.stream.close()
+
+
+class StrictHlsFD(HlsFD):
+    def __init__(self, ydl, params):
+        super().__init__(ydl, {**params, 'skip_unavailable_fragments': False})
+
+    def _prepare_frag_download(self, ctx):
+        partial = Path(self.temp_name(ctx['filename']))
+        checkpoint = Path(self.ytdl_filename(ctx['filename']))
+        if partial.exists() or checkpoint.exists():
+            # Parallel download progress can advance the checkpoint ahead of
+            # the fragments actually written to disk. Restart the assembly.
+            prefix = partial.name + '-Frag'
+            for item in partial.parent.iterdir():
+                if item.name.startswith(prefix) and item.name[len(prefix):].removesuffix('.part').isdigit():
+                    item.unlink(missing_ok=True)
+            partial.unlink(missing_ok=True)
+            checkpoint.unlink(missing_ok=True)
+        return super()._prepare_frag_download(ctx)
+
+    def download_and_append_fragments(self, ctx, *args, **kwargs):
+        stream = ctx['dest_stream']
+        ctx['dest_stream'] = _AssemblyStream(stream)
+        try:
+            return super().download_and_append_fragments(ctx, *args, **kwargs)
+        finally:
+            ctx['dest_stream'] = stream
+            if not stream.closed:
+                stream.close()
+
+
+class YoutubeHlsFD(StrictHlsFD):
     def real_download(self, filename, info_dict):
         local = dict(info_dict)
         manifest = local.get('hls_media_playlist_data')
@@ -131,13 +179,8 @@ class YoutubeHlsFD(HlsFD):
             return False
         local['hls_media_playlist_data'] = filtered
         previous = self.params
-        self.params = {**previous, 'skip_unavailable_fragments': False,
-                       'continuedl': False, 'overwrites': True}
+        self.params = {**previous, 'continuedl': False, 'overwrites': True}
         try:
-            # Validate a fresh assembly, never reuse fragments from an earlier
-            # attempt that may have silently skipped a different segment.
-            Path(self.temp_name(filename)).unlink(missing_ok=True)
-            Path(self.ytdl_filename(filename)).unlink(missing_ok=True)
             if not super().real_download(filename, local):
                 return False
             try:

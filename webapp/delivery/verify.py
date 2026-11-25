@@ -24,7 +24,16 @@ def inspect(path):
         raise InvalidSourceMedia('媒体文件不完整或无法解析，请重新下载后处理。')
     info = json.loads(result.stdout)
     streams = info.get('streams', [])
-    return {s.get('codec_type') for s in streams}, info
+    return {s.get('codec_type') for s in streams if not attached_picture(s)}, info
+
+
+def attached_picture(stream):
+    return stream.get('codec_type') == 'video' and stream.get('disposition', {}).get('attached_pic') == 1
+
+
+def stream_codec(info, kind):
+    return next((stream.get('codec_name', '') for stream in info.get('streams', [])
+                 if stream.get('codec_type') == kind and not attached_picture(stream)), '')
 
 
 def verify(path, kind, *, media=None):
@@ -76,8 +85,8 @@ def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
             raise InvalidSourceMedia('源文件缺少所需的画面或音轨，请重新下载后处理。')
     types, info = probes[0]
     streams = info.get('streams', [])
-    video = next((s.get('codec_name') for s in streams if s.get('codec_type') == 'video'), '')
-    audio = next((s.get('codec_name') for s in streams if s.get('codec_type') == 'audio'), '')
+    video = stream_codec(info, 'video')
+    audio = stream_codec(info, 'audio')
     containers = set(info.get('format', {}).get('format_name', '').split(','))
     if kind == 'video_only':
         ext = '.mp4' if mp4 else Path(inputs[0]).suffix
@@ -86,7 +95,7 @@ def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
     elif kind == 'audio_only':
         ext = '.mp3' if mp3 or audio == 'mp3' else '.m4a' if audio in ('aac', 'alac') else '.webm' if audio in ('opus', 'vorbis') else '.mka'
         suitable = {'mp3'} if ext == '.mp3' else {'mov', 'mp4', 'm4a'} if ext == '.m4a' else {'webm'} if ext == '.webm' else {'matroska'}
-        direct = (types == {'audio'} and bool(containers & suitable)
+        direct = (types == {'audio'} and bool(containers & suitable) and not any(map(attached_picture, streams))
                   and (not mp3 or audio == 'mp3'))
     else:
         ext = '.mp4' if mp4 else '.mkv'
@@ -95,9 +104,8 @@ def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
                    and audio in ('aac', 'alac', 'mp3') if mp4 else bool(containers & {'matroska', 'webm'})))
     if direct:
         verify(inputs[0], kind, media=probes[0])
-    codecs = [next((s.get('codec_name') for s in p[1].get('streams', []) if s.get('codec_type') == 'audio'), '') for p in probes]
     return dict(extension=ext, direct=direct, probes=probes,
-                video_codec=video, audio_codec=codecs[-1] if kind == 'av' else audio)
+                video_codec=video, audio_codec=stream_codec(probes[-1][1], 'audio') if kind == 'av' else audio)
 
 
 def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
@@ -111,12 +119,12 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
     if kind == 'subtitle':
         command += ['-map', '0:s:0']
     elif kind == 'video_only':
-        command += ['-map', '0:v:0', '-an', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy']
+        command += ['-map', '0:V:0', '-an', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy']
     elif kind == 'audio_only':
         command += ['-map', '0:a:0', '-vn', '-c:a', 'libmp3lame' if mp3 and media.get('audio_codec') != 'mp3' else 'copy']
     else:
         audio_input = unique_inputs.index(str(inputs[-1]))
-        command += ['-map', '0:v:0', '-map', f'{audio_input}:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
+        command += ['-map', '0:V:0', '-map', f'{audio_input}:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
                     '-c:a', 'aac' if mp4 and not compatible_audio else 'copy']
     if target.suffix == '.mp4':
         command += ['-movflags', '+faststart']
@@ -131,7 +139,7 @@ def split_copy(source, outputs):
     """Read a progressive source once when both separate tracks use copy."""
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(source)]
     for kind, target in outputs.items():
-        command += (['-map', '0:v:0', '-an', '-c:v', 'copy'] if kind == 'video_only' else
+        command += (['-map', '0:V:0', '-an', '-c:v', 'copy'] if kind == 'video_only' else
                     ['-map', '0:a:0', '-vn', '-c:a', 'copy'])
         if target.suffix == '.mp4':
             command += ['-movflags', '+faststart']

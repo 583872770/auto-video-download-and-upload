@@ -4,7 +4,9 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+from sqlalchemy.exc import OperationalError
 
 from webapp.lease_guard import LeaseGuard
 from webapp.store import TaskStore
@@ -29,6 +31,23 @@ class LeaseGuardTests(unittest.TestCase):
 
     def test_renewal_during_release(self):
         self.check_settlement_race('queued')
+
+    def test_release_retries_whole_transaction_after_deadlock(self):
+        observed = []
+        original = self.store._release_processing_attempt
+
+        def fail_once(db, row):
+            observed.append(row['attempts'])
+            original(db, row)
+            if len(observed) == 1:
+                raise OperationalError('UPDATE delivery_work', {}, Exception(1213, 'Deadlock found'))
+
+        with patch.object(self.store, '_release_processing_attempt', side_effect=fail_once):
+            self.guard.settle(self.store.release, self.task['id'], self.store.owner, '协调繁忙', delay=5)
+        self.assertEqual(observed, [1, 1])
+        row = self.store.get(self.task['id'], private=True)
+        self.assertEqual((row['status'], row['attempts'], row['worker_id']), ('queued', 0, None))
+        self.assertTrue(self.stop.is_set())
 
     def check_settlement_race(self, outcome):
         committed, resume, renewal_started = [threading.Event() for _ in range(3)]

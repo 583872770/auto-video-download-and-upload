@@ -1014,6 +1014,44 @@ class DeliveryTests(unittest.TestCase):
         response=self.client.post(f'/api/jobs/{job}/requirements/{task["id"]}/{missing["key"]}/waive',json={'reason':'Customer accepted no captions'},headers=self.headers)
         self.assertEqual(response.status_code,200,response.json);self.assertEqual(response.json['status'],'accepted')
 
+    def test_empty_caption_keeps_other_outputs_and_never_enters_conversion(self):
+        (self.media / 'empty.vtt').write_bytes(b'WEBVTT\nKind: captions\nLanguage: en\n\n')
+        info = self.info()
+        info['subtitles']['en'] = [{'url': self.url + '/empty.vtt', 'ext': 'vtt'}]
+        info['subtitles']['fr'] = [{'url': self.url + '/en.vtt', 'ext': 'vtt'}]
+        self.storage = {'storage_mode': 'test'}
+        job = self.create(['audio_only', 'subtitle'], {'subtitles': {
+            'scope': 'selected', 'original_languages': ['en', 'fr'], 'format': 'srt'}})
+        from webapp.delivery.verify import convert_subtitles
+        with patch('webapp.delivery.verify.convert_subtitles', wraps=convert_subtitles) as convert:
+            _, result = self.execute(info)
+        self.assertEqual((result['delivery_status'], result['file_count']), ('review', 2))
+        convert.assert_called_once()
+        self.assertEqual([source.parent.name for source, _ in convert.call_args.args[0]], ['fr'])
+        rows = self.client.get('/api/jobs/' + job + '/videos').json['items'][0]['delivery']['requirements']
+        self.assertEqual(next(row for row in rows if row['language'] == 'en')['status'], 'missing')
+
+    def test_embedded_cover_is_excluded_from_verification_and_conversion(self):
+        from PIL import Image
+        from webapp.delivery.verify import convert, inspect, InvalidSourceMedia, LocalDeliveryError, media_output, verify
+
+        cover = self.media / 'cover.jpg'
+        Image.new('RGB', (96, 64), 'blue').save(cover)
+        source = self.media / 'with-cover.m4a'
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(self.media / 'audio.m4a'),
+            '-i', str(cover), '-map', '0:a', '-map', '1:v', '-c', 'copy', '-disposition:v', 'attached_pic',
+            str(source)], check=True, capture_output=True)
+        types, probe = inspect(source)
+        self.assertEqual(types, {'audio'})
+        self.assertTrue(any(s['disposition']['attached_pic'] for s in probe['streams']))
+        with self.assertRaises(LocalDeliveryError):
+            verify(source, 'av')
+        with self.assertRaises(InvalidSourceMedia):
+            media_output([source], 'video_only')
+        audio = self.media / 'audio-without-cover.m4a'
+        convert([source], audio, 'audio_only')
+        self.assertEqual([s['codec_type'] for s in verify(audio, 'audio_only')[1]['streams']], ['audio'])
+
     def test_repair_reuses_files_without_extra_network_or_billing(self):
         job=self.create(KINDS);task,_=self.execute();before=self.client.get('/api/jobs/'+job).json
         self.hits.clear()

@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import PropertyMock, patch
 
 from yt_dlp.networking.exceptions import HTTPError
+from yt_dlp.utils import DownloadError
 
 from webapp.hls_download import empty_tail_candidate
 from webapp.downloader import build_ydl_options
@@ -46,7 +47,7 @@ class CandidateTests(unittest.TestCase):
 
 
 @contextmanager
-def source(manifest, segments, *, tail=b'', status=200, missing=None, tail_length=True):
+def source(manifest, segments, *, tail=b'', status=200, missing=None, tail_length=True, first_gate=None):
     calls = Counter()
     headers = []
 
@@ -56,6 +57,8 @@ def source(manifest, segments, *, tail=b'', status=200, missing=None, tail_lengt
 
         def do_GET(self):
             calls[self.path] += 1
+            if self.path == '/segment0.ts' and first_gate is not None:
+                first_gate.wait(4)
             headers.append(self.headers.get('X-Fixture'))
             code = status if self.path == '/tail.ts' else 200
             data = (manifest.encode() if self.path == '/video.m3u8' else tail
@@ -158,6 +161,52 @@ class HlsDownloadTests(unittest.TestCase):
             self.assertNotEqual(ydl._download_retcode, 0)
         self.assertFalse(Path(self.options['download_archive']).exists())
         self.assertFalse(self.path.exists())
+
+    def test_regular_playlist_rejects_failed_and_empty_middle_segments(self):
+        manifest = self.base_manifest.replace('segment1.ts', 'tail.ts').replace(
+            '#EXT-X-ENDLIST', '#EXTINF:1,\nsegment1.ts\n#EXT-X-ENDLIST')
+        for status in (200, 503):
+            with self.subTest(status=status), source(manifest, self.segments, status=status) as (url, calls, _):
+                options = {**self.options, 'ignoreerrors': False, 'fragment_retries': 2}
+                info = {**self.info(url), 'duration': 3}
+                with ParallelYoutubeDL(options) as ydl:
+                    try:
+                        success, _ = ydl.dl(str(self.path), info)
+                    except DownloadError:
+                        success = False
+                self.assertFalse(success)
+                self.assertFalse(self.path.is_file())
+                self.assertFalse(Path(self.options['download_archive']).exists())
+                self.assertGreaterEqual(calls['/tail.ts'], 1)
+
+    def test_failed_later_fragment_cannot_close_file_during_earlier_append(self):
+        gate = threading.Event()
+        manifest = self.base_manifest.replace('segment1.ts', 'tail.ts')
+        options = {**self.options, 'ignoreerrors': False, 'fragment_retries': 0}
+        original_error = self.logger.error
+
+        def report_error(message):
+            original_error(message)
+            gate.set()
+
+        self.logger.error = report_error
+        with source(manifest, self.segments, status=503, first_gate=gate) as (url, _, _):
+            with ParallelYoutubeDL(options) as ydl, self.assertRaisesRegex(DownloadError, '503'):
+                ydl.dl(str(self.path), self.info(url))
+        self.assertTrue(gate.is_set())
+        self.assertFalse(self.path.exists())
+
+    def test_regular_playlist_never_reuses_unverified_fragment_checkpoint(self):
+        Path(str(self.path) + '.part').write_bytes(self.segments['segment0.ts'])
+        Path(str(self.path) + '.part-Frag2').write_bytes(self.segments['segment1.ts'])
+        Path(str(self.path) + '.ytdl').write_text(json.dumps({'downloader': {'current_fragment': {'index': 2}}}))
+        manifest = self.base_manifest.replace('segment1.ts', 'tail.ts')
+        options = {**self.options, 'ignoreerrors': False}
+        with source(manifest, self.segments, status=503) as (url, calls, _):
+            with ParallelYoutubeDL(options) as ydl, self.assertRaisesRegex(DownloadError, '503'):
+                ydl.dl(str(self.path), self.info(url))
+            self.assertEqual(calls['/tail.ts'], 1)
+        self.assertFalse(self.path.is_file())
 
     def test_old_partial_download_is_discarded_before_verified_assembly(self):
         Path(str(self.path)+'.part').write_bytes(b'OLD INVALID MEDIA' * 300)

@@ -18,7 +18,7 @@ from yt_dlp.networking.exceptions import CertificateVerifyError, HTTPError, Inco
 from yt_dlp.utils import parse_http_range, sanitize_path
 from yt_dlp.utils.networking import HTTPHeaderDict
 from webapp.diagnostics import safe_text
-from webapp.hls_download import YoutubeHlsFD
+from webapp.hls_download import StrictHlsFD, YoutubeHlsFD
 
 
 CHUNK_SIZE = 10 * 1024 * 1024
@@ -353,11 +353,11 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
             minimum = self.params.get('sleep_interval') or 0
             self.params['sleep_interval_subtitles'] = random.uniform(
                 minimum, self.params.get('max_sleep_interval') or minimum)
-        if (not subtitle and not test and name != '-' and not hasattr(name, 'write')
-                and not self.params.get('test') and not info.get('is_live')
-                and (info.get('extractor_key') == 'Youtube' or info.get('extractor') == 'youtube')
-                and get_suitable_downloader(info, self.params, to_stdout=False) is HlsFD):
-            return self._download_file(YoutubeHlsFD, name, info, subtitle)
+        native = get_suitable_downloader(info, self.params, to_stdout=(name == '-'))
+        if (native is HlsFD and not subtitle and name != '-' and not hasattr(name, 'write')
+                and not self.params.get('test') and not info.get('is_live')):
+            youtube = info.get('extractor_key') == 'Youtube' or info.get('extractor') == 'youtube'
+            return self._download_file(YoutubeHlsFD if youtube else StrictHlsFD, name, info, subtitle)
         eligible = (self.params.get('_parallel_http') and not subtitle and not test
             and name != '-' and not hasattr(name, 'write')
             and self.params.get('concurrent_fragment_downloads', 1) > 1
@@ -367,6 +367,5 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
             and info.get('section_start') is None and info.get('section_end') is None
             and (info.get('filesize') or 0) > int(self.params.get('http_chunk_size') or CHUNK_SIZE)
             and 'Range' not in HTTPHeaderDict(info.get('http_headers')))
-        native = get_suitable_downloader(info, self.params, to_stdout=(name == '-'))
         return self._download_file(ParallelHttpFD if eligible and native is HttpFD else native,
                                    name, info, subtitle)

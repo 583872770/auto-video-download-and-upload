@@ -8,7 +8,7 @@ import uuid
 from sqlalchemy import select
 from webapp.database import delivery_work, tasks
 from webapp.delivery import artifacts as ledger
-from webapp.delivery.verify import media_output, convert, verify, inspect, LocalDeliveryError
+from webapp.delivery.verify import media_output, convert, verify, inspect, stream_codec, LocalDeliveryError
 from webapp.disk_budget import DiskBudget, DISK_FIELDS, safe_path, size_of, file_lock, alive
 from webapp.downloads import DownloadProgress
 
@@ -62,7 +62,8 @@ def checkpoint(store, task_id, plan):
 
 
 def run(store, task_id, work, report, *, slot=0):
-    from webapp.delivery.executor import ready, publish, finish
+    from webapp.delivery.executor import ready, publish, finish, require_key
+    from webapp.subtitle_tracks import empty_caption
     from webapp.worker.session import DownloadSession
     from webapp.download_metrics import meter_for
     from Utils.config import video_directory
@@ -121,16 +122,25 @@ def run(store, task_id, work, report, *, slot=0):
             known_ready = test_readiness(session, unit) if session.test_mode else {}
             caption_inputs = []
             caption_jobs = {}
+            empty_languages = set()
             for item in unit:
-                if item['kind'] != 'subtitle' or known_ready.get(('subtitle', item.get('language', ''))):
+                language = item.get('language', '')
+                if item['kind'] != 'subtitle' or known_ready.get(('subtitle', language)):
                     continue
                 source = safe_path(item['inputs'][0], lease.path)
+                destination = Path(item['destination']) if item.get('destination') else None
+                target = source.parent / ('processed-subtitle.' + item['format'])
+                if destination and destination.is_file() or item.get('prepared') == str(target) and target.is_file():
+                    continue
+                if source.is_file() and empty_caption(source):
+                    key = require_key(session, 'subtitle', language)
+                    ledger.mark(store, task_id, key, 'missing', '来源返回了空字幕，没有可用的时间轴条目。')
+                    empty_languages.add(language)
+                    completed(item)
+                    continue
                 if not item.get('destination'):
                     item['destination'] = str(root / (uuid.uuid4().hex + '.' + item['format']))
-                if Path(item['destination']).is_file() or source.suffix == '.' + item['format']:
-                    continue
-                target = source.parent / ('processed-subtitle.' + item['format'])
-                if item.get('prepared') == str(target) and target.is_file():
+                if source.suffix == '.' + item['format']:
                     continue
                 caption_inputs.append((source, target))
                 caption_jobs[str(target)] = item
@@ -149,9 +159,10 @@ def run(store, task_id, work, report, *, slot=0):
                         prepared_verified.add(str(target))
                 checkpoint(store, task_id, plan)
             for job in unit:
-                if job['kind'] == 'subtitle' and str(Path(job['inputs'][0]).parent / ('processed-subtitle.' + job['format'])) in errors:
-                    continue
                 kind, language = job['kind'], job.get('language', '')
+                if kind == 'subtitle' and (language in empty_languages or
+                        str(Path(job['inputs'][0]).parent / ('processed-subtitle.' + job['format'])) in errors):
+                    continue
                 progress.state.update(stage='processing', output_kind=kind, output_language=language)
                 progress.save(force=kind != 'subtitle')
                 if (known_ready.get((kind, language), False) if session.test_mode else ready(session, kind, language)):
@@ -180,8 +191,8 @@ def run(store, task_id, work, report, *, slot=0):
                             source_probes[path] = inspect(path)
                     probes = [source_probes[path] for path in inputs]
                     if job.get('auto'):
-                        video = next((s.get('codec_name') for s in probes[0][1]['streams'] if s.get('codec_type') == 'video'), '')
-                        audio = next((s.get('codec_name') for s in probes[-1][1]['streams'] if s.get('codec_type') == 'audio'), '')
+                        video = stream_codec(probes[0][1], 'video')
+                        audio = stream_codec(probes[-1][1], 'audio')
                         mp4 = video in ('h264', 'hevc', 'av1', 'mpeg4') and audio in ('aac', 'alac', 'mp3')
                     media = media_output(inputs, kind, mp4=mp4, mp3=job['mp3'], probes=probes)
                     extension, direct = media['extension'], media['direct']
@@ -261,7 +272,7 @@ def run(store, task_id, work, report, *, slot=0):
         if payload.get('_force_test_sample'):
             result['_sample_requested'] = True
         # No new network traffic. Keep the acquisition byte counter for logs.
-        if session.test_mode and not plan.get('source_failure'):
+        if session.test_mode and not plan.get('source_failure') and result['delivery_status'] == 'complete':
             result['message'] = '测试下载完成，处理结果已登记。'
         return result
 
