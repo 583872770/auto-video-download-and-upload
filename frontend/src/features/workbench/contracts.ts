@@ -188,6 +188,7 @@ export const stageLabels: Record<string, string> = {
   preparing: '准备中',
   waiting_cookie: '等待账号',
   waiting_request: '等待请求间隔',
+  waiting_connection: '连接 / 首字节等待',
   waiting_transfer: '等待来源服务 / 资源',
   waiting_processing: '等待后处理',
   disk_wait: '等待磁盘空间',

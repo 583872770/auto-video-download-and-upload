@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 import uuid
+from contextlib import contextmanager
 
 from sqlalchemy import select
 import yt_dlp
@@ -23,6 +24,7 @@ from webapp.subtitle_tracks import SubtitleSession, caption_plan, translated, pr
 class DeliveryDownloader(ParallelYoutubeDL):
     def __init__(self, session, options):
         self.session = session
+        self.observation = None
         super().__init__(options)
 
     def close(self):
@@ -32,13 +34,27 @@ class DeliveryDownloader(ParallelYoutubeDL):
             self.session = None
 
     def to_screen(self, message, *args, **kwargs):
-        session = self.session
-        if str(message).startswith('[download] Sleeping '):
+        if self.observation and str(message).startswith('[download] Sleeping '):
             sleeping = re.match(r'\[download\] Sleeping (\d+(?:\.\d+)?) seconds\b', str(message))
-            session.progress.state.update(stage='waiting_request', speed=None, eta=None,
-                request_wait_until=time.time() + float(sleeping[1]) if sleeping else None)
-            session.progress.save(force=True)
+            self.observation.sleeping(float(sleeping[1]) if sleeping else None)
         return super().to_screen(message, *args, **kwargs)
+
+    @contextmanager
+    def file_observation(self, fd, name):
+        from webapp.transfer_observation import FileTransferObservation
+        observation = self.observation = FileTransferObservation(self.session, fd, name)
+        try:
+            yield
+        except BaseException:
+            # Preserve the original HTTP/lease/space error and its cooldown evidence.
+            observation.close(publish=False)
+            raise
+        finally:
+            try:
+                observation.close()
+            finally:
+                observation.detach()
+                self.observation = None
 
     def report_warning(self, message, *args, **kwargs):
         session = self.session
@@ -370,15 +386,13 @@ def acquire(executor, addresses):
 
 def thumbnail(executor, info, downloader, temporary, key):
     from PIL import Image
+    from webapp.delivery.thumbnails import candidates, MissingThumbnails
     session = executor.session
-    # yt-dlp orders thumbnails from least to most preferred. Reuse the same
-    # authenticated downloader, request spacing and transfer admission as media.
-    candidates = [item for item in info.get('thumbnails') or []
-                  if isinstance(item, dict) and isinstance(item.get('url'), str)
-                  and item['url'].startswith(('http://', 'https://'))]
-    urls = list(dict.fromkeys(item['url'] for item in reversed(candidates)))
-    if isinstance(info.get('thumbnail'), str) and info['thumbnail'].startswith(('http://', 'https://')) and info['thumbnail'] not in urls:
-        urls.append(info['thumbnail'])
+    strategy = session.config['_delivery_contract']['thumbnail']['strategy']
+    urls = candidates(info, strategy)
+    missing = MissingThumbnails(session.store.directory, session.payload['_task_id'])
+    known_missing = missing.read()
+    urls = [url for url in urls if missing.key(url) not in known_missing]
     if not urls:
         ledger.mark(session.store, session.payload['_task_id'], key, 'missing', '来源没有可用封面图。')
         return
@@ -400,6 +414,7 @@ def thumbnail(executor, info, downloader, temporary, key):
                 # source image; authentication/rate-limit failures still escape.
                 from webapp.downloads import DownloadFailure
                 session.failure = DownloadFailure()
+                missing.record(url)
                 if isinstance(error, HTTPError):
                     error.response.close()
                 print('该规格封面不存在，尝试来源提供的下一张封面。', flush=True)
@@ -416,7 +431,7 @@ def thumbnail(executor, info, downloader, temporary, key):
     target = source.with_suffix(extension)
     source.replace(target)
     publish(session, target, 'thumbnail')
-    print('封面图已保存：来源最佳封面，保留原始图片格式。', flush=True)
+    print('封面图已保存：' + ('最佳画质优先' if strategy == 'best' else '来源明确提供的封面，减少无效探测') + '，保留原始图片格式。', flush=True)
 
 
 def subtitles(executor, info, temporary, caption_session):
@@ -443,14 +458,18 @@ def subtitles(executor, info, temporary, caption_session):
         languages = requested or ['']
         for language in languages:
             key = require_key(session, 'subtitle', language)
-            ledger.mark(session.store, task_id, key, 'missing', '来源没有所需语言的字幕。')
+            reason = ('来源未明确视频主语言，无法确认应交付的主语言字幕；请指定语言或选择全部原始语言。'
+                      if config['scope'] == 'main' and not language else '来源没有所需语言的字幕。')
+            ledger.mark(session.store, task_id, key, 'missing', reason)
         return
     for language in requested:
         if ready(session, 'subtitle', language):
             continue
         key = require_key(session, 'subtitle', language)
         if language not in available:
-            ledger.mark(session.store, task_id, key, 'missing', '来源没有该语言字幕。')
+            ledger.mark(session.store, task_id, key, 'missing',
+                '来源未明确视频主语言，请指定语言或选择全部原始语言。'
+                if config['scope'] == 'main' and not language else '来源没有该语言字幕。')
             continue
         directory = temporary / language
         directory.mkdir(exist_ok=True)

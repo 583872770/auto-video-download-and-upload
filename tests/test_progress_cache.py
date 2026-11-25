@@ -125,6 +125,17 @@ class ProgressCacheTests(unittest.TestCase):
         self.assertTrue(self.report(40, 'processing'))
         self.assertEqual(self.durable()['stage'], 'processing')
 
+    def test_network_substages_update_live_without_forcing_more_sql_commits(self):
+        self.report(0, 'waiting_request')
+        self.report(0, 'waiting_connection')
+        self.assertEqual(self.durable()['stage'], 'waiting_request')
+        self.assertEqual(self.store.get(self.task['id'])['progress']['stage'], 'waiting_connection')
+        self.report(10, 'downloading')
+        self.assertEqual(self.durable()['stage'], 'waiting_request')
+        self.assertEqual(self.store.get(self.task['id'])['progress']['stage'], 'downloading')
+        self.report(10, 'processing')
+        self.assertEqual(self.durable()['stage'], 'processing')
+
     def test_cache_outage_falls_back_and_old_cache_cannot_mask_newer_sql_after_recovery(self):
         self.report(10)
         self.report(20)

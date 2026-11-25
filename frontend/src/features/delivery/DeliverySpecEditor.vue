@@ -22,12 +22,12 @@ function toggleTranslation(enabled: boolean) {
   if (enabled && !spec.value.subtitles.languages.length)
     spec.value.subtitles.languages = ['zh-Hans'];
 }
-function updateLanguages(value: string) {
+function updateLanguages(value: string, field: 'languages' | 'original_languages' = 'languages') {
   model.value = {
     ...model.value,
     subtitles: {
       ...model.value.subtitles,
-      languages: value
+      [field]: value
         .split(',')
         .map((x) => x.trim())
         .filter(Boolean),
@@ -55,7 +55,7 @@ function updateLanguages(value: string) {
       v-if="spec.outputs.includes('thumbnail') || spec.outputs.includes('metadata')"
       class="cell-note"
     >
-      封面图保存来源提供的最佳封面（JPG / PNG / WebP）；视频信息保存为
+      封面图保留原始图片格式（JPG / PNG / WebP）；视频信息保存为
       JSON，包含标题、简介、频道、时长等资料。可单独下载，无需勾选视频或音频。
     </p>
     <p>
@@ -66,19 +66,39 @@ function updateLanguages(value: string) {
     </p>
     <div v-if="spec.outputs.includes('subtitle')" class="fields">
       <label class="field"
+        >原始字幕语言范围
+        <select v-model="spec.subtitles.scope" name="delivery-sub-scope">
+          <option value="all_original">全部原始语言</option>
+          <option value="main">视频主语言</option>
+          <option value="selected">指定语言</option>
+        </select>
+      </label>
+      <label v-if="spec.subtitles.scope === 'selected'" class="field"
+        >原始字幕语言代码
+        <input
+          name="delivery-original-languages"
+          :value="spec.subtitles.original_languages.join(',')"
+          @input="updateLanguages(($event.target as HTMLInputElement).value, 'original_languages')"
+        />
+        <small>例如 en,ja，最多 8 种；没有所需原始字幕会显示缺项，不会自动换成翻译。</small>
+      </label>
+      <label class="field"
         >字幕格式<select v-model="spec.subtitles.format" name="delivery-sub-format">
           <option value="srt">SRT</option>
           <option value="vtt">VTT</option>
         </select></label
       >
       <label v-if="translate" class="field"
-        >语言要求<select v-model="spec.subtitles.language_policy" name="delivery-language-policy">
+        >翻译目标要求<select
+          v-model="spec.subtitles.language_policy"
+          name="delivery-language-policy"
+        >
           <option value="available_selected">目标语言中至少一种</option>
           <option value="all_selected">每种目标语言都必须有</option>
         </select></label
       >
       <label class="field"
-        >原始字幕来源<select
+        >原始字幕来源优先级<select
           :value="spec.subtitles.sources.join(',')"
           name="delivery-sub-sources"
           @change="spec.subtitles.sources = ($event.target as HTMLSelectElement).value.split(',')"
@@ -89,8 +109,10 @@ function updateLanguages(value: string) {
         </select></label
       >
     </div>
-    <p v-if="spec.outputs.includes('subtitle') && !translate">
-      默认下载视频现有人工字幕及原语言自动字幕，保留实际语言，不请求自动翻译。
+    <p v-if="spec.outputs.includes('subtitle')" class="cell-note">
+      先按语言范围选取，再在每种语言内按来源优先级选择。人工优先不等于仅下载视频主语言。
+      主语言无法确认时会提示缺项，请指定语言或选择全部原始语言。
+      {{ translate ? '自动翻译目标在下方单独配置。' : '当前不请求自动翻译。' }}
     </p>
     <section v-if="spec.outputs.includes('subtitle')" class="subtitle-translation">
       <label class="choice"
@@ -102,7 +124,9 @@ function updateLanguages(value: string) {
         />同时下载自动翻译字幕</label
       >
       <template v-if="translate">
-        <p class="muted">保留原始字幕，同时获取所选语言的字幕。目标语言已有人工字幕时优先使用。</p>
+        <p class="muted">
+          保留上述范围的原始字幕，同时获取下列目标语言。目标语言已有字幕时优先使用。
+        </p>
         <div class="choices">
           <label v-for="[code, label] in languageOptions" :key="code" class="choice">
             <input
@@ -121,6 +145,23 @@ function updateLanguages(value: string) {
           /><small>支持自定义代码，逗号分隔，最多 8 种。</small></label
         >
       </template>
+    </section>
+    <section v-if="spec.outputs.includes('thumbnail')" class="subtitle-translation">
+      <label class="field"
+        >封面获取方式
+        <select v-model="spec.thumbnail.strategy" name="delivery-thumbnail-strategy">
+          <option value="best">最佳画质优先（可能尝试多个规格）</option>
+          <option value="source">减少探测（仅来源明确提供的封面）</option>
+        </select>
+      </label>
+      <p class="cell-note">
+        {{
+          spec.thumbnail.strategy === 'source'
+            ? '优先减少无效请求；可能放弃来源未列出但实际存在的更高清封面。来源封面失效会显示缺项。'
+            : '保留最高画质获取范围；不存在的候选会短期缓存，重试时不重复请求。'
+        }}
+        两种方式均保留现有请求间隔，不额外发送 HEAD 探测。
+      </p>
     </section>
     <div class="fields">
       <label v-if="spec.outputs.some((x) => ['av', 'video_only'].includes(x))" class="field"

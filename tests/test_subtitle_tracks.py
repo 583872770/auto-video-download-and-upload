@@ -17,6 +17,49 @@ TRANSLATED = {'url': ORIGINAL['url'] + '&tlang=zh-Hans', 'ext': 'vtt'}
 
 
 class SubtitleTrackTests(unittest.TestCase):
+    def test_language_scope_is_independent_of_source_priority_and_translation(self):
+        info = {'language': 'en', 'subtitles': {'ja': [{**ORIGINAL, 'url': ORIGINAL['url'].replace('en', 'ja')}]},
+                'automatic_captions': {'en-orig': [ORIGINAL], 'zh-Hans': [TRANSLATED]}}
+        config = normalize({})['subtitles']
+        self.assertEqual(set(caption_plan(info, config)[1]), {'en', 'ja'})
+        config['scope'] = 'main'
+        self.assertEqual(caption_plan(info, config), ({'en': (None, [ORIGINAL])}, ['en']))
+        config.update(scope='selected', original_languages=['ja', 'fr'])
+        available, required = caption_plan(info, config)
+        self.assertEqual(list(available), ['ja'])
+        self.assertEqual(required, ['ja', 'fr'])  # Missing is explicit, never silently removed.
+        config.update(mode='original_and_translated', languages=['zh-Hans'])
+        self.assertEqual(caption_plan(info, config)[1], ['ja', 'fr', 'zh-Hans'])
+
+    def test_main_language_never_guesses_from_caption_order_or_dubbed_audio(self):
+        from webapp.subtitle_tracks import main_language
+        info = {'subtitles': {'ja': [ORIGINAL], 'en': [ORIGINAL]}}
+        config = normalize({'subtitles': {'scope': 'main'}})['subtitles']
+        self.assertEqual(caption_plan(info, config), ({}, ['']))
+        info['formats'] = [{'acodec': 'aac', 'language': 'ja', 'language_preference': 5},
+                           {'acodec': 'aac', 'language': 'en', 'language_preference': 10}]
+        self.assertEqual(main_language(info), 'en')
+        self.assertEqual(caption_plan(info, config)[1], ['en'])
+        info['language'] = 'ja'  # A selected dubbed audio must not replace the original.
+        self.assertEqual(main_language(info), 'en')
+        info['language'] = 'en-US'
+        self.assertEqual(caption_plan(info, config)[1], ['en'])
+
+    def test_selected_original_language_never_uses_an_automatic_translation(self):
+        config = normalize({'subtitles': {'scope': 'selected', 'original_languages': ['zh-Hans']}})['subtitles']
+        self.assertEqual(caption_plan({'automatic_captions': {'zh-Hans': [TRANSLATED]}}, config),
+                         ({}, ['zh-Hans']))
+
+    def test_scope_and_thumbnail_defaults_preserve_all_originals_and_best_quality(self):
+        spec = normalize({})
+        self.assertEqual(spec['subtitles']['scope'], 'all_original')
+        self.assertEqual(spec['thumbnail']['strategy'], 'best')
+        for value in ({'subtitles': {'scope': 'selected'}}, {'subtitles': {'scope': 'bogus'}},
+                      {'thumbnail': {'strategy': 'bogus'}},
+                      {'subtitles': {'original_languages': ['bad code']}}):
+            with self.assertRaises(ValueError):
+                normalize(value)
+
     def test_live_chat_is_excluded_from_original_and_translated_caption_plans(self):
         chat = {'url': 'https://www.youtube.com/watch?v=fixture', 'ext': 'json'}
         for protocol in ('youtube_live_chat', 'youtube_live_chat_replay'):

@@ -720,8 +720,16 @@ class DeliveryTests(unittest.TestCase):
             calls.append(kwargs['task_id'])
             if len(calls)==1:raise RuntimeError('temporary local failure')
             return execute(*args, **kwargs)
+        finish = self.store.finish
+        def settle(*args, **kwargs):
+            # Exercise one queue pass independently of VPS/FFmpeg speed. The
+            # normal five-second retry may expire while the other file runs.
+            if kwargs.get('error'):
+                kwargs['retry_after'] = 3600
+            return finish(*args, **kwargs)
         self.hits.clear()
         with patch('webapp.worker.idle.PROCESSING_IDLE_SECONDS',0), \
+             patch.object(self.store, 'finish', side_effect=settle), \
              patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info',side_effect=AssertionError('source requested')):
             drain_queue(self.store.directory,slot=-2,role='processing',execute_task=processing,
                         store_factory=lambda *args:self.store)
@@ -936,6 +944,43 @@ class DeliveryTests(unittest.TestCase):
         self.assertGreaterEqual(failure_evidence(caught.exception).retry_after, 2390)
         self.assertEqual(self.hits, ['/limited.vtt'])
         self.assertEqual(self.client.get('/api/jobs/' + job + '/artifacts').json['items'], [])
+
+    def test_source_cover_policy_does_not_probe_synthetic_candidates(self):
+        self.create(['thumbnail'], {'thumbnail': {'strategy': 'source'}})
+        info = self.info()
+        info['thumbnail'] = self.url + '/cover.webp'
+        info['thumbnails'].append({'url': self.url + '/absent.jpg', 'preference': 0})
+        _, result = self.execute(info)
+        self.assertEqual(result['delivery_status'], 'complete')
+        self.assertEqual(self.hits, ['/cover.webp'])
+
+    def test_missing_cover_candidates_are_not_requested_again_on_task_retry(self):
+        from webapp.delivery.thumbnails import MissingThumbnails
+        self.create(['thumbnail'])
+        task = self.store.claim(self.store.owner)
+        info = self.info();info['thumbnails'].append({'url': self.url + '/absent.jpg'})
+        MissingThumbnails(self.store.directory, task['id']).record(self.url + '/absent.jpg')
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=info):
+            result = self.run_task(task)
+        self.store.finish(task['id'], result=result, worker_id=self.store.owner)
+        self.cleanup_result(result)
+        self.assertEqual(self.hits, ['/cover.webp'])
+
+    def test_selected_caption_missing_language_is_visible_without_silent_success(self):
+        job = self.create(['subtitle'], {'subtitles': {'scope': 'selected', 'original_languages': ['en', 'fr']}})
+        _, result = self.execute()
+        self.assertEqual(result['delivery_status'], 'review')
+        rows = self.client.get('/api/jobs/' + job + '/videos').json['items'][0]['delivery']['requirements']
+        self.assertEqual({r['language']: r['status'] for r in rows}, {'en': 'done', 'fr': 'missing'})
+        self.assertEqual(self.hits, ['/en.vtt'])
+
+    def test_unknown_main_language_is_visible_and_never_downloads_all_captions(self):
+        job = self.create(['subtitle'], {'subtitles': {'scope': 'main'}})
+        _, result = self.execute()
+        self.assertEqual(result['delivery_status'], 'review')
+        self.assertEqual(self.hits, [])
+        rows = self.client.get('/api/jobs/' + job + '/videos').json['items'][0]['delivery']['requirements']
+        self.assertIn('主语言', rows[0]['error'])
 
     def test_missing_cover_is_review_and_invalid_image_is_never_published(self):
         job = self.create(['thumbnail', 'metadata'])

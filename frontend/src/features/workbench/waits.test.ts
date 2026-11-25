@@ -11,6 +11,11 @@ const task = (overrides: Partial<AccountTask>): AccountTask => ({
 });
 
 describe('task wait explanations', () => {
+  it('distinguishes connecting from deliberate request intervals', () => {
+    expect(taskWait(task({ stage: 'waiting_connection' }))?.label).toBe('连接 / 首字节等待');
+    expect(taskWait(task({ stage: 'waiting_request' }))?.label).toBe('等待请求间隔');
+    expect(taskWait(task({ stage: 'downloading' }))).toBeUndefined();
+  });
   it('counts tasks across accounts by actual resource rather than the shared waiting stage', () => {
     const local = { code: 'local', label: '本机传输名额暂不可用' };
     const shared = { code: 'shared', label: '共享下载连接暂不可用' };

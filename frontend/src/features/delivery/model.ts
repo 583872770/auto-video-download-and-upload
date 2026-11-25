@@ -14,9 +14,12 @@ export interface DeliverySpec {
   video: { max_height: number; container: string };
   audio: { format: string };
   av: { container: string };
+  thumbnail: { strategy: 'best' | 'source' };
   subtitles: {
     mode: 'original' | 'original_and_translated';
     languages: string[];
+    scope: 'main' | 'selected' | 'all_original';
+    original_languages: string[];
     format: string;
     sources: string[];
     language_policy: string;
@@ -50,9 +53,12 @@ export function defaultDelivery(): DeliverySpec {
     video: { max_height: 1080, container: 'source' },
     audio: { format: 'source' },
     av: { container: 'auto' },
+    thumbnail: { strategy: 'best' },
     subtitles: {
       mode: 'original',
       languages: ['zh-Hans'],
+      scope: 'all_original',
+      original_languages: [],
       format: 'srt',
       sources: ['manual', 'automatic'],
       language_policy: 'available_selected',
@@ -73,6 +79,16 @@ export function validateDelivery(spec: DeliverySpec): string {
   if (!spec.outputs.length || spec.outputs.some((kind) => !(kind in outputLabels)))
     return '请至少选择一种有效交付内容。';
   const languages = spec.subtitles.languages;
+  const original = spec.subtitles.original_languages;
+  if (!['main', 'selected', 'all_original'].includes(spec.subtitles.scope))
+    return '请选择原始字幕语言范围。';
+  if (
+    (spec.subtitles.scope === 'selected' && !original.length) ||
+    original.length > 8 ||
+    original.some((value) => !/^[A-Za-z][A-Za-z0-9-]{0,30}$/.test(value))
+  )
+    return '请填写 1～8 个有效原始字幕语言代码。';
+  if (!['best', 'source'].includes(spec.thumbnail.strategy)) return '请选择封面获取方式。';
   if (
     (!languages.length && spec.subtitles.mode !== 'original') ||
     languages.length > 8 ||

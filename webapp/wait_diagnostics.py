@@ -19,6 +19,8 @@ def task_wait(progress, *, states=None, identity='local', stamp=0):
     elif stage == 'waiting_request':
         code, label, detail = 'file_interval', '下载前请求间隔', '按下载请求节奏等待后发起传输'
         until = progress.get('request_wait_until')
+    elif stage == 'waiting_connection':
+        code, label, detail = 'first_byte', '连接 / 首字节等待', '下载前间隔已结束，等待连接建立或首批文件数据；当前没有有效传输速度'
     else:
         code = stage
         label, detail = {

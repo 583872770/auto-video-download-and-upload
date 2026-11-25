@@ -29,4 +29,15 @@ describe('delivery editing contracts', () => {
     spec.outputs = ['thumbnail', 'metadata'];
     expect(validateDelivery(spec)).toBe('');
   });
+  it('keeps language selection independent from source priority and translation targets', () => {
+    const spec = defaultDelivery();
+    expect(spec.subtitles.scope).toBe('all_original');
+    expect(spec.thumbnail.strategy).toBe('best');
+    spec.subtitles.scope = 'selected';
+    expect(validateDelivery(spec)).toContain('原始字幕语言代码');
+    spec.subtitles.original_languages = ['en', 'ja'];
+    expect(validateDelivery(spec)).toBe('');
+    expect(spec.subtitles.sources).toEqual(['manual', 'automatic']);
+    expect(spec.subtitles.languages).toEqual(['zh-Hans']);
+  });
 });

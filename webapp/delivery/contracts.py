@@ -8,7 +8,9 @@ KINDS = ('subtitle', 'video_only', 'audio_only', 'av', 'thumbnail', 'metadata')
 LABELS = dict(zip(KINDS, ('字幕', '无声视频', '纯音频', '音视频成品', '封面图', '视频信息')))
 DEFAULT = {'schema_version': 1, 'outputs': ['av'], 'video': {'max_height': 1080, 'container': 'source'},
            'audio': {'format': 'source'}, 'av': {'container': 'auto'},
+           'thumbnail': {'strategy': 'best'},
            'subtitles': {'mode': 'original', 'languages': ['zh-Hans'], 'format': 'srt',
+                         'scope': 'all_original', 'original_languages': [],
                          'sources': ['manual', 'automatic'], 'language_policy': 'available_selected',
                          'missing_policy': 'review'}, 'storage': storage_defaults()}
 
@@ -33,12 +35,23 @@ def normalize(value=None):
         raise ValueError('请至少选择一种有效交付内容。')
     result = {'schema_version': 1, 'outputs': [k for k in KINDS if k in outputs]}
     result['storage'] = normalize_storage(value.get('storage'))
-    for group in ('video', 'audio', 'av', 'subtitles'):
+    for group in ('video', 'audio', 'av', 'subtitles', 'thumbnail'):
         supplied = value.get(group, {})
         if not isinstance(supplied, dict) or set(supplied) - set(DEFAULT[group]):
             raise ValueError('交付格式包含不支持的字段。')
         result[group] = {**DEFAULT[group], **supplied}
     video, audio, av, subs = (result[k] for k in ('video', 'audio', 'av', 'subtitles'))
+    if result['thumbnail']['strategy'] not in ('best', 'source'):
+        raise ValueError('封面选择策略无效。')
+    if subs['scope'] not in ('main', 'selected', 'all_original'):
+        raise ValueError('原始字幕语言范围无效。')
+    original_languages = subs['original_languages']
+    if (not isinstance(original_languages, list) or len(original_languages) > 8
+            or subs['scope'] == 'selected' and not original_languages
+            or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9-]{0,30}', s)
+                   for s in original_languages)):
+        raise ValueError('指定原始字幕语言需要 1 到 8 个有效语言代码。')
+    subs['original_languages'] = list(dict.fromkeys(original_languages))
     if type(video['max_height']) is not int or video['max_height'] not in (0, 360, 480, 720, 1080, 1440, 2160, 4320):
         raise ValueError('画质上限无效。')
     if video['container'] not in ('source', 'mp4') or audio['format'] not in ('source', 'mp3') or av['container'] not in ('auto', 'mp4', 'mkv'):
@@ -59,7 +72,9 @@ def normalize(value=None):
 
 def variant(spec, kind):
     # Output selection and contract revision do not alter an existing file's identity.
-    if kind in ('thumbnail', 'metadata'):
+    if kind == 'thumbnail':
+        return digest({'kind': kind, 'strategy': spec['thumbnail']['strategy']})
+    if kind == 'metadata':
         return digest({'kind': kind, 'schema_version': 1})
     options = spec['subtitles'] if kind == 'subtitle' else spec['audio'] if kind == 'audio_only' else {
         'video': spec['video'], **({'av': spec['av']} if kind == 'av' else {})}

@@ -21,15 +21,13 @@ class SourceExecution:
                 transfer_admitted=False, transfer_wait_resource=session.scheduler.blocked_resource or 'resources')
             session.progress.save(force=True)
         with session.scheduler.permit('transfer', on_wait=waiting):
-            session.progress.state.update(stage='downloading', upstream_group='youtube-origin',
+            session.progress.state.update(stage='waiting_connection', upstream_group='youtube-origin',
                 transfer_admitted=True, transfer_wait_resource=None, speed=None, eta=None)
             session.progress.save(force=True)
             session.failure_phase = 'transfer'
-            started = time.monotonic()
             try:
                 yield
             finally:
-                session.transfer_seconds += time.monotonic() - started
                 session.progress.state['transfer_admitted'] = False
 
 
@@ -78,6 +76,7 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
             health.record(snapshot['node'], transferred_bytes=progress.state.get('downloaded_bytes', 0),
                           elapsed=session.transfer_seconds)
         event('provider_end', provider='yt_dlp', outcome='completed',
+              network_seconds=progress.state.get('network_seconds', {}),
               elapsed_seconds=round(time.monotonic() - started, 3))
         return finish(session)
     except Exception as error:

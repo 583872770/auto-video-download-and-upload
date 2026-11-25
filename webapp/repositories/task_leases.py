@@ -281,8 +281,13 @@ class TaskLeases:
                     if not row:
                         return False
                     if self.progress_cache.publish(row, progress):
+                        stage = progress.get('stage')
+                        # File pacing/first-byte/data transitions are live Redis
+                        # observations, not extra reasons to commit every small file.
+                        durable_stage = 'downloading' if stage in (
+                            'waiting_request', 'waiting_connection', 'downloading') else stage
                         checkpoint = (worker_id, row['started_at'], row['attempts'],
-                                      progress.get('stage'), progress.get('download_method'))
+                                      durable_stage, progress.get('download_method'))
                         previous = self._progress_checkpoints.get(task_id)
                         if previous and previous[0] == checkpoint and time.monotonic() - previous[1] < PROGRESS_SQL_CHECKPOINT_SECONDS:
                             return True

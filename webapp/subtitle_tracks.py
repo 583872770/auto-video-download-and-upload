@@ -80,10 +80,46 @@ def target_tracks(info, languages):
     return available
 
 
+def main_language(info):
+    """Use source audio metadata, never guess from the first caption language."""
+    formats = [f for f in info.get('formats') or [] if f.get('acodec') != 'none'
+               and f.get('language') and f['language'] != 'und']
+    originals = [f for f in formats if (f.get('language_preference') or 0) >= 10]
+    languages = {f['language'].removesuffix('-orig') for f in originals}
+    if len(languages) == 1:
+        return languages.pop()
+    if info.get('language') and info['language'] != 'und':
+        return info['language'].removesuffix('-orig')
+    languages = {f['language'].removesuffix('-orig') for f in formats}
+    if len(languages) == 1:
+        return languages.pop()
+    languages = {key.removesuffix('-orig') for key, tracks in (info.get('automatic_captions') or {}).items()
+                 if key.endswith('-orig') and caption_entries(key, tracks)
+                 and any(not translated(t) for t in tracks)}
+    return languages.pop() if len(languages) == 1 else None
+
+
+def scoped_originals(info, config):
+    available = original_tracks(info, config['sources'])
+    if config['scope'] == 'all_original':
+        return available, list(available)
+    if config['scope'] == 'selected':
+        requested = config['original_languages']
+    else:
+        language = main_language(info)
+        if not language:
+            return {}, ['']  # Explicit missing requirement; never broaden or silently succeed.
+        if language not in available:
+            matches = [key for key in available if key.split('-')[0] == language.split('-')[0]]
+            if len(matches) == 1:
+                language = matches[0]
+        requested = [language]
+    return {key: available[key] for key in requested if key in available}, list(requested)
+
+
 def caption_plan(info, config):
     mode = config['mode']
-    available = original_tracks(info, config['sources'])
-    original = list(available)
+    available, original = scoped_originals(info, config)
     if mode == 'original_and_translated':
         targets = target_tracks(info, config['languages'])
         for language, tracks in targets.items():

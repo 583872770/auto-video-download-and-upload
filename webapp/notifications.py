@@ -14,6 +14,7 @@ from webapp.delivery.contracts import LABELS
 
 ESCALATE_SECONDS = 1800
 PHASES = {'extracting': '解析视频', 'auth': '检查登录', 'checking_login': '检查登录',
+    'waiting_request': '下载前请求间隔', 'waiting_connection': '连接 / 首字节等待',
     'checking_environment': '检查下载环境', 'preparing_workspace': '准备临时空间',
     'downloading': '下载传输', 'download': '下载传输', 'subtitle': '字幕下载',
     'processing': '本地处理', 'merging': '合并文件', 'uploading': '上传交付',

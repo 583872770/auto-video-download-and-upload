@@ -217,7 +217,8 @@ def diagnose(config, identity, progress, rate, context, stamp, *, global_limit=0
         youtube_start_interval=int(config.get('youtube_start_interval', 120)),
         youtube_task_rest_interval=int(config.get('youtube_task_rest_interval', 0)),
         youtube_cookie_pool_start_interval=cookie_pool_start_interval(config),
-        youtube_waiting=stages.get('waiting_request', 0), cookie_waiting=stages.get('waiting_cookie', 0),
+        youtube_waiting=stages.get('waiting_request', 0),
+        connection_waiting=stages.get('waiting_connection', 0), cookie_waiting=stages.get('waiting_cookie', 0),
         youtube_source_address=config.get('youtube_source_address', '') if config.get('proxy_mode') == 'direct' else '',
         disk_sample_fresh=disk_fresh, disk_blocked=bool(disk_fresh and disk.get('blocked')),
         disk_message=disk.get('message', '') if disk_fresh else '')

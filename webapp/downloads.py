@@ -245,13 +245,14 @@ class DownloadProgress:
             all_total = sum(stream['total'] for stream in self.streams.values())
         format_name = (output_label if output_label else
                        '音频' if info.get('vcodec') == 'none' else '视频')
-        self.state.update(stage='processing' if finished else 'downloading',
+        connecting = not finished and self.state.get('network_phase') == 'connecting'
+        self.state.update(stage='processing' if finished else 'waiting_connection' if connecting else 'downloading',
                           percent=round(percent, 1) if percent is not None else None,
                           downloaded_bytes=sum(stream['downloaded'] for stream in self.streams.values()),
                           total_bytes=all_total, current_downloaded_bytes=downloaded,
                           current_total_bytes=total, current_total_estimated=bool(total and not exact_total),
-                          speed=None if finished else speed,
-                          eta=None if finished else eta, title=str(info.get('title') or self.state['title']),
+                          speed=None if finished or connecting else speed,
+                          eta=None if finished or connecting else eta, title=str(info.get('title') or self.state['title']),
                           format=f'{format_name} · {info.get("format_id", "")}')
         self.save(force=finished or previous_stage != self.state['stage'])
 

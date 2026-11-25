@@ -2,6 +2,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import suppress
+from contextlib import contextmanager
 import os
 import random
 from pathlib import Path
@@ -327,7 +328,25 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
             for key in ('progress_hooks', 'postprocessor_hooks', 'post_hooks', 'logger'):
                 self.params.pop(key, None)
 
+    @contextmanager
+    def file_observation(self, fd, name):
+        yield
+
+    def _download_file(self, fd_type, name, info, subtitle):
+        if not info.get('url'):
+            self.raise_no_formats(info, True)
+        new_info = self._copy_infodict(info)
+        if new_info.get('http_headers') is None:
+            new_info['http_headers'] = self._calc_headers(new_info)
+        fd = fd_type(self, self.params)
+        with self.file_observation(fd, name):
+            for hook in self._progress_hooks:
+                fd.add_progress_hook(hook)
+            return fd.download(name, new_info, subtitle)
+
     def dl(self, name, info, subtitle=False, test=False):
+        if test:
+            return super().dl(name, info, subtitle, test)
         if subtitle:
             # yt-dlp uses a separate parameter for captions. Derive it from
             # the common file-start policy instead of imposing another delay.
@@ -338,13 +357,7 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
                 and not self.params.get('test') and not info.get('is_live')
                 and (info.get('extractor_key') == 'Youtube' or info.get('extractor') == 'youtube')
                 and get_suitable_downloader(info, self.params, to_stdout=False) is HlsFD):
-            new_info = self._copy_infodict(info)
-            if new_info.get('http_headers') is None:
-                new_info['http_headers'] = self._calc_headers(new_info)
-            fd = YoutubeHlsFD(self, self.params)
-            for hook in self._progress_hooks:
-                fd.add_progress_hook(hook)
-            return fd.download(name, new_info, subtitle)
+            return self._download_file(YoutubeHlsFD, name, info, subtitle)
         eligible = (self.params.get('_parallel_http') and not subtitle and not test
             and name != '-' and not hasattr(name, 'write')
             and self.params.get('concurrent_fragment_downloads', 1) > 1
@@ -354,12 +367,6 @@ class ParallelYoutubeDL(yt_dlp.YoutubeDL):
             and info.get('section_start') is None and info.get('section_end') is None
             and (info.get('filesize') or 0) > int(self.params.get('http_chunk_size') or CHUNK_SIZE)
             and 'Range' not in HTTPHeaderDict(info.get('http_headers')))
-        if not eligible or get_suitable_downloader(info, self.params, to_stdout=False) is not HttpFD:
-            return super().dl(name, info, subtitle, test)
-        new_info = self._copy_infodict(info)
-        if new_info.get('http_headers') is None:
-            new_info['http_headers'] = self._calc_headers(new_info)
-        fd = ParallelHttpFD(self, self.params)
-        for hook in self._progress_hooks:
-            fd.add_progress_hook(hook)
-        return fd.download(name, new_info, subtitle)
+        native = get_suitable_downloader(info, self.params, to_stdout=(name == '-'))
+        return self._download_file(ParallelHttpFD if eligible and native is HttpFD else native,
+                                   name, info, subtitle)
