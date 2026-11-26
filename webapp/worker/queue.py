@@ -36,6 +36,7 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
         exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
         last_wait_beat = float('-inf')
+        last_start_wait = None
         from webapp.worker.idle import ProcessingIdle, DownloadIdle
         idle = (ProcessingIdle(store, slot, name) if role == 'processing' else
             DownloadIdle(store, slot, name) if role in ('download', 'regular') and
@@ -71,12 +72,14 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
             if not task:
                 if waiting_start:
-                    if time.monotonic() >= last_wait_beat + 10:
+                    if waiting_start != last_start_wait or time.monotonic() >= last_wait_beat + 10:
                         store.worker_status(store.owner, name, 'waiting_start',
-                                            message='等待账号容量或启动间隔', live_only=True)
+                                            message=waiting_start['label'], wait=waiting_start, live_only=True)
                         last_wait_beat = time.monotonic()
+                        last_start_wait = waiting_start
                     time.sleep(1)  # No task lease, DB transaction or workspace held.
                     continue
+                last_start_wait = None
                 if idle and idle.wait():
                     continue
                 break
@@ -318,4 +321,5 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                             start_ticket.finish()
                         heartbeat.close()
                         last_wait_beat = float('-inf')
+                        last_start_wait = None
                         store.worker_status(store.owner, name, 'disk_wait' if resource_wait else 'idle', message=resource_wait)

@@ -30,7 +30,9 @@ class WorkbenchLiveTests(unittest.TestCase):
                     action='download', video_id='fixture', title='Title')
         self.store.worker_status(self.store.owner, '0', 'running', task['id'], task=task)
         self.store.worker_status('idle', '1', 'idle')
-        self.store.worker_status('gate', '2', 'waiting_start', message='等待账号容量或启动间隔')
+        until = time.time() + 9
+        self.store.worker_status('gate', '2', 'waiting_start', message='等待任务启动间隔',
+            wait={'code': 'start_interval', 'detail': '间隔结束后会自动尝试领取。', 'until': until})
         self.store.worker_status('other', 'other-node:1', 'idle')
         progress = dict(stage='downloading', network_phase='transferring', last_bytes_at=time.time(), speed=123,
                         output_kind='subtitle', output_language='ja')
@@ -49,6 +51,8 @@ class WorkbenchLiveTests(unittest.TestCase):
             data = client.get('/api/workbench/live').get_json()
             self.assertEqual(data['counts'], dict(downloading=1, pending_transfer=0, pending_start=1, idle=1))
             self.assertEqual(data['transfer_summary']['speed'], 123)
+            self.assertEqual(data['rows'][2]['wait'], {'code': 'start_interval', 'label': '等待任务启动间隔',
+                'detail': '间隔结束后会自动尝试领取。', 'until': until})
             cache.forget_worker(self.store.owner)
             self.assertEqual(client.get('/api/workbench/live').get_json()['counts']['downloading'], 0)
             self.redis.failed = True

@@ -24,7 +24,13 @@ def worker_view(worker, sample, stamp):
     stage = progress.get('stage') or worker['state']
     wait = task_wait(progress, stamp=stamp)
     if stage == 'waiting_start' or worker['state'] in ('disk_wait', 'paused'):
-        wait = {'label': safe_text(worker.get('message') or '等待执行条件'), 'until': worker.get('until')}
+        detail = worker.get('wait') or {}
+        wait = {'label': safe_text(worker.get('message') or '等待执行条件'),
+                'until': detail.get('until', worker.get('until'))}
+        if detail:
+            wait.update(code=detail['code'], detail=safe_text(detail['detail']))
+        elif stage == 'waiting_start':
+            wait['detail'] = '该进程尚未领取视频。启动条件恢复后会自动尝试领取。'
     if worker['state'] == 'idle':
         state = 'idle'
     elif stage == 'downloading' and progress.get('network_phase') == 'transferring':

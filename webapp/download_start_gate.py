@@ -55,7 +55,7 @@ class DownloadStartGate:
         return {}
 
     def acquire(self):
-        """Return (ticket, waiting). Missing/old snapshots use original DB admission.
+        """Return (ticket, wait details or False). Old snapshots use DB admission.
 
         Only one local worker may claim and prepare a pooled download at a time.
         That worker publishes the actual gate delay as soon as Cookie admission
@@ -69,20 +69,36 @@ class DownloadStartGate:
         if snapshot.get('mode') != 'cookie_pool' or not 0 <= now - snapshot.get('time', 0) < 20:
             return None, False
         summary = snapshot.get('cookie_pool') or {}
-        if (summary.get('known') and not summary.get('capacity') or
-                (summary.get('next_start_at') or 0) > now):
-            return None, True
+        next_start = summary.get('next_start_at') or 0
+        if summary.get('known') and not summary.get('capacity'):
+            if summary.get('cooling_sessions'):
+                wait = dict(code='account_cooldown', label='等待账号冷却',
+                            detail='当前没有可开启新任务的账号。账号冷却结束后会自动重新检查。')
+                if next_start > now:
+                    wait['until'] = next_start
+                return None, wait
+            if summary.get('manual_sessions') or summary.get('effective_sessions') == 0:
+                return None, dict(code='account_review', label='需要检查下载账号',
+                                  detail='当前没有可开启新任务的账号。请在账号管理检查登录、验证或账号分配。')
+            return None, dict(code='account_capacity', label='等待可用账号',
+                              detail='账号池暂时无法接收新任务。出现可用账号后会自动重新检查。')
+        if next_start > now:
+            return None, dict(code='account_start_time', label='等待账号可启动', until=next_start,
+                              detail='最早可用账号仍受启动间隔、冷却或启动次数限制。到时间后会重新检查。')
         with file_lock(self.lock) as acquired:
             if not acquired:
-                return None, True
+                return None, dict(code='start_check', label='等待启动检查',
+                                  detail='其他进程正在更新本机启动状态，稍后会自动重试。')
             state = self.read()
             policy = snapshot.get('policy')
             if state.get('policy') != policy:
                 state = {'policy': policy}
             if state.get('next_at', 0) > now:
-                return None, True
+                return None, dict(code='start_interval', label='等待任务启动间隔', until=state['next_at'],
+                                  detail='本机按设定间隔启动视频任务。间隔结束后会自动尝试领取。')
             if state.get('token') and state.get('expires_at', 0) > now and alive(state.get('owner') or {}):
-                return None, True
+                return None, dict(code='another_start', label='等待其他进程完成启动',
+                                  detail='其他下载进程正在为新任务准备账号。准备完成后会自动重新检查。')
             token = uuid.uuid4().hex
             state.update(token=token, owner=process_identity(), expires_at=now + 60)
             _atomic(self.path, state)
@@ -95,7 +111,7 @@ class DownloadStartGate:
         ticket, waiting = self.acquire()
         if waiting:
             if actions and set(actions) == {'download'}:
-                return None, None, True
+                return None, None, waiting
             exclude = tuple(set(exclude or ()) | {'download'})
         try:
             task = store.claim(store.owner, actions=actions, exclude=exclude)

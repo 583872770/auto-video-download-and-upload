@@ -512,7 +512,7 @@ class TaskLeases:
                 self.statistics.settle(db, instance_id=scope)
             return len(rows)
 
-    def worker_status(self, worker_id, slot, state, task_id=None, message='', *, task=None, until=None, live_only=False):
+    def worker_status(self, worker_id, slot, state, task_id=None, message='', *, task=None, until=None, wait=None, live_only=False):
         values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state,
                       task_id=task_id, message=message)
         if task is not None:
@@ -520,6 +520,8 @@ class TaskLeases:
                           video_id=task.get('video_id'), title=task.get('title'), batch_id=task.get('batch_id'))
         if until is not None:
             values['until'] = until
+        if wait is not None:
+            values['wait'] = wait
         if self.fleet:
             values['slot'] = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':' + str(slot)
             values['instance_id'] = self.fleet.id

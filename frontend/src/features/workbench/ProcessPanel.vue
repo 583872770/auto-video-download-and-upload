@@ -185,6 +185,9 @@ function toggleQueue(kind: QueueGroup) {
                 row.account
               }}</RouterLink>
               <small v-else-if="row.id" class="cell-note">待分配账号</small>
+              <small v-else-if="fresh && row.stage === 'waiting_start'" class="cell-note"
+                >尚未领取视频</small
+              >
             </td>
             <td>
               {{ fresh ? step(row) : '状态待确认'
@@ -197,12 +200,18 @@ function toggleQueue(kind: QueueGroup) {
                 <TransferProgress :progress="{ ...row.progress, stage: 'downloading' }" />
               </template>
               <template v-else-if="fresh && row.wait">
-                {{ row.wait.detail || row.wait.label }}
+                {{ row.wait.detail || '—' }}
                 <small v-if="row.wait.until" class="cell-note">{{
                   waitCountdown(row.wait.until, now, fresh)
                 }}</small>
                 <small v-else-if="row.phase_started_at" class="cell-note"
                   >已等待 {{ Math.max(0, Math.floor(now - row.phase_started_at)) }} 秒</small
+                >
+                <RouterLink
+                  v-if="row.wait.code === 'account_review'"
+                  class="text-link cell-note"
+                  :to="accountLink"
+                  >打开账号管理</RouterLink
                 >
               </template>
               <span v-else>—</span>

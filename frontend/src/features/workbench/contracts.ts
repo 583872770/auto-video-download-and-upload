@@ -77,7 +77,7 @@ export interface ProcessRow {
   output?: string | null;
   language?: string | null;
   progress: VideoTask['progress'];
-  wait?: { label: string; detail?: string; until?: number } | null;
+  wait?: { code?: string; label: string; detail?: string; until?: number } | null;
   phase_started_at?: number | null;
 }
 export type QueueGroup = 'processing' | 'disk' | 'retry' | 'ready';

@@ -34,7 +34,7 @@ class DownloadStartGateTests(unittest.TestCase):
             results = list(pool.map(lambda _: self.gate.claim(store, actions=('download',)), range(24)))
         claimed = [r for r in results if r[0]]
         self.assertEqual(len(claimed), 1)
-        self.assertEqual(sum(r[2] for r in results), 23)
+        self.assertEqual(sum(bool(r[2]) for r in results), 23)
         from sqlalchemy import select
         from webapp.database import tasks
         with store.connect() as db:
@@ -43,7 +43,9 @@ class DownloadStartGateTests(unittest.TestCase):
         claimed[0][1].finish(10)
         with patch.object(store, 'claim', side_effect=AssertionError('Claimed during local pacing')):
             for _ in range(24):
-                self.assertTrue(self.gate.claim(store, actions=('download',))[2])
+                _, _, wait = self.gate.claim(store, actions=('download',))
+                self.assertEqual(wait['code'], 'start_interval')
+                self.assertGreater(wait['until'], time.time())
 
     def test_other_lanes_remain_runnable_while_downloads_wait(self):
         ticket, _ = self.gate.acquire()
@@ -52,7 +54,8 @@ class DownloadStartGateTests(unittest.TestCase):
         task, other_ticket, waiting = self.gate.claim(store, exclude=('import', 'index'))
         self.assertEqual(task['action'], 'check')
         self.assertIsNone(other_ticket)
-        self.assertTrue(waiting)
+        self.assertEqual(waiting['code'], 'another_start')
+        self.assertNotIn('until', waiting)
         self.assertIn('download', store.claim.call_args.kwargs['exclude'])
         self.gate.claim(store, actions=('import', 'index'))
         self.assertEqual(store.claim.call_args.kwargs['actions'], ('import', 'index'))
@@ -87,11 +90,21 @@ class DownloadStartGateTests(unittest.TestCase):
         data['cookie_pool']['next_start_at'] = time.time() + 3600
         (self.root / 'throughput.json').write_text(json.dumps(data), encoding='utf-8')
         store = Mock(owner='fixture')
-        self.assertTrue(self.gate.claim(store, actions=('download',))[2])
+        _, _, wait = self.gate.claim(store, actions=('download',))
+        self.assertEqual((wait['code'], wait['until']), ('account_start_time', data['cookie_pool']['next_start_at']))
         store.claim.assert_not_called()
         data['time'] = time.time() - 21
         (self.root / 'throughput.json').write_text(json.dumps(data), encoding='utf-8')
         self.assertEqual(self.gate.acquire(), (None, False))
+
+    def test_unavailable_account_pool_reports_cooldown_or_manual_action(self):
+        self.snapshot(known=True, capacity=0, manual_sessions=2)
+        _, wait = self.gate.acquire()
+        self.assertEqual(wait['code'], 'account_review')
+        self.assertNotIn('until', wait)
+        self.snapshot(known=True, capacity=0, manual_sessions=1, cooling_sessions=1)
+        _, wait = self.gate.acquire()
+        self.assertEqual(wait['code'], 'account_cooldown')
 
     def test_empty_or_failed_claim_releases_local_ticket(self):
         store = Mock(owner='fixture')
