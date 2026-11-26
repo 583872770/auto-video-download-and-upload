@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import TransferProgress from '../../components/TransferProgress.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api } from '../../api';
@@ -11,12 +10,12 @@ import { usePolling } from '../../composables/polling';
 import { useLeaveGuard } from '../../composables/leaveGuard';
 import InstancePicker from '../../components/InstancePicker.vue';
 import SystemNotice from '../../components/SystemNotice.vue';
-import TaskLog from '../../components/TaskLog.vue';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import CapacityPanel from './CapacityPanel.vue';
+import ProcessPanel from './ProcessPanel.vue';
 import WorkbenchSpeeds from './WorkbenchSpeeds.vue';
-import { stageLabel, type Capacity, type WorkbenchStatus, type RuntimeTask } from './contracts';
-import { formatGB, jobStates, videoStates, type Job, type Page } from '../jobs/contracts';
+import type { Capacity, LiveWorkbench, WorkbenchStatus } from './contracts';
+import { formatGB, jobStates, type Job, type Page } from '../jobs/contracts';
 const route = useRoute(),
   router = useRouter(),
   instances = useInstances(),
@@ -33,9 +32,9 @@ const selection = ref(
 const query = ref(''),
   jobs = useResource<Page<Job>>(),
   workbench = useResource<WorkbenchStatus>(),
-  status = useResource<Capacity>();
+  status = useResource<Capacity>(),
+  live = useResource<LiveWorkbench>();
 const jobItems = computed(() => jobs.data.value?.items || []),
-  log = ref<RuntimeTask>(),
   stopping = ref(false);
 const job = computed(() => workbench.data.value?.job);
 const queue = computed(() => workbench.data.value);
@@ -95,7 +94,7 @@ async function refresh(signal?: AbortSignal, poll = false): Promise<boolean | un
   const ticket = ++refreshTicket;
   let received: WorkbenchStatus | undefined;
   const loaded = await workbench.load(async (signal) => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ summary: '1' });
     if (selected) params.set('job_id', selected);
     if (poll) params.set('poll', '1');
     const value = await api.request<WorkbenchStatus>(
@@ -137,15 +136,23 @@ async function refresh(signal?: AbortSignal, poll = false): Promise<boolean | un
 async function refreshCapacity(signal?: AbortSignal, poll = false): Promise<boolean | undefined> {
   if (!ready.value || busy.value) return undefined;
   const scope = instances.scope();
-  return status.load(
+  const result = await status.load(
     (signal) => api.request('/api/status', { scope, signal, timeoutMs: poll ? 12000 : 30000 }),
     signal,
   );
+  const capacity = status.data.value?.concurrency;
+  if (result && scope.isCurrent() && capacity?.cookie_allocation) {
+    headerStatus.adoptAccountSummary({
+      sample_time: capacity.sample_time || null,
+      accounts: capacity.cookie_allocation.accounts,
+    });
+  }
+  return result;
 }
 async function instanceChanged() {
   workbench.clear();
   status.clear();
-  log.value = undefined;
+  live.clear();
   stopping.value = false;
   message.value = '';
   failure.value = '';
@@ -199,6 +206,7 @@ async function control(action: 'start' | 'pause' | 'stop') {
   message.value = '';
   workbench.clear();
   status.clear();
+  live.clear();
   try {
     await api.request('/api/jobs/workbench', {
       method: 'POST',
@@ -227,14 +235,34 @@ usePolling(
   (signal) => refresh(signal, true),
   computed(() => {
     if (!queue.value?.online || queue.value.paused) return 30000;
-    return queue.value.running ? 5000 : 15000;
+    return 20000;
   }),
 );
 usePolling(
   computed(() => ready.value && !busy.value),
   (signal) => refreshCapacity(signal, true),
-  computed(() => (queue.value?.running ? 10000 : 20000)),
+  30000,
 );
+usePolling(
+  computed(() => ready.value),
+  (signal) =>
+    live.load(
+      (signal) =>
+        api.request<LiveWorkbench>('/api/workbench/live', {
+          scope: instances.scope(),
+          signal,
+          timeoutMs: 5000,
+        }),
+      signal,
+    ),
+  computed(() => (live.data.value?.rows.some((row) => row.id) ? 3000 : 5000)),
+);
+watch([live.lastSuccessAt, live.error], () => {
+  headerStatus.adoptLiveDownload(
+    live.data.value?.transfer_summary.speed || 0,
+    live.error.value ? 0 : live.lastSuccessAt.value,
+  );
+});
 </script>
 <template>
   <main class="content">
@@ -247,7 +275,13 @@ usePolling(
     </div>
     <InstancePicker :disabled="busy" purpose="operate" @change="instanceChanged" />
     <SystemNotice />
-    <WorkbenchSpeeds :status="queue" :received-at="workbench.lastSuccessAt.value" />
+    <WorkbenchSpeeds
+      :status="queue"
+      :received-at="workbench.lastSuccessAt.value"
+      :live="live.data.value"
+      :live-received-at="live.lastSuccessAt.value"
+      :live-error="live.error.value"
+    />
     <p v-if="failure" class="form-error" role="alert">{{ failure }}</p>
     <p v-if="message" class="notice" role="status">{{ message }}</p>
     <section class="card download-console">
@@ -430,59 +464,12 @@ usePolling(
       :status="status.data.value"
       :received-at="status.lastSuccessAt.value"
     />
-    <section class="card">
-      <div class="section-heading">
-        <h2>当前实例执行任务</h2>
-        <RouterLink class="text-link" :to="{ path: '/logs', query: instanceQuery }"
-          >查看执行记录 ↗</RouterLink
-        >
-      </div>
-      <div class="table-scroll">
-        <table id="workbench-tasks">
-          <thead>
-            <tr>
-              <th>视频</th>
-              <th>状态 / 阶段</th>
-              <th>进度</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="task in queue?.active_tasks" :key="task.id">
-              <td>
-                {{ task.title || task.video_id || task.id }}
-                <p
-                  v-if="task.notification?.missing.length"
-                  class="cell-note"
-                  style="color: #b47b35"
-                >
-                  未完成：{{ task.notification.missing.join('、') }}
-                </p>
-              </td>
-              <td>
-                {{ videoStates[task.status] || task.status }} ·
-                {{ stageLabel(task.progress?.stage) }}
-                <p v-if="task.notification" class="cell-note">{{ task.notification.reason }}</p>
-              </td>
-              <td>
-                <TransferProgress :progress="task.progress" />
-              </td>
-              <td>
-                <button
-                  @click="log = { ...task, instance_id: instances.selectedId || task.instance_id }"
-                >
-                  查看日志
-                </button>
-              </td>
-            </tr>
-            <tr v-if="queue && !queue.active_tasks.length">
-              <td colspan="4" class="empty">当前实例没有执行中的视频。</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <TaskLog v-if="log" :key="log.id" :task="log" @close="log = undefined" />
+    <ProcessPanel
+      :key="'processes-' + instances.epoch"
+      :snapshot="live.data.value"
+      :received-at="live.lastSuccessAt.value"
+      :error="live.error.value"
+    />
     <WorkspaceDialog
       v-if="stopping"
       :open="true"

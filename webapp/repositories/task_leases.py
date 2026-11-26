@@ -512,13 +512,18 @@ class TaskLeases:
                 self.statistics.settle(db, instance_id=scope)
             return len(rows)
 
-    def worker_status(self, worker_id, slot, state, task_id=None, message=''):
+    def worker_status(self, worker_id, slot, state, task_id=None, message='', *, task=None, until=None, live_only=False):
         values = dict(id=worker_id, slot=slot, pid=os.getpid(), heartbeat=time.time(), state=state,
                       task_id=task_id, message=message)
+        if task is not None:
+            values.update(attempt=self.progress_cache.attempt(task), action=task['action'],
+                          video_id=task.get('video_id'), title=task.get('title'), batch_id=task.get('batch_id'))
+        if until is not None:
+            values['until'] = until
         if self.fleet:
             values['slot'] = hashlib.sha256(self.fleet.id.encode()).hexdigest()[:16] + ':' + str(slot)
             values['instance_id'] = self.fleet.id
-        if self.progress_cache.publish_worker(values):
+        if self.progress_cache.publish_worker(values) or live_only:
             return
         # Redis is the live path. Keep the SQL fallback for local development
         # and an outage so the dashboard remains useful without stopping work.

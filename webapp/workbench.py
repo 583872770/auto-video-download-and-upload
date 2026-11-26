@@ -114,7 +114,7 @@ class Workbench:
             result.append(task)
         return result
 
-    def status(self, identity, preview=None, *, compact=False):
+    def status(self, identity, preview=None, *, compact=False, summary_only=False):
         with self.store.connect() as db:
             row = self.node(identity, db)
             from webapp.disk_diagnostics import summary
@@ -124,11 +124,12 @@ class Workbench:
             active_query = select(*LIST_FIELDS).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
                 tasks.c.status == 'running').order_by(tasks.c.seq)
-            active = self.store.decode_many(db.execute(
+            active = [] if summary_only else self.store.decode_many(db.execute(
                 active_query if compact else active_query.limit(100)).mappings())
-            running = db.execute(select(func.count()).select_from(tasks).where(
+            running_counts = dict(db.execute(select(tasks.c.batch_id, func.count()).where(
                 tasks.c.instance_id == identity, tasks.c.action == 'download',
-                tasks.c.status == 'running')).scalar_one()
+                tasks.c.status == 'running').group_by(tasks.c.batch_id)).all())
+            running = sum(running_counts.values())
             telemetry = (self.store.progress_cache.read_instances([identity]) or {}).get(identity, {})
             heartbeat = telemetry.get('heartbeat', row['heartbeat'])
             online = heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS
@@ -141,11 +142,13 @@ class Workbench:
             local = json.loads(row['config'])
             config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
             from webapp.database import delivery_work
-            local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
-            accounts = account_summary(db, config, telemetry.get('throughput') or local.get('throughput'), identity,
-                                       [task for task in active if task['id'] not in local_ids],
-                                       online=online, paused=paused)
-        if not compact:
+            accounts = None
+            if not summary_only:
+                local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
+                accounts = account_summary(db, config, telemetry.get('throughput') or local.get('throughput'), identity,
+                                           [task for task in active if task['id'] not in local_ids],
+                                           online=online, paused=paused)
+        if not compact and not summary_only:
             active = self.decorate_cookie_names(active, None, self.store, scope=identity)
             from webapp.notifications import attach_tasks
             with self.store.connect() as db:
@@ -153,7 +156,7 @@ class Workbench:
         job = self.visible_job(preview or selected, compact=compact)
         if job:
             desired = selected == job['id'] and enabled
-            job = {**job, 'running': sum(task['batch_id'] == job['id'] for task in active),
+            job = {**job, 'running': running_counts.get(job['id'], 0) if summary_only else sum(task['batch_id'] == job['id'] for task in active),
                    'released': desired, 'desired_running': desired,
                    'waiting_reason': (error or ('当前实例离线。' if not online else
                        '等待下载实例释放磁盘空间' if blocked else '')) if desired and job['queued'] else '',
@@ -219,6 +222,7 @@ def register_workbench(app, store, configuration, preflight):
     @app.route('/api/jobs/workbench', methods=['GET', 'POST'])
     def download_workbench():
         compact = request.args.get('compact') == '1'
+        summary_only = request.method == 'GET' and request.args.get('summary') == '1'
         fleet = store.fleet
         if not fleet:
             # A standalone service has exactly one executor.
@@ -240,9 +244,9 @@ def register_workbench(app, store, configuration, preflight):
                 identity = workbench.selection(db, 'selected_download_job')
             job = workbench.visible_job(request.args.get('job_id') or identity, compact=compact)
             queue = store.download_queue()
-            active = store.page(actions=['download'], status='active', limit=100, order='asc')['items']
+            active = [] if summary_only else store.page(actions=['download'], status='active', limit=100, order='asc')['items']
             active = Workbench.decorate_cookie_names(active, base, store)
-            if not compact:
+            if not compact and not summary_only:
                 from webapp.notifications import attach_tasks
                 with store.connect() as db:
                     active = attach_tasks(db, active)
@@ -254,8 +258,8 @@ def register_workbench(app, store, configuration, preflight):
                     rate = json.loads((store.directory / 'throughput.json').read_text(encoding='utf-8'))
                 except (OSError, ValueError):
                     rate = None
-                accounts = account_summary(db, config, rate, 'local', active,
-                                           online=True, paused=queue['paused'])
+                accounts = None if summary_only else account_summary(db, config, rate, 'local', active,
+                                                                    online=True, paused=queue['paused'])
             value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
@@ -282,8 +286,8 @@ def register_workbench(app, store, configuration, preflight):
                 rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
             workbench.control(identity, data.get('action'), data.get('job_id'), expected)
         preview = request.args.get('job_id')
-        value = views.read(('workbench', identity, preview, compact),
-                           lambda: workbench.status(identity, preview, compact=compact))
+        value = views.read(('workbench', identity, preview, compact, summary_only),
+                           lambda: workbench.status(identity, preview, compact=compact, summary_only=summary_only))
         if compact:
             value = compact_status(value)
         else:

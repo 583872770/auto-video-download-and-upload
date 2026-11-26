@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import type { WorkbenchStatus } from './contracts';
+import type { LiveWorkbench, WorkbenchStatus } from './contracts';
 import { speedNumber } from './speeds';
 import { formatGB } from '../jobs/contracts';
 
 const props = defineProps<{
   status?: WorkbenchStatus;
   receivedAt?: number;
+  live?: LiveWorkbench;
+  liveReceivedAt?: number;
+  liveError?: string;
 }>();
 const FRESH_SECONDS = 30;
 const DISPLAY_STALE_SECONDS = 90;
@@ -38,7 +41,10 @@ const timer = setInterval(() => {
 }, 1000);
 onUnmounted(() => clearInterval(timer));
 const transfer = computed(
-  () => props.status?.transfer_summary || { time: 0, transferring: 0, measured: 0, speed: 0 },
+  () => props.live?.transfer_summary || { time: 0, transferring: 0, measured: 0, speed: 0 },
+);
+const transferFresh = computed(
+  () => !!props.live && !props.liveError && now.value - (props.liveReceivedAt || 0) < 15,
 );
 const snapshotAt = computed(() => props.receivedAt || receivedAt.value);
 const fresh = computed(
@@ -48,7 +54,7 @@ const displayFresh = computed(
   () => !!props.status?.online && now.value - snapshotAt.value <= DISPLAY_STALE_SECONDS,
 );
 const total = computed(() =>
-  displayFresh.value
+  transferFresh.value
     ? transfer.value.transferring && !transfer.value.measured
       ? 0
       : transfer.value.speed
@@ -75,8 +81,9 @@ const readState = computed(() =>
     <article class="speed-metric" aria-labelledby="total-download-speed-label">
       <div class="speed-metric-heading">
         <h2 id="total-download-speed-label">实时总下载速度</h2>
-        <span v-if="fresh" class="speed-indicator">{{ transfer.transferring }} 个传输任务</span>
-        <span v-else-if="displayFresh" class="speed-indicator muted">数据稍旧</span>
+        <span v-if="transferFresh" class="speed-indicator"
+          >{{ transfer.transferring }} 个传输任务</span
+        >
         <span v-else class="speed-indicator muted">待更新</span>
       </div>
       <div class="speed-reading">
@@ -86,14 +93,13 @@ const readState = computed(() =>
         <span>MB/s</span>
         <small>{{ speedNumber(total == null ? null : (total * 8) / 1e6) }} Mbps</small>
       </div>
-      <p v-if="!displayFresh">{{ readState }}</p>
-      <p v-else-if="!fresh">{{ readState }}</p>
+      <p v-if="!transferFresh">等待实时采样</p>
       <p v-else-if="transfer.transferring && transfer.measured < transfer.transferring">
         当前实例 · {{ transfer.measured }} / {{ transfer.transferring }} 个任务有新鲜速度采样{{
           transfer.measured ? '，显示已取得的合计' : ''
         }}
       </p>
-      <p v-else>当前实例全部传输任务合计 · 每 5 秒更新</p>
+      <p v-else>当前实例全部传输任务合计</p>
     </article>
     <article class="speed-metric output-speed-metric" aria-labelledby="session-output-speed-label">
       <div class="speed-metric-heading">

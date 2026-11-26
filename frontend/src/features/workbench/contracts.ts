@@ -64,6 +64,35 @@ export interface WaitReason {
   detail?: string;
   until?: number;
 }
+export interface ProcessRow {
+  slot: string;
+  number: number;
+  processing: boolean;
+  state: 'downloading' | 'pending_transfer' | 'pending_start' | 'idle';
+  stage: string;
+  id?: string | null;
+  video_id?: string | null;
+  title?: string | null;
+  account?: string | null;
+  output?: string | null;
+  language?: string | null;
+  progress: VideoTask['progress'];
+  wait?: { label: string; detail?: string; until?: number } | null;
+  phase_started_at?: number | null;
+}
+export type QueueGroup = 'processing' | 'disk' | 'retry' | 'ready';
+export interface QueuePage {
+  items: { id: string; video_id?: string; title?: string; reason?: string; until?: number }[];
+  next_cursor: number | null;
+}
+export interface LiveWorkbench {
+  time: number;
+  paused: boolean;
+  rows: ProcessRow[];
+  counts: Record<ProcessRow['state'], number>;
+  queue: Record<QueueGroup, number>;
+  transfer_summary: WorkbenchStatus['transfer_summary'];
+}
 export interface Pacing {
   phase: string;
   recovery: boolean;

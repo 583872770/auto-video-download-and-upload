@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import type { Capacity } from './contracts';
-import AccountTasks from './AccountTasks.vue';
 import { sampleNow } from './waits';
 const props = defineProps<{ status: Capacity; receivedAt?: number }>();
 const capacity = computed(() => props.status.concurrency);
@@ -21,9 +20,6 @@ const timer = setInterval(() => {
   wallNow.value = Date.now() / 1000;
 }, 1000);
 onUnmounted(() => clearInterval(timer));
-const fresh = computed(
-  () => capacity.value.online && (!props.receivedAt || wallNow.value - props.receivedAt <= 30),
-);
 const displayFresh = computed(
   () => capacity.value.online && (!props.receivedAt || wallNow.value - props.receivedAt <= 90),
 );
@@ -34,7 +30,6 @@ const worker = computed(() =>
     ? capacity.value.worker_control
     : undefined,
 );
-const sessions = computed(() => capacity.value.cookie_pool?.sessions || []);
 function at(stamp?: number) {
   return stamp ? new Date(stamp * 1000).toLocaleString('zh-CN') : '—';
 }
@@ -58,7 +53,7 @@ const blockers: Record<string, string> = {
       <h2>执行容量与等待原因</h2>
       <span class="badge">账号池调度</span>
     </div>
-    <p v-if="!fresh" class="notice">
+    <p v-if="!displayFresh" class="notice">
       实例离线或采样尚未更新；下方保留上次记录，不能确认当前占用或恢复进度。
     </p>
     <div class="summary-grid">
@@ -177,16 +172,5 @@ const blockers: Record<string, string> = {
         <p v-if="!capacity.decisions.history.length">暂无结构化事件记录。</p>
       </details>
     </template>
-    <AccountTasks
-      v-if="capacity.cookie_allocation || sessions.length"
-      :accounts="capacity.cookie_allocation?.accounts || []"
-      :sessions="sessions"
-      :unassigned="capacity.cookie_allocation?.unassigned_tasks || []"
-      :fresh="fresh"
-      :time="capacity.time"
-      :now="now"
-      :pending="capacity.pending_tasks"
-      :paused="capacity.paused"
-    />
   </section>
 </template>

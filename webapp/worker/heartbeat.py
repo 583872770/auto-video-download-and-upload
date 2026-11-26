@@ -8,11 +8,12 @@ from webapp.lease_guard import LeaseGuard
 
 
 class LeaseHeartbeat:
-    def __init__(self, store, task_id, name, context):
+    def __init__(self, store, task_id, name, context, task=None):
         self.store = store
         self.task_id = task_id
         self.name = name
         self.context = context
+        self.task = task
         self.stop = threading.Event()
         self.guard = LeaseGuard(self.stop)
         self.deadline = time.monotonic() + 45
@@ -49,7 +50,7 @@ class LeaseHeartbeat:
                 if not owned:
                     self._abandon('heartbeat_ownership_lost')
                 self.deadline = renewal_started + 45
-                self.store.worker_status(self.store.owner, self.name, 'running', self.task_id)
+                self.store.worker_status(self.store.owner, self.name, 'running', self.task_id, task=self.task)
             except Exception as error:
                 if time.monotonic() - last_error >= 30:
                     last_error = time.monotonic()

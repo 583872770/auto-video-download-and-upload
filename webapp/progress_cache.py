@@ -115,6 +115,29 @@ class ProgressCache:
             self._call('srem', self.worker_index, *stale)
         return result
 
+    def forget_worker(self, identity):
+        if self._call('delete', self.live_prefix + 'worker:' + identity) is not None:
+            self._call('srem', self.worker_index, identity)
+
+    def publish_workbench(self, identity, summary):
+        return self._call('set', self.live_prefix + 'workbench:' + identity,
+                          json.dumps(summary, ensure_ascii=False), ex=60)
+
+    def read_workbench(self, identity, workers):
+        task_ids = list(dict.fromkeys(worker['task_id'] for worker in workers if worker.get('task_id')))
+        values = self._call('mget', [self.live_prefix + 'workbench:' + identity,
+                                    *(self.prefix + task_id for task_id in task_ids)])
+        if values is None:
+            return None
+        decoded = []
+        for raw in values:
+            try:
+                value = json.loads(raw) if raw is not None else None
+            except (ValueError, TypeError):
+                value = None
+            decoded.append(value if isinstance(value, dict) else None)
+        return decoded[0], dict(zip(task_ids, decoded[1:]))
+
     def publish_instance(self, identity, heartbeat, throughput=None, error=''):
         """Publish live instance telemetry without rewriting instance config."""
         if not self.enabled or not identity:

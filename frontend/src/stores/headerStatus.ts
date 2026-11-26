@@ -8,7 +8,7 @@ import { accountState } from '../features/workbench/accountState';
 
 export interface HeaderStatus extends Omit<WorkbenchStatus, 'active_tasks'> {
   transfer_summary: { time: number; transferring: number; measured: number; speed: number };
-  account_summary: { sample_time: number | null; accounts: RuntimeAccount[] };
+  account_summary?: { sample_time: number | null; accounts: RuntimeAccount[] } | null;
 }
 
 // Idle polling is 15 seconds. Keep the control window wider than one poll
@@ -30,6 +30,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   let revision = 0,
     controller: AbortController | undefined;
   let lastSelected: string | null | undefined;
+  const liveDownload = ref<{ speed: number; receivedAt: number }>();
   const fresh = computed(
     () =>
       !!data.value &&
@@ -77,6 +78,8 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       !data.value.stop_requested,
   );
   const download = computed(() => {
+    if (liveDownload.value)
+      return now.value - liveDownload.value.receivedAt < 15 ? liveDownload.value.speed / 1e6 : null;
     const sample = data.value?.transfer_summary;
     if (!displayFresh.value || !sample) return null;
     if (sample.transferring && !sample.measured) return 0;
@@ -116,6 +119,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     return '待启动';
   });
   function clear() {
+    liveDownload.value = undefined;
     revision++;
     controller?.abort();
     controller = undefined;
@@ -126,9 +130,17 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   function adopt(value: HeaderStatus | WorkbenchStatus) {
     const header = { ...value } as HeaderStatus & Partial<WorkbenchStatus>;
     delete header.active_tasks;
+    if (header.account_summary) liveDownload.value = undefined;
+    header.account_summary ||= data.value?.account_summary;
     data.value = header;
     error.value = '';
     receivedAt.value = now.value = Date.now() / 1000;
+  }
+  function adoptLiveDownload(speed: number, received: number) {
+    liveDownload.value = { speed, receivedAt: received };
+  }
+  function adoptAccountSummary(summary: HeaderStatus['account_summary']) {
+    if (data.value) data.value = { ...data.value, account_summary: summary };
   }
   async function refresh(signal?: AbortSignal, poll = false): Promise<boolean | undefined> {
     if (busy.value || (bootstrap().fleetEnabled && !instances.selectedId)) return undefined;
@@ -258,6 +270,8 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     choose,
     invalidate,
     adopt,
+    adoptLiveDownload,
+    adoptAccountSummary,
     control,
     clear,
   };

@@ -78,6 +78,7 @@ class TaskRunner:
         from webapp.maintenance import prune_disk_logs, cleanup_logs
         from webapp.worker.locks import worker_lock
         last_disk = last_cleanup = last_log_cleanup = last_snapshot = last_error = last_summary_cleanup = 0
+        last_workbench = float('-inf')
         while not self.stop.is_set():
             config = self._maintenance_config
             # Local log retention also works during a database outage.
@@ -93,6 +94,10 @@ class TaskRunner:
                 continue
             config = self._maintenance_config
             try:
+                if time.monotonic() - last_workbench >= 15:
+                    last_workbench = time.monotonic()
+                    from webapp.workbench_live import publish_queue
+                    publish_queue(self.store)
                 disk = DiskBudget(self.store.directory, config)
                 if time.monotonic() - last_disk >= 30:
                     last_disk = time.monotonic()

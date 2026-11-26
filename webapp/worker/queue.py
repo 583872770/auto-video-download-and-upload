@@ -1,5 +1,5 @@
 """Queue claims, task leases, settlement and worker retirement."""
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import os
 from pathlib import Path
 import shutil
@@ -27,13 +27,15 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     store = TaskStore(directory, os.environ.get('VIDEO_WORKER_DATABASE_URL'))
     from webapp.diagnostics import worker_name
     name = worker_name(slot)
-    with worker_lock(store.directory / f'worker-{name}.lock') as acquired:
+    with worker_lock(store.directory / f'worker-{name}.lock') as acquired, ExitStack() as lifecycle:
         if not acquired:
             return
+        lifecycle.callback(store.progress_cache.forget_worker, store.owner)
         store.recover(expired_only=True)
         actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
+        last_wait_beat = float('-inf')
         from webapp.worker.idle import ProcessingIdle, DownloadIdle
         idle = (ProcessingIdle(store, slot, name) if role == 'processing' else
             DownloadIdle(store, slot, name) if role in ('download', 'regular') and
@@ -55,6 +57,10 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 # Delay this idle worker too. Delaying only the released task
                 # lets a large queue churn thousands of unrelated task claims.
                 # No task lease or DB transaction is held during this wait.
+                if time.monotonic() >= last_wait_beat + 10:
+                    store.worker_status(store.owner, name, 'waiting_start', message='等待调度条件恢复',
+                                        until=time.time() + remaining, live_only=True)
+                    last_wait_beat = time.monotonic()
                 time.sleep(min(1, remaining))
                 continue
             if role in ('processing', 'all'):
@@ -65,6 +71,10 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 task, start_ticket, waiting_start = start_gate.claim(store, actions=actions, exclude=exclude)
             if not task:
                 if waiting_start:
+                    if time.monotonic() >= last_wait_beat + 10:
+                        store.worker_status(store.owner, name, 'waiting_start',
+                                            message='等待账号容量或启动间隔', live_only=True)
+                        last_wait_beat = time.monotonic()
                     time.sleep(1)  # No task lease, DB transaction or workspace held.
                     continue
                 if idle and idle.wait():
@@ -103,8 +113,8 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         break
                     if not workspace.test_mode:
                         store.import_archive(base)
-                store.worker_status(store.owner, name, 'running', task['id'])
-                heartbeat = LeaseHeartbeat(store, task['id'], name, task_context)
+                store.worker_status(store.owner, name, 'running', task['id'], task=task)
+                heartbeat = LeaseHeartbeat(store, task['id'], name, task_context, task=task)
                 lease_guard = heartbeat.guard
                 heartbeat.start()
                 resource_wait = None
@@ -307,4 +317,5 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         if start_ticket:
                             start_ticket.finish()
                         heartbeat.close()
+                        last_wait_beat = float('-inf')
                         store.worker_status(store.owner, name, 'disk_wait' if resource_wait else 'idle', message=resource_wait)
