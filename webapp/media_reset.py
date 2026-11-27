@@ -177,5 +177,6 @@ def reset_records(store, local_id, remove_log):
         db.execute(counters.delete().where(counters.c.scope == 'instance:' + local_id))
         db.execute(counters.delete().where(counters.c.value == 0))
     store.statistics._dashboard_cache.clear()
-    store.statistics._history_cache.clear()
+    store.statistics._recent_cache.clear()
+    store.statistics._delivery_speed_cache.clear()
     return {'deleted_tasks': deleted_tasks, 'deleted_artifacts': len(artifact_rows)}

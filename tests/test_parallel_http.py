@@ -1,5 +1,6 @@
 """Real HTTP integration: bounded parallel ranges must preserve every byte."""
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import os
@@ -187,6 +188,21 @@ class ParallelHttpTests(unittest.TestCase):
             self.assertTrue(self.download(url, hook=hook, overrides={'http_chunk_size':chunk})[0])
         self.assertTrue(observed)
         self.assertGreater(observed[0], 0)
+        self.assert_file()
+
+    def test_slow_front_range_refills_connections_inside_bounded_window(self):
+        with source('streaming') as (url, state), ThreadPoolExecutor(max_workers=1) as pool:
+            task = pool.submit(self.download, url)
+            try:
+                self.assertTrue(state['half_sent'].wait(2))
+                deadline = time.monotonic() + 1.5
+                while len(state['calls']) < 7 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertIn(f'bytes={3*CHUNK}-{4*CHUNK-1}', state['calls'])
+                self.assertNotIn(f'bytes={6*CHUNK}-{7*CHUNK-1}', state['calls'])
+            finally:
+                state['continue_range'].set()
+            self.assertTrue(task.result(timeout=5)[0])
         self.assert_file()
 
     def test_concurrency_one_keeps_native_sequential_downloader(self):

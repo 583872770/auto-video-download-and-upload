@@ -406,6 +406,23 @@ class DiskBudgetTests(unittest.TestCase):
                 with patch.object(self.budget, '_free', return_value=0):
                     lease.check(force=True)
 
+    def test_shared_space_sample_only_replaces_safe_existing_checks(self):
+        config_path = self.budget.directory / 'disk-budget-config.json'
+        with self.budget.lease('imports') as lease:
+            lease.check(force=True)
+            sample = dict(at=time.monotonic(), free=16 * GIB, roots=[])
+            config_path.write_text(json.dumps({'space_sample': sample}), encoding='utf-8')
+            with patch.object(self.budget, '_free', wraps=self.budget._free) as free:
+                lease.check(force=True)
+                free.assert_not_called()
+                lease.check(lease.reserved + MIB, force=True)
+                free.assert_called()
+            sample['at'] = time.monotonic() - 20
+            config_path.write_text(json.dumps({'space_sample': sample}), encoding='utf-8')
+            with patch.object(self.budget, '_free', wraps=self.budget._free) as free:
+                lease.check(force=True)
+                free.assert_called()
+
     def test_watchdog_reports_lock_pressure_and_cleanup_preserves_original_error(self):
         notified = threading.Event()
         lease = self.budget.lease('imports')

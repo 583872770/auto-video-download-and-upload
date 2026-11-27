@@ -194,6 +194,8 @@ class ThroughputController:
                     ready_ages.append(max(0, time.time() - started))
         from webapp.download_metrics import read_counters
         metrics = read_counters(self.directory)
+        hls_spill_bytes = sum(value.get('hls_spill_bytes', 0) for value in metrics.values())
+        hls_buffered_files = sum(value.get('hls_buffered_files', 0) for value in metrics.values())
         received = verified = resolved = 0
         if self.metric_previous is not None and tick > self.last:
             for identity, value in metrics.items():
@@ -291,6 +293,8 @@ class ThroughputController:
         self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
         from webapp.hls_buffer import buffer_usage
         self.state['hls_buffer'] = buffer_usage(self.directory)
+        self.state['hls_spill_bytes'] = hls_spill_bytes
+        self.state['hls_buffered_files'] = hls_buffered_files
         self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
             self.pool_last_reduction,
             self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)),

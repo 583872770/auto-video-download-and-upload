@@ -10,8 +10,7 @@ from urllib.parse import urljoin
 from yt_dlp.downloader.hls import HlsFD
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 
-from webapp.hls_buffer import (BufferedFragmentHttpFD, FragmentBuffers,
-                               OrderedFragmentPool, buffer_slot)
+from webapp.hls_buffer import BufferedFragmentHttpFD, FragmentBuffers, OrderedFragmentPool
 
 
 MAX_EMPTY_TAIL_SECONDS = .05
@@ -176,25 +175,27 @@ class StrictHlsFD(HlsFD):
                     or any(f['decrypt_info']['METHOD'] != 'NONE' for f in fragments)):
                 return super().download_and_append_fragments(ctx, fragments, info_dict, **kwargs)
             workers = math.ceil(self.params.get('concurrent_fragment_downloads', 1) / ctx.get('max_progress', 1))
-            with buffer_slot(directory) as reserved:
-                buffers = ctx['fragment_buffers'] = FragmentBuffers(reserved)
-                ctx['dl'] = BufferedFragmentHttpFD(ctx['dl'], buffers)
-                pool = OrderedFragmentPool(workers) if workers > 1 else nullcontext()
-                # Strict HLS restarts any partial assembly. The startup marker
-                # stays available for cleanup, with no checkpoint per fragment.
-                params = self.params
-                self.params = {**params, '_no_ytdl_file': True}
-                try:
-                    with pool as executor:
-                        success = super().download_and_append_fragments(ctx, fragments, info_dict, tpe=executor)
-                    if success:
-                        self.try_remove(self.ytdl_filename(ctx['filename']))
-                    return success
-                finally:
-                    self.params = params
-                    buffers.clear()
-                    self.to_screen(f'[hlsnative] 分片缓冲峰值 {buffers.peak / 1024**2:.2f} MiB，'
-                                   f'内存 {buffers.memory_fragments} 片，磁盘 {buffers.disk_fragments} 片。')
+            buffers = ctx['fragment_buffers'] = FragmentBuffers(directory)
+            ctx['dl'] = BufferedFragmentHttpFD(ctx['dl'], buffers)
+            pool = OrderedFragmentPool(workers) if workers > 1 else nullcontext()
+            # 保留启动标记用于清理，严格模式重试会重新拼接，不逐片写断点。
+            params = self.params
+            self.params = {**params, '_no_ytdl_file': True}
+            try:
+                with pool as executor:
+                    success = super().download_and_append_fragments(ctx, fragments, info_dict, tpe=executor)
+                if success:
+                    self.try_remove(self.ytdl_filename(ctx['filename']))
+                return success
+            finally:
+                self.params = params
+                buffers.clear()
+                report_spill = params.get('_hls_report_spill')
+                if report_spill:
+                    report_spill(buffers.disk_bytes)
+                self.to_screen(f'[hlsnative] 分片缓冲峰值 {buffers.peak / 1024**2:.2f} MiB，'
+                               f'内存 {buffers.memory_fragments} 片，磁盘 {buffers.disk_fragments} 片，'
+                               f'分片临时写入 {buffers.disk_bytes / 1024**2:.2f} MiB。')
         finally:
             ctx['dest_stream'] = stream
             if not stream.closed:

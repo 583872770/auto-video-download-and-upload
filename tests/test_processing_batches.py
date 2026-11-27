@@ -66,7 +66,8 @@ class CaptionBatchTests(unittest.TestCase):
                 progress=dict(space_plan=dict(source_bytes=100 * 1024**2)))))
         expensive, cheap = row(1, 100, 500 * 1024**2), row(2, 110, 0)
         self.assertIs(select_work([expensive, cheap], 200), cheap)
-        self.assertIs(select_work([expensive, cheap], 1900), expensive)
+        self.assertIs(select_work([expensive, row(3, 270, 0)], 270), expensive)
+        self.assertIs(select_work([expensive, cheap], 280), expensive)
 
 
 class AtomicBatchTests(unittest.TestCase):

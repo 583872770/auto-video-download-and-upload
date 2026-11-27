@@ -287,6 +287,7 @@ def acquire(executor, addresses):
     fragment_budget = fragment_limit(session.config)
     options = build_ydl_options(session.config, session.base)
     options['_hls_buffer_directory'] = session.store.directory
+    options['_hls_report_spill'] = session.meter.hls_spill
     options.update(ignoreerrors=False, writesubtitles=False, writeautomaticsub=False,
                    writeinfojson=False, writethumbnail=False, post_hooks=[],
                    format='bestvideo/bestaudio/best', progress_hooks=[progress.hook, session.meter.hook],

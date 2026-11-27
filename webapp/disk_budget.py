@@ -27,6 +27,8 @@ GIB = 1024 ** 3
 MIB = 1024 ** 2
 COORDINATION_TIMEOUT = 5
 USAGE_INTERVAL = 30
+DISK_SAMPLE_SECONDS = 7
+DISK_SAMPLE_HEADROOM = 2 * GIB
 
 
 def disk_watermarks(config, capacity):
@@ -525,8 +527,8 @@ class DiskBudget:
     def _free(self):
         return min(usage.free for usage in self._filesystems())
 
-    def _watermark(self, db, *, persist=True):
-        free = self._free()
+    def _watermark(self, db, *, persist=True, sampled_free=None):
+        free = self._free() if sampled_free is None else sampled_free
         low, high = self.watermarks
         waiting = self._get(db, 'low_space', False)
         waiting = free < (high if waiting else low)
@@ -548,6 +550,7 @@ class DiskBudget:
         self._refresh_usage(force)
         with self.connect(write=False) as db:
             usage, committed = self._usage(db)
+            sample_at = time.monotonic()
             waiting, free = self._watermark(db, persist=False)
             watermark_changed = waiting != self._get(db, 'low_space', False)
             blocked = self._get(db, 'reason', '')
@@ -569,6 +572,7 @@ class DiskBudget:
                 if waiting or request['needed'] > available or any(usage[k] > v for k,v in self.limits.items()):
                     waiting_tasks += 1
             result = dict(mode='software', directory=str(self.directory), free_bytes=free,
+                        sample_at=sample_at,
                         total_bytes=shutil.disk_usage(self.directory).total,
                         used_bytes=sum(usage.values()), committed_bytes=sum(committed.values()),
                         budget_bytes=self.budget_bytes,
@@ -613,7 +617,9 @@ class DiskBudget:
         # A local file keeps the independent disk watchdog off the remote DB.
         target = self.directory / 'disk-budget-config.json'
         content = json.dumps({**{key: self.config[key] for key in DISK_FIELDS},
-                              'postprocess_limit': self.config.get('postprocess_limit', 2)})
+                              'postprocess_limit': self.config.get('postprocess_limit', 2),
+                              'space_sample': {'at': snapshot['sample_at'], 'free': snapshot['free_bytes'],
+                                               'roots': list(map(str, self.external_roots))}})
         if not target.exists() or target.read_text(encoding='utf-8') != content:
             temporary = target.with_suffix('.tmp')
             temporary.write_text(content, encoding='utf-8')
@@ -704,12 +710,12 @@ class DiskBudget:
                             self.budget_bytes - sum(committed.values())) - self._processing_scratch(db)
         return peak <= available
 
-    def _reserve(self, lease, needed):
+    def _reserve(self, lease, needed, *, sampled_free=None):
         if lease.reserved >= needed:
             # The common progress/watchdog path only validates an existing
             # promise. It must not queue for a writer or generate journal I/O.
             with self.connect(write=False) as db:
-                waiting, free = self._watermark(db, persist=False)
+                waiting, free = self._watermark(db, persist=False, sampled_free=sampled_free)
                 old = db.execute('SELECT reserved FROM leases WHERE id=?', (lease.id,)).fetchone()
                 if (old and old[0] >= needed and free >= self.watermarks[0]
                         and waiting == self._get(db, 'low_space', False)):
@@ -1284,7 +1290,7 @@ class DiskLease:
 
     def _checkpoint_space(self, extra):
         """Release unused promises at file boundaries, never per byte event."""
-        used = size_of(self.path)
+        used = self._measure_workspace()
         needed = used + max(0, int(extra))
         if needed > self.reserved:
             self.check(needed, force=True)
@@ -1293,7 +1299,16 @@ class DiskLease:
             db.execute('UPDATE leases SET reserved=? WHERE id=?', (needed, self.id))
             db.execute('UPDATE state SET value=? WHERE key=?', (json.dumps(needed), 'scratch:' + self.id))
         self.planned = self.reserved = self.estimate = needed
-        self.measured_bytes, self.measured_at = used, time.monotonic()
+
+    def _measure_workspace(self):
+        self.measured_bytes = size_of(self.path)
+        self.measured_at = time.monotonic()
+        return self.measured_bytes
+
+    def check_output_space(self, extra):
+        # 产物写入前只实测一次。续检复用本次测量，实际写入后的检查点重新计量。
+        with self.check_lock:
+            self._check(self._measure_workspace() + extra, force=True)
 
     def __enter__(self):
         self.lock = file_lock(self.budget.directory / 'disk-locks' / (self.id + '.lock'))
@@ -1358,24 +1373,38 @@ class DiskLease:
         if not force and self.estimate <= self.reserved and time.monotonic() - self.last_check < 1:
             return
         self.last_check = time.monotonic()
+        sample = None
         if self.config_reader:
             self.budget.config.update(self.config_reader())
         else:
             local_config = self.budget.directory / 'disk-budget-config.json'
             try:
-                self.budget.config.update(json.loads(local_config.read_text(encoding='utf-8')))
+                config = json.loads(local_config.read_text(encoding='utf-8'))
+                sample = config.pop('space_sample', None)
+                self.budget.config.update(config)
             except FileNotFoundError:
                 pass
-        if self.media_directory:
-            self.check_media_space(self.media_directory)
         if time.monotonic() - self.measured_at >= 5:
-            self.measured_bytes = size_of(self.path)
-            self.measured_at = time.monotonic()
+            self._measure_workspace()
         used = self.measured_bytes
         unit = min(16 * MIB, max(4096, self.budget.limits[self.category] // 16))
         needed = max(self.reserved, self.estimate, used if self.processing else math.ceil((used + unit) / unit) * unit)
         try:
-            self.budget._reserve(self, needed)
+            sampled_free = None
+            if sample and needed <= self.reserved:
+                # 仅已预留且远离水位时共享采样。新增预留和临界空间仍实时查盘。
+                floor = max(self.budget.watermarks[1], int(self.budget.config.get('min_free_gb', 2)) * GIB)
+                roots = self.budget.external_roots
+                if (0 <= time.monotonic() - sample['at'] <= DISK_SAMPLE_SECONDS
+                        and sample['roots'] == list(map(str, roots)) and sample['free'] >= floor + DISK_SAMPLE_HEADROOM
+                        and (not self.media_directory or any(root.parent == self.media_directory for root in roots))):
+                    sampled_free = sample['free']
+            if sampled_free is None:
+                if self.media_directory:
+                    self.check_media_space(self.media_directory)
+                self.budget._reserve(self, needed)
+            else:
+                self.budget._reserve(self, needed, sampled_free=sampled_free)
         except DiskPressure as error:
             self.error = error
             raise

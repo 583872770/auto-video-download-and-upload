@@ -56,6 +56,13 @@ class DownloadMeter:
         self.publish(force=True)
 
     @synchronized
+    def hls_spill(self, size):
+        # 只累计拼接前的临时分片写入，主媒体文件不重复计入。
+        self._add('hls_spill_bytes', size)
+        self._add('hls_buffered_files', 1)
+        self.publish()
+
+    @synchronized
     def resolved(self, seconds):
         self.resolve_seconds += seconds
         self._add('resolved', 1)

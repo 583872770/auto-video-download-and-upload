@@ -61,13 +61,48 @@ def main():
                     session = None if state['mode'] == 'empty' else dict(
                         id=identity + '-session', started_at='2026-11-14T00:00:00+00:00', elapsed_seconds=1000,
                         file_bytes_exact='1000000000', test_file_bytes_exact='1000000000', downloaded_file_bytes_exact='2000000000',
-                        file_count=10, output_mbps=16 if identity == 'alpha' else 48,
-                        output_recent_mbps=8, output_history={'points': []})
+                        file_count=10, output_mbps=16 if identity == 'alpha' else 48)
                     route.fulfill(json=dict(selected_job_id=None, job=None, online=state['mode'] != 'offline',
                         paused=False, running=len(active), queued=0, active_tasks=active, error='', session=session))
 
+                def delivery_speed(route):
+                    identity = route.request.headers.get('x-instance-id')
+                    end = int(time.time() // 600) * 600
+                    start = end - 86400
+                    points = [dict(start_at=begin, end_at=begin + 600, file_bytes_exact='0',
+                                   file_count=0, mbps=0, partial=False) for begin in range(start, end, 600)]
+                    if identity == 'alpha':
+                        points[-1].update(file_bytes_exact='1800000000', file_count=4, mbps=24)
+                    route.fulfill(json=dict(start_at=start, end_at=end, interval_seconds=600, points=points))
+
+                def live(route):
+                    mode = state['mode']
+                    if mode == 'error':
+                        route.abort()
+                        return
+                    identity = route.request.headers.get('x-instance-id')
+                    active = 0 if mode == 'empty' else 2 if identity == 'alpha' else 1
+                    measured = 0 if mode == 'stale' else active
+                    speed = (20e6 if identity == 'alpha' else 3e6) if measured else 0
+                    stamp = time.time()
+                    route.fulfill(json=dict(time=stamp, paused=False, rows=[],
+                        counts=dict(downloading=active, pending_transfer=0, pending_start=0, disk_wait=0, idle=0),
+                        disk_waiting=dict(download=0, processing=0), queue=dict(processing=0, retry=0, ready=0),
+                        transfer_summary=dict(time=stamp, transferring=active, measured=measured, speed=speed)))
+
+                def update_mode(mode):
+                    state['mode'] = mode
+                    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+
                 page.route('**/api/jobs/workbench*', status)
+                page.route('**/api/workbench/live', live)
+                page.route('**/api/workbench/delivery-speed', delivery_speed)
                 page.goto(base + '/workbench?instance_id=alpha')
+                expect(page.get_by_role('heading', name='近 24 小时平均交付速度')).to_be_visible()
+                expect(page.locator('.delivery-column')).to_have_count(144)
+                page.get_by_text('查看每 10 分钟交付明细').click()
+                expect(page.locator('.delivery-details tbody tr').first).to_contain_text('24 Mbps')
+                page.get_by_text('查看每 10 分钟交付明细').click()
                 download = page.locator('#workbench-download-speed')
                 produced = page.locator('#workbench-output-speed')
                 panel = page.get_by_role('region', name='下载与产出速度', exact=True)
@@ -78,25 +113,26 @@ def main():
                 assert panel.bounding_box()['y'] < page.locator('.download-console').bounding_box()['y']
                 page.screenshot(path=str(output / 'speeds-1440.png'), full_page=True)
                 page.get_by_label('当前实例', exact=True).select_option('beta')
+                expect(page.get_by_text('近 24 小时暂无正式交付。')).to_be_visible()
                 expect(download).to_have_text('3.00')
                 expect(produced).to_have_text('6.00')
-                state['mode'] = 'stale'
-                expect(download).to_have_text('—', timeout=12000)
+                update_mode('stale')
+                expect(download).to_have_text('0.00', timeout=12000)
                 expect(produced).to_have_text('6.00')
                 expect(panel).to_contain_text('0 / 1 个任务有新鲜速度采样')
-                state['mode'] = 'offline'
+                update_mode('offline')
                 expect(produced).to_have_text('—', timeout=12000)
                 expect(panel).to_contain_text('实例离线')
-                state['mode'] = 'empty'
+                update_mode('empty')
                 expect(download).to_have_text('0.00', timeout=12000)
                 expect(produced).to_have_text('—')
                 expect(panel).to_contain_text('暂无当前会话')
-                state['mode'] = 'normal'
+                update_mode('normal')
                 expect(produced).to_have_text('6.00', timeout=12000)
-                state['mode'] = 'error'
-                expect(produced).to_have_text('—', timeout=12000)
-                expect(panel).to_contain_text('读取失败')
-                state['mode'] = 'normal'
+                update_mode('error')
+                expect(download).to_have_text('—', timeout=12000)
+                expect(panel).to_contain_text('等待实时采样')
+                update_mode('normal')
                 expect(download).to_have_text('3.00', timeout=12000)
                 for width in (768, 390, 360):
                     page.set_viewport_size({'width': width, 'height': 844})

@@ -12,10 +12,11 @@ import InstancePicker from '../../components/InstancePicker.vue';
 import SystemNotice from '../../components/SystemNotice.vue';
 import WorkspaceDialog from '../../components/WorkspaceDialog.vue';
 import CapacityPanel from './CapacityPanel.vue';
+import DeliverySpeedPanel from './DeliverySpeedPanel.vue';
 import ProcessPanel from './ProcessPanel.vue';
 import WorkbenchSpeeds from './WorkbenchSpeeds.vue';
 import type { Capacity, LiveWorkbench, WorkbenchStatus } from './contracts';
-import { formatGB, jobStates, type Job, type Page } from '../jobs/contracts';
+import { jobStates, type Job, type Page } from '../jobs/contracts';
 const route = useRoute(),
   router = useRouter(),
   instances = useInstances(),
@@ -58,16 +59,6 @@ const canStart = computed(
     !queue.value?.cleaning_temporary &&
     !(queue.value?.stop_requested && queue.value.running),
 );
-const points = computed(() => queue.value?.session?.output_history?.points || []);
-const chart = computed(() => {
-  const maximum = Math.max(1, ...points.value.map((item) => item.output_mbps || 0));
-  return points.value
-    .map(
-      (point, index) =>
-        `${(index * 600) / Math.max(1, points.value.length - 1)},${100 - ((point.output_mbps || 0) / maximum) * 90}`,
-    )
-    .join(' ');
-});
 const instanceQuery = computed(() =>
   instances.selectedId ? { instance_id: instances.selectedId } : {},
 );
@@ -421,48 +412,7 @@ watch([live.lastSuccessAt, live.error], () => {
       </p>
       <p v-if="queue?.error" class="form-error">{{ queue.error }}</p>
     </section>
-    <section v-if="queue?.session" class="card">
-      <h2>本轮成品产出</h2>
-      <p>
-        平均 {{ queue.session.output_mbps ?? '—' }} Mbps · 近十分钟
-        {{ queue.session.output_recent_mbps ?? '—' }} Mbps · 正式文件
-        {{ queue.session.file_count }} 个 / {{ formatGB(queue.session.file_bytes_exact) }}
-      </p>
-      <p class="muted">按完成文件和本轮经过时间计算，包含测试产出；实时传输速度见顶部汇总。</p>
-      <svg
-        v-if="points.length"
-        class="output-chart"
-        viewBox="0 0 600 110"
-        role="img"
-        aria-label="近三十分钟每分钟成品产出速率"
-      >
-        <polyline :points="chart" fill="none" stroke="var(--accent)" stroke-width="2" />
-      </svg>
-      <details>
-        <summary>查看每分钟产出</summary>
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>完成文件</th>
-                <th>产出速率</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="point in points" :key="point.start_at">
-                <td>
-                  {{ new Date(point.start_at * 1000).toLocaleTimeString('zh-CN')
-                  }}{{ point.partial ? '（未满一分钟）' : '' }}
-                </td>
-                <td>{{ point.file_count }} 个 / {{ formatGB(point.file_bytes) }}</td>
-                <td>{{ point.output_mbps ?? '—' }} Mbps</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </details>
-    </section>
+    <DeliverySpeedPanel v-if="ready" :key="instances.epoch" />
     <p v-if="status.error.value" class="form-error" role="alert">
       执行容量读取失败：{{ status.error.value }} <button @click="refresh()">重试</button>
     </p>

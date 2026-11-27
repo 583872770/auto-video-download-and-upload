@@ -27,6 +27,10 @@ def register_dashboard_routes(context, dashboard):
             return jsonify(error='实时状态暂不可用，等待实例重新上报。'), 503
         return jsonify(value)
 
+    @app.get('/api/workbench/delivery-speed')
+    def workbench_delivery_speed():
+        return jsonify(context.store.statistics.delivery_speed(workbench_instance()))
+
     @app.get('/api/workbench/queue')
     def workbench_queue():
         kind = request.args.get('kind')

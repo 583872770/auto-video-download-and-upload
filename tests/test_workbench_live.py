@@ -59,6 +59,14 @@ class WorkbenchLiveTests(unittest.TestCase):
             self.redis.failed = True
             self.assertEqual(client.get('/api/workbench/live').status_code, 503)
 
+    def test_delivery_speed_endpoint_works_without_an_active_session(self):
+        with patch('webapp.console_auth.ConsoleAuth.guard', return_value=None):
+            response = self.app.test_client().get('/api/workbench/delivery-speed')
+        self.assertEqual(response.status_code, 200)
+        history = response.get_json()
+        self.assertEqual(history['end_at'] - history['start_at'], 86400)
+        self.assertTrue(all(point['file_count'] == 0 for point in history['points']))
+
     def test_backoff_and_disk_waits_keep_actionable_details(self):
         until = time.time() + 5
         wait = start_wait('disk_coordination', until=until)

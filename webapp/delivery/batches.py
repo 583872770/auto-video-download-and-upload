@@ -9,13 +9,14 @@ from webapp.disk_budget import safe_path
 
 
 CAPTION_BATCH = 8
+PROCESSING_AGING_SECONDS = 180
 
 
 def select_work(candidates, now):
     """Bounded, metadata-only scheduling with an absolute FIFO aging limit."""
     import json
     oldest = candidates[0]
-    if now - oldest['_work_created'] >= 1800:
+    if now - oldest['_work_created'] >= PROCESSING_AGING_SECONDS:
         return oldest
     def cost(row):
         plan = json.loads(row['_work_plan'])
@@ -25,7 +26,10 @@ def select_work(candidates, now):
         # Nonzero overhead prevents tiny captions from monopolizing the queue.
         work = writes + len(pending) * 1024 ** 2
         releasable = max(1024 ** 2, int(plan.get('progress', {}).get('space_plan', {}).get('source_bytes') or 0))
-        return (work / releasable, row['_work_created'], row['seq'])
+        # 归一化空间周转收益，等待越久越优先，同时保留最长等待兜底顺序。
+        age = max(0, now - row['_work_created'])
+        return (work / (work + releasable) - age / PROCESSING_AGING_SECONDS,
+                row['_work_created'], row['seq'])
     return min(candidates, key=cost)
 
 

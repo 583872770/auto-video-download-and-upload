@@ -9,12 +9,14 @@ import uuid
 
 from sqlalchemy import func, select
 
-from webapp.database import deliveries, download_sessions as sessions, session_tasks, settings, tasks, test_files, test_totals
+from webapp.database import deliveries, delivery_artifacts, download_sessions as sessions, session_tasks, settings, tasks, test_files, test_totals
 
 
 COUNTERS = ('attempted', 'running', 'succeeded', 'failed', 'skipped', 'test_succeeded', 'file_count', 'file_bytes')
 OUTCOMES = ('running', 'succeeded', 'failed', 'skipped', 'test_succeeded')
 UNITS = {'GB': 1000 ** 3, 'GiB': 1024 ** 3}
+DELIVERY_WINDOW_SECONDS = 24 * 60 * 60
+DELIVERY_INTERVAL_SECONDS = 10 * 60
 
 
 def with_test_sizes(value):
@@ -72,7 +74,8 @@ class DownloadStatistics:
     def __init__(self, store):
         self.store, self.db = store, store.db
         from webapp.read_cache import ReadCache
-        self._history_cache = ReadCache(ttl=3)
+        self._recent_cache = ReadCache(ttl=3)
+        self._delivery_speed_cache = ReadCache(ttl=20)
         self._dashboard_cache = ReadCache(ttl=2)
 
     @staticmethod
@@ -123,45 +126,56 @@ class DownloadStatistics:
         value = describe(row)
         return {**value, 'elapsed_seconds': round(elapsed, 3),
                 'output_mbps': round(value['downloaded_file_bytes'] * 8 / elapsed / 1e6, 2) if elapsed > 0 else None,
-                **self.output_history(db, identity, started, end)}
+                **self.recent_output(db, identity, started, end)}
 
-    def output_history(self, db, identity, started, end):
-        return self._history_cache.read((identity, started, int(end // 3)),
-            lambda: self._output_history(db, identity, started, end))
+    def recent_output(self, db, identity, started, end):
+        return self._recent_cache.read((identity, started, int(end // 3)),
+            lambda: self._recent_output(db, identity, started, end))
 
-    def _output_history(self, db, identity, started, end):
-        """Rebuild recent rates from durable completed-file ledgers, including tests."""
-        first_minute = int(end // 60) * 60 - 29 * 60
+    def _recent_output(self, db, identity, started, end):
         recent_start = max(started, end - 600)
         recent_seconds = max(0, end - recent_start)
         recent_bytes = 0
-        points = []
-        for index in range(30):
-            begin = first_minute + index * 60
-            elapsed = max(0, min(end, begin + 60) - max(started, begin))
-            points.append(dict(start_at=begin, end_at=begin + 60, elapsed_seconds=round(elapsed, 3),
-                               file_bytes=0, file_count=0, output_mbps=None, partial=elapsed < 60))
-        lower = max(started, min(first_minute, recent_start))
-        for ledger in (deliveries, test_files):
-            rows = list(db.execute(select(ledger.c.created_epoch, ledger.c.size).where(
-                ledger.c.session_id == identity, ledger.c.created_epoch >= lower,
-                ledger.c.created_epoch <= end)))
-            for completed, size in rows:
-                if not started <= completed <= end:
-                    continue
-                if completed > end - 600:
-                    recent_bytes += size
-                index = int(completed // 60) - first_minute // 60
-                if 0 <= index < len(points):
-                    points[index]['file_bytes'] += size
-                    points[index]['file_count'] += 1
-        for point in points:
-            seconds = point['elapsed_seconds']
-            if seconds > 0:
-                point['output_mbps'] = round(point['file_bytes'] * 8 / seconds / 1e6, 2)
+        if recent_seconds:
+            for ledger in (deliveries, test_files):
+                recent_bytes += int(db.execute(select(func.coalesce(func.sum(ledger.c.size), 0)).where(
+                    ledger.c.session_id == identity, ledger.c.created_epoch >= started,
+                    ledger.c.created_epoch > end - 600, ledger.c.created_epoch <= end)).scalar_one())
         return dict(output_recent_mbps=round(recent_bytes * 8 / recent_seconds / 1e6, 2) if recent_seconds else None,
-                    output_recent_seconds=round(recent_seconds, 3), output_recent_file_bytes_exact=str(recent_bytes),
-                    output_history=dict(as_of=end, interval_seconds=60, points=points))
+                    output_recent_seconds=round(recent_seconds, 3), output_recent_file_bytes_exact=str(recent_bytes))
+
+    def delivery_speed(self, instance_id=None):
+        scope = self._scope(instance_id)
+        return self._delivery_speed_cache.read(scope, lambda: self._delivery_speed(scope))
+
+    def _delivery_speed(self, scope):
+        from webapp.fleet import database_time
+        interval = DELIVERY_INTERVAL_SECONDS
+        with self.store.connect() as db:
+            end = database_time(db, self.db.mysql)
+            start = end - DELIVERY_WINDOW_SECONDS
+            bucket = func.floor(deliveries.c.created_epoch / interval)
+            # 正式交付账本记录去重后的完成时间和大小。关联产物定位实例，旧记录可回退到任务。
+            source = (sessions.join(deliveries, deliveries.c.session_id == sessions.c.id)
+                      .outerjoin(delivery_artifacts, delivery_artifacts.c.id == deliveries.c.id)
+                      .outerjoin(tasks, (tasks.c.id == deliveries.c.task_id) & delivery_artifacts.c.id.is_(None)))
+            owner = func.coalesce(delivery_artifacts.c.instance_id, tasks.c.instance_id, 'local')
+            rows = db.execute(select(bucket, func.sum(deliveries.c.size), func.count()).select_from(source).where(
+                owner == scope, deliveries.c.created_epoch >= start, deliveries.c.created_epoch < end
+            ).group_by(bucket))
+            totals = {int(index): (int(size), count) for index, size, count in rows}
+        points = []
+        for aligned_start in range(int(start // interval) * interval, int(end) + 1, interval):
+            # 首尾按滚动窗口截断，未满十分钟的区间按实际覆盖时长计算。
+            begin = max(start, aligned_start)
+            finish = min(end, aligned_start + interval)
+            elapsed = finish - begin
+            if elapsed <= 0:
+                continue
+            size, count = totals.get(aligned_start // interval, (0, 0))
+            points.append(dict(start_at=begin, end_at=finish, file_bytes_exact=str(size), file_count=count,
+                               mbps=round(size * 8 / elapsed / 1e6, 2), partial=elapsed < interval))
+        return dict(start_at=start, end_at=end, interval_seconds=interval, points=points)
 
     def ensure_session(self, db, instance_id=None):
         scope = self._scope(instance_id)
@@ -298,7 +312,7 @@ class DownloadStatistics:
         recorded = transaction_retry(lambda: self._record_file(
             task_id, path, size, video_id, title, test_mode=test_mode, artifact=artifact))
         if recorded:
-            self._history_cache.clear()
+            self._recent_cache.clear()
             self._dashboard_cache.clear()
         return recorded
 
@@ -318,7 +332,7 @@ class DownloadStatistics:
                     artifact=item.get('artifact'), _db=db) for item in prepared]
         result = transaction_retry(commit)
         if any(result):
-            self._history_cache.clear()
+            self._recent_cache.clear()
             self._dashboard_cache.clear()
         return result
 

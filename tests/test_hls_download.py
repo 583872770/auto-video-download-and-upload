@@ -15,7 +15,7 @@ from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.utils import DownloadError
 
 from webapp.hls_download import empty_tail_candidate
-from webapp.hls_buffer import buffer_slot, HLS_INSTANCE_BUFFER, HLS_FILE_BUFFER
+from webapp.hls_buffer import FragmentBuffers, buffer_usage, HLS_SHARED_BLOCK
 from webapp.downloader import build_ydl_options
 from webapp.parallel_http import ParallelYoutubeDL
 
@@ -105,8 +105,10 @@ class BufferedHlsTests(unittest.TestCase):
         ample = {'memory_total': 8 * 1024**3, 'memory_available': 4 * 1024**3}
         with tempfile.TemporaryDirectory() as directory, source(playlist, segments) as (url, calls, _):
             target = Path(directory) / 'video.ts'
+            spills = []
             options = dict(quiet=True, noprogress=True, proxy='', cachedir=False, ignoreerrors=False,
-                           concurrent_fragment_downloads=4, _hls_buffer_directory=directory)
+                           concurrent_fragment_downloads=4, _hls_buffer_directory=directory,
+                           _hls_report_spill=spills.append)
             info = dict(url=url, id='buffer', title='Fixture', protocol='m3u8_native', ext='ts')
             with patch('webapp.hls_buffer.resource_limits', return_value=ample), \
                     patch('webapp.hls_buffer.HLS_FILE_BUFFER', 2 * 1024**2), \
@@ -115,16 +117,27 @@ class BufferedHlsTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b''.join(segments.values()))
             self.assertTrue(all(calls['/' + name] == 1 for name in segments))
             self.assertEqual(list(Path(directory).glob('video.ts*')), [target])
-            with buffer_slot(directory) as acquired:
-                self.assertTrue(acquired)
+            self.assertEqual(spills, [sum(map(len, segments.values()))])
+            self.assertEqual(buffer_usage(directory)['occupied_slots'], 0)
 
     def test_instance_concurrency_budget_is_shared(self):
-        from contextlib import ExitStack
-        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
-            for _ in range(HLS_INSTANCE_BUFFER // HLS_FILE_BUFFER):
-                self.assertTrue(stack.enter_context(buffer_slot(directory)))
-            with buffer_slot(directory) as acquired:
-                self.assertFalse(acquired)
+        ample = {'memory_total': 8 * 1024**3, 'memory_available': 4 * 1024**3}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('webapp.hls_buffer.resource_limits', return_value=ample), \
+                patch('webapp.hls_buffer.HLS_INSTANCE_BUFFER', 10 * HLS_SHARED_BLOCK):
+            buffers = [FragmentBuffers(directory) for _ in range(11)]
+            try:
+                for buffer in buffers[:10]:
+                    self.assertTrue(buffer.reserve(1024**2))
+                self.assertEqual(buffer_usage(directory)['used_bytes'], 10 * 1024**2)
+                self.assertFalse(buffers[-1].reserve(1024**2))
+                buffers[0].release(1024**2)
+                buffers[-1].next_pool_try = 0
+                self.assertTrue(buffers[-1].reserve(1024**2))
+            finally:
+                for buffer in buffers:
+                    buffer.clear()
+            self.assertEqual(buffer_usage(directory)['occupied_slots'], 0)
 
 
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires FFmpeg')

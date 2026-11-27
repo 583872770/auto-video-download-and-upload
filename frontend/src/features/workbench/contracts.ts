@@ -40,18 +40,21 @@ export interface WorkbenchStatus {
     elapsed_seconds: number;
     started_at: string;
     output_mbps: number | null;
-    output_recent_mbps: number | null;
-    output_history: {
-      points: Array<{
-        start_at: number;
-        end_at: number;
-        file_bytes: number;
-        file_count: number;
-        output_mbps: number | null;
-        partial: boolean;
-      }>;
-    };
   };
+}
+
+export interface DeliverySpeed {
+  start_at: number;
+  end_at: number;
+  interval_seconds: number;
+  points: Array<{
+    start_at: number;
+    end_at: number;
+    file_bytes_exact: string;
+    file_count: number;
+    mbps: number;
+    partial: boolean;
+  }>;
 }
 
 export interface HlsBufferSample {

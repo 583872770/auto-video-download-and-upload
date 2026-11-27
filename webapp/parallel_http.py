@@ -1,6 +1,6 @@
 """Bounded HTTP Range downloads using yt-dlp's networking and progress hooks."""
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import suppress
 from contextlib import contextmanager
 import os
@@ -149,7 +149,7 @@ class ParallelHttpFD(HttpFD):
             if not force and now - last_progress < .25:
                 return
             with lock:
-                downloaded = resume + sum(received.values())
+                downloaded = contiguous + sum(received.values())
             samples.append((now, downloaded))
             while len(samples) > 2 and samples[1][0] <= now - 5:
                 samples.popleft()
@@ -227,36 +227,39 @@ class ParallelHttpFD(HttpFD):
         # Keep at most `workers` range requests in flight. Futures retain only
         # offsets; data goes straight into the temporary file in small blocks.
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='http-range')
-        pending = deque()
+        pending = set()
         next_offset = resume
 
-        def submit():
+        def fill():
             nonlocal next_offset
-            if next_offset < total:
+            # 慢分块只限制前探距离，已经结束的连接仍可领取下一块。
+            window_end = min(total, contiguous + 2 * workers * chunk_size)
+            while len(pending) < workers and next_offset < window_end:
                 end = min(total - 1, next_offset + chunk_size - 1)
-                pending.append(pool.submit(fetch, next_offset, end))
+                pending.add(pool.submit(fetch, next_offset, end))
                 next_offset = end + 1
 
         try:
             progress(force=True)
-            for _ in range(workers):
-                submit()
+            fill()
             while pending:
-                future = pending[0]
-                try:
-                    result = future.result(timeout=.2)
-                except FutureTimeout:
-                    if future.done():
-                        result = future.result()
+                finished, pending = wait(pending, timeout=.2, return_when=FIRST_COMPLETED)
+                errors = []
+                for future in finished:
+                    error = future.exception()
+                    if error is not None:
+                        errors.append(error)
                     else:
-                        progress()
-                        continue
-                offset, end = result
-                completed[offset] = end
-                while contiguous in completed:
-                    contiguous = completed.pop(contiguous)
-                pending.popleft()
-                submit()
+                        offset, end = future.result()
+                        completed[offset] = end
+                # 只折叠已校验的连续前缀，限制进度账本和稀疏后缀的大小。
+                with lock:
+                    while contiguous in completed:
+                        received.pop(contiguous, None)
+                        contiguous = completed.pop(contiguous)
+                if errors:
+                    raise next((error for error in errors if isinstance(error, RangeUnsupported)), errors[0])
+                fill()
                 progress()
             stream.flush()
             if contiguous != total:
