@@ -95,6 +95,7 @@ def run(store, task_id, work, report, *, slot=0):
         progress.state['_sample_requested'] = True
     session = DownloadSession(config=config, base=Path(plan['base']),
         payload={'_task_id': task_id, '_disk_workspace': work['workspace'],
+                 '_redownload_after_stop': payload.get('_redownload_after_stop', False),
                  '_force_test_sample': payload.get('_force_test_sample', False)}, store=store,
         worker_slot=slot, progress=progress, scheduler=None, meter=meter_for(store.directory, slot),
         youtube=False, test_mode=config.get('storage_mode') == 'test',
@@ -102,6 +103,7 @@ def run(store, task_id, work, report, *, slot=0):
         current_video=plan['current_video'], output_files=dict(plan['output_files']),
         billable_bytes=plan['billable_bytes'])
     with lease, local_processing(store.directory, runtime, progress, 'delivery'):
+        lease.reserve_processing_space()
         from webapp.control import terminate_own_descendants
         lease.start_monitor(terminate_own_descendants)
         source_probes = {}

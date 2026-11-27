@@ -452,7 +452,8 @@ class DeliveryTests(unittest.TestCase):
         with budget.connect(write=False) as db:
             row = db.execute('SELECT reserved,measured FROM leases').fetchone()
             self.assertLess(row['reserved'], 20*MIB)
-            self.assertGreater(row['reserved'], row['measured'])
+            self.assertEqual(row['reserved'], row['measured'])
+            self.assertEqual(budget._processing_scratch(db), 17*MIB)
         with self.store.connect() as db:
             updated = json.loads(db.execute(select(delivery_work.c.plan)).scalar_one())
         self.assertEqual(updated['jobs'][0]['output_estimate'], MIB)

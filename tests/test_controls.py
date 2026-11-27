@@ -18,6 +18,41 @@ from webapp.store import TaskStore
 
 
 class ControlContract:
+    def test_immediate_stop_discards_queued_processing_files_for_a_fresh_download(self):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget, MIB
+
+        payload = {'config': {'storage_mode': 'test'}, 'base': str(self.root),
+                   'urls': ['https://example.test/video.mp4']}
+        task = self.store.create('download', payload)
+        budget = DiskBudget(self.store.directory, {'disk_min_free_gb': 0})
+        with budget.lease('test', task=task['id'], reserve=MIB) as lease:
+            (lease.path / 'input.part').write_bytes(b'test video')
+            lease.preserve = True
+            with self.store.connect() as db:
+                db.execute(delivery_work.insert().values(task_id=task['id'], instance_id='local',
+                    workspace=str(lease.path), disk_lease=lease.id, plan='{}',
+                    created_at=time.time(), source_attempts=1))
+            self.store.set_downloads_paused(True, discard_temporary=True)
+            # 活跃写入期间保留目录。下一轮清理可以重试同一个请求。
+            self.assertFalse(budget.cleanup_stopped_downloads(self.store))
+            self.assertTrue(lease.path.exists())
+        samples = self.store.directory / 'test-samples'
+        samples.mkdir(exist_ok=True)
+        retained = samples / 'finished.mp4'
+        retained.write_bytes(b'completed sample')
+        self.assertTrue(budget.cleanup_stopped_downloads(self.store))
+        self.assertFalse(lease.path.exists())
+        self.assertTrue(retained.exists())
+        with self.store.connect() as db:
+            self.assertIsNone(db.execute(delivery_work.select()).first())
+            self.assertIsNone(self.store.pending_stop_cleanup(db))
+        self.store.set_downloads_paused(False)
+        self.assertIsNone(self.store.claim(processing=True))
+        retry = self.store.claim()
+        self.assertEqual(retry['id'], task['id'])
+        self.assertTrue(retry['payload']['_redownload_after_stop'])
+
     def test_subscription_update_requires_paused_and_drained_queue_and_preserves_jobs(self):
         from webapp.clash import ClashError
 

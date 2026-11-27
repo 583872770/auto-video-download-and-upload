@@ -10,6 +10,7 @@ from tests.test_progress_cache import MemoryRedis
 from webapp.database import counters, notifications, notification_tasks, settings, tasks
 from webapp.progress_cache import ProgressCache
 from webapp.workbench_live import live_snapshot, publish_queue, queue_details
+from webapp.wait_diagnostics import start_wait
 
 
 class WorkbenchLiveTests(unittest.TestCase):
@@ -57,6 +58,17 @@ class WorkbenchLiveTests(unittest.TestCase):
             self.assertEqual(client.get('/api/workbench/live').get_json()['counts']['downloading'], 0)
             self.redis.failed = True
             self.assertEqual(client.get('/api/workbench/live').status_code, 503)
+
+    def test_backoff_and_disk_waits_keep_actionable_details(self):
+        until = time.time() + 5
+        wait = start_wait('disk_coordination', until=until)
+        self.store.worker_status('backoff', '0', 'waiting_start', message=wait['label'], wait=wait)
+        self.store.worker_status('disk', '1', 'disk_wait', message='本机临时文件总预算不足')
+        publish_queue(self.store)
+        backoff, disk = live_snapshot(self.store.progress_cache, 'local')['rows']
+        self.assertEqual(backoff['wait'], wait)
+        self.assertEqual(disk['wait']['code'], 'disk_wait')
+        self.assertEqual(disk['wait']['detail'], '本机临时文件总预算不足')
 
     def test_queue_summary_groups_match_paginated_task_details(self):
         stamp = time.time()

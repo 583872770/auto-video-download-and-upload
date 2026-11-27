@@ -26,6 +26,7 @@ export interface WorkbenchStatus {
   online: boolean;
   paused: boolean;
   stop_requested?: boolean;
+  cleaning_temporary?: boolean;
   running: number;
   queued: number;
   active_tasks: RuntimeTask[];

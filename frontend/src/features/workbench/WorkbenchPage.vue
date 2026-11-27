@@ -55,6 +55,7 @@ const canStart = computed(
     !job.value?.deleted &&
     !!(job.value?.queued || job.value?.running || job.value?.importing) &&
     !alreadyStarted.value &&
+    !queue.value?.cleaning_temporary &&
     !(queue.value?.stop_requested && queue.value.running),
 );
 const points = computed(() => queue.value?.session?.output_history?.points || []);
@@ -216,7 +217,7 @@ async function control(action: 'start' | 'pause' | 'stop') {
     message.value = {
       start: '已启动所选任务。',
       pause: '当前实例已停止领取；正在执行的视频完成后停止。',
-      stop: '已请求立即停止当前实例。',
+      stop: '正在停止实例并清理未完成视频的临时文件。',
     }[action];
     started = action === 'start';
     stopping.value = false;
@@ -391,7 +392,7 @@ watch([live.lastSuccessAt, live.error], () => {
         ><button
           id="download-job-stop"
           class="danger"
-          :disabled="!editable || busy || !queue || (queue.paused && !queue.running)"
+          :disabled="!editable || busy || !queue || queue.cleaning_temporary"
           @click="stopping = true"
         >
           立即停止</button
@@ -404,7 +405,13 @@ watch([live.lastSuccessAt, live.error], () => {
       <p id="download-queue-status">
         {{
           queue
-            ? (queue.online ? (queue.paused ? '已暂停领取' : '允许领取任务') : '实例离线') +
+            ? (queue.online
+                ? queue.cleaning_temporary
+                  ? '正在停止并清理临时文件'
+                  : queue.paused
+                    ? '已暂停领取'
+                    : '允许领取任务'
+                : '实例离线') +
               ' · 当前实例处理中视频 ' +
               queue.running +
               ' 个'
@@ -479,7 +486,7 @@ watch([live.lastSuccessAt, live.error], () => {
       ><p>
         将终止 {{ instances.name
         }}<template v-if="instances.selectedId">（{{ instances.selectedId }}）</template>
-        当前执行中的视频，未完成条目需要重新处理。
+        当前执行中的视频，并清理未完成视频的下载和后处理临时文件。下次开始时重新下载。
       </p>
       <p v-if="failure" role="alert" class="form-error">{{ failure }}</p>
       <button class="danger" :disabled="busy" @click="control('stop')">

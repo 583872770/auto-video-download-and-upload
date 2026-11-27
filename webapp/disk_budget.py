@@ -407,24 +407,30 @@ class DiskBudget:
             committed[category] = committed.get(category, 0) + max(0, row['reserved'] - row['measured'])
         return usage, committed
 
-    def refresh_processing(self, store):
-        """Protect shared scratch for queued plans that have no completion promise.
+    def _processing_scratch(self, db):
+        slots = max(1, min(8, int(self.config.get('postprocess_limit', 2))))
+        shared = db.execute("""
+            SELECT COALESCE(SUM(needed), 0) FROM (
+                SELECT MAX(0, CAST(s.value AS INTEGER) - MAX(l.reserved, l.measured)) AS needed
+                FROM leases l JOIN state s ON s.key='scratch:' || l.id
+                ORDER BY needed DESC LIMIT ?
+            )""", (slots,)).fetchone()[0]
+        return shared + self._get(db, 'processing_scratch', 0)
 
-        Inspect the small local work table, not the millions of source tasks.
-        New acquisitions already hold their own completion reservation.
-        """
+    def refresh_processing(self, store):
+        """把排队任务各自占用的输出预留换成共享周转额度。"""
         from sqlalchemy import select
         from webapp.database import tasks, delivery_work
         with store.connect() as db:
             work = [dict(row) for row in db.execute(select(delivery_work).select_from(
                 delivery_work.join(tasks, tasks.c.id == delivery_work.c.task_id)).where(
                 delivery_work.c.instance_id == (store.fleet.id if store.fleet else 'local'),
-                tasks.c.status.in_(('queued', 'running'))).order_by(delivery_work.c.created_at).limit(512)).mappings()]
+                tasks.c.status == 'queued').order_by(delivery_work.c.created_at).limit(512)).mappings()]
         with self.connect(write=False) as db:
             leases = {row['id']: dict(row) for row in db.execute('SELECT * FROM leases')}
             refined = {row['key']: json.loads(row['value']) for row in db.execute(
-                "SELECT key,value FROM state WHERE key LIKE 'refinement:%'")}
-        scratch = []
+                "SELECT key,value FROM state WHERE key LIKE 'refinement:%' AND "
+                "'scratch:' || substr(key,12) IN (SELECT key FROM state)")}
         for item in work:
             row = leases.get(item['disk_lease'])
             if not row:
@@ -432,44 +438,15 @@ class DiskBudget:
             fingerprint = hashlib.sha256(item['plan'].encode()).hexdigest()
             if refined.get('refinement:' + row['id']) != [fingerprint, row['reserved']]:
                 self._refine_queued_plan(store, item, row)
-                # Refinement may shrink the promise; refresh only that row.
-                with self.connect(write=False) as db:
-                    row = db.execute('SELECT * FROM leases WHERE id=?', (item['disk_lease'],)).fetchone()
-                if not row:
-                    continue
-            plan = json.loads(item['plan'])
-            pending = []
-            for job in plan['jobs']:
-                if job.get('done'):
-                    continue
-                hint = job.get('output_estimate')
-                if hint is None:
-                    # An unplanned/interrupted acquisition is costed from its
-                    # actual files. The processing worker refines track rates.
-                    hint = 0
-                    for name in set(job['inputs']):
-                        try:
-                            hint += self._safe(name).stat().st_size
-                        except FileNotFoundError:
-                            pass  # A processing worker may just have retired it.
-                pending.append({**job, 'output_estimate': int(hint)})
-            from webapp.delivery.space import processing_peak
-            peak = processing_peak(pending, test_mode=plan['config'].get('storage_mode') == 'test')
-            additional = max(0, peak - max(0, row['reserved'] - row['measured']))
-            if additional:
-                scratch.append(additional)
-        slots = max(1, min(8, int(self.config.get('postprocess_limit', 2))))
         with self.connect() as db:
-            amount = sum(sorted(scratch, reverse=True)[:slots])
-            if self._get(db, 'processing_scratch', 0) != amount:
-                self._set(db, 'processing_scratch', amount)
-            db.execute("DELETE FROM state WHERE key LIKE 'refinement:%' AND substr(key,12) NOT IN (SELECT id FROM leases)")
+            db.execute("DELETE FROM state WHERE key='processing_scratch' "
+                       "OR (key LIKE 'refinement:%' AND substr(key,12) NOT IN (SELECT id FROM leases)) "
+                       "OR (key LIKE 'scratch:%' AND substr(key,9) NOT IN (SELECT id FROM leases))")
 
     def _refine_queued_plan(self, store, item, lease):
-        """Reconcile a stopped acquisition's promise with its real inputs.
+        """核对已结束下载的实际文件，并把输出预留交给共享额度。
 
-        Both new and interrupted work use the same path. Never probe or touch
-        a running writer, and commit the plan before lowering its reservation.
+        新任务和中断恢复使用同一套流程。跳过仍在写入的任务，先提交处理计划再释放预留。
         """
         if alive(json.loads(lease['owner'])) or any(alive(c) for c in json.loads(lease['children'])):
             return
@@ -496,7 +473,6 @@ class DiskBudget:
                 item['plan'] = json.dumps(plan, ensure_ascii=False)
             used = size_of(self._safe(lease['path']))
             extra = processing_peak(plan['jobs'], test_mode=plan['config'].get('storage_mode') == 'test')
-            needed = used + extra + 16 * MIB
             # Releasing a promise must use the same scanner coordination as
             # release_retained. Removed bytes remain conservatively counted.
             with file_lock(self.directory / 'disk-usage.lock', blocking=True) as acquired:
@@ -507,15 +483,15 @@ class DiskBudget:
                     if not row:
                         return
                     fingerprint = hashlib.sha256(item['plan'].encode()).hexdigest()
-                    reserved = min(needed, row['reserved'])
+                    reserved = min(used, row['reserved'])
                     self._set(db, 'refinement:' + lease['id'], [fingerprint, reserved])
-                    if needed >= row['reserved']:
-                        return
                     cached = self._get(db, 'usage', {'time': 0, 'bytes': {}})
                     cached['bytes'][row['category']] = cached['bytes'].get(row['category'], 0) + max(0, used-row['measured'])
                     self._set(db, 'usage', cached)
-                    db.execute('UPDATE leases SET reserved=?,measured=? WHERE id=?', (needed, used, lease['id']))
-                    self._set(db, 'completion:' + lease['id'], needed)
+                    db.execute('UPDATE leases SET reserved=?,measured=? WHERE id=?', (reserved, used, lease['id']))
+                    self._set(db, 'completion:' + lease['id'], reserved)
+                    # 在同一事务中释放旧预留和登记共享额度，进程异常退出也不会留下计费空档。
+                    self._set(db, 'scratch:' + lease['id'], used + extra + 16 * MIB)
 
     def _filesystems(self):
         yield shutil.disk_usage(self.directory)
@@ -568,7 +544,7 @@ class DiskBudget:
             pending = db.execute('SELECT * FROM requirements WHERE task NOT IN '
                 '(SELECT task FROM leases WHERE task IS NOT NULL AND reserved > 0)').fetchall()
             pressure = self._get(db, 'pressure', {})
-            protected = self._get(db, 'processing_scratch', 0)
+            protected = self._processing_scratch(db)
             unused = sum(max(0, r['reserved']-r['measured']) for r in db.execute('SELECT reserved,measured FROM leases'))
             waiting_tasks = 0
             for request in pending:
@@ -586,7 +562,7 @@ class DiskBudget:
                         categories={key: dict(used_bytes=usage[key], committed_bytes=committed[key],
                                               budget_bytes=limit) for key, limit in self.limits.items()},
                         low_space=waiting, message=('磁盘剩余空间不足，正在等待自动恢复。' if waiting else blocked),
-                        processing_scratch_bytes=self._get(db, 'processing_scratch', 0),
+                        processing_scratch_bytes=protected,
                         active=dict((r['category'], r['n']) for r in rows),
                         waiting_tasks=waiting_tasks, recheck_tasks=len(pending)-waiting_tasks,
                         last_cleanup=self._get(db, 'cleanup', {}))
@@ -623,7 +599,8 @@ class DiskBudget:
         publish(self, store, snapshot)
         # A local file keeps the independent disk watchdog off the remote DB.
         target = self.directory / 'disk-budget-config.json'
-        content = json.dumps({key: self.config[key] for key in DISK_FIELDS})
+        content = json.dumps({**{key: self.config[key] for key in DISK_FIELDS},
+                              'postprocess_limit': self.config.get('postprocess_limit', 2)})
         if not target.exists() or target.read_text(encoding='utf-8') != content:
             temporary = target.with_suffix('.tmp')
             temporary.write_text(content, encoding='utf-8')
@@ -669,7 +646,7 @@ class DiskBudget:
             usage, committed = self._usage(db)
             waiting, free = self._watermark(db, persist=False)
             unused = sum(max(0, r['reserved'] - r['measured']) for r in db.execute('SELECT reserved,measured FROM leases'))
-            protected = self._get(db, 'processing_scratch', 0)
+            protected = self._processing_scratch(db)
             recoverable = {r[0] for r in db.execute('SELECT task FROM leases WHERE reserved=0 AND task IS NOT NULL')}
         blocked = set()
         current = json.loads(self._version())
@@ -728,7 +705,7 @@ class DiskBudget:
                 # Existing reservations can finish below the resume watermark, but
                 # never below the low watermark or by extending an exhausted budget.
                 low = self.watermarks[0]
-                protected = 0 if lease.processing else self._get(db, 'processing_scratch', 0)
+                protected = 0 if lease.processing else self._processing_scratch(db)
                 reason = ''
                 if free < low:
                     reason = '磁盘实际剩余空间不足，等待释放空间。'
@@ -812,6 +789,100 @@ class DiskBudget:
                 self._set(db, 'usage', cached)
                 planned = self._get(db, 'completion:' + identity, 0)
                 db.execute('UPDATE leases SET reserved=?,measured=? WHERE id=?', (planned, measured, identity))
+
+    def cleanup_stopped_downloads(self, store):
+        """清理已停止的下载工作目录，保留任务供下次重新下载。"""
+        from sqlalchemy import select
+        from webapp.database import delivery_work, settings, tasks
+
+        identity = store.fleet.id if store.fleet else 'local'
+        with store.connect() as db:
+            token = store.pending_stop_cleanup(db)
+            if not token:
+                return False
+            running = select(tasks.c.id).where(tasks.c.status == 'running', tasks.c.action == 'download')
+            if store.fleet:
+                running = running.where(tasks.c.instance_id == identity)
+            if db.execute(running.limit(1)).first():
+                # 停止由调度器执行，清理线程不在写入尚未终止时抢删文件。
+                return False
+        with file_lock(self.directory / 'disk-cleanup.lock') as cleaning:
+            if not cleaning:
+                return False
+            with self.connect(write=False) as db:
+                # 本地账本只查下载临时目录，跳过留样、日志和其他服务的文件。
+                leases = {row['id']: dict(row) for row in db.execute(
+                    "SELECT * FROM leases WHERE category IN ('test','downloads') AND task IS NOT NULL")}
+            with store.connect() as db:
+                plans = {row['disk_lease']: dict(row) for row in db.execute(
+                    select(delivery_work).where(delivery_work.c.instance_id == identity)).mappings()}
+            pending = False
+            for lease_id in leases.keys() | plans.keys():
+                lease, plan = leases.get(lease_id), plans.get(lease_id)
+                task_id = lease['task'] if lease else plan['task_id']
+                task = store.get(task_id)
+                if not task or task['status'] in ('succeeded', 'removed', 'cancelled'):
+                    continue
+                if task['status'] == 'running':
+                    pending = True
+                    continue
+                if not self._discard_stopped_workspace(store, task, lease_id, lease, plan):
+                    pending = True
+            if pending:
+                return False
+            self._refresh_usage(force=True)
+            with store.connect() as db:
+                # 先刷新空间用量，再允许下一轮准入，避免按旧用量继续阻挡下载。
+                db.execute(settings.delete().where(settings.c.key == store.stop_cleanup_key(),
+                    settings.c.value == token))
+        return True
+
+    def _discard_stopped_workspace(self, store, task, lease_id, lease, plan):
+        from sqlalchemy import select
+        from webapp.database import delivery_work, tasks
+
+        lock = self.directory / 'disk-locks' / (lease_id + '.lock')
+        with file_lock(lock) as owned:
+            # 目录锁与进程身份一起验证，防止任务刚退出但子进程仍在落盘。
+            if not owned or lease and (alive(json.loads(lease['owner'])) or
+                    any(alive(child) for child in json.loads(lease['children']))):
+                return False
+            if lease and plan and (lease['task'] != plan['task_id'] or lease['path'] != plan['workspace']):
+                raise ValueError('停止清理时发现临时目录登记不一致。')
+            path = self._safe(lease['path'] if lease else plan['workspace'])
+            # 即使登记的路径有误，也把删除限定在专用下载临时目录内。
+            roots = [self.directory / 'test-downloads', self.runtime / 'downloads', *self.external_roots]
+            if not any(path != root and path.is_relative_to(root) for root in roots):
+                raise ValueError('停止清理只允许删除下载临时目录。')
+            if path.exists():
+                shutil.rmtree(path)
+            if path.is_relative_to(self.directory / 'test-downloads'):
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
+
+            # 清理请求仍阻止领取。若这里中断，下次可继续注销已经删除的目录。
+            with store.connect() as db:
+                row = db.execute(store._locked(select(tasks).where(tasks.c.id == task['id']))).mappings().first()
+                if row and row['status'] == 'queued':
+                    payload = store.decode(row, private=True, db=db)['payload']
+                    # 已登记的测试统计可保留。重新执行时仍要获取本次的文件。
+                    payload['_redownload_after_stop'] = True
+                    progress = dict(stage='paused', wait_reason='临时文件已清理，开始后重新下载。')
+                    db.execute(tasks.update().where(tasks.c.id == task['id']).values(
+                        progress=json.dumps(progress, ensure_ascii=False), payload=store._pack(db, payload),
+                        error=None, result=None, available_at=0))
+                if plan:
+                    db.execute(delivery_work.delete().where(delivery_work.c.task_id == task['id'],
+                        delivery_work.c.disk_lease == lease_id))
+            with self.connect() as db:
+                db.execute('DELETE FROM requirements WHERE task=?', (task['id'],))
+                db.execute('DELETE FROM leases WHERE id=?', (lease_id,))
+                db.execute('DELETE FROM state WHERE key IN (?,?,?)', tuple(
+                    prefix + lease_id for prefix in ('completion:', 'refinement:', 'scratch:')))
+        store.progress_cache.discard([task['id']])
+        return True
 
     def cleanup(self, store=None, *, grace=300):
         """Only delete owned, unlocked directories after verifying all owners."""
@@ -1160,6 +1231,12 @@ class DiskLease:
             db.execute('UPDATE leases SET reserved=? WHERE id=?', (peak, self.id))
         self.planned = self.reserved = self.estimate = peak
 
+    def reserve_processing_space(self):
+        with self.budget.connect(write=False) as db:
+            peak = self.budget._get(db, 'scratch:' + self.id, 0)
+        if peak:
+            self.plan(peak)
+
     def checkpoint_space(self, extra=0):
         with self.check_lock:
             return self._checkpoint_space(extra)
@@ -1173,6 +1250,7 @@ class DiskLease:
         with self.budget.connect() as db:
             self.budget._set(db, 'completion:' + self.id, needed)
             db.execute('UPDATE leases SET reserved=? WHERE id=?', (needed, self.id))
+            db.execute('UPDATE state SET value=? WHERE key=?', (json.dumps(needed), 'scratch:' + self.id))
         self.planned = self.reserved = self.estimate = needed
         self.measured_bytes, self.measured_at = used, time.monotonic()
 

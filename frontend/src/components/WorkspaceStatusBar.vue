@@ -113,7 +113,7 @@ async function stop() {
   more.value = false;
   if (!status.canStop) return;
   try {
-    await ElMessageBox.confirm(`立即停止「${instances.name}」正在执行的任务？`, '立即停止', {
+    await ElMessageBox.confirm(`停止「${instances.name}」并清理未完成视频的临时文件？下次开始时重新下载。`, '立即停止', {
       confirmButtonText: '立即停止',
       cancelButtonText: '取消',
       type: 'warning',
@@ -368,7 +368,7 @@ const powerTitle = computed(
             <p v-if="status.error || instances.error" role="alert">
               {{ status.error || instances.error }}
             </p>
-            <p>暂停后当前下载继续，立即停止会中断当前执行。</p>
+            <p>暂停会让当前任务继续完成。立即停止会中断任务并清理未完成视频的临时文件。</p>
           </div>
         </div>
       </div>

@@ -23,6 +23,7 @@ MIB = 1024 ** 2
 class PipelineBusy(RuntimeError):
     """Temporary admission pressure; do not charge an attempt or isolate a node."""
     retry_after = 10
+    wait_code = 'scheduler_retry'
 
 
 def policy_key(config):

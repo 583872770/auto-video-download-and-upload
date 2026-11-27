@@ -6,6 +6,7 @@ import uuid
 
 from webapp.disk_budget import alive, file_lock, process_identity
 from webapp.throughput import _atomic, policy_key
+from webapp.wait_diagnostics import START_WAITS, start_wait
 
 
 class StartTicket:
@@ -13,7 +14,7 @@ class StartTicket:
         self.gate, self.token = gate, token
         self.closed = False
 
-    def finish(self, delay=1):
+    def finish(self, delay=1, *, wait=None):
         if self.closed:
             return
         with file_lock(self.gate.lock, blocking=True) as acquired:
@@ -22,7 +23,7 @@ class StartTicket:
             state = self.gate.read()
             if state.get('token') == self.token:
                 state.update(token=None, owner=None, expires_at=0,
-                             next_at=time.time() + max(0, min(60, delay)))
+                             next_at=time.time() + max(0, min(60, delay)), wait=wait)
                 _atomic(self.gate.path, state)
             self.closed = True
 
@@ -72,19 +73,18 @@ class DownloadStartGate:
         next_start = summary.get('next_start_at') or 0
         if summary.get('known') and not summary.get('capacity'):
             if summary.get('cooling_sessions'):
-                wait = dict(code='account_cooldown', label='等待账号冷却',
-                            detail='当前没有可开启新任务的账号。账号冷却结束后会自动重新检查。')
-                if next_start > now:
-                    wait['until'] = next_start
-                return None, wait
+                reason = summary.get('next_start_reason') or 'account_cooldown'
+                code = reason if reason in START_WAITS else 'account_cooldown'
+                return None, start_wait(code, until=next_start if next_start > now else None)
             if summary.get('manual_sessions') or summary.get('effective_sessions') == 0:
-                return None, dict(code='account_review', label='需要检查下载账号',
-                                  detail='当前没有可开启新任务的账号。请在账号管理检查登录、验证或账号分配。')
-            return None, dict(code='account_capacity', label='等待可用账号',
-                              detail='账号池暂时无法接收新任务。出现可用账号后会自动重新检查。')
+                return None, start_wait('account_review')
+            return None, start_wait('account_capacity')
         if next_start > now:
+            reason = summary.get('next_start_reason')
+            if reason in START_WAITS:
+                return None, start_wait(reason, until=next_start)
             return None, dict(code='account_start_time', label='等待账号可启动', until=next_start,
-                              detail='最早可用账号仍受启动间隔、冷却或启动次数限制。到时间后会重新检查。')
+                              detail='账号已上报下次可开工时间。具体限制尚未采到，可在账号管理查看。')
         with file_lock(self.lock) as acquired:
             if not acquired:
                 return None, dict(code='start_check', label='等待启动检查',
@@ -94,8 +94,8 @@ class DownloadStartGate:
             if state.get('policy') != policy:
                 state = {'policy': policy}
             if state.get('next_at', 0) > now:
-                return None, dict(code='start_interval', label='等待任务启动间隔', until=state['next_at'],
-                                  detail='本机按设定间隔启动视频任务。间隔结束后会自动尝试领取。')
+                wait = state.get('wait') or start_wait('start_interval')
+                return None, {**wait, 'until': state['next_at']}
             if state.get('token') and state.get('expires_at', 0) > now and alive(state.get('owner') or {}):
                 return None, dict(code='another_start', label='等待其他进程完成启动',
                                   detail='其他下载进程正在为新任务准备账号。准备完成后会自动重新检查。')

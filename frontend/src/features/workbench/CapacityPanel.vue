@@ -46,6 +46,13 @@ const blockers: Record<string, string> = {
   io: 'I/O 压力未低于恢复阈值',
   memory: '可用内存未达到恢复水位',
 };
+function reductionReason(reason: { code: string; value: number; threshold: number }) {
+  const { code, value, threshold } = reason;
+  if (code === 'cpu') return `CPU 利用率 ${value}%，触发阈值 ${threshold}%`;
+  if (code === 'io') return `I/O 压力 ${value}%，触发阈值 ${threshold}%`;
+  if (code === 'memory') return `可用内存 ${value} MB，低于 ${threshold} MB 安全水位`;
+  return '';
+}
 </script>
 <template>
   <section class="card capacity-panel" aria-label="当前实例传输并发">
@@ -119,6 +126,7 @@ const blockers: Record<string, string> = {
       <div v-if="worker.resource_limited" class="notice">
         <p v-if="worker.last_reduction">
           最近一次缩容 {{ worker.last_reduction.from }} → {{ worker.last_reduction.to }} 个进程。
+          {{ worker.last_reduction.reasons.map(reductionReason).filter(Boolean).join('。') }}
         </p>
         <template v-if="worker.recovery"
           ><p>

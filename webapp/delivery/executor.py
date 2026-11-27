@@ -89,9 +89,10 @@ def ready(session, kind, language=''):
         return True
     if artifact:
         session.current_video.update(title=artifact['title'])
-    force_sample = session.payload.get('_force_test_sample')
+    # 留样重试与立即停止后重启都要求取一份本次执行的测试文件。
+    fresh_copy = session.payload.get('_force_test_sample') or session.payload.get('_redownload_after_stop')
     same_workspace = artifact and Path(artifact['path']).is_relative_to(Path(session.payload.get('_disk_workspace') or '/__none__'))
-    if session.test_mode and artifact and artifact['test_mode'] and (not force_sample or same_workspace):
+    if session.test_mode and artifact and artifact['test_mode'] and (not fresh_copy or same_workspace):
         with session.store.connect() as db:
             ledger.fenced_run(session.store, db, task['id'])
             recorded = ledger.recorded_test_output(db, task, artifact)

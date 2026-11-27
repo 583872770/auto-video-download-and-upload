@@ -28,10 +28,12 @@ def worker_view(worker, sample, stamp):
         detail = worker.get('wait') or {}
         wait = {'label': safe_text(worker.get('message') or '等待执行条件'),
                 'until': detail.get('until', worker.get('until'))}
-        if detail:
-            wait.update(code=detail['code'], detail=safe_text(detail['detail']))
-        elif stage == 'waiting_start':
-            wait['detail'] = '该进程尚未领取视频。启动条件恢复后会自动尝试领取。'
+        if detail.get('code'):
+            wait.update(code=detail['code'], detail=safe_text(detail.get('detail') or ''))
+        elif worker['state'] in ('disk_wait', 'paused'):
+            wait.update(code='disk_wait', detail=safe_text(worker.get('message') or '请查看本实例的磁盘诊断。'))
+        else:
+            wait.update(code='reason_pending', detail='具体原因尚未上报，等待下次进程状态更新。')
     if worker['state'] == 'idle':
         state = 'idle'
     elif stage == 'downloading' and progress.get('network_phase') == 'transferring':

@@ -86,6 +86,26 @@ const diskLink = computed(() => ({
   path: '/logs',
   query: { instance_id: instances.selectedId || undefined },
 }));
+const settingsLink = computed(() => ({
+  path: '/settings',
+  query: { instance_id: instances.selectedId || undefined },
+}));
+const waitActions = computed(() => {
+  const account = { label: '查看账号状态与限额', to: accountLink.value };
+  const disk = { label: '查看磁盘用量和临时额度', to: diskLink.value };
+  return {
+    account_review: account,
+    account_cooldown: account,
+    account_capacity: account,
+    account_interval: account,
+    account_rest: account,
+    account_quota: account,
+    account_start_time: account,
+    start_interval: { label: '查看启动间隔设置', to: settingsLink.value },
+    disk_wait: disk,
+    disk_coordination: disk,
+  } as Record<string, typeof account>;
+});
 
 function step(row: ProcessRow) {
   if (row.state === 'idle') return '可领取任务';
@@ -208,10 +228,10 @@ function toggleQueue(kind: QueueGroup) {
                   >已等待 {{ Math.max(0, Math.floor(now - row.phase_started_at)) }} 秒</small
                 >
                 <RouterLink
-                  v-if="row.wait.code === 'account_review'"
+                  v-if="row.wait.code && waitActions[row.wait.code]"
                   class="text-link cell-note"
-                  :to="accountLink"
-                  >打开账号管理</RouterLink
+                  :to="waitActions[row.wait.code].to"
+                  >{{ waitActions[row.wait.code].label }}</RouterLink
                 >
               </template>
               <span v-else>—</span>

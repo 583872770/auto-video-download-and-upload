@@ -13,6 +13,7 @@ from webapp.worker.formatting import format_bytes
 from webapp.worker.locks import worker_lock
 from webapp.worker.recovery import TaskRecovery
 from webapp.worker.heartbeat import LeaseHeartbeat
+from webapp.wait_diagnostics import start_wait
 
 
 def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
@@ -35,6 +36,7 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
         actions = ('import', 'index') if role == 'maintenance' else ('download',) if role == 'download' else None
         exclude = ('import', 'index') if role == 'regular' else None
         next_claim_after = 0
+        claim_wait = None
         last_wait_beat = float('-inf')
         last_start_wait = None
         from webapp.worker.idle import ProcessingIdle, DownloadIdle
@@ -58,10 +60,12 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                 # Delay this idle worker too. Delaying only the released task
                 # lets a large queue churn thousands of unrelated task claims.
                 # No task lease or DB transaction is held during this wait.
-                if time.monotonic() >= last_wait_beat + 10:
-                    store.worker_status(store.owner, name, 'waiting_start', message='等待调度条件恢复',
-                                        until=time.time() + remaining, live_only=True)
+                if last_start_wait != claim_wait or time.monotonic() >= last_wait_beat + 10:
+                    wait = {**claim_wait, 'until': time.time() + remaining}
+                    store.worker_status(store.owner, name, 'waiting_start', message=wait['label'],
+                                        wait=wait, live_only=True)
                     last_wait_beat = time.monotonic()
+                    last_start_wait = claim_wait
                 time.sleep(min(1, remaining))
                 continue
             if role in ('processing', 'all'):
@@ -181,8 +185,11 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                               stage_seconds=last_progress.get('stage_seconds', {}))
                     except PipelineBusy as error:
                         start_delay = getattr(error, 'start_gate_delay', error.retry_after)
+                        claim_wait = start_wait(error.wait_code, detail=str(error))
+                        # 进入退避状态时立即覆盖上一条运行中采样。
+                        last_start_wait = None
                         if start_ticket:
-                            start_ticket.finish(start_delay)
+                            start_ticket.finish(start_delay, wait=claim_wait)
                         store.update_progress(task['id'], {**last_progress, 'stage': 'scheduling_wait',
                             'speed': None, 'eta': None, 'wait_reason': str(error),
                             'retry_at': time.time() + error.retry_after,
@@ -197,6 +204,8 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                               wait_scope=getattr(error, 'wait_scope', None))
                         continue
                     except DiskCoordinationBusy as error:
+                        claim_wait = start_wait('disk_coordination')
+                        last_start_wait = None
                         store.update_progress(task['id'], {**last_progress,
                             'stage': 'waiting_processing' if processing_task else 'scheduling_wait',
                             'speed': None, 'eta': None, 'wait_reason': str(error),
@@ -206,10 +215,12 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         event('attempt_released', reason='disk_coordination_busy', message=str(error), retry_after=5)
                         continue
                     except DiskPressure as error:
-                        resource_wait = str(error)
                         lease_guard.settle(store.release, task['id'], store.owner, str(error), delay=60, resource=True,
                                            resource_detail=error.detail)
-                        store.worker_status(store.owner, name, 'disk_wait', message=str(error))
+                        kind = (error.detail or {}).get('kind')
+                        label = {'budget': '临时磁盘额度不足', 'reservation': '可分配预留空间不足',
+                                 'space': '磁盘安全空间不足'}.get(kind, '磁盘写入受限')
+                        resource_wait = dict(code='disk_wait', label=label, detail=safe_text(error)[:350])
                         print(f'磁盘资源等待：{error}', flush=True)
                         event('attempt_released', reason='disk_pressure', message=str(error), **error_details(error))
                         break
@@ -255,9 +266,9 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                     except BaseException as error:
                         if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
                             record_failure(error)
-                            resource_wait = '磁盘空间或配额不足，等待释放空间。'
-                            lease_guard.settle(store.release, task['id'], store.owner, resource_wait, delay=60, resource=True)
-                            store.worker_status(store.owner, name, 'disk_wait', message='磁盘空间或配额不足。')
+                            detail = '文件写入被文件系统拒绝。请检查实际剩余空间和文件系统配额。'
+                            resource_wait = dict(code='disk_wait', label='磁盘写入失败', detail=detail)
+                            lease_guard.settle(store.release, task['id'], store.owner, detail, delay=60, resource=True)
                             event('attempt_released', reason='disk_full', **error_details(error))
                             break
                         if processing_task and isinstance(error, Exception):
@@ -322,4 +333,5 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         heartbeat.close()
                         last_wait_beat = float('-inf')
                         last_start_wait = None
-                        store.worker_status(store.owner, name, 'disk_wait' if resource_wait else 'idle', message=resource_wait)
+                        store.worker_status(store.owner, name, 'disk_wait' if resource_wait else 'idle',
+                                            message=resource_wait['label'] if resource_wait else '', wait=resource_wait)

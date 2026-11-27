@@ -1,7 +1,8 @@
-"""QueueControl contracts used by the composed TaskStore repository."""
+"""下载队列的启停和任务领取控制。"""
 import hashlib
 import json
 import time
+import uuid
 
 from sqlalchemy import and_, func, or_, select
 
@@ -9,6 +10,18 @@ from webapp.database import counters, download_lists, imports, rotations, settin
 
 
 class QueueControl:
+    def stop_cleanup_key(self, identity=None):
+        return 'stop_cleanup:' + (identity or (self.fleet.id if self.fleet else 'local'))
+
+    def request_stop_cleanup(self, db, identity=None):
+        # 每次停止生成新标记。上一次清理即使稍后完成，也只能注销自己的标记。
+        value = dict(key=self.stop_cleanup_key(identity), value=uuid.uuid4().hex)
+        db.execute(self.db.upsert(settings, value, ['key']))
+
+    def pending_stop_cleanup(self, db, identity=None):
+        return db.execute(select(settings.c.value).where(
+            settings.c.key == self.stop_cleanup_key(identity))).scalar_one_or_none()
+
     def downloads_paused(self, db=None, *, lock=False):
         """Read shared execution permission in the caller's transaction.
 
@@ -36,7 +49,7 @@ class QueueControl:
             with self.connect() as connection:
                 return self.downloads_stopped(connection, lock=lock)
         if self.fleet:
-            return bool(self.fleet.row(db)['stop_requested'])
+            return bool(self.fleet.row(db)['stop_requested'] or self.pending_stop_cleanup(db))
         return self.downloads_paused(db, lock=lock)
 
     def claims_paused(self, db=None, *, lock=False):
@@ -45,8 +58,9 @@ class QueueControl:
                 return self.claims_paused(connection, lock=lock)
         if self.fleet:
             row = self.fleet.row(db)
-            return bool(row['paused'] or row['stop_requested'])
-        return self.downloads_paused(db, lock=lock)
+            # 清理可能跨进程重启。文件和处理计划都注销后才能重新领取。
+            return bool(row['paused'] or row['stop_requested'] or self.pending_stop_cleanup(db))
+        return self.downloads_paused(db, lock=lock) or bool(self.pending_stop_cleanup(db))
 
     def released_condition(self):
         selected = select(settings.c.value).where(settings.c.key == 'selected_download_job').scalar_subquery()
@@ -68,7 +82,7 @@ class QueueControl:
         return db.execute(select(settings.c.value).where(
             settings.c.key == 'selected_download_job')).scalar_one_or_none() or None
 
-    def set_downloads_paused(self, paused):
+    def set_downloads_paused(self, paused, *, discard_temporary=False):
         with self.connect() as db:
             if self.fleet:
                 if self.db.sqlite:
@@ -79,6 +93,8 @@ class QueueControl:
                 from webapp.download_policy import execution_decision
                 execution_decision(self, db, 'local')
             if paused:
+                if discard_temporary:
+                    self.request_stop_cleanup(db)
                 if self.fleet:
                     from webapp.database import instances
                     db.execute(instances.update().where(instances.c.role == 'hybrid')

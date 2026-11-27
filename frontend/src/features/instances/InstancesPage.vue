@@ -21,6 +21,7 @@ interface Instance {
   transferring: number;
   speed: number;
   stop_requested: boolean;
+  cleaning_temporary?: boolean;
   error: string;
   cookie_count: number;
   selected_job?: { name: string; customer: string };
@@ -59,10 +60,14 @@ async function refresh(signal?: AbortSignal) {
 }
 async function save(id: string, action?: string) {
   await op.run(async () => {
-    if (action === 'stop' && !(await confirmAction(`立即停止「${id}」的当前下载？`))) return;
+    if (action === 'stop' && !(await confirmAction(`停止「${id}」并清理未完成视频的临时文件？下次开始时重新下载。`))) return;
     const result = await api.request<{ message: string }>(
       '/api/instances/' + encodeURIComponent(id),
-      { method: 'PUT', body: action ? { action } : { name: names[id] }, timeoutMs: 90000 },
+      {
+        method: 'PUT',
+        body: action === 'stop' ? { action, discard_temporary: true } : action ? { action } : { name: names[id] },
+        timeoutMs: 90000,
+      },
     );
     await refresh();
     if (resource.error.value) throw new Error('操作已提交，状态读取失败，请重新读取核对。');
@@ -172,6 +177,7 @@ usePolling(
             op.busy.value ||
             !item.online ||
             !item.paused ||
+            item.cleaning_temporary ||
             (item.stop_requested && item.running > 0)
           "
           @click="save(item.id, 'resume')"
@@ -183,12 +189,10 @@ usePolling(
         >
           完成当前后停止</button
         ><button
-          :disabled="
-            !editable || op.busy.value || item.stop_requested || (item.paused && !item.running)
-          "
+          :disabled="!editable || op.busy.value || !item.online || item.cleaning_temporary"
           @click="save(item.id, 'stop')"
         >
-          立即停止
+          {{ item.cleaning_temporary ? '清理临时文件中' : '立即停止' }}
         </button>
       </div>
       <details>

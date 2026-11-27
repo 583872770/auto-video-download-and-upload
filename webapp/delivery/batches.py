@@ -65,7 +65,8 @@ def test_readiness(session, jobs):
         identity = ledger.artifact_identity(task['batch_id'], task['video_id'], spec, *key, True)
         artifact, receipt = artifacts.get(identity), files.get(identity)
         recorded = artifact is not None and receipt is not None
-        if recorded and session.payload.get('_force_test_sample'):
+        # 旧测试的登记凭据可用于统计，本次从头下载时只复用本次的产物。
+        if recorded and (session.payload.get('_force_test_sample') or session.payload.get('_redownload_after_stop')):
             recorded = Path(artifact['path']).is_relative_to(Path(session.payload['_disk_workspace']))
         result[key] = requirements.get(key) == 'waived' or recorded
         if recorded:

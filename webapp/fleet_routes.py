@@ -116,9 +116,14 @@ def register_fleet(app, fleet):
         data = request.get_json() or {}
         if data.get('action') == 'resume':
             rpc(fleet, identity, '/api/fleet/preflight', method='POST', data={})
-        fleet.control(identity, data)
+        discard_temporary = data.pop('discard_temporary', False)
+        if type(discard_temporary) is not bool or discard_temporary and data.get('action') != 'stop':
+            raise ValueError('只能在立即停止实例时清理临时文件。')
+        fleet.control(identity, data, discard_temporary=discard_temporary)
         messages = {'resume': '实例已启动。', 'drain': '实例将在正在处理的视频全部完成后停止。',
                     'stop': '已发送立即停止指令，正在停止当前实例的下载。'}
+        if discard_temporary:
+            messages['stop'] = '正在停止下载并清理未完成视频的临时文件。'
         return jsonify(message=messages.get(data.get('action'), '实例配置已保存。'))
 
     @app.put('/api/instances/limits')

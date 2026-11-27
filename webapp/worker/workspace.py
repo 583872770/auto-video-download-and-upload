@@ -22,6 +22,8 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     config = dict(payload['config'])
     runtime = store.runtime() if store else config
     config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
+    if 'postprocess_limit' in runtime:
+        config['postprocess_limit'] = runtime['postprocess_limit']
     state = store.directory if store else Path(payload['base']) / '.cache'
     if config.get('storage_mode', 'local') != 'test':
         # Keep disposable media workspaces on the same bind mount as their
@@ -30,7 +32,9 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         config['_media_root'] = str(video_directory(config, payload['base']))
     workspace = DownloadWorkspace(config, state, task_id, uuid.uuid4().hex)
     budget = DiskBudget(state, config)
-    if workspace.test_mode and store and task_id and not payload.get('_force_test_sample'):
+    # 立即停止后的任务要重新下载，即使旧目录还有等待清理的产物凭据。
+    if (workspace.test_mode and store and task_id and not
+            (payload.get('_force_test_sample') or payload.get('_redownload_after_stop'))):
         recovered = budget.recover_test_result(store, task_id)
         if recovered:
             return recovered
@@ -82,7 +86,9 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
         try:
             if not store or not task_id or not prepared.get('youtube_cookie_pool'):
                 from webapp.throughput import PipelineBusy
-                raise PipelineBusy('当前实例未分配可用账号，请在账号管理中分配并登录账号。')
+                error = PipelineBusy('当前实例未分配可用账号，请在账号管理中分配并登录账号。')
+                error.wait_code = 'account_review'
+                raise error
             from webapp.cookie_pool import CookiePool
             pool = CookiePool(store, prepared, payload['base'], task_id, strict=False)
             retry_profile = payload.get('_retry_cookie_profile_id')

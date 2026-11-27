@@ -259,6 +259,8 @@ class Fleet:
             result = []
             selections = dict(db.execute(select(settings.c.key, settings.c.value).where(
                 settings.c.key.startswith('workbench_job:'))).all())
+            cleaning = set(db.execute(select(settings.c.key).where(
+                settings.c.key.in_([self.store.stop_cleanup_key(row['id']) for row in rows]))).scalars())
             jobs = {job['id']: dict(job) for job in db.execute(select(
                 download_lists.c.id, download_lists.c.name, download_lists.c.customer).where(
                     download_lists.c.id.in_(list(selections.values())),
@@ -276,6 +278,7 @@ class Fleet:
                 progress = by_instance.get(row['id'], [])
                 result.append({k: row[k] for k in ('id', 'name', 'role', 'host', 'url', 'heartbeat', 'paused', 'stop_requested', 'error', 'boot_id')} | {
                     'delivery_schema_version': local.get('delivery_schema_version', 0),
+                    'cleaning_temporary': self.store.stop_cleanup_key(row['id']) in cleaning,
                     'online': heartbeat > stamp - ONLINE_SECONDS, 'running': counts.get(row['id'], 0),
                     'transferring': sum(p.get('stage') == 'downloading' for p in progress),
                     'speed': sum(p.get('speed') or 0 for p in progress if p.get('stage') == 'downloading' and
@@ -335,7 +338,7 @@ class Fleet:
                         item.pop(key, None)
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
-    def control(self, identity, data):
+    def control(self, identity, data, *, discard_temporary=False):
         with self.store.connect() as db:
             db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             row = db.execute(select(instances).where(instances.c.id == identity).with_for_update()).mappings().first()
@@ -361,7 +364,12 @@ class Fleet:
                     raise ValueError('不支持的实例操作。')
                 values.update(paused=int(action != 'resume'), stop_requested=int(action == 'stop'))
                 if action == 'resume':
+                    if self.store.pending_stop_cleanup(db, identity):
+                        from werkzeug.exceptions import Conflict
+                        raise Conflict('正在清理停止任务的临时文件，请稍后启动实例。')
                     values['error'] = ''
+                elif action == 'stop' and discard_temporary:
+                    self.store.request_stop_cleanup(db, identity)
             db.execute(instances.update().where(instances.c.id == identity).values(**values, limits=json.dumps(limits)))
             if data.get('action') == 'resume':
                 from webapp.download_policy import execution_decision

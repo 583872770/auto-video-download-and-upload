@@ -140,8 +140,14 @@ def task_rest_until(config, state):
 
 
 def next_account_start(config, state, budget_until=0):
-    return max(state.get('next_at', 0), budget_until, task_rest_until(config, state),
-               state.get('last_start', 0) + account_interval(config, state) if state.get('last_start') else 0)
+    return account_start_restriction(config, state, budget_until)[0]
+
+
+def account_start_restriction(config, state, budget_until=0):
+    last_start = state.get('last_start', 0)
+    interval_until = max(state.get('next_at', 0), last_start + account_interval(config, state) if last_start else 0)
+    return max(((budget_until, 'account_quota'), (task_rest_until(config, state), 'account_rest'),
+                (interval_until, 'account_interval')), key=lambda restriction: restriction[0])
 
 
 def start_budget(config, state, stamp):

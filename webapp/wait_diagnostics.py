@@ -4,6 +4,30 @@ import math
 from webapp.diagnostics import safe_text
 
 
+START_WAITS = {
+    'start_interval': ('实例启动间隔', '本实例按设置错开每个新任务的启动时间。'),
+    'account_interval': ('账号启动间隔', '有空闲账号，但距离该账号上次开工的间隔还未结束。'),
+    'account_rest': ('账号任务后休息', '有空闲账号，但该账号上一条任务结束后的休息时间还未到。'),
+    'account_quota': ('账号启动次数已用完', '最早可用账号的每小时或每日启动次数已达上限，等待额度恢复。'),
+    'account_capacity': ('账号并发名额已满', '当前可用账号的并发名额已占满，等待正在执行的任务释放名额。'),
+    'account_cooldown': ('下载账号冷却中', '当前需等待账号冷却到期，可在账号管理查看触发原因和到期时间。'),
+    'account_review': ('下载账号需要处理', '当前没有可用于开工的账号，请检查账号分配、登录或验证状态。'),
+    'manual_retry_quota': ('手动重试启动额度受限', '手动重试正在等待启动份额，普通任务继续调度。'),
+    'source_cooldown': ('YouTube 来源服务冷却', '来源服务触发了临时保护，调度器将在冷却后重新检查。'),
+    'redis_unavailable': ('调度 Redis 暂不可用', '请求调度无法写入 Redis，请检查 Redis 服务和实例到 Redis 的连接。'),
+    'disk_coordination': ('磁盘额度账本繁忙', '多个进程正在核对或更新临时空间额度，调度器会短暂等待后重试。'),
+    'scheduler_retry': ('调度暂缓领取', '等本次调度重试。'),
+}
+
+
+def start_wait(code, *, detail=None, until=None):
+    label, default = START_WAITS[code]
+    wait = dict(code=code, label=label, detail=safe_text(detail or default)[:300])
+    if until is not None:
+        wait['until'] = until
+    return wait
+
+
 def task_wait(progress, *, states=None, identity='local', stamp=0):
     stage = progress.get('stage', '')
     if not (stage.startswith('waiting_') or stage in ('disk_wait', 'scheduling_wait', 'retrying')):

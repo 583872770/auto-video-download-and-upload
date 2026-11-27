@@ -102,6 +102,7 @@ class TaskRunner:
         from webapp.maintenance import prune_disk_logs, cleanup_logs
         from webapp.worker.locks import worker_lock
         last_disk = last_cleanup = last_log_cleanup = last_snapshot = last_error = last_summary_cleanup = 0
+        last_stop_cleanup = 0
         while not self.stop.is_set():
             config = self._maintenance_config
             # Local log retention also works during a database outage.
@@ -117,7 +118,12 @@ class TaskRunner:
             config = self._maintenance_config
             try:
                 disk = DiskBudget(self.store.directory, config)
-                if time.monotonic() - last_disk >= 30:
+                stop_cleaned = False
+                if time.monotonic() - last_stop_cleanup >= 5:
+                    # 删除目录可能耗时，放在维护线程，让调度器继续处理进程退出。
+                    last_stop_cleanup = time.monotonic()
+                    stop_cleaned = disk.cleanup_stopped_downloads(self.store)
+                if time.monotonic() - last_disk >= 30 or stop_cleaned:
                     last_disk = time.monotonic()
                     disk.cleanup(self.store)
                     disk.refresh_processing(self.store)

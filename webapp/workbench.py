@@ -133,7 +133,8 @@ class Workbench:
             telemetry = (self.store.progress_cache.read_instances([identity]) or {}).get(identity, {})
             heartbeat = telemetry.get('heartbeat', row['heartbeat'])
             online = heartbeat > self.store.fleet.clock(db) - ONLINE_SECONDS
-            paused = bool(row['paused'])
+            cleaning = bool(self.store.pending_stop_cleanup(db, identity))
+            paused = bool(row['paused']) or cleaning
             enabled = not paused and not row['stop_requested']
             from webapp.disk_budget import resource_blocked
             blocked = resource_blocked(self.store, db, identity)
@@ -164,7 +165,7 @@ class Workbench:
                    'running_videos': [task for task in active if task['batch_id'] == job['id']]}
             job['state'] = self.jobs.execution_state(job)
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
-                    stop_requested=bool(row['stop_requested']), online=online, running=running,
+                    stop_requested=bool(row['stop_requested']), cleaning_temporary=cleaning, online=online, running=running,
                     queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session,
                     disk=disk_summary, hls_buffer=rate.get('hls_buffer') if online else None, account_summary=accounts)
 
@@ -183,6 +184,8 @@ class Workbench:
             key = 'workbench_job:' + identity
             selected = db.execute(select(settings.c.value).where(settings.c.key == key)).scalar_one_or_none()
             if action == 'start':
+                if self.store.pending_stop_cleanup(db, identity):
+                    raise Conflict('正在清理停止任务的临时文件，请稍后开始下载。')
                 if expected and any(row[k] != expected[k] for k in
                         ('boot_id', 'config', 'limits', 'paused', 'stop_requested')):
                     raise Conflict('检查期间实例设置或开关发生变化，请重新开始。')
@@ -210,7 +213,8 @@ class Workbench:
                 db.execute(instances.update().where(instances.c.id == identity).values(
                     paused=1, stop_requested=int(action == 'stop')))
                 if action == 'stop':
-                    self.jobs.stop_running(db, tasks.c.instance_id == identity)
+                    # 保留运行中的租约，直到下载实例终止了对应的写入进程。
+                    self.store.request_stop_cleanup(db, identity)
                 self.store.statistics.stop_session(db, identity)
             self.store.statistics.settle(db, instance_id=identity)
 

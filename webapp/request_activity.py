@@ -20,6 +20,7 @@ class RequestActivity:
             from webapp.throughput import PipelineBusy
             error = PipelineBusy('请求调度 Redis 暂时不可用，等待恢复后继续；账号保护保持生效。')
             error.retry_after = 5
+            error.wait_code = 'redis_unavailable'
             raise error
         return key
 

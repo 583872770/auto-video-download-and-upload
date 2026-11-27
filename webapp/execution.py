@@ -57,6 +57,12 @@ class ExecutionControlService:
             raise Conflict('当前下载进程尚未停止，请稍后恢复系统领取。')
         if self.store.media_clear_busy():
             raise Conflict('素材库正在清空，请完成后再恢复系统领取。')
+        if not self.store.fleet:
+            from webapp.disk_budget import DiskBudget
+            with self.store.connect() as db:
+                pending = self.store.pending_stop_cleanup(db)
+            if pending:
+                DiskBudget(self.store.directory, self.store.runtime()).cleanup_stopped_downloads(self.store)
         if self.prepare_resume:
             self.prepare_resume()
         # Lock the same flag as clear/stop. Never release a not-yet-started job.
@@ -68,6 +74,8 @@ class ExecutionControlService:
                 raise Conflict('素材库正在清空，请完成后再恢复系统领取。')
             if self.store.downloads_paused(db) and self.store._counts(db, ['action:download']).get('running', 0):
                 raise Conflict('当前下载进程尚未停止，请稍后恢复系统领取。')
+            if not self.store.fleet and self.store.pending_stop_cleanup(db):
+                raise Conflict('正在清理停止任务的临时文件，请稍后开始下载。')
             if self.store.fleet:
                 self.store.fleet.activate(db)
             db.execute(settings.update().where(settings.c.key == 'downloads_paused').values(value='false'))

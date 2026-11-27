@@ -63,6 +63,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       !chosen.value.deleted &&
       !!(chosen.value.queued || chosen.value.running || chosen.value.importing) &&
       !enabled.value &&
+      !data.value?.cleaning_temporary &&
       !(data.value?.stop_requested && data.value.running),
   );
   const canPause = computed(
@@ -74,8 +75,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       fresh.value &&
       !busy.value &&
       !!data.value &&
-      (!!data.value.running || !data.value.paused) &&
-      !data.value.stop_requested,
+      !data.value.cleaning_temporary,
   );
   const download = computed(() => {
     if (liveDownload.value)
@@ -119,6 +119,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     if (busy.value) return '处理中';
     if (!data.value) return '读取中';
     if (!data.value.online) return '实例离线';
+    if (data.value.cleaning_temporary) return '清理临时文件中';
     if (data.value.stop_requested && data.value.running) return '停止中';
     if (data.value.paused) return data.value.running ? '收尾中' : '已暂停';
     if (!fresh.value && !displayFresh.value) return '待更新';
@@ -232,7 +233,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
         message.value = {
           start: '已启动所选任务。',
           pause: '已暂停领取新任务，当前下载完成后停止。',
-          stop: '已请求立即停止当前实例。',
+          stop: '正在停止实例并清理未完成视频的临时文件。',
         }[action];
     } catch (failure) {
       if (scope.isCurrent())

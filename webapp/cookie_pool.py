@@ -23,8 +23,8 @@ from webapp.concurrency_policy import (MAX_TRANSFERS, cookie_pool_start_interval
 from webapp.cookie_policy import (account_interval, start_budget, retry_interval, account_limit_delay,
                                   RECOVERY_INTERVAL, RECOVERY_WINDOW, RECOVERY_SUCCESSES,
                                   STABLE_SUCCESSES, STABLE_WINDOW, PROTECTION_INTERVAL,
-                                  pacing_progress, task_rest_until, next_account_start,
-                                  advance_account_interval)
+                                  pacing_progress, task_rest_until,
+                                  advance_account_interval, account_start_restriction)
 from webapp.config.schema import DEFAULTS
 
 
@@ -75,10 +75,11 @@ def session_view(identity, name, state, config, stamp, *, pacing=None):
     cooling = state.get('cooldown_until', 0) > stamp
     recovery = bool(state.get('recovery_mode'))
     starts, budget_until = start_budget(config, state, stamp)
+    next_start, start_reason = account_start_restriction(config, state, budget_until)
     return dict(id=identity, name=name, state='manual' if state.get('halted') else 'cooldown' if cooling else 'recovery' if recovery else 'ready',
         halted=bool(state.get('halted')), halt_kind=state.get('halt_kind'), halted_at=state.get('halted_at'),
         halt_incident_id=state.get('halt_revision'),
-        active=int(state.get('active', 0)), next_start_at=next_account_start(config, state, budget_until),
+        active=int(state.get('active', 0)), next_start_at=next_start, next_start_reason=start_reason,
         last_finished_at=state.get('last_finished_at', 0), rest_until=task_rest_until(config, state),
         hourly_used=sum(s > stamp - 3600 for s in starts), daily_used=len(starts), budget_until=budget_until,
         hourly_limit=int(config.get('youtube_hourly_start_limit', DEFAULTS['youtube_hourly_start_limit'])),
@@ -103,8 +104,12 @@ def capacity_summary(snapshot, stamp=None):
     capacity = sum(limit for a, limit in capacities if not a.get('halted') and a.get('cooldown_until', 0) <= stamp)
     capacity = min(capacity, MAX_TRANSFERS)
     active = sum(a.get('active', 0) for a in sessions)
-    next_starts = [max(snapshot.get('next_at', 0), a.get('next_at', 0), a.get('cooldown_until', 0), stamp)
+    pool_next = snapshot.get('next_at', 0)
+    next_starts = [max(((stamp, None), (pool_next, 'start_interval'),
+                        (a.get('cooldown_until', 0), 'account_cooldown'),
+                        (a.get('next_at', 0), a.get('next_start_reason'))), key=lambda value: value[0])
                    for a, limit in capacities if not a.get('halted') and a.get('active', 0) < limit]
+    next_start, start_reason = min(next_starts, key=lambda value: value[0]) if next_starts else (None, None)
     warmup = sum(1 for a, limit in capacities if a.get('warming', limit < 2))
     session_states = snapshot.get('session_states', [])
     cooling_sessions = [s for s in session_states if s['state'] == 'cooldown']
@@ -140,7 +145,7 @@ def capacity_summary(snapshot, stamp=None):
                 until=s['cooldown_until'], manual=False, reason=s['cooldown_kind']) for s in cooling_sessions] + [
                 dict(scope='Cookie：' + s['name'], action='halt', until=0, manual=True,
                      reason=s['halt_kind']) for s in manual_sessions],
-            'next_start_at': min(next_starts) if next_starts else None}
+            'next_start_at': next_start, 'next_start_reason': start_reason}
 
 
 class CookiePool:
@@ -221,8 +226,8 @@ class CookiePool:
                 account.update(limit=session_limit(self.config, account),
                                configured_limit=configured, warming=warming,
                                interval=account_interval(self.config, account))
-                account['next_at'] = session_view(account['id'], '', account, self.config, stamp,
-                                                  pacing=progress[account['id']])['next_start_at']
+                view = session_view(account['id'], '', account, self.config, stamp, pacing=progress[account['id']])
+                account.update(next_at=view['next_start_at'], next_start_reason=view['next_start_reason'])
             for identity, canonical in self.aliases.items():
                 accounts.append({**next(a for a in accounts if a['id'] == canonical),
                                  'id': identity, 'shared_with': canonical})
@@ -270,14 +275,15 @@ class CookiePool:
         if not self.accounts:
             error = PipelineBusy('账号池没有可用 Cookie，请在账号管理中更新或重新检测。')
             error.retry_after = 60
+            error.wait_code = 'account_review'
             raise error
 
         def reserve(db, stamp):
             gate = router._state(db, self.global_scope)
             if gate.get('next_at', 0) > stamp:
-                return None, gate['next_at'] - stamp, 'pool'
+                return None, gate['next_at'] - stamp, 'pool', 'start_interval'
             if manual_retry and gate.get('retry_next_at', 0) > stamp:
-                return None, gate['retry_next_at'] - stamp, 'manual_retry'
+                return None, gate['retry_next_at'] - stamp, 'manual_retry', 'manual_retry_quota'
             scopes = [scope for _, _, scope in self.accounts]
             state_by_scope = router._states(db, scopes)
             active_by_scope = router._active_many(db, scopes, stamp)
@@ -292,9 +298,11 @@ class CookiePool:
                 if state.get('halted'):
                     continue
                 _, budget_until = start_budget(self.config, state, stamp)
-                next_at = max(state.get('cooldown_until', 0), next_account_start(self.config, state, budget_until))
+                next_at, reason = account_start_restriction(self.config, state, budget_until)
+                if state.get('cooldown_until', 0) >= next_at:
+                    next_at, reason = state.get('cooldown_until', 0), 'account_cooldown'
                 if next_at > stamp:
-                    delays.append(next_at - stamp)
+                    delays.append((next_at - stamp, reason))
                     continue
                 cap = session_limit(self.config, state)
                 if active < cap:
@@ -303,13 +311,15 @@ class CookiePool:
                 halted = [s for i, _, _, s, _ in states
                           if (not profile_id or i == self.aliases.get(profile_id, profile_id)) and s.get('halted')]
                 if halted and (profile_id or all(s.get('halted') for _, _, _, s, _ in states)):
-                    return None, 60, 'manual_account'
-                return None, min(delays, default=10), 'account' if profile_id else 'pool'
+                    return None, 60, 'manual_account', 'account_review'
+                delay, reason = min(delays, key=lambda value: value[0], default=(10, 'account_capacity'))
+                return None, delay, 'account' if profile_id else 'pool', reason
             _, _, identity, path, scope, state, cap = min(candidates, key=lambda x: x[:3])
             token, delay = router._admit(db, stamp, [(self.global_scope, capacity, 1), (scope, cap, 1)])
             if not token:
                 resource = (router.blocked_resource or '').split(':', 1)[0]
-                return None, delay, 'account' if resource == 'youtube-account' else 'pool'
+                reason = 'account_cooldown' if (router.blocked_resource or '').endswith(':cooldown') else 'account_capacity'
+                return None, delay, 'account' if resource == 'youtube-account' else 'pool', reason
             # Preserve the permit policy written by _admit.
             state = router._state(db, scope)
             if state.get('recovery_mode') and not state.get('recovery_started_at'):
@@ -333,22 +343,18 @@ class CookiePool:
                             and start_budget(self.config, s, stamp)[1] <= stamp]
                 gate['retry_next_at'] = stamp + retry_interval(self.config, eligible)
             router._save(db, self.global_scope, gate)
-            return (identity, path, scope, token, stamp), 0, 'pool'
+            return (identity, path, scope, token, stamp), 0, 'pool', None
 
-        selected, delay, wait_scope = router.transaction_call(reserve)
+        selected, delay, wait_scope, wait_code = router.transaction_call(reserve)
         if not selected:
-            messages = {
-                'pool': 'Cookie 账号池正在按账号并发及请求间隔等待。',
-                'account': '该任务对应的 Cookie 正在等待账号并发、启动间隔或冷却，其他账号继续调度。',
-                'manual_retry': '手动重试正在等待启动份额，普通任务继续调度。',
-                'manual_account': '该账号需要人工处理登录或网页验证；处理后在账号管理点击“检测登录”，其他健康账号继续。',
-            }
-            error = PipelineBusy(messages[wait_scope])
+            from webapp.wait_diagnostics import start_wait
+            error = PipelineBusy(start_wait(wait_code)['detail'])
             error.retry_after = max(2, min(60, delay))
             # Only waits affecting the whole pool may delay other task claims.
             # A pinned account/replay keeps its own available_at deadline.
             error.start_gate_delay = error.retry_after if wait_scope == 'pool' else 0
             error.wait_scope = wait_scope
+            error.wait_code = wait_code
             raise error
         identity, path, scope, token, admitted_at = selected
         error = None

@@ -194,12 +194,14 @@ class RequestScheduler:
         if state.get('halted'):
             error = PipelineBusy('该账号需要人工处理登录或验证；其他健康账号继续。')
             error.retry_after = 60
+            error.wait_code = 'account_review'
             raise error
         until = state.get('cooldown_until', 0)
         if until > stamp:
             name = self.config.get('_cookie_pool_profile_name', self.config.get('_cookie_pool_selected'))
             error = PipelineBusy(f'账号「{name}」正在冷却，已保留任务等待；其他健康账号继续。')
             error.retry_after = max(2, min(60, until - stamp))
+            error.wait_code = 'account_cooldown'
             raise error
 
 
@@ -231,8 +233,8 @@ class RequestScheduler:
             if on_wait:
                 on_wait()
             if delay > 2 or time.monotonic() >= deadline:
-                error = PipelineBusy('来源服务暂时故障，等待恢复。' if self.blocked_resource == 'source:youtube'
-                                     else '服务器资源保护正在收敛并发，稍后继续。')
+                error = PipelineBusy('YouTube 来源服务处于冷却期，到期后重新检查。')
+                error.wait_code = 'source_cooldown'
                 error.retry_after = max(2, min(60, delay)) + random.uniform(0, 2)
                 raise error
             time.sleep(.5 + random.uniform(0, .2))

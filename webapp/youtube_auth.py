@@ -286,10 +286,12 @@ class YouTubeAuth:
             if session and session['state'] == 'manual' and not allow_manual:
                 error = PipelineBusy('该账号需人工处理登录或验证，请在账号管理重新检测；其他健康账号继续。')
                 error.retry_after = 60
+                error.wait_code = 'account_review'
                 raise error
             if session and session.get('cooldown_until', 0) > time.time():
                 error = PipelineBusy(f'账号「{session["name"]}」正在冷却，暂不发送登录检测请求；到期自动低频恢复。')
                 error.retry_after = max(1, session['cooldown_until'] - time.time())
+                error.wait_code = 'account_cooldown'
                 raise error
         # Library checks must not overwrite the selected account's live status.
         generation = self._read('youtube_auth_generation', '')

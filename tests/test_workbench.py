@@ -427,9 +427,15 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertFalse(self.status('beta')['paused'])
 
     def test_stop_revokes_only_current_instance_and_resume_uses_same_selection(self):
+        from webapp.disk_budget import DiskBudget
+
         a, b = self.pair()
         first, second = self.a.claim('alpha-owner'), self.b.claim('beta-owner')
         self.control('alpha', 'stop')
+        self.assertTrue(self.status('alpha')['cleaning_temporary'])
+        self.assertIsNone(self.a.claim('alpha-next'))
+        # 下载实例确认进程退出后才解除租约，然后由维护线程清理。
+        self.assertEqual(self.a.stop_running_downloads(lambda owner: owner == 'alpha-owner'), 1)
         self.assertFalse(self.a.heartbeat(first['id'], 'alpha-owner'))
         self.assertFalse(self.a.finish(first['id'], result={}, worker_id='alpha-owner'))
         self.assertTrue(self.a.downloads_stopped())
@@ -437,6 +443,9 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertIsNotNone(self.b.claim('beta-next'))
         self.assertEqual(self.status('alpha')['selected_job_id'], a)
         with patch('webapp.fleet_routes.rpc'):
+            response = self.client.put('/api/instances/alpha', json={'action': 'resume'}, headers=self.headers)
+            self.assertEqual(response.status_code, 409)
+            self.assertTrue(DiskBudget(self.a.directory, self.a.runtime()).cleanup_stopped_downloads(self.a))
             response = self.client.put('/api/instances/alpha', json={'action': 'resume'}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.a.claim('alpha-new')['batch_id'], a)

@@ -1,4 +1,5 @@
 """Peak planning, shared inputs, handoff promises and hot-path accounting."""
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import tempfile
@@ -179,6 +180,56 @@ class SpacePlanTests(unittest.TestCase):
                 self.assertIn('waiting', budget.blocked_tasks())
                 with budget.connect() as db: budget._set(db, 'processing_scratch', 0)
                 self.assertNotIn('waiting', budget.blocked_tasks())
+
+    def test_processing_backlog_shares_space_but_concurrent_workers_can_finish(self):
+        from webapp.database import delivery_work
+        from webapp.store import TaskStore
+
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as resources:
+            store = TaskStore(tmp)
+            resources.callback(store.db.engine.dispose)
+            budget = DiskBudget(tmp, dict(disk_budget_gb=1, disk_test_budget_gb=1,
+                disk_min_free_gb=0, disk_resume_free_gb=0, postprocess_limit=2, storage_mode='test'))
+            leases = []
+            for index in range(4):
+                task = store.create('download', {'urls': [f'https://www.youtube.com/watch?v={index:011}']})
+                with budget.lease('test', task=task['id'], reserve=225 * MIB) as lease:
+                    source = lease.path / 'source.mp4'
+                    with source.open('wb') as stream:
+                        stream.truncate(100 * MIB)
+                    lease.plan(225 * MIB)
+                    lease.preserve = True
+                    plan = dict(config={'storage_mode': 'test'}, jobs=[dict(
+                        kind='video_only', inputs=[str(source)], output_estimate=105 * MIB)])
+                    with store.connect() as db:
+                        db.execute(delivery_work.insert().values(task_id=task['id'], instance_id='local',
+                            workspace=str(lease.path), disk_lease=lease.id, plan=json.dumps(plan),
+                            created_at=index, source_attempts=1))
+                leases.append(lease)
+
+            with self.assertRaises(DiskPressure):
+                with budget.lease('test', task='waiting', reserve=300 * MIB):
+                    pass
+            budget.refresh_processing(store)
+            self.assertNotIn('waiting', budget.blocked_tasks())
+            with budget.connect(write=False) as db:
+                self.assertEqual(budget._processing_scratch(db), 242 * MIB)
+                usage, committed = budget._usage(db)
+                self.assertEqual(committed['test'], usage['test'])
+            with budget.lease('test', task='waiting', reserve=300 * MIB):
+                with self.assertRaises(DiskPressure):
+                    with budget.lease('test', reserve=125 * MIB):
+                        pass
+                with budget.adopt(leases[0].id, leases[0].task, leases[0].path) as first:
+                    first.reserve_processing_space()
+                    with budget.adopt(leases[1].id, leases[1].task, leases[1].path) as second:
+                        second.reserve_processing_space()
+                        self.assertEqual(first.reserved - first.measured_bytes, 121 * MIB)
+                        self.assertEqual(second.reserved - second.measured_bytes, 121 * MIB)
+                        snapshot = budget.snapshot()
+                        unwritten = snapshot['committed_bytes'] - snapshot['used_bytes']
+                        self.assertGreater(unwritten, 541 * MIB)
+                        self.assertLessEqual(unwritten, 542 * MIB)
 
     def test_repeated_progress_checks_do_not_rescan_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -106,6 +106,31 @@ class DownloadStartGateTests(unittest.TestCase):
         _, wait = self.gate.acquire()
         self.assertEqual(wait['code'], 'account_cooldown')
 
+    def test_released_claim_preserves_redis_failure_for_other_workers(self):
+        from webapp.wait_diagnostics import start_wait
+
+        ticket, _ = self.gate.acquire()
+        ticket.finish(5, wait=start_wait('redis_unavailable'))
+        _, wait = self.gate.acquire()
+        self.assertEqual(wait['code'], 'redis_unavailable')
+        self.assertIn('Redis', wait['detail'])
+        self.assertGreater(wait['until'], time.time())
+
+    def test_account_deadline_preserves_the_restriction_in_the_snapshot(self):
+        from webapp.cookie_pool import capacity_summary, session_view
+
+        stamp = time.time()
+        config = dict(youtube_hourly_start_limit=1, youtube_daily_start_limit=0)
+        view = session_view('a', 'Account', {'starts': [stamp - 60], 'next_at': stamp + 10}, config, stamp)
+        summary = capacity_summary({'accounts': [{'next_at': view['next_start_at'],
+            'next_start_reason': view['next_start_reason'], 'limit': 1}]}, stamp)
+        data = json.loads((self.root / 'throughput.json').read_text())
+        data['cookie_pool'] = summary
+        (self.root / 'throughput.json').write_text(json.dumps(data))
+        _, wait = self.gate.acquire()
+        self.assertEqual(wait['code'], 'account_quota')
+        self.assertEqual(wait['until'], stamp + 3540)
+
     def test_empty_or_failed_claim_releases_local_ticket(self):
         store = Mock(owner='fixture')
         store.claim.side_effect = RuntimeError('database unavailable')
