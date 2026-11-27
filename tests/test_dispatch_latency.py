@@ -94,7 +94,7 @@ class DispatchLatencyTests(unittest.TestCase):
     def test_low_free_space_prevents_download_dispatch(self):
         self.download()
         self.runner.settings = lambda: {'disk_min_free_gb': 1}
-        with patch('webapp.runtime.supervisor.shutil.disk_usage', return_value=SimpleNamespace(free=0)), \
+        with patch('webapp.runtime.supervisor.shutil.disk_usage', return_value=SimpleNamespace(free=0, total=40 * 1024**3)), \
                 patch('webapp.runtime.supervisor.subprocess.Popen') as launch:
             self.tick()
         launch.assert_not_called()

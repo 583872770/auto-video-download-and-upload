@@ -4,6 +4,7 @@ import math
 import time
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from webapp.database import counters, delivery_work, notifications, notification_tasks, settings, tasks
 from webapp.diagnostics import safe_text
@@ -127,7 +128,12 @@ def publish_queue(store):
         queries = queue_queries(identity, batch, stamp)
         def count(statement):
             query = statement.with_only_columns(func.count(), maintain_column_froms=True)
-            return db.execute(query.prefix_with('/*+ MAX_EXECUTION_TIME(1500) */', dialect='mysql')).scalar_one()
+            try:
+                return db.execute(query.prefix_with('/*+ MAX_EXECUTION_TIME(1500) */', dialect='mysql')).scalar_one()
+            except OperationalError as error:
+                if error.orig.args[0] != 3024:
+                    raise
+                return None
 
         counts['processing'] = count(queries['processing'])
         if batch:
@@ -137,7 +143,8 @@ def publish_queue(store):
                 counters.c.status == 'queued')).scalar_one_or_none() or 0
             processing = count(select(delivery_work.c.task_id).select_from(delivery_work.join(tasks,
                 tasks.c.id == delivery_work.c.task_id)).where(tasks.c.batch_id == batch, tasks.c.status == 'queued'))
-            counts['ready'] = max(0, int(total) - processing - counts['disk'] - counts['retry'])
+            deductions = (processing, counts['disk'], counts['retry'])
+            counts['ready'] = (None if None in deductions else max(0, int(total) - sum(deductions)))
     cache.publish_workbench(identity, dict(queue=counts, paused=paused, updated_at=time.time()))
 
 
@@ -151,6 +158,8 @@ def queue_details(store, identity, kind, cursor):
         statement = queries[kind]
         if kind == 'ready':
             statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_batch_ready)', dialect_name='mysql')
+        elif kind == 'retry':
+            statement = statement.with_hint(tasks, 'FORCE INDEX (ix_tasks_dispatch)', dialect_name='mysql')
         rows = db.execute(statement.with_only_columns(tasks.c.id, tasks.c.video_id, tasks.c.title,
             tasks.c.error, tasks.c.available_at, tasks.c.seq).where(tasks.c.seq > cursor)
             .order_by(tasks.c.seq).limit(21)).mappings().all()

@@ -140,12 +140,13 @@ class Workbench:
             error = row['error']
             session = self.store.statistics.current_session(db, identity)
             local = json.loads(row['config'])
+            rate = telemetry.get('throughput') or local.get('throughput') or {}
             config = {**local.get('config', {}), **self.store.fleet.resource_limits(row)}
             from webapp.database import delivery_work
             accounts = None
             if not summary_only:
                 local_ids = set(db.execute(select(delivery_work.c.task_id).where(delivery_work.c.instance_id == identity)).scalars())
-                accounts = account_summary(db, config, telemetry.get('throughput') or local.get('throughput'), identity,
+                accounts = account_summary(db, config, rate, identity,
                                            [task for task in active if task['id'] not in local_ids],
                                            online=online, paused=paused)
         if not compact and not summary_only:
@@ -165,7 +166,7 @@ class Workbench:
         return dict(instance_id=identity, selected_job_id=selected, job=job, paused=paused,
                     stop_requested=bool(row['stop_requested']), online=online, running=running,
                     queued=job['queued'] if job else 0, active_tasks=active, error=error, session=session,
-                    disk=disk_summary, account_summary=accounts)
+                    disk=disk_summary, hls_buffer=rate.get('hls_buffer') if online else None, account_summary=accounts)
 
     def control(self, identity, action, job_id=None, expected=None):
         if action not in ('start', 'pause', 'stop'):
@@ -263,7 +264,7 @@ def register_workbench(app, store, configuration, preflight):
             value = dict(instance_id=None, selected_job_id=identity, job=job,
                 paused=queue['paused'] or not job or not job['released'], running=queue['running'],
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
-                disk=disk_summary, account_summary=accounts)
+                disk=disk_summary, hls_buffer=(rate or {}).get('hls_buffer'), account_summary=accounts)
             if compact:
                 value = compact_status(value)
             else:

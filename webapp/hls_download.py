@@ -1,6 +1,7 @@
 """Recover YouTube's empty, sub-frame HLS tail without accepting missing media."""
 import json
 import math
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 from threading import get_ident
@@ -8,6 +9,9 @@ from urllib.parse import urljoin
 
 from yt_dlp.downloader.hls import HlsFD
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+
+from webapp.hls_buffer import (BufferedFragmentHttpFD, FragmentBuffers,
+                               OrderedFragmentPool, buffer_slot)
 
 
 MAX_EMPTY_TAIL_SECONDS = .05
@@ -138,11 +142,59 @@ class StrictHlsFD(HlsFD):
             checkpoint.unlink(missing_ok=True)
         return super()._prepare_frag_download(ctx)
 
-    def download_and_append_fragments(self, ctx, *args, **kwargs):
+    def _read_fragment(self, ctx):
+        buffers = ctx.get('fragment_buffers')
+        if buffers is None:
+            return super()._read_fragment(ctx)
+        return buffers.files.get(ctx.get('fragment_filename_sanitized'))
+
+    def _append_fragment(self, ctx, frag_content):
+        buffers = ctx.get('fragment_buffers')
+        if buffers is None:
+            return super()._append_fragment(ctx, frag_content)
+        filename = ctx.pop('fragment_filename_sanitized')
+        try:
+            stream = ctx['dest_stream']
+            frag_content.append_to(stream)
+            stream.flush()
+            if frag_content.disk:
+                buffers.disk_fragments += 1
+            else:
+                buffers.memory_fragments += 1
+        finally:
+            buffers.files.pop(filename).discard()
+            if frag_content.disk:
+                self.try_remove(filename)
+
+    def download_and_append_fragments(self, ctx, fragments, info_dict, **kwargs):
         stream = ctx['dest_stream']
         ctx['dest_stream'] = _AssemblyStream(stream)
         try:
-            return super().download_and_append_fragments(ctx, *args, **kwargs)
+            directory = self.params.get('_hls_buffer_directory')
+            if (not directory or ctx.get('live') or info_dict.get('ext') == 'vtt'
+                    or self.params.get('keep_fragments') or kwargs
+                    or any(f['decrypt_info']['METHOD'] != 'NONE' for f in fragments)):
+                return super().download_and_append_fragments(ctx, fragments, info_dict, **kwargs)
+            workers = math.ceil(self.params.get('concurrent_fragment_downloads', 1) / ctx.get('max_progress', 1))
+            with buffer_slot(directory) as reserved:
+                buffers = ctx['fragment_buffers'] = FragmentBuffers(reserved)
+                ctx['dl'] = BufferedFragmentHttpFD(ctx['dl'], buffers)
+                pool = OrderedFragmentPool(workers) if workers > 1 else nullcontext()
+                # Strict HLS restarts any partial assembly. The startup marker
+                # stays available for cleanup, with no checkpoint per fragment.
+                params = self.params
+                self.params = {**params, '_no_ytdl_file': True}
+                try:
+                    with pool as executor:
+                        success = super().download_and_append_fragments(ctx, fragments, info_dict, tpe=executor)
+                    if success:
+                        self.try_remove(self.ytdl_filename(ctx['filename']))
+                    return success
+                finally:
+                    self.params = params
+                    buffers.clear()
+                    self.to_screen(f'[hlsnative] 分片缓冲峰值 {buffers.peak / 1024**2:.2f} MiB，'
+                                   f'内存 {buffers.memory_fragments} 片，磁盘 {buffers.disk_fragments} 片。')
         finally:
             ctx['dest_stream'] = stream
             if not stream.closed:

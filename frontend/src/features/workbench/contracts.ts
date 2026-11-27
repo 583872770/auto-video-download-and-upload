@@ -20,6 +20,7 @@ export interface WorkbenchStatus {
     speed: number;
   };
   disk?: import('../disk/model').DiskDiagnostic | null;
+  hls_buffer?: HlsBufferSample | null;
   selected_job_id: string | null;
   job: (Job & { importing?: number }) | null;
   online: boolean;
@@ -49,6 +50,15 @@ export interface WorkbenchStatus {
       }>;
     };
   };
+}
+
+export interface HlsBufferSample {
+  sample_time: number;
+  used_bytes: number;
+  limit_bytes: number;
+  per_file_bytes: number;
+  occupied_slots: number;
+  total_slots: number;
 }
 export interface AccountTask {
   task_id: string;

@@ -13,7 +13,7 @@ import { useResource } from '../composables/resource';
 import { speedNumber } from '../features/workbench/speeds';
 import type { Job, Page } from '../features/jobs/contracts';
 import AppIcon from './AppIcon.vue';
-import { diskLabel } from '../features/disk/model';
+import { diskBytes, diskLabel } from '../features/disk/model';
 
 defineProps<{ menuOpen: boolean }>();
 const emit = defineEmits<{ menu: []; logout: []; refreshPage: [] }>();
@@ -24,8 +24,10 @@ const instances = useInstances(),
   route = useRoute();
 const pickerRoot = ref<HTMLElement>(),
   moreRoot = ref<HTMLElement>(),
+  resourceRoot = ref<HTMLElement>(),
   picker = ref(false),
-  more = ref(false);
+  more = ref(false),
+  resourceOpen = ref<'buffer' | 'disk'>();
 const search = ref(''),
   jobs = useResource<Page<Job>>();
 const ready = computed(() => !bootstrap().fleetEnabled || !!instances.selectedId);
@@ -124,9 +126,13 @@ async function stop() {
 function outside(event: PointerEvent) {
   if (!pickerRoot.value?.contains(event.target as Node)) picker.value = false;
   if (!moreRoot.value?.contains(event.target as Node)) more.value = false;
+  if (!resourceRoot.value?.contains(event.target as Node)) resourceOpen.value = undefined;
 }
 function escape(event: KeyboardEvent) {
-  if (event.key === 'Escape') picker.value = more.value = false;
+  if (event.key === 'Escape') {
+    picker.value = more.value = false;
+    resourceOpen.value = undefined;
+  }
 }
 let timer: ReturnType<typeof setInterval>;
 let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
@@ -169,8 +175,36 @@ watch(
   () => instances.selectedId,
   () => {
     picker.value = more.value = false;
+    resourceOpen.value = undefined;
   },
 );
+const disk = computed(() => (status.displayFresh ? status.data?.disk : null));
+const diskQuota = computed(() => {
+  const total = disk.value?.download?.constraints?.find((row) => row.key === 'total');
+  if (!total || total.limit_bytes <= 0) return null;
+  const percent = (bytes: number) => Math.min(100, (100 * bytes) / total.limit_bytes);
+  return {
+    ...total,
+    writtenPercent: percent(total.used_bytes),
+    committedPercent: percent(total.committed_bytes),
+  };
+});
+const diskCategories = computed(() =>
+  (disk.value?.download?.constraints || []).filter(
+    (row) => row.key === 'test' || row.key === 'downloads' || (row.key !== 'total' && row.limiting),
+  ),
+);
+const bufferFullyAllocated = computed(
+  () => !!status.hlsBuffer && status.hlsBuffer.occupied_slots === status.hlsBuffer.total_slots,
+);
+function quantityPair(used: number, limit: number, power: number) {
+  const scale = 1024 ** power;
+  const maximum = limit / scale;
+  return `${(used / scale).toFixed(1)} / ${maximum.toFixed(Number.isInteger(maximum) ? 0 : 1)} ${power === 2 ? 'MiB' : 'GiB'}`;
+}
+function toggleResource(resource: 'buffer' | 'disk') {
+  resourceOpen.value = resourceOpen.value === resource ? undefined : resource;
+}
 const powerTitle = computed(
   () =>
     status.error ||
@@ -357,24 +391,155 @@ const powerTitle = computed(
         <strong id="header-cooling">{{ status.cooling ?? '—' }}</strong></span
       >
     </div>
-    <button
-      class="header-disk"
-      :class="status.displayFresh && status.data?.disk?.severity"
-      :title="
-        status.displayFresh && status.data?.disk
-          ? status.data.disk.headline + ' · 点击查看空间诊断'
-          : '等待当前实例的空间采样'
-      "
-      @click="
-        router.push({
-          path: '/settings',
-          query: bootstrap().fleetEnabled ? { instance_id: instances.selectedId } : {},
-          hash: '#maintenance',
-        })
-      "
-    >
-      {{ diskLabel(status.displayFresh ? status.data?.disk : null) }}
-    </button>
+    <div ref="resourceRoot" class="header-resources">
+      <div class="header-resource-wrap">
+        <button
+          class="header-resource buffer-meter"
+          :class="{ warning: bufferFullyAllocated }"
+          type="button"
+          aria-controls="header-buffer-details"
+          :aria-expanded="resourceOpen === 'buffer'"
+          @click="toggleResource('buffer')"
+        >
+          <span class="resource-heading">
+            <span>分片缓冲</span>
+            <strong>{{
+              bufferFullyAllocated
+                ? '额度满'
+                : status.hlsBuffer
+                  ? status.hlsBuffer.percent + '%'
+                  : '—'
+            }}</strong>
+          </span>
+          <span class="resource-track" aria-hidden="true">
+            <span :style="{ width: (status.hlsBuffer?.percent ?? 0) + '%' }"></span>
+          </span>
+          <span class="resource-caption">
+            {{
+              status.hlsBuffer
+                ? quantityPair(status.hlsBuffer.used_bytes, status.hlsBuffer.limit_bytes, 2)
+                : '等待采样'
+            }}
+          </span>
+        </button>
+        <div
+          v-if="resourceOpen === 'buffer'"
+          id="header-buffer-details"
+          class="header-popover header-resource-details"
+          role="region"
+          aria-label="分片缓冲详情"
+        >
+          <strong>{{ instances.name }} · HLS 分片缓冲</strong>
+          <dl v-if="status.hlsBuffer">
+            <div>
+              <dt>已用 / 实例上限</dt>
+              <dd>
+                {{ quantityPair(status.hlsBuffer.used_bytes, status.hlsBuffer.limit_bytes, 2) }}
+              </dd>
+            </div>
+            <div>
+              <dt>单视频额度</dt>
+              <dd>{{ diskBytes(status.hlsBuffer.per_file_bytes) }}</dd>
+            </div>
+            <div>
+              <dt>已领额度</dt>
+              <dd>{{ status.hlsBuffer.occupied_slots }} / {{ status.hlsBuffer.total_slots }} 个</dd>
+            </div>
+          </dl>
+          <p v-if="status.hlsBuffer">额度按需领取。额度不足或系统内存偏低时，分片自动写入磁盘。</p>
+          <p v-else>当前暂无有效的分片缓冲采样。</p>
+        </div>
+      </div>
+      <div class="header-resource-wrap">
+        <button
+          class="header-resource disk-meter"
+          :class="disk?.severity"
+          type="button"
+          aria-controls="header-disk-quota-details"
+          :aria-expanded="resourceOpen === 'disk'"
+          :title="diskLabel(disk)"
+          @click="toggleResource('disk')"
+        >
+          <span class="resource-heading">
+            <span>临时磁盘</span>
+            <strong>{{
+              disk?.waiting_tasks
+                ? disk.waiting_tasks + ' 等待'
+                : diskQuota
+                  ? Math.round(diskQuota.committedPercent) + '%'
+                  : '—'
+            }}</strong>
+          </span>
+          <span class="resource-track" aria-hidden="true">
+            <span
+              class="quota-reserved"
+              :style="{ width: (diskQuota?.committedPercent ?? 0) + '%' }"
+            ></span>
+            <span :style="{ width: (diskQuota?.writtenPercent ?? 0) + '%' }"></span>
+          </span>
+          <span class="resource-caption">
+            {{
+              diskQuota
+                ? quantityPair(diskQuota.committed_bytes, diskQuota.limit_bytes, 3)
+                : '等待采样'
+            }}
+          </span>
+        </button>
+        <div
+          v-if="resourceOpen === 'disk'"
+          id="header-disk-quota-details"
+          class="header-popover header-resource-details disk-quota-details"
+          role="region"
+          aria-label="临时磁盘额度详情"
+        >
+          <strong>{{ instances.name }} · 临时磁盘额度</strong>
+          <dl v-if="disk && diskQuota">
+            <div>
+              <dt>已写入（深色）</dt>
+              <dd>{{ diskBytes(diskQuota.used_bytes) }}</dd>
+            </div>
+            <div>
+              <dt>已预留待写入（浅色）</dt>
+              <dd>{{ diskBytes(diskQuota.reserved_bytes) }}</dd>
+            </div>
+            <div>
+              <dt>额度剩余</dt>
+              <dd>{{ diskBytes(diskQuota.remaining_bytes) }}</dd>
+            </div>
+            <div>
+              <dt>磁盘实际可用</dt>
+              <dd>{{ diskBytes(disk.free_bytes) }}</dd>
+            </div>
+            <div v-for="item in diskCategories" :key="item.key">
+              <dt>{{ item.label }}额度</dt>
+              <dd>{{ quantityPair(item.committed_bytes, item.limit_bytes, 3) }}</dd>
+            </div>
+          </dl>
+          <p v-if="disk?.download">{{ disk.download.impact_text }}</p>
+          <p v-else>当前暂无有效的磁盘额度采样。</p>
+          <p v-if="disk?.download && disk.download.impact !== 'unaffected'">
+            {{ disk.download.reason }}
+            <template v-if="disk.download.shortfall_bytes"
+              >{{ disk.download.shortfall_text }}。</template
+            >
+          </p>
+          <button
+            class="disk-quota-link"
+            type="button"
+            @click="
+              resourceOpen = undefined;
+              router.push({
+                path: '/settings',
+                query: bootstrap().fleetEnabled ? { instance_id: instances.selectedId } : {},
+                hash: '#maintenance',
+              });
+            "
+          >
+            查看空间与日志
+          </button>
+        </div>
+      </div>
+    </div>
     <button
       class="header-notifications"
       type="button"
@@ -407,35 +572,112 @@ const powerTitle = computed(
 </template>
 
 <style scoped>
-.workspace-statusbar .header-disk {
-  font-size: 10px;
-  white-space: nowrap;
-  border: 1px solid #dcebe6;
-  background: #f1faf6;
-  color: #328371;
-  min-height: 28px;
+.header-resources {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.header-resource-wrap {
+  position: relative;
+  flex: 0 0 111px;
+}
+.workspace-statusbar .header-resource {
+  --meter-color: #177562;
+  display: grid;
+  width: 100%;
+  gap: 3px;
   padding: 4px 7px;
+  border: 1px solid #e5eaf1;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #475569;
+  text-align: left;
+  line-height: 1.15;
 }
-.workspace-statusbar .header-disk.warning {
-  background: #fff8e9;
-  color: #a17323;
-  border-color: #f4e4bc;
+.workspace-statusbar .disk-meter {
+  --meter-color: #2463b2;
+  --reserve-color: #a5c6ef;
 }
-.workspace-statusbar .header-disk.critical,
-.workspace-statusbar .header-disk.blocked {
-  background: #fff0ef;
-  color: #c8504a;
-  border-color: #f5dcd8;
+.workspace-statusbar .header-resource.warning {
+  --meter-color: #946200;
+  --reserve-color: #edd091;
+  background: #fff8eb;
 }
-@media (max-width: 1250px) {
+.workspace-statusbar .header-resource.critical,
+.workspace-statusbar .header-resource.blocked {
+  --meter-color: #b83b36;
+  --reserve-color: #efb1ac;
+  background: #fff1f0;
+}
+.resource-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 3px;
+  font-size: 10px;
+}
+.resource-heading strong {
+  color: var(--meter-color);
+}
+.resource-caption {
+  font-size: 10px;
+}
+.resource-heading,
+.resource-caption {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.resource-track {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  height: 4px;
+  border-radius: 2px;
+  background: #e2e8f0;
+}
+.resource-track > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--meter-color);
+}
+.resource-track > .quota-reserved {
+  background: var(--reserve-color);
+}
+.header-resource-details {
+  left: auto;
+  right: 0;
+  width: 270px;
+  max-width: calc(100vw - 32px);
+  line-height: 1.5;
+  font-size: 12px;
+}
+.header-resource-details dl {
+  margin: 8px 0;
+}
+.header-resource-details dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+.header-resource-details dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.header-resource-details p {
+  margin: 5px 0 0;
+  color: #64748b;
+}
+.workspace-statusbar .disk-quota-link {
+  margin-top: 8px;
+  padding: 4px 8px;
+  min-height: 26px;
+  font-size: 11px;
+}
+@media (max-width: 1330px) {
   .header-metric:nth-child(2) {
     display: none;
-  }
-}
-@media (max-width: 700px) {
-  .workspace-statusbar .header-disk {
-    font-size: 9px;
-    padding: 3px 4px;
   }
 }
 .header-notifications {
@@ -826,6 +1068,14 @@ const powerTitle = computed(
     max-width: 150px;
   }
 }
+@media (max-width: 1140px) {
+  .header-resource-wrap {
+    flex-basis: 102px;
+  }
+  .resource-caption {
+    font-size: 9px;
+  }
+}
 @media (max-width: 1000px) and (min-width: 761px) {
   .header-user a {
     display: none;
@@ -841,6 +1091,31 @@ const powerTitle = computed(
   }
   .header-instance select {
     max-width: 90px;
+  }
+}
+@media (max-width: 930px) {
+  .workspace-statusbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 7px;
+    padding-block: 7px;
+  }
+  .header-resources {
+    position: relative;
+    flex: 1 0 100%;
+    order: 1;
+  }
+  .header-resource-wrap {
+    position: static;
+    flex: 1 1 0;
+  }
+  .header-resource-details {
+    left: 0;
+    right: auto;
+  }
+  .disk-quota-details {
+    right: 0;
+    left: auto;
   }
 }
 @media (max-width: 760px) {
@@ -872,7 +1147,7 @@ const powerTitle = computed(
   }
   .header-readings {
     margin: 0;
-    gap: 15px;
+    gap: 8px;
   }
   .header-user {
     margin-left: auto;
@@ -902,6 +1177,14 @@ const powerTitle = computed(
   .header-state {
     max-width: 40px;
     overflow: hidden;
+  }
+}
+@media (max-width: 460px) {
+  .workspace-statusbar {
+    column-gap: 7px;
+  }
+  .workspace-statusbar .header-user button > span {
+    display: none;
   }
 }
 </style>

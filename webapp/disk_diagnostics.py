@@ -65,7 +65,7 @@ def explain(budget, snapshot):
             (pressure.get('task_id') or '',)).fetchone()[0]
     total, free = snapshot['total_bytes'], snapshot['free_bytes']
     unused = max(0, snapshot['committed_bytes'] - snapshot['used_bytes'])
-    minimum = int(budget.config['disk_min_free_gb']) * 1024 ** 3
+    minimum, resume = budget.watermarks
     sources = [dict(key=key, label=LABELS[key], used_bytes=value['used_bytes'], status='ok',
                     same_filesystem=True, note='本实例受管文件；预留空间单独计算，不计入实际磁盘用量。')
                for key, value in snapshot['categories'].items()]
@@ -117,7 +117,7 @@ def explain(budget, snapshot):
             category_committed_bytes=category.get('committed_bytes') if pressure else None),
         used_percent=round(100*(total-free)/total, 1) if total else 0,
         total_bytes=total, free_bytes=free, minimum_free_bytes=minimum,
-        resume_free_bytes=int(budget.config['disk_resume_free_gb'])*1024**3,
+        resume_free_bytes=resume,
         unwritten_reserved_bytes=unused, allocatable_bytes=max(0, free-unused-minimum-protected),
         processing_scratch_bytes=protected,
         waiting_tasks=snapshot['waiting_tasks'], pressure=pressure, retention=retention,

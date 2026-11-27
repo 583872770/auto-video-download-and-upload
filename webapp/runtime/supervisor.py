@@ -26,6 +26,13 @@ def now():
 from webapp.store import TaskStore
 
 
+def disk_low(directory, config):
+    from webapp.disk_budget import disk_watermarks
+    usage = shutil.disk_usage(directory)
+    minimum = disk_watermarks(config, usage.total)[0]
+    return usage.free < minimum
+
+
 class TaskRunner:
     """Supervise download slots and auxiliary import/index work."""
     def __init__(self, store, settings=None, *, base=None):
@@ -64,29 +71,44 @@ class TaskRunner:
         self._maintenance_config = config
         maintenance = threading.Thread(target=self._maintain, args=(diagnostic_log,),
                                        name='video-task-maintenance', daemon=True)
+        workbench = threading.Thread(target=self._report_workbench, args=(diagnostic_log,),
+                                     name='video-workbench', daemon=True)
         maintenance.start()
+        workbench.start()
         try:
             self._dispatch(diagnostic_log)
         finally:
             self.stop.set()
             maintenance.join(timeout=2)
+            workbench.join(timeout=2)
+
+    def _report_workbench(self, diagnostic_log):
+        from webapp.diagnostics import safe_text
+        from webapp.workbench_live import publish_queue
+        while not self.stop.is_set():
+            if not self._settings_ready.wait(1):
+                continue
+            try:
+                publish_queue(self.store)
+            except Exception as error:
+                message = safe_text('工作台队列上报失败：' + str(error))[:2000]
+                diagnostic_log.write((message + '\n').encode('utf-8'))
+            self.stop.wait(15)
 
     def _maintain(self, diagnostic_log):
         """Directory scans and retention must never hold up queue dispatch."""
         from webapp.diagnostics import safe_text
-        from webapp.disk_budget import DiskBudget, GIB
+        from webapp.disk_budget import DiskBudget
         from webapp.maintenance import prune_disk_logs, cleanup_logs
         from webapp.worker.locks import worker_lock
         last_disk = last_cleanup = last_log_cleanup = last_snapshot = last_error = last_summary_cleanup = 0
-        last_workbench = float('-inf')
         while not self.stop.is_set():
             config = self._maintenance_config
             # Local log retention also works during a database outage.
             if time.monotonic() - last_log_cleanup >= 30:
                 last_log_cleanup = time.monotonic()
                 try:
-                    prune_disk_logs(self.store, config, low_space=shutil.disk_usage(self.store.directory).free <
-                                    int(config.get('disk_min_free_gb', 10)) * GIB)
+                    prune_disk_logs(self.store, config, low_space=disk_low(self.store.directory, config))
                 except Exception as error:
                     diagnostic_log.write((safe_text('日志清理检查失败：' + str(error))[:2000] + '\n').encode('utf-8'))
             if not self._settings_ready.is_set():
@@ -94,10 +116,6 @@ class TaskRunner:
                 continue
             config = self._maintenance_config
             try:
-                if time.monotonic() - last_workbench >= 15:
-                    last_workbench = time.monotonic()
-                    from webapp.workbench_live import publish_queue
-                    publish_queue(self.store)
                 disk = DiskBudget(self.store.directory, config)
                 if time.monotonic() - last_disk >= 30:
                     last_disk = time.monotonic()
@@ -125,7 +143,7 @@ class TaskRunner:
 
     def _dispatch(self, diagnostic_log):
         from webapp.diagnostics import capture_output, error_details
-        from webapp.disk_budget import GIB, resource_blocked
+        from webapp.disk_budget import resource_blocked
         last_recovery = last_error = last_beat = 0
         while not self.stop.is_set():
             # Clear before reading the queue so changes made during this tick
@@ -188,7 +206,7 @@ class TaskRunner:
                 # Workers still reserve/check the actual budget before use.
                 with self.store.connect() as db:
                     blocked = resource_blocked(self.store, db)
-                if blocked or shutil.disk_usage(self.store.directory).free < int(config.get('disk_min_free_gb', 10)) * GIB:
+                if blocked or disk_low(self.store.directory, config):
                     roles.discard('download')
                     roles.discard('regular')
                 if roles:

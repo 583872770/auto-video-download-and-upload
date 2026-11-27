@@ -276,6 +276,8 @@ class ThroughputController:
                       'cookie_pool': cookie_capacity,
                       'database_budget': db_budget}
         self.state.update(pool_limits, workers=workers, worker_pressure_limited=workers < pool_limits['workers'])
+        from webapp.hls_buffer import buffer_usage
+        self.state['hls_buffer'] = buffer_usage(self.directory)
         self.state['worker_control'] = worker_control(workers, pool_limits, resources, cpu, protection,
             self.pool_last_reduction,
             self.state['time'] + max(0, WORKER_ADJUST_SECONDS - (tick - self.pool_adjusted)),

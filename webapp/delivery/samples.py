@@ -10,7 +10,7 @@ from werkzeug.exceptions import Conflict, NotFound
 
 from webapp.database import (test_sample_policies as policies, test_samples as samples,
     delivery_artifacts as artifacts, delivery_work, tasks)
-from webapp.disk_budget import MIB, GIB, file_lock, safe_path
+from webapp.disk_budget import MIB, file_lock, safe_path
 
 DEFAULT_POLICY = dict(enabled=True, maximum=3, budget_mb=3072, hours=24, failure_hours=24, revision=0)
 
@@ -83,7 +83,7 @@ def _sweep(store, budget, *, incoming=None):
         rows = [dict(r) for r in db.execute(select(samples).where(samples.c.instance_id == local_id(store))
             .order_by(samples.c.created)).mappings()]
         policies_by_job = {r['job_id']: policy(db, r['job_id']) for r in rows}
-    pressure = budget._free() < int(budget.config['disk_resume_free_gb']) * GIB
+    pressure = budget._free() < budget.watermarks[1]
     snapshot = budget.snapshot()
     pressure |= (snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
         snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'])
@@ -126,7 +126,7 @@ def _sweep(store, budget, *, incoming=None):
         retained -= 1
         removed += 1
         snapshot = budget.snapshot(force=True)
-        pressure = (budget._free() < int(budget.config['disk_resume_free_gb']) * GIB or
+        pressure = (budget._free() < budget.watermarks[1] or
             snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
             snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'])
     return total, per_job, pressure, removed
@@ -149,7 +149,7 @@ def status(store, budget):
         budget._set(db, 'sample_status', dict(count=int(count), used_bytes=int(amount), time=time.time()))
 
 
-def capture(store, budget, lease, task):
+def capture(store, budget, lease, task, *, under_pressure=False):
     """Move completed files on the same disk; no re-encoding or duplicate traffic.
 
     Caller owns the stopped workspace lease lock. A durable building row makes
@@ -170,6 +170,8 @@ def capture(store, budget, lease, task):
                 p['enabled'] = True
             previous = db.execute(select(samples).where(samples.c.id == lease['id'])).mappings().first()
             if previous and previous['state'] == 'ready':
+                return
+            if under_pressure and not previous:
                 return
             # A building sample already has its manifest. A fast test does not
             # need file discovery at all; neither path should scan receipts.
@@ -245,7 +247,7 @@ def expire_failed(store, budget, lease, task):
         if not work:
             return
         finished = datetime.fromisoformat(task['finished_at']).timestamp() if task['finished_at'] else time.time()
-        pressure = budget._free() < int(budget.config['disk_resume_free_gb']) * GIB
+        pressure = budget._free() < budget.watermarks[1]
         snapshot = budget.snapshot()
         pressure |= (snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
             snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'] or

@@ -88,6 +88,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   const output = computed(() =>
     displayFresh.value && data.value?.session ? (data.value.session.output_mbps ?? 0) / 8 : null,
   );
+  const hlsBuffer = computed(() => {
+    const sample = data.value?.hls_buffer;
+    if (!displayFresh.value || !sample || sample.limit_bytes <= 0) return null;
+    const age = now.value - sample.sample_time;
+    if (!Number.isFinite(age) || age < -5 || age >= 60) return null;
+    return { ...sample, percent: Math.round((100 * sample.used_bytes) / sample.limit_bytes) };
+  });
   const cooling = computed(() => {
     const sample = data.value?.account_summary;
     if (
@@ -263,6 +270,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     canStop,
     download,
     output,
+    hlsBuffer,
     cooling,
     label,
     controlVersion,

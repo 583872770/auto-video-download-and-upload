@@ -15,6 +15,7 @@ from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.utils import DownloadError
 
 from webapp.hls_download import empty_tail_candidate
+from webapp.hls_buffer import buffer_slot, HLS_INSTANCE_BUFFER, HLS_FILE_BUFFER
 from webapp.downloader import build_ydl_options
 from webapp.parallel_http import ParallelYoutubeDL
 
@@ -96,6 +97,36 @@ class Logger:
         self.errors.append(message)
 
 
+class BufferedHlsTests(unittest.TestCase):
+    def test_spill_keeps_bytes_in_order_and_releases_slot(self):
+        segments = {f'segment{i}.ts': bytes([i + 1]) * (3 * 1024**2) for i in range(5)}
+        playlist = '#EXTM3U\n#EXT-X-TARGETDURATION:1\n' + ''.join(
+            f'#EXTINF:1,\n{name}\n' for name in segments) + '#EXT-X-ENDLIST\n'
+        ample = {'memory_total': 8 * 1024**3, 'memory_available': 4 * 1024**3}
+        with tempfile.TemporaryDirectory() as directory, source(playlist, segments) as (url, calls, _):
+            target = Path(directory) / 'video.ts'
+            options = dict(quiet=True, noprogress=True, proxy='', cachedir=False, ignoreerrors=False,
+                           concurrent_fragment_downloads=4, _hls_buffer_directory=directory)
+            info = dict(url=url, id='buffer', title='Fixture', protocol='m3u8_native', ext='ts')
+            with patch('webapp.hls_buffer.resource_limits', return_value=ample), \
+                    patch('webapp.hls_buffer.HLS_FILE_BUFFER', 2 * 1024**2), \
+                    ParallelYoutubeDL(options) as ydl:
+                self.assertTrue(ydl.dl(str(target), info)[0])
+            self.assertEqual(target.read_bytes(), b''.join(segments.values()))
+            self.assertTrue(all(calls['/' + name] == 1 for name in segments))
+            self.assertEqual(list(Path(directory).glob('video.ts*')), [target])
+            with buffer_slot(directory) as acquired:
+                self.assertTrue(acquired)
+
+    def test_instance_concurrency_budget_is_shared(self):
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            for _ in range(HLS_INSTANCE_BUFFER // HLS_FILE_BUFFER):
+                self.assertTrue(stack.enter_context(buffer_slot(directory)))
+            with buffer_slot(directory) as acquired:
+                self.assertFalse(acquired)
+
+
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires FFmpeg')
 class HlsDownloadTests(unittest.TestCase):
     @classmethod
@@ -121,6 +152,7 @@ class HlsDownloadTests(unittest.TestCase):
         self.options = dict(quiet=True, noprogress=True, logger=self.logger, ignoreerrors='only_download',
             retries=0, fragment_retries=0, concurrent_fragment_downloads=4,
             cachedir=False, proxy='', socket_timeout=2, hls_prefer_native=True,
+            _hls_buffer_directory=self.temp.name,
             outtmpl=str(self.path), download_archive=str(Path(self.temp.name)/'archive.txt'))
 
     def info(self, url):
