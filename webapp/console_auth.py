@@ -165,7 +165,7 @@ class ConsoleAuth:
             if user['role'] == 'viewer':
                 raise Forbidden('当前账户为只读，不能执行修改或下载操作。')
             if user['role'] == 'operator' and not (
-                    request.path.startswith('/api/jobs') or request.path in ('/api/downloads/stop', '/api/downloads/resume')
+                    request.path.startswith('/api/jobs') or request.path == '/api/downloads/stop'
                     or request.path.startswith('/api/statistics/sessions/')):
                 raise Forbidden('此设置需要管理员权限。')
         return None

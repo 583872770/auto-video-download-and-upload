@@ -112,7 +112,7 @@ class Jobs:
         # Use the creation UUID as the job identity. Retrying a lost HTTP
         # response cannot create a second customer's bill.
         identity = request_id
-        validate_settings(config, download_only=True)
+        validate_settings(config)
         urls = video_urls(data['urls']) if data.get('urls') else []
         with self.store.connect() as db:
             if self.store.db.sqlite:
@@ -589,7 +589,7 @@ def register_jobs(app, store, settings, preflight):
 
     @app.post('/api/jobs/system/resume')
     def job_system_resume():
-        # Restore only jobs already released; never release freshly imported lists.
+        # 恢复已经开始的任务，刚导入的任务需要手动开始。
         return jsonify(app.extensions['execution_control'].resume_system())
 
     @app.get('/api/jobs/system/status')

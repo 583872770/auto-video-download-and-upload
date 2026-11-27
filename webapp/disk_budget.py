@@ -409,13 +409,12 @@ class DiskBudget:
 
     def _processing_scratch(self, db):
         slots = max(1, min(8, int(self.config.get('postprocess_limit', 2))))
-        shared = db.execute("""
+        return db.execute("""
             SELECT COALESCE(SUM(needed), 0) FROM (
                 SELECT MAX(0, CAST(s.value AS INTEGER) - MAX(l.reserved, l.measured)) AS needed
                 FROM leases l JOIN state s ON s.key='scratch:' || l.id
                 ORDER BY needed DESC LIMIT ?
             )""", (slots,)).fetchone()[0]
-        return shared + self._get(db, 'processing_scratch', 0)
 
     def refresh_processing(self, store):
         """把排队任务各自占用的输出预留换成共享周转额度。"""
@@ -439,8 +438,7 @@ class DiskBudget:
             if refined.get('refinement:' + row['id']) != [fingerprint, row['reserved']]:
                 self._refine_queued_plan(store, item, row)
         with self.connect() as db:
-            db.execute("DELETE FROM state WHERE key='processing_scratch' "
-                       "OR (key LIKE 'refinement:%' AND substr(key,12) NOT IN (SELECT id FROM leases)) "
+            db.execute("DELETE FROM state WHERE (key LIKE 'refinement:%' AND substr(key,12) NOT IN (SELECT id FROM leases)) "
                        "OR (key LIKE 'scratch:%' AND substr(key,9) NOT IN (SELECT id FROM leases))")
 
     def _refine_queued_plan(self, store, item, lease):

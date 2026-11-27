@@ -142,7 +142,10 @@ class ControlContract:
         self.assertEqual(self.store.claim('worker')['id'], check['id'])
         self.store.finish(check['id'], result={'message': 'done'}, worker_id='worker')
         self.assertEqual(self.client.post('/api/downloads/stop', headers=self.headers).status_code, 200)
-        self.assertEqual(self.client.post('/api/downloads/resume', headers=self.headers).status_code, 200)
+        # 恢复前的账号检查由专门用例覆盖。这里验证队列恢复后可重新领取。
+        with patch('webapp.services.preflight.DownloadPreflight.verify_youtube'):
+            response = self.client.post('/api/jobs/system/resume', headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
         self.assertEqual(self.store.claim('worker')['id'], download['id'])
 
     def test_running_owners_are_fenced_and_manual_stop_does_not_consume_attempts_or_rotation(self):
@@ -150,7 +153,7 @@ class ControlContract:
         self.store.claim('simulated-owner')
         self.store.update_progress(task['id'], {'rotation_id': 'generation', 'percent': 42, 'speed': 100}, 'simulated-owner')
         self.assertEqual(self.client.post('/api/downloads/stop', headers=self.headers).status_code, 202)
-        self.assertEqual(self.client.post('/api/downloads/resume', headers=self.headers).status_code, 409)
+        self.assertEqual(self.client.post('/api/jobs/system/resume', headers=self.headers).status_code, 409)
         self.assertEqual(self.store.stop_running_downloads(lambda owner: True), 1)
         current = self.store.get(task['id'])
         self.assertEqual((current['status'], current['attempts'], current['progress']['percent']), ('queued', 0, 42))
@@ -159,7 +162,9 @@ class ControlContract:
         self.assertFalse(self.store.update_progress(task['id'], {}, 'simulated-owner'))
         self.assertEqual(self.store.rotation_completed('generation'), 0)
         self.assertEqual(self.store.counts(), {'queued': 1, 'running': 0, 'total': 1})
-        self.client.post('/api/downloads/resume', headers=self.headers)
+        with patch('webapp.services.preflight.DownloadPreflight.verify_youtube'):
+            response = self.client.post('/api/jobs/system/resume', headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
         claimed = self.store.claim('new-owner')
         self.assertIsNone(claimed['progress'].get('rotation_id'))
         # The resumed attempt reports its own node generation; a stopped

@@ -72,7 +72,6 @@ class MediaCleanupTests(unittest.TestCase):
         local = self.artifact(video)
         cloud = self.artifact(video, storage='oss')
         task = self.store.create('download', {'urls': ['https://example.test/queued.mp4']})
-        self.store.archive_add('youtube fixture', str(video))
         source = self.store.directory / 'imports' / 'pending.csv'
         source.parent.mkdir(exist_ok=True)
         source.write_text('not yet imported')
@@ -94,7 +93,6 @@ class MediaCleanupTests(unittest.TestCase):
         self.assertFalse(partial.exists())
         self.assertTrue(source.is_file())
         self.assertTrue(credential.is_file())
-        self.assertTrue(self.store.archive_has('youtube fixture'))
         self.assertEqual(self.store.get(task['id'])['status'], 'queued')
         with self.store.connect() as db:
             available = dict(db.execute(select(delivery_artifacts.c.id, delivery_artifacts.c.available)).all())
@@ -216,14 +214,12 @@ class MediaCleanupTests(unittest.TestCase):
         standalone_subtitle = self.write('delivery-output.srt')
         outside = self.base / 'outside.mp4'
         outside.write_bytes(b'outside')
-        (self.base / 'videos.txt').write_text('youtube npNnbj46_ik\n', encoding='utf-8')
         self.catalog.reindex(self.root)
         self.store.set_downloads_paused(False)
         task = self.store.create('download', {'base': str(self.base), 'urls': ['https://youtu.be/npNnbj46_ik']})
         self.store.claim(self.store.owner)
         self.store.statistics.record_file(task['id'], video)
         self.store.finish(task['id'], result={}, worker_id=self.store.owner)
-        self.store.archive_add('youtube npNnbj46_ik', str(video))
         with self.store.connect() as db:
             db.execute(delivery_artifacts.insert().values(
                 id='d' * 64, seq=self.store.db.sequence(db, 'delivery_artifact'), contract_version=1, job_id=task['id'],
@@ -248,11 +244,8 @@ class MediaCleanupTests(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b'outside')
         self.assertTrue(self.root.is_dir())
         self.assertEqual(self.client.get('/api/media').json['total'], 0)
-        self.assertEqual(self.client.get('/api/overview').json['recent_media'], [])
         self.assertIsNone(self.store.get(task['id']))
         self.assertEqual(self.store.statistics.overview()['summary']['file_count'], 0)
-        self.assertTrue(self.store.archive_has('youtube npNnbj46_ik'))
-        self.assertEqual((self.base / 'videos.txt').read_text(), 'youtube npNnbj46_ik\n')
         with self.store.connect() as db:
             self.assertIsNone(db.execute(select(delivery_artifacts.c.available).where(
                 delivery_artifacts.c.id == 'd' * 64)).scalar_one_or_none())

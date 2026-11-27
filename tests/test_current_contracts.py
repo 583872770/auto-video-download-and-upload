@@ -23,6 +23,12 @@ class CurrentContractTests(unittest.TestCase):
             self.assertIn(response.status_code, (404, 405), (path, response.status_code))
         self.assertEqual(self.store.counts()['total'], 0)
 
+    def test_removed_download_endpoints_are_absent(self):
+        for method, path in (('GET', '/api/overview'), ('GET', '/api/batches'),
+                             ('POST', '/api/downloads/resume')):
+            response = self.client.open(path, method=method, headers=self.headers)
+            self.assertEqual(response.status_code, 404, (path, response.status_code))
+
     def test_missing_frontend_returns_actionable_503(self):
         from unittest.mock import patch
         from werkzeug.exceptions import ServiceUnavailable

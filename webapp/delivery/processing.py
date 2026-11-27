@@ -223,13 +223,16 @@ def run(store, task_id, work, report, *, slot=0):
                             other = inputs[0].parent / ('processed-' + partner['kind'] + other_media['extension'])
                             partner['output_estimate'] = output_bytes(inputs, partner['kind'], probes=probes)
                             lease.check(size_of(lease.path) + job['output_estimate'] + partner['output_estimate'], force=True)
-                            split_copy(inputs[0], {kind: output, partner['kind']: other})
+                            split_copy(inputs[0], {kind: output, partner['kind']: other},
+                                       faststart=not session.test_mode)
                             job['prepared'], partner['prepared'] = str(output), str(other)
                             prepared_verified.update((str(output), str(other)))
                             checkpoint(store, task_id, plan)
                         else:
                             lease.check(size_of(lease.path) + job['output_estimate'], force=True)
-                            convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media)
+                            # 测试留样允许稍慢起播，省去 MP4 索引前移的整文件读写。
+                            convert(inputs, output, kind, mp4=mp4, mp3=job.get('mp3', False), media=media,
+                                    faststart=not session.test_mode)
                 print(f'{LABELS[kind]}：' + ('原始文件符合要求，直接交付。' if direct else '格式处理完成，正在交付。'), flush=True)
                 if not destination:
                     root = video_directory(config, plan['base'])

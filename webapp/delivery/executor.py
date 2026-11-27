@@ -282,7 +282,7 @@ def acquire(executor, addresses):
     fragment_budget = fragment_limit(session.config)
     options = build_ydl_options(session.config, session.base)
     options['_hls_buffer_directory'] = session.store.directory
-    options.update(ignoreerrors=False, download_archive=None, writesubtitles=False, writeautomaticsub=False,
+    options.update(ignoreerrors=False, writesubtitles=False, writeautomaticsub=False,
                    writeinfojson=False, writethumbnail=False, post_hooks=[],
                    format='bestvideo/bestaudio/best', progress_hooks=[progress.hook, session.meter.hook],
                    retries=2, fragment_retries=2, extractor_retries=1, concurrent_fragment_downloads=fragment_budget)

@@ -172,7 +172,7 @@ class WebTests(unittest.TestCase):
 
     def test_saved_account_state_does_not_expose_credentials(self):
         response = self.client.get('/api/status')
-        self.assertEqual(response.json['accounts'], {})
+        self.assertNotIn('accounts', response.json)
 
     def upload_cookie(self, content, filename='cookies.txt', headers=None):
         response = self.client.post('/api/youtube/cookie', data={'cookie': (io.BytesIO(content), filename)},

@@ -23,17 +23,9 @@ def register_tasks_routes(context, queue, preflight):
                        query=request.args.get('q', '')[:200], batch_id=batch_id, order=request.args.get('order', 'desc')),
                        **({} if compact else {'counts': store.counts(actions=actions, batch_id=batch_id)}))
 
-    @app.get('/api/batches')
-    def download_batches():
-        return jsonify(store.batch_page(cursor=request.args.get('cursor')))
-
     @app.post('/api/downloads/stop')
     def stop_downloads():
         return json_result(queue.stop_downloads())
-
-    @app.post('/api/downloads/resume')
-    def resume_downloads():
-        return json_result(queue.resume_downloads())
 
     @app.get('/api/downloads/startup')
     def startup_status():

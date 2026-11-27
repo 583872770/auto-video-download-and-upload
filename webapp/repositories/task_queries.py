@@ -5,7 +5,7 @@ import time
 
 from sqlalchemy import and_, case, func, or_, select, union_all
 
-from webapp.database import batches, counters, download_lists, tasks, job_imports, delivery_work
+from webapp.database import counters, download_lists, tasks, job_imports, delivery_work
 from webapp.repositories.task_codec import LIST_FIELDS
 
 
@@ -118,17 +118,6 @@ class TaskQueries:
 
     def list(self, limit=100, actions=None):
         return self.page(limit=min(limit, 100), actions=actions)['items']
-
-    def batch_page(self, limit=20, cursor=None):
-        statement = select(batches)
-        if cursor:
-            statement = statement.where(batches.c.seq < int(cursor))
-        with self.connect() as db:
-            rows = db.execute(statement.order_by(batches.c.seq.desc()).limit(limit + 1)).mappings().all()
-            result = []
-            for row in rows[:limit]:
-                result.append({**row, 'counts': self._counts(db, ['batch:' + row['id']])})
-            return {'items': result, 'next_cursor': str(rows[limit - 1]['seq']) if len(rows) > limit else None}
 
     def _counts(self, db, scopes=None):
         statement = select(counters.c.status, func.sum(counters.c.value)).group_by(counters.c.status)
@@ -265,4 +254,3 @@ class TaskQueries:
                 if count:
                     counts[role] = count
             return counts
-

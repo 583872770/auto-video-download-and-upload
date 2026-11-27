@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountTask, RuntimeAccount } from './contracts';
-import {
-  accountState,
-  accountReasons,
-  accountSpeed,
-  taskSummary,
-  type AccountContext,
-} from './accountState';
+import { accountState, accountReasons, type AccountContext } from './accountState';
 
 const context: AccountContext = { fresh: true, now: 100, pending: 12, paused: false };
 const task = (stage: string, speed?: number): AccountTask => ({
@@ -88,45 +82,6 @@ describe('account workbench states', () => {
     );
     expect(accountState(account({ state: 'recovery' }), { ...context, pending: 0 })).toBe('idle');
     expect(accountState(account({ tasks: [task('waiting_cookie')] }), context)).toBe('waiting');
-  });
-  it('counts waits independently of preparation, parsing and local processing', () => {
-    const result = taskSummary(
-      account({
-        tasks: [
-          'checking_login',
-          'extracting',
-          'downloading',
-          'downloading',
-          'processing',
-          'converting',
-          'uploading_oss',
-          'waiting_cookie',
-          'waiting_processing',
-          'completed',
-        ].map((stage) => task(stage)),
-      }),
-    );
-    expect(Object.fromEntries(result.map((group) => [group.key, group.count]))).toEqual({
-      preparing: 1,
-      extracting: 1,
-      downloading: 2,
-      processing: 2,
-      uploading: 1,
-      waiting: 2,
-    });
-  });
-  it('uses the sum of current download rates and hides stale rates', () => {
-    const value = account({
-      tasks: [
-        task('downloading', 100),
-        task('downloading', 300),
-        task('processing', 900),
-        task('waiting_request', 700),
-        task('downloading', NaN),
-      ],
-    });
-    expect(accountSpeed(value, true)).toBe(400);
-    expect(accountSpeed(value, false)).toBeUndefined();
   });
   it('keeps actionable admission restrictions but hides expired spacing and idle resource gates', () => {
     const value = account({

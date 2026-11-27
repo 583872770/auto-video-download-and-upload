@@ -32,13 +32,11 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
     store = catalog.store
     root = validate_clear_root(root, (ROOT, store.directory, *protected))
     local_id = store.fleet.id if store.fleet else 'local'
-    preserved = {(Path(base) / 'videos.txt').absolute()} if base else set()
     cache_parts = (
         'runtime/downloads', 'runtime/cache', 'runtime/uploads', 'runtime/browser-profiles',
         'test-downloads', 'imports', 'download-metrics')
     if files_only:
-        # A file purge must not cancel pending imports, erase login state or
-        # remove task history. The UI's full material reset remains explicit.
+        # 仅清空下载文件时，保留待导入文件、登录状态和任务历史。
         cache_parts = ('runtime/downloads', 'runtime/cache', 'test-downloads', 'download-metrics')
     cache_roots = [store.directory / part for part in cache_parts]
     for folder in cache_roots:
@@ -75,8 +73,6 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
 
     def remove(path, *, keep_root=False):
         nonlocal deleted, total_bytes
-        if path.absolute() in preserved:
-            return
         progress()
         try:
             # Remove the link itself; never enumerate its target, including junctions.
@@ -179,7 +175,7 @@ def clear_media(catalog, root, report=None, *, config=None, base=None, protected
             for folder in (*managed_roots, *cache_roots):
                 if folder.is_dir():
                     with os.scandir(io_path(folder)) as entries:
-                        if any((folder / entry.name).absolute() not in preserved for entry in entries):
+                        if next(entries, None) is not None:
                             failures.append(folder.name)
             if failures:
                 raise RuntimeError(f'部分素材未能删除（{len(failures)} 个文件或目录），请检查占用、权限和清理日志后重试。')

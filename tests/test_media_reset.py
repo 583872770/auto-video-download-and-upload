@@ -29,15 +29,11 @@ class MediaResetTests(unittest.TestCase):
             target = self.store.directory / folder / '.hidden/leftover.bin'
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b'cache')
-        archive = self.base / 'videos.txt'
-        archive.write_text('youtube fixture\n', encoding='utf-8')
-        self.store.archive_add('youtube fixture')
+        self.write('videos.txt')
         result = clear_media(self.catalog, self.root, base=self.base)
         self.assertEqual(list(self.root.iterdir()), [])
         for folder in caches:
             self.assertFalse((self.store.directory / folder).exists(), folder)
-        self.assertEqual(archive.read_text(), 'youtube fixture\n')
-        self.assertTrue(self.store.archive_has('youtube fixture'))
         self.assertTrue(self.config.is_file())
         self.assertGreater(result['deleted_files'], 6)
 
@@ -62,7 +58,6 @@ class MediaResetTests(unittest.TestCase):
         path = self.store.log_path(task['id'])
         path.write_text('old log')
         path.with_suffix('.offset').write_text('0')
-        self.store.archive_add('youtube finished', str(video))
         self.store.set_downloads_paused(True)
         response = self.request_clear()
         done = self.wait(response.json['id'])
@@ -72,7 +67,6 @@ class MediaResetTests(unittest.TestCase):
         self.assertFalse(path.with_suffix('.offset').exists())
         self.assertIsNone(self.store.get(task['id']))
         self.assertIsNone(self.store.get(queued['id']))
-        self.assertTrue(self.store.archive_has('youtube finished'))
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(schema.reservations)).all(), reservations)
             for table in (schema.delivery_artifacts, schema.delivery_runs, schema.delivery_requirements,

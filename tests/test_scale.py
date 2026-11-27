@@ -121,8 +121,8 @@ class ScaleTests(unittest.TestCase):
         found = self.client.get('/api/tasks?q=00000000012').json['items']
         self.assertEqual([task['video_id'] for task in found], ['00000000012'])
         self.assertEqual(self.client.get('/api/tasks?limit=1000').status_code, 400)
-        batch = self.client.get('/api/batches').json['items'][0]
-        self.assertEqual(batch['counts']['total'], 70)
+        scoped = self.client.get('/api/tasks?batch_id=' + payload['batch_id']).json
+        self.assertEqual(scoped['counts']['total'], 70)
 
     def test_media_listing_uses_index_without_scanning_and_supports_sharded_ranges(self):
         root = self.root / 'videos'

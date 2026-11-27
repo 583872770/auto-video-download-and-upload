@@ -62,9 +62,6 @@ class JobTests(unittest.TestCase):
         self.assertNotIn('download_methods', task['payload']['config'])
         self.assertEqual(task['payload']['config']['dir'], '')
         self.assertIn('_delivery_contract', task['payload']['config'])
-        self.store.archive_add('youtube npNnbj46_ik', job_id=a)
-        self.assertFalse(self.store.archive_has('youtube npNnbj46_ik', job_id=b))
-        self.assertFalse(self.store.archive_has('youtube npNnbj46_ik'))
 
     def test_append_deduplicates_canonical_links_and_retry_keeps_one_row(self):
         a = self.create()

@@ -15,7 +15,7 @@ from sqlalchemy.exc import OperationalError
 
 from tests import test_scale
 from tests.test_mysql import StandaloneMySQLFixture
-from webapp.database import (archive, deliveries, download_lists, download_sessions,
+from webapp.database import (deliveries, download_lists, download_sessions,
                              settings, tasks, test_files, test_totals)
 from webapp.statistics import describe
 from webapp.store import TaskStore

@@ -177,14 +177,12 @@ class NotificationTests(unittest.TestCase):
         from webapp.notifications import resolve_task
         with self.store.connect() as db:
             resolve_task(self.store, db, task['id'])
-        self.store.archive_add('youtube SjePkzdiyWU')
         self.store.set_downloads_paused(True)
         from webapp.media_reset import reset_records
         reset_records(self.store, 'local', lambda path: path.unlink(missing_ok=True))
         self.assertEqual(self.page()['counts'], {'action': 0, 'recovering': 0, 'resolved': 0})
         with self.store.connect() as db:
             self.assertEqual(db.execute(select(notification_tasks)).all(), [])
-        self.assertTrue(self.store.archive_has('youtube SjePkzdiyWU'))
 
     def test_notification_reads_do_not_scan_task_history_or_return_secrets(self):
         self.create_job()

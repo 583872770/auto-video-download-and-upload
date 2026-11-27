@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 YOUTUBE_PREFIX = 'https://www.youtube.com/watch?v='
 import yaml
 from Utils.oss_storage import validate_oss
-from webapp.config.schema import (DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, TEXT_FIELDS)
+from webapp.config.schema import DEFAULTS, INTEGER_FIELDS, TEXT_FIELDS
 
 
 def urls_from(value):
@@ -31,7 +31,7 @@ def urls_from(value):
     return urls
 
 
-def validate_settings(config, *, download_only=False):
+def validate_settings(config):
     unknown = [key for key in config if key not in DEFAULTS and not key.startswith('_')]
     if unknown:
         raise ValueError('不支持的配置项：' + '、'.join(sorted(unknown)))

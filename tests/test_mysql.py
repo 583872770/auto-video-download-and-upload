@@ -17,7 +17,7 @@ import uuid
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DataError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
 from app import create_app
@@ -91,7 +91,7 @@ class StandaloneMySQLFixture(MySQLFixture):
 class MySQLJobTests(StandaloneMySQLFixture, test_jobs.JobTests):
     def setUp(self):
         StandaloneMySQLFixture.setUp(self)
-        response = self.client.put('/api/config', json={'download_methods': ['downmp3']}, headers=self.headers)
+        response = self.client.put('/api/config', json={}, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.json)
         config, base = self.app.extensions['settings_func']()
         self.store.set_download_settings(config, base, self.root / 'clash')
@@ -148,7 +148,7 @@ class MySQLScaleTests(StandaloneMySQLFixture, test_scale.ScaleTests):
             self.assertEqual(db.execute(select(batches.c.name)).scalar_one(), '')
             self.assertEqual(db.execute(select(imports.c.samples)).scalar_one(), '[]')
 
-    def test_case_sensitive_ids_emoji_long_snapshots_and_no_silent_truncation(self):
+    def test_case_sensitive_ids_and_long_emoji_snapshots(self):
         payload = {'config': {'fixture': '中😀' * 40000}, 'base': str(self.root)}
         jobs = self.store.create_batch([{**payload, 'urls': [f'https://youtu.be/{value}']}
                                        for value in ('Abcdefghijk', 'abcdefghijk', 'Abcdefghijk')], deduplicate=True)
@@ -156,9 +156,6 @@ class MySQLScaleTests(StandaloneMySQLFixture, test_scale.ScaleTests):
         self.assertEqual(self.store.get(jobs[0]['id'], private=True)['payload']['config'], payload['config'])
         self.assertEqual(len(self.store.page(query='Abcdefghijk')['items']), 1)
         self.assertEqual(len(self.store.page(query='abcdefghijk')['items']), 1)
-        with self.assertRaises(DataError):
-            self.store.archive_add('x' * 513)
-        self.assertFalse(self.store.archive_has('x' * 512))
 
     def test_fractional_lease_and_media_timestamps_are_preserved(self):
         job = self.store.create('download', {'config': {}, 'base': str(self.root)})
@@ -225,7 +222,6 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
         from webapp.database import Database
         task = self.store.create('download', {'config': {}, 'base': str(self.root),
                                               'urls': ['https://youtu.be/Abcdefghijk']})
-        self.store.archive_add('youtube Abcdefghijk')
         self.store.set_downloads_paused(True)
         url = self.empty_target()
         destination = self.root / 'migration'
@@ -247,7 +243,6 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
         self.assertTrue(result['activated'])
         self.assertEqual(restored.get(task['id'])['url'], task['url'])
         self.assertEqual(restored.counts()['total'], 1)
-        self.assertTrue(restored.archive_has('youtube Abcdefghijk'))
         self.assertTrue(restored.downloads_paused())
         self.assertEqual(migrate_mysql.migrate(self.store.db.url, url, destination)['counts'], result['counts'])
         self.assertEqual(self.store.counts()['total'], 1)
@@ -275,7 +270,6 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
                                              'batch_id': 'b' * 32, 'urls': ['https://youtu.be/Abcdefghijk']})
         original.update_progress(task['id'], {'percent': 42, 'title': '下载测试 😀'})
         original.log_path(task['id']).write_text('保留原日志', encoding='utf-8')
-        original.archive_add('youtube Abcdefghijk')
         root = self.root / 'videos'
         root.mkdir()
         video = root / '下载测试 😀.mp4'
@@ -289,5 +283,4 @@ class MySQLMigrationTests(MySQLFixture, unittest.TestCase):
         self.assertEqual(restored.get(task['id'])['progress']['percent'], 42)
         self.assertIn('保留原日志', restored.logs(task['id'])['text'])
         self.assertEqual(MediaCatalog(restored).page(root)['items'][0]['title'], video.stem)
-        self.assertEqual(restored.batch_page()['items'][0]['counts']['total'], 1)
-        self.assertTrue(restored.archive_has('youtube Abcdefghijk'))
+        self.assertEqual(restored.counts(batch_id='b' * 32)['total'], 1)

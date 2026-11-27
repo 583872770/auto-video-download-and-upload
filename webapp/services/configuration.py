@@ -1,6 +1,6 @@
 """ConfigurationService operations independent of route registration."""
 from flask import g, has_request_context
-from webapp.config.settings import DEFAULTS, DOWNLOAD_FIELDS, validate_settings
+from webapp.config.settings import DEFAULTS, validate_settings
 
 
 class ConfigurationService:
@@ -45,7 +45,7 @@ class ConfigurationService:
                 if self.context.store.download_connection_busy():
                     return dict(error='请先停止全部下载并等待当前任务结束，再修改代理连接方式。'), 409
             config.update(data)
-            validate_settings(config, download_only=set(data) <= DOWNLOAD_FIELDS)
+            validate_settings(config)
             from webapp.db_pool_calculator import connection_budget
             connection_budget(config)  # Reject impossible reservations before any persistence.
             if 'youtube_cookie_pool' in data:

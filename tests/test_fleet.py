@@ -212,26 +212,6 @@ class FleetTests(unittest.TestCase):
             self.assertEqual(len(result.json['items']), count)
             self.assertEqual({item['artifact']['instance_id'] for item in result.json['items']}, {instance})
 
-    def test_overview_uses_workers_current_directories_without_interpreting_remote_paths(self):
-        empty_count = self.client.get('/api/overview').json['media']['count']
-        self.assertEqual(empty_count, 0)
-        self.assertIs(type(empty_count), int)
-        catalog = self.apps['alpha'].extensions['media_catalog']
-        old = self.root / 'alpha/videos-alpha'
-        old.mkdir()
-        (old / 'old.mp4').write_bytes(b'old')
-        catalog.reindex(old)
-        self.assertEqual(self.client.get('/api/overview').json['media']['count'], 1)
-        new = self.root / 'alpha/new'
-        new.mkdir()
-        (new / 'new.mp4').write_bytes(b'new')
-        catalog.reindex(new)
-        self.a.fleet.save_local({'path': 'new', 'download_task_limit': 1}, self.root / 'alpha', self.root / 'alpha/clash')
-        response = self.client.get('/api/overview').json
-        self.assertEqual(response['media']['count'], 1)
-        self.assertEqual([item['name'] for item in response['recent_media']], ['new.mp4'])
-        self.assertEqual(response['recent_media'][0]['instance_id'], 'alpha')
-
     def test_agent_authentication_and_private_fields(self):
         app = self.apps['alpha']
         self.assertEqual(app.test_client().get('/api/config').status_code, 200)  # Former workers also have a local console.
@@ -271,7 +251,6 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(response.json['instance_id'], 'alpha')
         self.assertEqual(self.client.get('/api/auth/status').json['user']['username'], 'admin')
         self.assertEqual(self.client.get('/api/jobs').status_code, 200)
-        self.assertEqual(self.client.get('/api/overview').status_code, 200)
         # Correctly addressed workers continue to use the node credential, not browser cookies.
         self.serve('alpha')
         self.assertEqual(self.client.get('/api/config', headers={'X-Instance-ID':'alpha'}).status_code, 200)
@@ -286,7 +265,6 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('本机回环地址', response.json['error'])
         self.assertIn('/setup', response.json['error'])
-        self.assertEqual(self.client.get('/api/overview').status_code, 200)
 
     def test_removed_cookie_upload_is_rejected_on_selected_worker(self):
         self.serve('beta')
@@ -343,7 +321,7 @@ class FleetTests(unittest.TestCase):
             self.assertTrue({'instance_ready:alpha', 'instance_ready:beta'} <= stages)
             self.client.post('/api/downloads/stop', headers=self.headers)
             self.assertTrue(self.manager.downloads_paused())
-            self.client.post('/api/downloads/resume', headers=self.headers)
+            self.client.post('/api/jobs/system/resume', headers=self.headers)
             self.assertEqual(self.wait_startup()['state'], 'succeeded')
 
     def test_failed_preflight_keeps_queue_paused(self):

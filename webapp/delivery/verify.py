@@ -108,7 +108,7 @@ def media_output(inputs, kind, *, mp4=False, mp3=False, probes=None):
                 video_codec=video, audio_codec=stream_codec(probes[-1][1], 'audio') if kind == 'av' else audio)
 
 
-def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
+def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None, faststart=True):
     media = media or (media_output(inputs, kind, mp4=mp4, mp3=mp3) if kind != 'subtitle' else {})
     compatible_video = media.get('video_codec') in ('h264', 'hevc', 'av1', 'mpeg4')
     compatible_audio = media.get('audio_codec') in ('aac', 'alac', 'mp3')
@@ -126,7 +126,7 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
         audio_input = unique_inputs.index(str(inputs[-1]))
         command += ['-map', '0:V:0', '-map', f'{audio_input}:a:0', '-c:v', 'libx264' if mp4 and not compatible_video else 'copy',
                     '-c:a', 'aac' if mp4 and not compatible_audio else 'copy']
-    if target.suffix == '.mp4':
+    if faststart and target.suffix == '.mp4':
         command += ['-movflags', '+faststart']
     # Keep transcoding bounded on small servers; stream copy ignores this option.
     result = subprocess.run(command + ['-threads', '1', str(target)], capture_output=True, timeout=1800)
@@ -135,13 +135,13 @@ def convert(inputs, target, kind, *, mp4=False, mp3=False, media=None):
     return verify(target, kind)
 
 
-def split_copy(source, outputs):
+def split_copy(source, outputs, *, faststart=True):
     """Read a progressive source once when both separate tracks use copy."""
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(source)]
     for kind, target in outputs.items():
         command += (['-map', '0:V:0', '-an', '-c:v', 'copy'] if kind == 'video_only' else
                     ['-map', '0:a:0', '-vn', '-c:a', 'copy'])
-        if target.suffix == '.mp4':
+        if faststart and target.suffix == '.mp4':
             command += ['-movflags', '+faststart']
         command += ['-threads', '1', str(target)]
     result = subprocess.run(command, capture_output=True, timeout=1800)

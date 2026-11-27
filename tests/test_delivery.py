@@ -1352,6 +1352,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(commands),1,commands)
         self.assertEqual(commands[0].count('-i'),1)
         self.assertEqual(commands[0].count('copy'),2)
+        self.assertNotIn('+faststart', commands[0])
         self.assertTrue(result['files_deleted'])
 
     def test_shared_transfer_busy_preserves_delivered_media_for_subtitle_retry(self):

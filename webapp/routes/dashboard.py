@@ -34,7 +34,3 @@ def register_dashboard_routes(context, dashboard):
         if kind not in QUEUE or not cursor.isascii() or not cursor.isdecimal() or len(cursor) > 18:
             raise ValueError('无效的队列分类或分页位置。')
         return jsonify(queue_details(context.store, workbench_instance(), kind, int(cursor)))
-
-    @app.get('/api/overview')
-    def overview():
-        return json_result(dashboard.overview())

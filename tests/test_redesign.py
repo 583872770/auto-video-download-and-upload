@@ -119,22 +119,21 @@ class RedesignContract:
         self.assertEqual({key: detail[key] for key in row}, row)
         self.assertNotIn('running_videos', row)
 
-    def test_resume_aliases_preserve_job_intent_and_obey_stop_and_clear(self):
+    def test_resume_preserves_job_intent_and_obeys_stop_and_clear(self):
         started, fresh = self.create(), self.create('Fresh')
         self.control(started, 'start')
         self.store.set_downloads_paused(True)
         self.assertEqual(self.detail(started)['state'], 'waiting')
-        for route in ('/api/jobs/system/resume', '/api/downloads/resume'):
-            with patch('webapp.environment.require_native_environment'):
-                response = self.client.post(route, headers=self.headers)
-            self.assertEqual(response.status_code, 200, response.json)
-            self.assertTrue(self.detail(started)['desired_running'])
-            self.assertFalse(self.detail(fresh)['desired_running'])
-            self.store.set_downloads_paused(True)
+        route = '/api/jobs/system/resume'
+        # 模拟账号预检成功，使用真实恢复接口验证任务意愿和清理互斥。
+        with patch('webapp.services.preflight.DownloadPreflight.verify_youtube'):
+            response = self.client.post(route, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(self.detail(started)['desired_running'])
+        self.assertFalse(self.detail(fresh)['desired_running'])
+        self.store.set_downloads_paused(True)
         self.store.create('clear_media', {})
-        for route in ('/api/jobs/system/resume', '/api/downloads/resume'):
-            with patch('webapp.environment.require_native_environment'):
-                self.assertEqual(self.client.post(route, headers=self.headers).status_code, 409)
+        self.assertEqual(self.client.post(route, headers=self.headers).status_code, 409)
         self.assertTrue(self.store.downloads_paused())
 
     def test_resume_explains_jobs_that_have_not_started(self):
@@ -186,16 +185,15 @@ class NodeIsolationTests(unittest.TestCase):
         for store in (self.a, self.b):
             store.fleet.control(store.fleet.id, {'action': 'drain'})
         self.manager.set_downloads_paused(True)
-        for route in ('/api/jobs/system/resume', '/api/downloads/resume'):
-            response = self.client.post(route, headers=self.headers)
-            self.assertEqual(response.status_code, 200, response.json)
-            execution = response.json['execution']
-            paused = next(item for item in execution['blockers'] if item['code'] == 'instances_paused')
-            self.assertIn('3 个在线下载实例', paused['message'])  # All unified instances can execute downloads.
-            self.assertEqual(paused['href'], '/#instances')
-            self.assertIn('单独恢复', response.json['message'])
-            self.assertTrue(self.a.fleet.row()['paused'])
-            self.assertTrue(self.b.fleet.row()['paused'])
+        response = self.client.post('/api/jobs/system/resume', headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        execution = response.json['execution']
+        paused = next(item for item in execution['blockers'] if item['code'] == 'instances_paused')
+        self.assertIn('3 个在线下载实例', paused['message'])  # 统一实例均具备执行下载的能力。
+        self.assertEqual(paused['href'], '/#instances')
+        self.assertIn('单独恢复', response.json['message'])
+        self.assertTrue(self.a.fleet.row()['paused'])
+        self.assertTrue(self.b.fleet.row()['paused'])
         self.a.fleet.control('alpha', {'action': 'resume'})
         status = self.client.get('/api/jobs/system/status').json
         self.assertNotIn('instances_paused', [item['code'] for item in status['blockers']])

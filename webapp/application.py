@@ -155,7 +155,7 @@ def build_application(import_name, config_path=None, state_dir=None, *, start_wo
     configuration = ConfigurationService(context, cookies)
     dashboard = DashboardService(context)
     media_library = MediaLibraryService(context)
-    queue = DownloadQueueService(context, preflight)
+    queue = DownloadQueueService(context)
     app.extensions['youtube_login'] = YouTubeLogin(context.store.directory, cookies.install_browser_cookie)
     app.extensions['start_account_browser_login'] = cookies.start_browser_login
     app.extensions['execution_control'].prepare_resume = preflight.prepare_system_resume

@@ -141,8 +141,6 @@ class HybridTests(unittest.TestCase):
                                                   headers={'Range': 'bytes=0-3'})
                 self.assertEqual(result.status_code, 206)
                 self.assertEqual(result.data, target.encode()[:4])
-        result = self.clients['alpha'].get('/api/overview')
-        self.assertEqual(result.status_code, 200, result.json)
 
     def test_local_rpc_protocol_matches_real_routes_and_excludes_shared_management(self):
         from webapp.console_auth import LOCAL_RPC_METHODS, rpc_allowed

@@ -3,7 +3,6 @@ import importlib.util
 import shutil
 import sys
 import time
-from flask import g, has_request_context
 from Utils.config import resolve_path, video_directory
 
 
@@ -55,26 +54,10 @@ class DashboardService:
                                        error=snapshot['error'])
         concurrency['auth_checked_at'] = youtube['auth'].get('checked_at')
         concurrency['local_processing'] = snapshot['local_processing']
-        return dict(tools=tools, accounts={}, startup=self.context.startup.status(), python=sys.version.split()[0], database=self.context.store.db.engine.dialect.name,
+        return dict(tools=tools, startup=self.context.startup.status(), python=sys.version.split()[0], database=self.context.store.db.engine.dialect.name,
                        throughput=rate, concurrency=concurrency,
                        workers=self.context.store.workers(), download_queue=queue,
                        execution=self.context.app.extensions['execution_control'].status(queue),
                        connection_busy=self.context.store.download_connection_busy(),
                        youtube=youtube, storage_mode=config.get('storage_mode', 'local'),
                        media_directory=str(video_directory(config, base)), timezone='服务器本地时间')
-
-    def overview(self):
-        config, base = self.context.settings()
-        root = video_directory(config, base)
-        accounting = self.context.store.statistics.dashboard()
-        if self.context.fleet and self.context.fleet.can_manage and not (has_request_context() and g.fleet_rpc):
-            from webapp.repositories.dashboard import fleet_media_overview
-            total, recent = fleet_media_overview(self.context.store)
-            return dict(counts=self.context.store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
-                download_counts=self.context.store.counts(actions=('download',)), accounting=accounting,
-                media={'count': int(total)}, recent_media=recent,
-                recent_tasks=self.context.store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])
-        return dict(counts=self.context.store.counts(actions=('download', 'check', 'import', 'index', 'clear_media')),
-                       download_counts=self.context.store.counts(actions=('download',)), accounting=accounting,
-                       media=self.context.catalog.root_status(root), recent_media=self.context.catalog.page(root, limit=4)['items'],
-                       recent_tasks=self.context.store.page(limit=5, actions=('download', 'check', 'import', 'index', 'clear_media'), finished_only=True)['items'])

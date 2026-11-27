@@ -162,8 +162,9 @@ class SpacePlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             budget = DiskBudget(tmp, dict(disk_budget_gb=1, disk_test_budget_gb=1,
                                          disk_min_free_gb=0, disk_resume_free_gb=0))
-            with budget.lease('test', reserve=400 * MIB) as running:
-                with budget.connect() as db: budget._set(db, 'processing_scratch', 400 * MIB)
+            with budget.lease('test', reserve=400 * MIB) as running, budget.lease('test', reserve=0) as waiting:
+                with budget.connect() as db:
+                    budget._set(db, 'scratch:' + waiting.id, 400 * MIB)
                 running.check(force=True)
                 with self.assertRaisesRegex(DiskPressure, '后处理周转额度'):
                     with budget.lease('test', reserve=400 * MIB): pass
@@ -173,12 +174,12 @@ class SpacePlanTests(unittest.TestCase):
             budget = DiskBudget(tmp, dict(disk_budget_gb=1, disk_test_budget_gb=1,
                 disk_min_free_gb=0, disk_resume_free_gb=0, storage_mode='test'))
             with budget.lease('test', task='running', reserve=400 * MIB):
-                with budget.connect() as db:
-                    budget._set(db, 'processing_scratch', 400 * MIB)
-                with self.assertRaises(DiskPressure):
-                    with budget.lease('test', task='waiting', reserve=400 * MIB): pass
-                self.assertIn('waiting', budget.blocked_tasks())
-                with budget.connect() as db: budget._set(db, 'processing_scratch', 0)
+                with budget.lease('test', reserve=0) as waiting:
+                    with budget.connect() as db:
+                        budget._set(db, 'scratch:' + waiting.id, 400 * MIB)
+                    with self.assertRaises(DiskPressure):
+                        with budget.lease('test', task='waiting', reserve=400 * MIB): pass
+                    self.assertIn('waiting', budget.blocked_tasks())
                 self.assertNotIn('waiting', budget.blocked_tasks())
 
     def test_processing_backlog_shares_space_but_concurrent_workers_can_finish(self):

@@ -73,21 +73,3 @@ def concurrency_inputs(store, config, base, fleet, queue):
                 budget=int(budget or 0), global_running=global_running, profiles=profile_metadata,
                 paused=bool(node['paused']) if fleet else queue.get('paused', False),
                 error=node.get('error', ''), pending_count=int(pending or 0))
-
-
-def fleet_media_overview(store):
-    from sqlalchemy import func, select
-    from webapp.database import media as catalog_media, roots as catalog_roots, instances as fleet_instances
-    with store.connect() as db:
-        current_roots = []
-        for identity, value in db.execute(select(fleet_instances.c.id, fleet_instances.c.config)
-                                          .where(fleet_instances.c.role == 'hybrid')):
-            directory = json.loads(value).get('directory')
-            if directory:
-                current_roots.append('@' + identity + '|' + directory)
-        total = db.execute(select(func.coalesce(func.sum(catalog_roots.c.count), 0)).where(catalog_roots.c.root.in_(current_roots))).scalar_one()
-        recent = [dict(row) for row in db.execute(select(catalog_media).where(catalog_media.c.root.in_(current_roots))
-                  .order_by(catalog_media.c.modified.desc()).limit(4)).mappings()]
-    for item in recent:
-        item['instance_id'] = item['root'][1:].split('|', 1)[0]
-    return int(total), recent

@@ -118,8 +118,6 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         store.release(task['id'], store.owner, message)
                         store.worker_status(store.owner, name, 'paused', message=message)
                         break
-                    if not workspace.test_mode:
-                        store.import_archive(base)
                 store.worker_status(store.owner, name, 'running', task['id'], task=task)
                 heartbeat = LeaseHeartbeat(store, task['id'], name, task_context, task=task)
                 lease_guard = heartbeat.guard

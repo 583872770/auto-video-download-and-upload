@@ -27,7 +27,8 @@ class CurrentSchemaTests(unittest.TestCase):
         with self.database.engine.connect() as db:
             self.assertEqual(db.execute(select(settings.c.value).where(
                 settings.c.key == 'application-data')).scalar_one(), 'keep')
-        self.assertNotIn('schema_migrations', inspect(self.database.engine).get_table_names())
+        tables = inspect(self.database.engine).get_table_names()
+        self.assertNotIn('schema_migrations', tables)
 
     def test_remote_startup_does_not_reconnect_for_every_table(self):
         engine = create_engine(self.database.engine.url, poolclass=NullPool)
@@ -39,12 +40,12 @@ class CurrentSchemaTests(unittest.TestCase):
 
     def test_incomplete_old_table_is_rejected_before_ddl_or_bootstrap_writes(self):
         with self.database.engine.begin() as db:
-            db.exec_driver_sql('ALTER TABLE tasks DROP COLUMN policy_version')
+            db.exec_driver_sql('ALTER TABLE tasks DROP COLUMN payload')
             db.execute(settings.delete().where(settings.c.key == 'downloads_paused'))
             db.execute(settings.insert().values(key='keep', value='test data'))
         with self.assertRaises(SchemaMismatch):
             self.database.initialize()
-        self.assertNotIn('policy_version', {c['name'] for c in inspect(self.database.engine).get_columns('tasks')})
+        self.assertNotIn('payload', {c['name'] for c in inspect(self.database.engine).get_columns('tasks')})
         with self.database.engine.connect() as db:
             self.assertIsNone(db.execute(select(settings.c.value).where(settings.c.key == 'downloads_paused')).scalar())
             self.assertEqual(db.execute(select(settings.c.value).where(settings.c.key == 'keep')).scalar_one(), 'test data')

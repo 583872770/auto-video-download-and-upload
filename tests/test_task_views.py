@@ -37,9 +37,6 @@ class TaskViewContract:
             result = self.client.get('/api/tasks?view=history&status=' + status).json['items']
             self.assertEqual(len(result), expected)
         self.assertEqual(self.client.get('/api/tasks?view=history&q=' + running['id']).json['items'], [])
-        overview = self.client.get('/api/overview').json
-        self.assertTrue(all(task['status'] in ('succeeded', 'failed', 'interrupted') for task in overview['recent_tasks']))
-        # The original queue API remains available to operators.
         self.assertTrue(any(task['status'] == 'queued' for task in self.client.get('/api/tasks').json['items']))
 
     def test_live_downloads_span_batches_and_move_to_history_on_completion(self):
@@ -115,8 +112,6 @@ class TaskViewContract:
             ascending = self.store.page(finished_only=True, order='asc', limit=2, cursor=ascending['next_cursor'])
             asc_ids.extend(row['id'] for row in ascending['items'])
         self.assertEqual(asc_ids, list(reversed([newest['id'], *expected])))
-        overview = self.client.get('/api/overview').json
-        self.assertEqual([row['id'] for row in overview['recent_tasks']], [newest['id'], *expected])
         failed = self.client.get('/api/tasks?view=history&status=failed').json['items']
         self.assertEqual([row['id'] for row in failed], [third['id']])
 

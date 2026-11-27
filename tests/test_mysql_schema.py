@@ -98,8 +98,8 @@ class MySQLCurrentSchemaTests(StandaloneMySQLFixture, unittest.TestCase):
 
     def test_case_insensitive_identifiers_are_rejected(self):
         with self.store.db.engine.begin() as db:
-            db.exec_driver_sql('ALTER TABLE download_archive CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci')
-        with self.assertRaisesRegex(SchemaMismatch, 'download_archive'):
+            db.exec_driver_sql('ALTER TABLE download_reservations CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci')
+        with self.assertRaisesRegex(SchemaMismatch, 'download_reservations'):
             self.store.db.initialize()
 
     def test_wrong_index_prefix_is_rejected(self):

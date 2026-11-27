@@ -1,38 +1,5 @@
-import { stageLabel, type AccountTask, type WaitReason } from './contracts';
-
 export function isWaitingStage(stage: string) {
   return /^(waiting_|disk_wait$|scheduling_wait$|retrying$)/.test(stage);
-}
-
-export function taskWait(task: AccountTask): WaitReason | undefined {
-  if (!isWaitingStage(task.stage)) return undefined;
-  return task.wait || { code: task.stage, label: stageLabel(task.stage) };
-}
-
-export function summarizeWaits(tasks: AccountTask[]) {
-  const reasons = new Map<string, WaitReason & { count: number }>();
-  for (const task of tasks) {
-    const reason = taskWait(task);
-    if (!reason) continue;
-    const existing = reasons.get(reason.code);
-    if (existing) existing.count++;
-    else reasons.set(reason.code, { ...reason, count: 1 });
-  }
-  return [...reasons.values()].sort((a, b) => b.count - a.count);
-}
-
-// Distinct deadlines must stay separate: one task's timer cannot stand in for another's.
-export function taskWaitGroups(tasks: AccountTask[]) {
-  const groups = new Map<string, WaitReason & { count: number }>();
-  for (const task of tasks) {
-    const reason = taskWait(task);
-    if (!reason) continue;
-    const key = JSON.stringify([reason.code, reason.label, reason.detail, reason.until]);
-    const existing = groups.get(key);
-    if (existing) existing.count++;
-    else groups.set(key, { ...reason, count: 1 });
-  }
-  return [...groups.values()];
 }
 
 export function sampleNow(sample: number, receivedAt: number, monotonicNow: number) {

@@ -17,7 +17,8 @@ from Utils.oss_storage import OSS_DEFAULTS, OSS_FIELDS, OSS_INTEGER_FIELDS
 from webapp.disk_budget import DISK_DEFAULTS, DISK_FIELDS
 from webapp.config.schema import TASK_FIELDS
 from webapp.fleet import LOCAL_FIELDS, POLICY_FIELDS, RESOURCE_LIMITS
-from webapp.config.settings import DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS, save_settings, validate_settings
+from webapp.config.schema import DEFAULTS, DOWNLOAD_FIELDS, INTEGER_FIELDS
+from webapp.config.settings import save_settings, validate_settings
 from webapp.throughput import policy_key
 from webapp.config.schema import PACING_FIELDS
 

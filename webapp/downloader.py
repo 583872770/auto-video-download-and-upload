@@ -45,12 +45,9 @@ def download_cookie_session(options):
 
 
 def build_ydl_options(config, base):
-    from Utils.download_storage import storage_mode
-    test_mode = storage_mode(config) == 'test'
     options = {
         'format': 'bestvideo*+bestaudio/best',
         'format_sort': ['res', 'fps'],
-        'download_archive': None if test_mode or config.get('storage_mode') == 'oss' else str(resolve_path(base, 'videos.txt')),
         'fragment_retries': 3,
         'ignoreerrors': 'only_download',
         'outtmpl': output_template(config, base),
