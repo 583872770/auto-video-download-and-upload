@@ -1,7 +1,7 @@
 """Capacity contention, crash recovery, streaming limits and preserved ledgers."""
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import json
 import multiprocessing
 import os
@@ -811,26 +811,87 @@ class DiskWebTests(unittest.TestCase):
                 self.assertGreaterEqual(lease.reserved,2*GIB,'prior interruptions must not strand a task once budget fits')
 
     def test_worker_handles_pressure_without_provider_failure(self):
-        from web_worker import drain
-        task = self.store.create('download', {'config':{}, 'base':str(self.root),'urls':['https://youtu.be/npNnbj46_ik']})
-        with patch('web_worker.execute', side_effect=DiskPressure('测试磁盘预算不足')):
-            drain(self.store.directory, role='download')
+        from tests.test_progress_cache import MemoryRedis
+        from webapp.progress_cache import ProgressCache
+        from webapp.workbench_live import live_snapshot, publish_queue
+        from webapp.worker.queue import drain_queue
+        self.store.progress_cache = ProgressCache(self.store.db.url, client=MemoryRedis())
+        task = self._create_test_download_task()
+        config = {**self.store.runtime(), 'storage_mode': 'test', 'disk_budget_gb': 4, 'disk_test_budget_gb': 2}
+        budget = DiskBudget(self.store.directory, config)
+        competing = ExitStack()
+        self.addCleanup(competing.close)
+        competing.enter_context(budget.lease('test', reserve=GIB))
+        executions = []
+
+        def execute(action, payload, report, **context):
+            current = self.store.get(task['id'])
+            executions.append((context['task_id'], current['worker_id'], current['attempts']))
+            self.assertEqual(current['status'], 'running')
+            if len(executions) == 2:
+                # 另一个进程不能领走正在等空间的视频，顶部和工作台的实时等待只有一个。
+                self.assertIsNone(self.store.claim('another-worker', actions=['download']))
+                publish_queue(self.store)
+                snapshot = live_snapshot(self.store.progress_cache, 'local')
+                self.assertEqual(snapshot['disk_waiting'], dict(download=1, processing=0))
+                self.assertEqual(current['progress']['stage'], 'disk_wait')
+                competing.close()
+            self.assertLessEqual(len(executions), 2)
+            with budget.lease('test', task=task['id'], reserve=3 * GIB // 2):
+                report(dict(stage='preparing_workspace'))
+                return dict(file_count=0)
+
+        with patch('webapp.worker.disk_wait.DISK_RECHECK_SECONDS', 0):
+            drain_queue(self.store.directory, role='download', execute_task=execute, store_factory=lambda *args: self.store)
         saved = self.store.get(task['id'])
-        self.assertEqual(saved['status'], 'queued')
-        self.assertEqual(saved['attempts'], 0)
-        self.assertEqual(saved['progress']['stage'], 'disk_wait')
+        self.assertEqual(len(executions), 2)
+        self.assertEqual(executions[0], executions[1])
+        self.assertEqual((executions[0][0], executions[0][2]), (task['id'], 1))
+        self.assertEqual(saved['status'], 'succeeded')
+        self.assertEqual(saved['attempts'], 1)
         self.assertEqual(self.client.get('/api/statistics').json['summary']['failed'], 0)
-        self.assertEqual(self.store.workers()[0]['state'], 'disk_wait')
+        self.assertEqual(live_snapshot(self.store.progress_cache, 'local')['disk_waiting'], dict(download=0, processing=0))
+
+    def test_disk_wait_checks_space_without_reopening_source(self):
+        from unittest.mock import Mock
+        from webapp.worker.disk_wait import run_with_disk_wait
+
+        heartbeat = SimpleNamespace(stop=Mock(), wait_state=None, wait=None)
+        heartbeat.stop.is_set.return_value = False
+        def set_wait(state=None, wait=None):
+            heartbeat.wait_state, heartbeat.wait = state, wait
+        heartbeat.set_wait = set_wait
+        space_ready = Mock(side_effect=[False, False, True])
+        attempts = []
+        def execute(report):
+            attempts.append(heartbeat.wait_state)
+            report({'stage': 'extracting'})
+            if len(attempts) == 1:
+                error = DiskPressure('空间不足')
+                error.download_space_ready = space_ready
+                raise error
+            self.assertEqual(heartbeat.wait_state, 'disk_wait')
+            report({'stage': 'extracting', 'space_plan': {'peak_bytes': 20 * MIB}})
+            return 'ready'
+
+        self.assertEqual(run_with_disk_wait(execute, heartbeat, Mock()), 'ready')
+        self.assertEqual(attempts, [None, 'disk_wait'])
+        self.assertEqual(space_ready.call_count, 3)
+        self.assertIsNone(heartbeat.wait_state)
 
     def test_real_coordination_lock_is_requeued_without_failure_statistics(self):
         from web_worker import drain
         task = self._create_test_download_task()
         budget = DiskBudget(self.store.directory, self.store.runtime())
         budget.snapshot()
+        def plan_download(action, payload, report, *args):
+            # 解析完成后才检查空间账本，账本繁忙时不能进入文件下载。
+            report({'stage': 'extracting', 'space_plan': {'peak_bytes': 20 * MIB}})
+            self.fail('账本繁忙时不能开始下载文件')
         with closing(sqlite3.connect(budget.database)) as locker:
             locker.execute('BEGIN IMMEDIATE')
             with patch('webapp.disk_budget.COORDINATION_TIMEOUT', 0.03), \
-                    patch('web_worker._execute', side_effect=AssertionError('must wait before downloading')):
+                    patch('web_worker._execute', side_effect=plan_download):
                 drain(self.store.directory, role='download')
         saved = self.store.get(task['id'])
         self.assertEqual(saved['status'], 'queued')
@@ -874,7 +935,8 @@ class DiskWebTests(unittest.TestCase):
         running = []
         def monitor(lease, on_pressure):
             running.append(lease)
-        def download(*args):
+        def download(action, payload, report, *args):
+            report({'stage': 'extracting', 'space_plan': {'peak_bytes': 20 * MIB}})
             running[0].error = DiskPressure('late observation during completion')
             return {'file_count':1, 'file_bytes':20}
         task = self._create_test_download_task()
@@ -891,13 +953,31 @@ class DiskWebTests(unittest.TestCase):
 
     def test_pressure_wrapped_by_downloader_remains_resource_wait(self):
         from web_worker import execute
+        from webapp.disk_budget import DiskLease
         task = self._create_test_download_task()
         task = self.store.claim(self.store.owner)
+        reserve = DiskBudget._reserve
+        reservation_sizes = []
+
+        def record_reservation(budget, lease, needed):
+            reservation_sizes.append(needed)
+            return reserve(budget, lease, needed)
+
         def download(action, payload, report, *args):
+            # 模拟解析进度，确认准备目录和分配账号阶段没有提前检查或预留空间。
+            report({'stage': 'extracting'})
+            self.assertEqual(reservation_sizes, [])
+            check_space.assert_not_called()
             try:
-                report({'total_bytes':20 * GIB,'download_method':'yt_dlp'})
+                report({'stage': 'extracting', 'space_plan': {'peak_bytes': 20 * GIB}})
             except DiskPressure as error:
                 raise RuntimeError('wrapped downloader error') from error
-        with patch('web_worker._execute', side_effect=download):
+        with patch.object(DiskBudget, '_reserve', new=record_reservation), \
+                patch.object(DiskLease, 'check_media_space', autospec=True) as check_space, \
+                patch.object(DiskLease, 'start_monitor', autospec=True) as start_monitor, \
+                patch('web_worker._execute', side_effect=download):
             with self.assertRaises(DiskPressure):
                 execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.assertEqual(reservation_sizes, [20 * GIB])
+        check_space.assert_called_once()
+        start_monitor.assert_not_called()

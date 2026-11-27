@@ -56,6 +56,8 @@ class TaskLeases:
             statement = select(tasks).where(tasks.c.status == 'queued', tasks.c.available_at <= stamp)
             local_work = select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists()
             if processing:
+                if self.downloads_stopped(db, lock=True):
+                    return None
                 local_id = self.fleet.id if self.fleet else 'local'
                 statement = statement.select_from(delivery_work.join(tasks, delivery_work.c.task_id == tasks.c.id)).where(
                     tasks.c.action == 'download', delivery_work.c.instance_id == local_id)
@@ -82,9 +84,7 @@ class TaskLeases:
             # Destructive cleanup runs only in the Web instance that accepted confirmation.
             statement = statement.where(tasks.c.action != 'clear_media')
             statement = statement.where(self.released_condition())
-            if self.claims_paused(db, lock=True):
-                statement = statement.where(tasks.c.action != 'download')
-            elif not processing and not self._released_queued_count(db):
+            if not processing and (self.claims_paused(db, lock=True) or not self._released_queued_count(db)):
                 statement = statement.where(tasks.c.action != 'download')
             from webapp.disk_budget import resource_blocked
             if not processing and resource_blocked(self, db):

@@ -115,7 +115,10 @@ class ProcessingFleetIdleTests(unittest.TestCase):
         self.assertTrue(primary.allowed())
         self.assertFalse(excess.allowed())
         self.assertTrue(other.allowed())
-        for values in ({'paused':1}, {'paused':0,'stop_requested':1},
+        self.a.fleet.control('alpha', {'action': 'drain'})
+        self.assertTrue(primary.allowed())
+        self.assertFalse(excess.allowed())
+        for values in ({'stop_requested':1},
                        {'stop_requested':0,'boot_id':'replacement'}):
             with self.a.connect() as db:
                 db.execute(instances.update().where(instances.c.id=='alpha').values(**values))

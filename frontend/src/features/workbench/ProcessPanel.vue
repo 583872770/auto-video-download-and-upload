@@ -25,7 +25,6 @@ const filters = [
 ] as const;
 const queueGroups: { key: QueueGroup; label: string }[] = [
   { key: 'processing', label: '等待本地处理' },
-  { key: 'disk', label: '等待磁盘空间' },
   { key: 'retry', label: '等待重试' },
   { key: 'ready', label: '等待领取' },
 ];
@@ -76,7 +75,9 @@ const network = computed(() => {
 });
 const processing = computed(() => rows.value.filter((row) => row.processing && row.id));
 const onlineProcessing = computed(
-  () => processing.value.filter((row) => row.stage !== 'waiting_processing').length,
+  () =>
+    processing.value.filter((row) => row.stage !== 'waiting_processing' && row.state !== 'disk_wait')
+      .length,
 );
 const accountLink = computed(() => ({
   path: '/accounts',
@@ -204,7 +205,7 @@ function toggleQueue(kind: QueueGroup) {
               <RouterLink v-if="row.account" class="text-link cell-note" :to="accountLink">{{
                 row.account
               }}</RouterLink>
-              <small v-else-if="row.id" class="cell-note">待分配账号</small>
+              <small v-else-if="row.id && row.state !== 'disk_wait'" class="cell-note">待分配账号</small>
               <small v-else-if="fresh && row.stage === 'waiting_start'" class="cell-note"
                 >尚未领取视频</small
               >
@@ -264,6 +265,9 @@ function toggleQueue(kind: QueueGroup) {
           >本地处理 {{ String(row.number).padStart(2, '0') }} · {{ row.title || row.video_id
           }}<small class="cell-note">{{ fresh ? step(row) : '状态待确认' }}</small></span
         >
+        <small v-if="fresh && row.state === 'disk_wait'" class="cell-note">
+          {{ row.wait?.detail }} <RouterLink class="text-link" :to="diskLink">查看空间</RouterLink>
+        </small>
         <button type="button" @click="showLog(row)">查看日志</button>
       </li>
     </ul>
@@ -272,12 +276,6 @@ function toggleQueue(kind: QueueGroup) {
       <button type="button" :aria-expanded="expanded === item.key" @click="toggleQueue(item.key)">
         {{ item.label }} <strong>{{ fresh ? snapshot?.queue[item.key] : '—' }}</strong>
       </button>
-      <RouterLink
-        v-if="item.key === 'disk' && snapshot?.queue.disk"
-        class="text-link"
-        :to="diskLink"
-        >查看空间</RouterLink
-      >
       <template v-if="expanded === item.key">
         <p v-if="details.error.value" class="form-error">
           {{ details.error.value }} <button type="button" @click="loadQueue(item.key)">重试</button>

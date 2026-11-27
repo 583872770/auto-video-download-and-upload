@@ -97,6 +97,24 @@ class ResourceFeedbackTests(unittest.TestCase):
             cleared = controller.update(config, force=True)
         self.assertEqual(cleared['download_start_gate'], {})
 
+    def test_aged_local_processing_bytes_slow_new_downloads(self):
+        tick = [1]
+        controller = ThroughputController(self.directory, clock=lambda: tick[0])
+        pool = {'known': True, 'capacity': 12}
+        config = {'youtube_cookie_pool': [str(index) for index in range(12)]}
+        sample = {'cpu_cores': 4, 'memory_total': 8192 * MIB,
+                  'memory_available': 4096 * MIB, 'cpu_percent': 30, 'io_pressure': 0, 'rx': 0}
+        backlog = {'bytes': 4096 * MIB, 'budget_bytes': 8192 * MIB, 'count': 12,
+                   'oldest_at': time.time() - 120}
+        with patch.object(controller, 'sample', return_value=sample):
+            initial = controller.update(config, cookie_capacity=pool)['workers']
+            tick[0] += 61
+            limited = controller.update(config, cookie_capacity=pool, processing_load=backlog)
+            self.assertLess(limited['workers'], initial)
+            self.assertEqual(limited['worker_control']['pressure']['reasons'][0]['code'], 'processing_backlog')
+            tick[0] += 61
+            self.assertGreater(controller.update(config, cookie_capacity=pool)['workers'], limited['workers'])
+
     def test_container_quota_and_memory_override_host_totals(self):
         (self.directory/'cpu.max').write_text('50000 100000')
         (self.directory/'memory.max').write_text(str(768*MIB))

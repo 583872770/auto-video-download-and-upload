@@ -2,7 +2,6 @@
 from contextlib import ExitStack, nullcontext
 import os
 from pathlib import Path
-import shutil
 import sys
 import time
 import traceback
@@ -13,13 +12,14 @@ from webapp.worker.formatting import format_bytes
 from webapp.worker.locks import worker_lock
 from webapp.worker.recovery import TaskRecovery
 from webapp.worker.heartbeat import LeaseHeartbeat
+from webapp.worker.disk_wait import run_with_disk_wait
 from webapp.wait_diagnostics import start_wait
 
 
 def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
     execute = execute_task
     TaskStore = store_factory
-    from webapp.disk_budget import DiskPressure, DiskCoordinationBusy, is_disk_full, MIB
+    from webapp.disk_budget import DiskPressure, DiskCoordinationBusy, is_disk_write_pressure, MIB
     from webapp.youtube_auth import YouTubeAuthRequired
     from webapp.environment import DownloadEnvironmentRequired
     from webapp.downloads import DownloadLeaseLost, YouTubeAccountLimited
@@ -105,19 +105,6 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         start_ticket.finish()
                     store.release(task['id'], store.owner, '下载进程数量已调整，任务等待其他进程继续。', delay=0)
                     break
-                if task['action'] == 'download' and not processing_task:
-                    from Utils.config import video_directory
-                    from Utils.download_storage import DownloadWorkspace
-                    workspace = DownloadWorkspace(config, store.directory, task['id'])
-                    target = store.directory if workspace.test_mode else video_directory(workspace.config, base)
-                    target.mkdir(parents=True, exist_ok=True)
-                    reserve_gb = int(runtime.get('min_free_gb', config.get('min_free_gb', 2)))
-                    reserve = reserve_gb * 1024 ** 3
-                    if shutil.disk_usage(target).free < reserve:
-                        message = f'磁盘剩余空间不足 {reserve_gb} GB，下载已暂停，释放空间后自动继续。'
-                        store.release(task['id'], store.owner, message)
-                        store.worker_status(store.owner, name, 'paused', message=message)
-                        break
                 store.worker_status(store.owner, name, 'running', task['id'], task=task)
                 heartbeat = LeaseHeartbeat(store, task['id'], name, task_context, task=task)
                 lease_guard = heartbeat.guard
@@ -150,10 +137,17 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                         if not log_admitted:
                             event('task_log_unavailable', fallback='supervisor_log', reason='maintenance_busy_or_write_failed')
                         event('attempt_start', action=task['action'], policy_version=task.get('policy_version'))
-                        result = execute(task['action'], task['payload'],
-                                         report,
-                                         rotation_completed=store.rotation_completed, store=store, worker_slot=slot, task_id=task['id'],
-                                         **({'start_ticket': start_ticket} if start_ticket else {}))
+                        def execute_current(write):
+                            return execute(task['action'], task['payload'], write,
+                                           rotation_completed=store.rotation_completed, store=store,
+                                           worker_slot=slot, task_id=task['id'],
+                                           **({'start_ticket': start_ticket} if start_ticket else {}))
+
+                        # 磁盘复查只重进当前任务的执行函数，不重新领取，也不增加任务尝试次数。
+                        if task['action'] == 'download':
+                            result = run_with_disk_wait(execute_current, heartbeat, report, start_ticket=start_ticket)
+                        else:
+                            result = execute_current(report)
                         if result.get('processing_pending'):
                             committed = lease_guard.settle(store.finish, task['id'], result=result, worker_id=store.owner)
                             print('网络下载完成，账号已释放，等待本地处理。', flush=True)
@@ -262,7 +256,7 @@ def drain_queue(directory, slot=0, role='all', *, execute_task, store_factory):
                             break
                         continue
                     except BaseException as error:
-                        if is_disk_full(error) or any(term in str(error).lower() for term in ('no space left', 'disk full', 'disk quota exceeded')):
+                        if is_disk_write_pressure(error):
                             record_failure(error)
                             detail = '文件写入被文件系统拒绝。请检查实际剩余空间和文件系统配额。'
                             resource_wait = dict(code='disk_wait', label='磁盘写入失败', detail=detail)

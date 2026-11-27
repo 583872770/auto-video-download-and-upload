@@ -33,10 +33,12 @@ def transfer_summary(tasks, stamp=None):
     return dict(time=stamp, transferring=transferring, measured=measured, speed=speed)
 
 
-def compact_status(value):
+def compact_status(value, cache=None, identity='local'):
     """Keep task details in the inspector; the header needs one speed sum."""
     value = dict(value)
     value['transfer_summary'] = transfer_summary(value.get('active_tasks', []))
+    from webapp.workbench_live import disk_wait_counts, live_workers
+    value['disk_waiting'] = disk_wait_counts(live_workers(cache, identity, time.time())) if cache else None
     value.pop('active_tasks', None)
     if value.get('job'):
         value['job'] = {key: item for key, item in value['job'].items()
@@ -270,7 +272,7 @@ def register_workbench(app, store, configuration, preflight):
                 queued=job['queued'] if job else 0, online=True, active_tasks=active, error='', session=session,
                 disk=disk_summary, hls_buffer=(rate or {}).get('hls_buffer'), account_summary=accounts)
             if compact:
-                value = compact_status(value)
+                value = compact_status(value, store.progress_cache, 'local')
             else:
                 value = {**value, 'transfer_summary': transfer_summary(value.get('active_tasks', []))}
             return jsonify(value)
@@ -294,7 +296,7 @@ def register_workbench(app, store, configuration, preflight):
         value = views.read(('workbench', identity, preview, compact, summary_only),
                            lambda: workbench.status(identity, preview, compact=compact, summary_only=summary_only))
         if compact:
-            value = compact_status(value)
+            value = compact_status(value, store.progress_cache, identity)
         else:
             value = {**value, 'transfer_summary': transfer_summary(value.get('active_tasks', []))}
         return jsonify(value)

@@ -52,6 +52,12 @@ def is_disk_full(error):
     return isinstance(error, OSError) and error.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', 122))
 
 
+def is_disk_write_pressure(error):
+    # 下载器可能将文件系统错误包装成自己的异常，保留已有的错误文本识别。
+    return is_disk_full(error) or any(term in str(error).lower() for term in
+                                      ('no space left', 'disk full', 'disk quota exceeded'))
+
+
 def _path_comparison_key(path):
     value = str(path)
     if os.name == 'nt':
@@ -416,6 +422,15 @@ class DiskBudget:
                 ORDER BY needed DESC LIMIT ?
             )""", (slots,)).fetchone()[0]
 
+    def processing_load(self, pending):
+        # 只算仍在队列的本地处理计划，复用工作区实测用量，不扫描文件。
+        placeholders = ','.join('?' for _ in pending)
+        with self.connect(write=False) as db:
+            measured, = db.execute(f'SELECT COALESCE(SUM(measured), 0) FROM leases WHERE id IN ({placeholders})',
+                                   [row.disk_lease for row in pending]).fetchone()
+        return dict(count=len(pending), bytes=measured, oldest_at=pending[0].created_at,
+                    budget_bytes=self.budget_bytes)
+
     def refresh_processing(self, store):
         """把排队任务各自占用的输出预留换成共享周转额度。"""
         from sqlalchemy import select
@@ -608,7 +623,7 @@ class DiskBudget:
         return json.dumps({'disk': {k: self.config[k] for k in sorted(DISK_FIELDS)},
                            'policy': {k: self.config.get(k) for k in policy_fields}}, sort_keys=True)
 
-    def lease(self, category, *, task=None, reserve=None, path=None):
+    def lease(self, category, *, task=None, reserve=None, path=None, wait_for_budget=False, defer_reservation=False):
         identity = uuid.uuid4().hex
         if path is None:
             folder = {'test': 'test-downloads', 'browsers': 'runtime/browser-profiles',
@@ -616,13 +631,17 @@ class DiskBudget:
                       'downloads': 'runtime/downloads'}[category]
             path = (self.external_roots[0] if category == 'downloads' and self.external_roots
                     else self.directory / folder) / identity
-        return DiskLease(self, identity, category, self._safe(path), task, reserve)
+        lease = DiskLease(self, identity, category, self._safe(path), task, reserve)
+        lease.wait_for_budget = wait_for_budget
+        lease.defer_reservation = defer_reservation
+        return lease
 
     def adopt(self, identity, task, path):
         with self.connect(write=False) as db:
             row = db.execute('SELECT * FROM leases WHERE id=? AND task=?', (identity, task)).fetchone()
         if not row or self._safe(row['path']) != self._safe(path):
-            raise DiskPressure('待处理文件的空间登记缺失，已停止本地处理，请检查临时目录。')
+            from webapp.delivery.verify import InvalidSourceMedia
+            raise InvalidSourceMedia('待处理文件的空间登记缺失，请重新下载。')
         lease = DiskLease(self, identity, row['category'], self._safe(path), task, 0)
         lease.processing = True
         return lease
@@ -662,6 +681,28 @@ class DiskBudget:
             if waiting or row['needed'] > available or any(usage[k] > v for k, v in self.limits.items()):
                 blocked.add(row['task'])
         return blocked
+
+    def download_space_ready(self, media_directory, category, peak):
+        # 等待进程共用已有的磁盘用量采样，只读估算。正式恢复写入仍须原子预留。
+        try:
+            self.config.update(json.loads((self.directory / 'disk-budget-config.json').read_text(encoding='utf-8')))
+        except FileNotFoundError:
+            pass
+        low = self.watermarks[0]
+        if shutil.disk_usage(media_directory).free < max(low, int(self.config.get('min_free_gb', 2)) * GIB):
+            return False
+        self._refresh_usage()
+        with self.connect(write=False) as db:
+            waiting, free = self._watermark(db, persist=False)
+            if waiting:
+                return False
+            usage, committed = self._usage(db)
+            if any(usage[key] > limit for key, limit in self.limits.items() if key != category):
+                return False
+            unwritten = sum(committed.values()) - sum(usage.values())
+            available = min(free - low - unwritten, self.limits[category] - committed[category],
+                            self.budget_bytes - sum(committed.values())) - self._processing_scratch(db)
+        return peak <= available
 
     def _reserve(self, lease, needed):
         if lease.reserved >= needed:
@@ -1206,6 +1247,8 @@ class DiskLease:
         self.config_reader = None
         self.media_directory = None
         self.processing = False
+        self.wait_for_budget = False
+        self.defer_reservation = False
         self.planned = None
         self.measured_at = float('-inf')
         self.measured_bytes = 0
@@ -1219,7 +1262,7 @@ class DiskLease:
         peak = max(0, int(peak))
         if self.planned == peak:
             return
-        if peak > min(self.budget.limits[self.category], self.budget.budget_bytes):
+        if not self.wait_for_budget and peak > min(self.budget.limits[self.category], self.budget.budget_bytes):
             from webapp.delivery.verify import LocalDeliveryError
             raise LocalDeliveryError('单个视频的预计完成峰值超过本实例临时空间额度，请提高额度或调整任务交付要求。')
         self.check(peak, force=True)
@@ -1255,26 +1298,33 @@ class DiskLease:
     def __enter__(self):
         self.lock = file_lock(self.budget.directory / 'disk-locks' / (self.id + '.lock'))
         if not self.lock.__enter__():
-            raise DiskPressure('临时目录正在清理，请稍后重试。')
+            raise DiskCoordinationBusy('临时目录正在清理，请稍后重试。')
         try:
             if self.processing:
                 with self.budget.connect() as db:
                     row = db.execute('SELECT * FROM leases WHERE id=?', (self.id,)).fetchone()
-                    if (not row or alive(json.loads(row['owner'])) or
+                    if not row:
+                        from webapp.delivery.verify import InvalidSourceMedia
+                        raise InvalidSourceMedia('待处理文件的空间登记缺失，请重新下载。')
+                    if (alive(json.loads(row['owner'])) or
                             any(alive(child) for child in json.loads(row['children']))):
-                        raise DiskPressure('下载进程尚未释放临时文件，等待本地处理交接。')
+                        raise DiskCoordinationBusy('下载进程尚未释放临时文件，等待本地处理交接。')
                     self.reserved = max(row['reserved'], size_of(self.path))
                     db.execute('UPDATE leases SET owner=?,children=? WHERE id=?',
                                (json.dumps(process_identity()), '[]', self.id))
-            else:
+            elif not self.defer_reservation:
                 self.budget._reserve(self, self.initial)
             self.path.mkdir(parents=True, exist_ok=True)
         except BaseException:
             try:
                 if self.reserved:
-                    self._retire()
+                    # 进入工作区失败时还没有启动写入进程，立即释放未使用的预留。
+                    self._retire(quiescent=True)
             finally:
                 self.lock.__exit__(None, None, None)
+            if not self.processing and not self.reserved and not self.path.exists():
+                # 初始预留失败时没有工作区，每轮重试都应清掉这次独立的锁文件。
+                (self.budget.directory / 'disk-locks' / (self.id + '.lock')).unlink(missing_ok=True)
             raise
         return self
 
@@ -1296,6 +1346,11 @@ class DiskLease:
         with self.check_lock:
             return self._check(estimate, force=force)
 
+    def check_media_space(self, directory):
+        if shutil.disk_usage(directory).free < max(
+                int(self.budget.config.get('min_free_gb', 2)) * GIB, self.budget.watermarks[0]):
+            raise DiskPressure('磁盘实际剩余空间未达到最低保留要求。')
+
     def _check(self, estimate=0, *, force=False):
         if self.error:
             raise self.error
@@ -1312,9 +1367,7 @@ class DiskLease:
             except FileNotFoundError:
                 pass
         if self.media_directory:
-            if shutil.disk_usage(self.media_directory).free < max(
-                    int(self.budget.config.get('min_free_gb', 2)) * GIB, self.budget.watermarks[0]):
-                raise DiskPressure('素材目录所在磁盘剩余空间不足。')
+            self.check_media_space(self.media_directory)
         if time.monotonic() - self.measured_at >= 5:
             self.measured_bytes = size_of(self.path)
             self.measured_at = time.monotonic()

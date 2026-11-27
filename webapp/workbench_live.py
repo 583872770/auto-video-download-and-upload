@@ -6,13 +6,13 @@ import time
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
-from webapp.database import counters, delivery_work, notifications, notification_tasks, settings, tasks
+from webapp.database import counters, delivery_work, settings, tasks
 from webapp.diagnostics import safe_text
 from webapp.wait_diagnostics import task_wait
 
 
-STATES = ('downloading', 'pending_transfer', 'pending_start', 'idle')
-QUEUE = ('processing', 'disk', 'retry', 'ready')
+STATES = ('downloading', 'pending_transfer', 'pending_start', 'disk_wait', 'idle')
+QUEUE = ('processing', 'retry', 'ready')
 
 
 def worker_view(worker, sample, stamp):
@@ -24,7 +24,12 @@ def worker_view(worker, sample, stamp):
         progress = sample.get('progress') or {}
     stage = progress.get('stage') or worker['state']
     wait = task_wait(progress, stamp=stamp)
-    if stage == 'waiting_start' or worker['state'] in ('disk_wait', 'paused'):
+    if worker['state'] == 'disk_wait' and worker.get('task_id'):
+        # 实时进程状态优先，磁盘等待时不沿用上一次传输采样。
+        stage = 'disk_wait'
+    elif worker['state'] == 'waiting_start':
+        stage = 'waiting_start'
+    if worker['state'] == 'waiting_start' or stage == 'waiting_start' or worker['state'] in ('disk_wait', 'paused'):
         detail = worker.get('wait') or {}
         wait = {'label': safe_text(worker.get('message') or '等待执行条件'),
                 'until': detail.get('until', worker.get('until'))}
@@ -36,6 +41,8 @@ def worker_view(worker, sample, stamp):
             wait.update(code='reason_pending', detail='具体原因尚未上报，等待下次进程状态更新。')
     if worker['state'] == 'idle':
         state = 'idle'
+    elif worker['state'] == 'disk_wait' and worker.get('task_id'):
+        state = 'disk_wait'
     elif stage == 'downloading' and progress.get('network_phase') == 'transferring':
         state = 'downloading'
     elif stage in ('waiting_request', 'waiting_connection', 'extracting', 'downloading') or (
@@ -52,14 +59,13 @@ def worker_view(worker, sample, stamp):
                 video_id=worker.get('video_id'), title=progress.get('title') or worker.get('title'),
                 account=progress.get('cookie_profile_name'), output=progress.get('output_kind'),
                 language=progress.get('output_language'), progress=live_progress, wait=wait,
-                phase_started_at=progress.get('network_phase_started_at'))
+                phase_started_at=progress.get('network_phase_started_at') if stage != 'disk_wait' else None)
 
 
-def live_snapshot(cache, identity):
+def live_workers(cache, identity, stamp):
     workers = cache.read_workers()
     if workers is None:
         return None
-    stamp = time.time()
     prefix = hashlib.sha256(identity.encode()).hexdigest()[:16] + ':' if identity != 'local' else ''
     latest = {}
     for worker in sorted(workers, key=lambda row: row.get('heartbeat', 0), reverse=True):
@@ -71,14 +77,34 @@ def live_snapshot(cache, identity):
                 and 0 <= stamp - worker.get('heartbeat', 0) < 30):
             if worker.get('action') in (None, 'download'):
                 latest.setdefault(slot, worker)
-    samples = cache.read_workbench(identity, list(latest.values()))
+    return list(latest.values())
+
+
+def disk_wait_counts(workers):
+    if workers is None:
+        return None
+    # 每个仍在报告心跳的槽位只计一次，已退出和未领取的任务均不计入。
+    counts = dict(download=0, processing=0)
+    for worker in workers:
+        if worker['state'] == 'disk_wait' and worker.get('task_id'):
+            slot = str(worker['slot']).rsplit(':', 1)[-1]
+            counts['processing' if slot.startswith('processing-') else 'download'] += 1
+    return counts
+
+
+def live_snapshot(cache, identity):
+    stamp = time.time()
+    workers = live_workers(cache, identity, stamp)
+    if workers is None:
+        return None
+    samples = cache.read_workbench(identity, workers)
     if samples is None:
         return None
     summary, progress = samples
     if not summary or not 0 <= stamp - summary.get('updated_at', 0) < 60:
         return None
     rows = sorted((worker_view(worker, progress.get(worker.get('task_id')), stamp)
-                   for worker in latest.values()), key=lambda row: (row['processing'], row['number']))
+                   for worker in workers), key=lambda row: (row['processing'], row['number']))
     counts = dict.fromkeys(STATES, 0)
     measured = []
     for row in rows:
@@ -87,7 +113,8 @@ def live_snapshot(cache, identity):
             speed = row['progress'].get('speed')
             if row['state'] == 'downloading' and isinstance(speed, (int, float)) and math.isfinite(speed) and speed >= 0:
                 measured.append(speed)
-    return dict(time=stamp, rows=rows, counts=counts, queue=summary['queue'], queue_at=summary['updated_at'],
+    return dict(time=stamp, rows=rows, counts=counts, disk_waiting=disk_wait_counts(workers),
+                queue=summary['queue'], queue_at=summary['updated_at'],
                 paused=summary['paused'], transfer_summary=dict(time=stamp, transferring=counts['downloading'],
                 measured=len(measured), speed=sum(measured)))
 
@@ -103,15 +130,9 @@ def queue_queries(identity, batch, stamp):
     local = select(tasks).select_from(processing).where(*pending, delivery_work.c.instance_id == identity)
     job_tasks = (*pending, tasks.c.batch_id == batch)
     no_processing = ~select(delivery_work.c.task_id).where(delivery_work.c.task_id == tasks.c.id).exists()
-    incidents = notifications.join(notification_tasks, notifications.c.id == notification_tasks.c.group_id)
-    disk_tasks = (notifications.c.job_id == batch, notifications.c.code == 'disk', notification_tasks.c.state != 'resolved')
-    disk = select(tasks).select_from(incidents.join(tasks, tasks.c.id == notification_tasks.c.task_id))
-    not_disk = ~select(notification_tasks.c.task_id).select_from(incidents).where(
-        notification_tasks.c.task_id == tasks.c.id, *disk_tasks).exists()
-    download = select(tasks).where(*job_tasks, no_processing, not_disk)
+    download = select(tasks).where(*job_tasks, no_processing)
     return {
         'processing': local,
-        'disk': disk.where(*job_tasks, *disk_tasks, no_processing),
         'retry': download.where(tasks.c.available_at > stamp),
         'ready': download.where(tasks.c.available_at <= stamp),
     }
@@ -139,13 +160,12 @@ def publish_queue(store):
 
         counts['processing'] = count(queries['processing'])
         if batch:
-            counts['disk'] = count(queries['disk'])
             counts['retry'] = count(queries['retry'].with_hint(tasks, 'FORCE INDEX (ix_tasks_dispatch)', dialect_name='mysql'))
             total = db.execute(select(counters.c.value).where(counters.c.scope == 'batch:' + batch,
                 counters.c.status == 'queued')).scalar_one_or_none() or 0
             processing = count(select(delivery_work.c.task_id).select_from(delivery_work.join(tasks,
                 tasks.c.id == delivery_work.c.task_id)).where(tasks.c.batch_id == batch, tasks.c.status == 'queued'))
-            deductions = (processing, counts['disk'], counts['retry'])
+            deductions = (processing, counts['retry'])
             counts['ready'] = (None if None in deductions else max(0, int(total) - sum(deductions)))
     cache.publish_workbench(identity, dict(queue=counts, paused=paused, updated_at=time.time()))
 

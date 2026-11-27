@@ -60,12 +60,18 @@ async function refresh(signal?: AbortSignal) {
 }
 async function save(id: string, action?: string) {
   await op.run(async () => {
-    if (action === 'stop' && !(await confirmAction(`停止「${id}」并清理未完成视频的临时文件？下次开始时重新下载。`))) return;
+    if (
+      action === 'stop' &&
+      !(await confirmAction(
+        `停止「${id}」并删除本地待处理和下载中的临时文件？下次开始时重新下载。`,
+      ))
+    )
+      return;
     const result = await api.request<{ message: string }>(
       '/api/instances/' + encodeURIComponent(id),
       {
         method: 'PUT',
-        body: action === 'stop' ? { action, discard_temporary: true } : action ? { action } : { name: names[id] },
+        body: action ? { action } : { name: names[id] },
         timeoutMs: 90000,
       },
     );

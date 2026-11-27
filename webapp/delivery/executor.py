@@ -239,7 +239,12 @@ def choose(info, kind, max_height):
 def attempt(executor, addresses):
     try:
         return acquire(executor, addresses)
-    except Exception:
+    except Exception as error:
+        from webapp.disk_budget import DiskPressure, is_disk_write_pressure
+        monitor_error = executor.session.payload.get('_disk_monitor_error')
+        # 磁盘受限时，原下载进程会恢复执行。把未完成的下载交给本地队列会造成重复归属。
+        if isinstance(error, DiskPressure) or is_disk_write_pressure(error) or (monitor_error and monitor_error()):
+            raise
         # Retain already acquired outputs even if a later caption request fails.
         # Settlement persists the source recovery decision before handing off
         # local work. Any permitted retry fetches only missing requirements.
@@ -292,7 +297,6 @@ def acquire(executor, addresses):
         # Listing translated variants of author-provided captions is opt-in.
         options['writeautomaticsub'] = spec['subtitles'].get('mode') == 'original_and_translated'
     temporary = Path(session.config.get('_temporary_directory') or session.payload['_disk_workspace']) / 'delivery'
-    temporary.mkdir(parents=True, exist_ok=True)
     progress.state.update(download_method='yt_dlp', output_types=spec['outputs'], delivery_version=session.config['_delivery_version'])
     session.meter.begin()
     try:
@@ -345,6 +349,8 @@ def acquire(executor, addresses):
                     forecast['peak_bytes'] += 24 * 1024**2
                 progress.state['space_plan'] = forecast
                 progress.save(force=True)
+                # 完成空间预留后再创建写入目录并获取交付文件。
+                temporary.mkdir(parents=True, exist_ok=True)
                 session.current_video.update(id=info.get('id'), title=info.get('title', ''))
                 progress.state['title'] = info.get('title', '')
                 if 'metadata' in remaining:
@@ -354,8 +360,6 @@ def acquire(executor, addresses):
                     output.write_text(json.dumps(video_metadata(info), ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
                     publish(session, output, 'metadata')
                     print('视频信息已保存：JSON，包含标题、简介、频道等来源资料。', flush=True)
-                if 'thumbnail' in remaining:
-                    thumbnail(executor, info, downloader, temporary, keys['thumbnail'])
                 downloaded = set()
                 for source in sources:
                     kind, selected, path = source['kind'], source['format'], source['path']
@@ -377,6 +381,9 @@ def acquire(executor, addresses):
                         forecast['peak_bytes'] += 24 * 1024**2
                     progress.state['space_plan'] = forecast
                     progress.save(force=True)
+                # 先完成媒体传输，封面请求等待期间仍可在失败分支保全已下载轨道。
+                if 'thumbnail' in remaining:
+                    thumbnail(executor, info, downloader, temporary, keys['thumbnail'])
                 # Acquisition ends here. Conversion, verification and large-file
                 # publication run in independent local workers, without Cookies.
                 if not sub_done:

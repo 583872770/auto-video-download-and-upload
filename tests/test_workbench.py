@@ -413,16 +413,44 @@ class WorkbenchFleetTests(unittest.TestCase):
         self.assertEqual(self.b.claim('beta-new')['batch_id'], b)
         self.assertEqual(self.status('beta')['selected_job_id'], b)
 
-    def test_pause_drains_current_video_and_leaves_peer_running(self):
+    def queue_local_processing(self, store, task, owner):
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskBudget, MIB
+
+        budget = DiskBudget(store.directory, store.runtime())
+        with budget.lease('test', task=task['id'], reserve=MIB) as lease:
+            (lease.path / 'source.part').write_bytes(b'downloaded source')
+            with store.connect() as db:
+                db.execute(delivery_work.insert().values(task_id=task['id'], instance_id=store.fleet.id,
+                    workspace=str(lease.path), disk_lease=lease.id, plan=json.dumps({'jobs': []}),
+                    created_at=time.time(), source_attempts=task['attempts']))
+            lease.preserve = True
+        self.assertTrue(store.finish(task['id'], result={'processing_pending': True}, worker_id=owner))
+        return lease.path
+
+    def test_pause_drains_current_video_and_local_queue_and_leaves_peer_running(self):
         self.pair()
+        queued = self.a.claim('alpha-initial')
+        self.queue_local_processing(self.a, queued, 'alpha-initial')
         first, second = self.a.claim('alpha-owner'), self.b.claim('beta-owner')
         self.control('alpha', 'pause')
         self.assertIsNone(self.a.claim('alpha-next'))
+        self.assertEqual(self.a.runnable_counts(), {'processing': 1})
+        self.assertIsNone(self.b.claim('beta-processing', processing=True))
         self.assertTrue(self.a.heartbeat(first['id'], 'alpha-owner'))
         self.assertFalse(self.a.downloads_stopped())
         self.assertTrue(self.b.heartbeat(second['id'], 'beta-owner'))
         self.assertIsNotNone(self.b.claim('beta-next'))
-        self.assertTrue(self.a.finish(first['id'], result={}, worker_id='alpha-owner'))
+        self.queue_local_processing(self.a, first, 'alpha-owner')
+        self.assertEqual(self.a.runnable_counts(), {'processing': 2})
+        processed = set()
+        for _ in range(2):
+            local = self.a.claim('alpha-processing', processing=True)
+            self.assertTrue(local['payload']['_processing'])
+            self.assertTrue(self.a.finish(local['id'], result={}, worker_id='alpha-processing'))
+            processed.add(local['id'])
+        self.assertEqual(processed, {queued['id'], first['id']})
+        self.assertEqual(self.a.runnable_counts(), {})
         self.assertTrue(self.status('alpha')['paused'])
         self.assertFalse(self.status('beta')['paused'])
 
@@ -430,10 +458,17 @@ class WorkbenchFleetTests(unittest.TestCase):
         from webapp.disk_budget import DiskBudget
 
         a, b = self.pair()
+        queued = self.a.claim('alpha-initial')
+        workspace = self.queue_local_processing(self.a, queued, 'alpha-initial')
+        peer = self.b.claim('beta-initial')
+        peer_workspace = self.queue_local_processing(self.b, peer, 'beta-initial')
         first, second = self.a.claim('alpha-owner'), self.b.claim('beta-owner')
         self.control('alpha', 'stop')
         self.assertTrue(self.status('alpha')['cleaning_temporary'])
         self.assertIsNone(self.a.claim('alpha-next'))
+        self.assertIsNone(self.a.claim('alpha-processing', processing=True))
+        self.assertNotIn('processing', self.a.runnable_counts())
+        self.assertEqual(self.b.runnable_counts().get('processing'), 1)
         # 下载实例确认进程退出后才解除租约，然后由维护线程清理。
         self.assertEqual(self.a.stop_running_downloads(lambda owner: owner == 'alpha-owner'), 1)
         self.assertFalse(self.a.heartbeat(first['id'], 'alpha-owner'))
@@ -446,9 +481,22 @@ class WorkbenchFleetTests(unittest.TestCase):
             response = self.client.put('/api/instances/alpha', json={'action': 'resume'}, headers=self.headers)
             self.assertEqual(response.status_code, 409)
             self.assertTrue(DiskBudget(self.a.directory, self.a.runtime()).cleanup_stopped_downloads(self.a))
+            self.assertFalse(workspace.exists())
+            self.assertTrue(peer_workspace.exists())
             response = self.client.put('/api/instances/alpha', json={'action': 'resume'}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.a.claim('alpha-new')['batch_id'], a)
+        self.assertIsNone(self.a.claim('alpha-processing', processing=True))
+        restarted = self.a.claim('alpha-new')
+        self.assertEqual(restarted['id'], queued['id'])
+        self.assertTrue(restarted['payload']['_redownload_after_stop'])
+        self.assertEqual(restarted['batch_id'], a)
+
+    def test_instance_stop_always_requests_cleanup(self):
+        self.pair()
+        response = self.client.put('/api/instances/alpha', json={'action': 'stop'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(self.status('alpha')['cleaning_temporary'])
+        self.assertFalse(self.status('beta')['cleaning_temporary'])
 
     def test_preflight_failure_or_policy_change_does_not_touch_peers(self):
         a, b = self.pair()

@@ -218,7 +218,7 @@ class TaskQueries:
             paused = self.claims_paused(db)
             counts = {}
             stamp = self.fleet.clock(db) if self.fleet else time.time()
-            if not paused and not self.media_clear_busy(db):
+            if not self.downloads_stopped(db) and not self.media_clear_busy(db):
                 local_id = self.fleet.id if self.fleet else 'local'
                 local = select(tasks.c.id).select_from(tasks.join(delivery_work,
                     tasks.c.id == delivery_work.c.task_id)).where(tasks.c.status == 'queued',

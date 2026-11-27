@@ -50,7 +50,7 @@ class QueueControl:
                 return self.downloads_stopped(connection, lock=lock)
         if self.fleet:
             return bool(self.fleet.row(db)['stop_requested'] or self.pending_stop_cleanup(db))
-        return self.downloads_paused(db, lock=lock)
+        return self.downloads_paused(db, lock=lock) or bool(self.pending_stop_cleanup(db))
 
     def claims_paused(self, db=None, *, lock=False):
         if db is None:
@@ -287,6 +287,9 @@ class QueueControl:
                 if owner:
                     db.execute(workers.update().where(workers.c.id == owner).values(state='stopped', task_id=None, message='用户已停止下载。'))
                 stopped += 1
+            # 已确认进程退出，立即从实时列表移除，不用等心跳过期。
+            if owner:
+                self.progress_cache.forget_worker(owner)
         return stopped
 
     def rotation_completed(self, rotation_id, count_failures=True):

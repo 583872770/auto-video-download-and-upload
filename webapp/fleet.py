@@ -338,7 +338,7 @@ class Fleet:
                         item.pop(key, None)
         return {'items': result, 'global_limit': budget, 'role': self.role, 'instance_id': self.id}
 
-    def control(self, identity, data, *, discard_temporary=False):
+    def control(self, identity, data):
         with self.store.connect() as db:
             db.execute(select(settings.c.value).where(settings.c.key == 'fleet_budget').with_for_update()).first()
             row = db.execute(select(instances).where(instances.c.id == identity).with_for_update()).mappings().first()
@@ -368,7 +368,7 @@ class Fleet:
                         from werkzeug.exceptions import Conflict
                         raise Conflict('正在清理停止任务的临时文件，请稍后启动实例。')
                     values['error'] = ''
-                elif action == 'stop' and discard_temporary:
+                elif action == 'stop':
                     self.store.request_stop_cleanup(db, identity)
             db.execute(instances.update().where(instances.c.id == identity).values(**values, limits=json.dumps(limits)))
             if data.get('action') == 'resume':

@@ -744,6 +744,41 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(Path(work['workspace']).exists())
         self.assertEqual(self.hits,[])
 
+    def test_local_disk_wait_resumes_the_latest_checkpoint_without_new_claim(self):
+        from web_worker import execute
+        from webapp.database import delivery_work
+        from webapp.disk_budget import DiskPressure
+
+        self.create(['audio_only'])
+        task = self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=self.info()):
+            result = execute('download', task['payload'], store=self.store, task_id=task['id'])
+        self.store.finish(task['id'], result=result, worker_id=self.store.owner)
+        observations = []
+
+        def process(store, task_id, work, report, *, slot):
+            plan = json.loads(work['plan'])
+            current = store.get(task_id)
+            observations.append((current['worker_id'], current['attempts'], plan.get('disk_wait_fixture')))
+            if len(observations) == 1:
+                # 空间不足前落下的新断点必须被下一轮读取，不能沿用首次领取时的旧计划。
+                plan['disk_wait_fixture'] = 'saved'
+                with store.connect() as db:
+                    db.execute(delivery_work.update().where(delivery_work.c.task_id == task_id).values(plan=json.dumps(plan)))
+                raise DiskPressure('本地处理暂缺空间')
+            report(dict(stage='processing'))
+            return dict(file_count=0)
+
+        self.hits.clear()
+        with patch('webapp.delivery.processing.run', side_effect=process), \
+             patch('webapp.worker.disk_wait.DISK_RECHECK_SECONDS', 0):
+            self.drain_role('processing')
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(observations[0][:2], observations[1][:2])
+        self.assertEqual(observations[1][2], 'saved')
+        self.assertEqual(self.store.get(task['id'])['status'], 'succeeded')
+        self.assertEqual(self.hits, [])
+
     def test_source_handoff_does_not_consume_a_processing_slot(self):
         from web_worker import execute
         self.store.set_runtime({**self.store.runtime(), 'postprocess_limit': 1})

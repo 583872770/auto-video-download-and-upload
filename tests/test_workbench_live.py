@@ -1,4 +1,4 @@
-import json
+import hashlib
 import tempfile
 import time
 import unittest
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from app import create_app
 from tests.test_progress_cache import MemoryRedis
-from webapp.database import counters, notifications, notification_tasks, settings, tasks
+from webapp.database import settings, tasks
 from webapp.progress_cache import ProgressCache
 from webapp.workbench_live import live_snapshot, publish_queue, queue_details
 from webapp.wait_diagnostics import start_wait
@@ -50,7 +50,7 @@ class WorkbenchLiveTests(unittest.TestCase):
                 self.store, 'connect', side_effect=AssertionError('live SQL read')):
             client = self.app.test_client()
             data = client.get('/api/workbench/live').get_json()
-            self.assertEqual(data['counts'], dict(downloading=1, pending_transfer=0, pending_start=1, idle=1))
+            self.assertEqual(data['counts'], dict(downloading=1, pending_transfer=0, pending_start=1, disk_wait=0, idle=1))
             self.assertEqual(data['transfer_summary']['speed'], 123)
             self.assertEqual(data['rows'][2]['wait'], {'code': 'start_interval', 'label': '等待任务启动间隔',
                 'detail': '间隔结束后会自动尝试领取。', 'until': until})
@@ -63,33 +63,42 @@ class WorkbenchLiveTests(unittest.TestCase):
         until = time.time() + 5
         wait = start_wait('disk_coordination', until=until)
         self.store.worker_status('backoff', '0', 'waiting_start', message=wait['label'], wait=wait)
-        self.store.worker_status('disk', '1', 'disk_wait', message='本机临时文件总预算不足')
+        task = dict(id='fixture', worker_id='disk', started_at='now', attempts=1, action='download')
+        cache = self.store.progress_cache
+        cache.publish(task, dict(stage='downloading', network_phase='transferring', speed=1000))
+        self.store.worker_status('disk', '1', 'disk_wait', task['id'], task=task, message='等待磁盘空间',
+            wait=dict(code='disk_wait', detail='本机临时文件总预算不足'))
+        self.store.worker_status('processing', 'processing-0', 'disk_wait', 'local-video')
+        self.store.worker_status('peer', hashlib.sha256(b'peer').hexdigest()[:16] + ':1', 'disk_wait', 'peer-video')
+        self.store.worker_status('old', '2', 'disk_wait')
         publish_queue(self.store)
-        backoff, disk = live_snapshot(self.store.progress_cache, 'local')['rows']
+        data = live_snapshot(cache, 'local')
+        backoff, disk, *_ = data['rows']
         self.assertEqual(backoff['wait'], wait)
-        self.assertEqual(disk['wait']['code'], 'disk_wait')
+        self.assertEqual(disk['state'], 'disk_wait')
+        self.assertIsNone(disk['progress']['speed'])
         self.assertEqual(disk['wait']['detail'], '本机临时文件总预算不足')
+        self.assertEqual(data['disk_waiting'], dict(download=1, processing=1))
+        from webapp.workbench import compact_status
+        self.assertEqual(compact_status({}, cache)['disk_waiting'], data['disk_waiting'])
+        cache.forget_worker('disk')
+        self.assertEqual(live_snapshot(cache, 'local')['disk_waiting'], dict(download=0, processing=1))
 
     def test_queue_summary_groups_match_paginated_task_details(self):
         stamp = time.time()
         batch = 'fixture-batch'
         with self.store.connect() as db:
             db.execute(self.store.db.upsert(settings, {'key': 'selected_download_job', 'value': batch}, ['key']))
-            db.execute(counters.insert().values(scope='batch:' + batch, status='queued', value=23))
-            db.execute(notifications.insert().values(id='disk', instance_id='local', job_id=batch, code='disk',
-                status='action', active_count=1, action_count=1, first_seen=stamp, updated_at=stamp, detail='{}'))
         for index in range(23):
-            task = self.store.create('download', {'urls': [f'https://youtu.be/{index:011d}']})
-            progress = {'stage': 'disk_wait'} if index == 0 else {}
+            task = self.store.create('download', {'batch_id': batch, 'urls': [f'https://youtu.be/{index:011d}']})
             with self.store.connect() as db:
                 db.execute(tasks.update().where(tasks.c.id == task['id']).values(
-                    batch_id=batch, progress=json.dumps(progress), available_at=stamp+300 if index == 1 else 0))
-                if index == 0:
-                    db.execute(notification_tasks.insert().values(task_id=task['id'], group_id='disk', state='action',
-                        first_seen=stamp, updated_at=stamp, detail='{}'))
+                    progress='{"stage":"disk_wait"}' if index == 0 else '{}',
+                    available_at=stamp+300 if index == 1 else 0))
+
         publish_queue(self.store)
-        summary = live_snapshot(self.store.progress_cache, 'local')['queue']
-        self.assertEqual(summary, dict(processing=0, disk=1, retry=1, ready=21))
+        self.assertEqual(live_snapshot(self.store.progress_cache, 'local')['queue'],
+                         dict(processing=0, retry=1, ready=22))
         first = queue_details(self.store, 'local', 'ready', 0)
         second = queue_details(self.store, 'local', 'ready', first['next_cursor'])
-        self.assertEqual((len(first['items']), len(second['items']), second['next_cursor']), (20, 1, None))
+        self.assertEqual((len(first['items']), len(second['items']), second['next_cursor']), (20, 2, None))

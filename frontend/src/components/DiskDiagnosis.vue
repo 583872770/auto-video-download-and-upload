@@ -34,7 +34,7 @@ function time(value: number) {
           diagnostic.waiting_tasks &&
           decision.impact === 'new_downloads_paused'
         "
-        >已有 {{ diagnostic.waiting_tasks }} 个任务等待空间；已在执行的任务继续接受空间检查。</small
+        >有 {{ diagnostic.waiting_tasks }} 条任务空间申请尚未满足；实时等待进程可在下载工作台查看。</small
       >
     </div>
     <dl class="disk-answer">

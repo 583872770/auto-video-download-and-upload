@@ -149,7 +149,7 @@ class TaskRunner:
 
     def _dispatch(self, diagnostic_log):
         from webapp.diagnostics import capture_output, error_details
-        from webapp.disk_budget import resource_blocked
+        from webapp.disk_budget import DiskBudget, DiskCoordinationBusy, resource_blocked
         last_recovery = last_error = last_beat = 0
         while not self.stop.is_set():
             # Clear before reading the queue so changes made during this tick
@@ -171,12 +171,23 @@ class TaskRunner:
                         if self.store.fleet:
                             statement = statement.where(tasks.c.instance_id == self.store.fleet.id)
                         stages = [json.loads(value or '{}') for value in db.execute(statement).scalars()]
+                        pending = db.execute(select(delivery_work.c.disk_lease, delivery_work.c.created_at)
+                            .join(tasks, tasks.c.id == delivery_work.c.task_id).where(tasks.c.status == 'queued',
+                                delivery_work.c.instance_id == (self.store.fleet.id if self.store.fleet else 'local'))
+                            .order_by(delivery_work.c.created_at).limit(512)).all()
                     cookie_capacity = None
                     from webapp.cookie_pool import CookiePool
                     base = self.store.fleet.local_settings()['base'] if self.store.fleet else self.base
                     if base:
                         cookie_capacity = CookiePool(self.store, config, base, None, strict=False).status()['capacity_summary']
-                    self.throughput.update(config, stages, cookie_capacity=cookie_capacity)
+                    processing_load = None
+                    if pending and (self.store.directory / 'disk-budget.sqlite3').is_file():
+                        try:
+                            processing_load = DiskBudget(self.store.directory, config).processing_load(pending)
+                        except DiskCoordinationBusy:
+                            pass
+                    self.throughput.update(config, stages, cookie_capacity=cookie_capacity,
+                                           processing_load=processing_load)
                     if self.store.fleet:
                         from webapp.risk_diagnostics import local_health
                         self.throughput.state['risk_local'] = local_health(self.store.directory, config,

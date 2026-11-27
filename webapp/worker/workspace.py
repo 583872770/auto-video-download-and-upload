@@ -9,8 +9,16 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
             start_ticket=None, *, pipeline):
     _execute = pipeline
     if store and payload.get('_processing'):
+        from sqlalchemy import select
+        from webapp.database import delivery_work
         from webapp.delivery.processing import run
-        return run(store, task_id, payload['_processing'], report_progress or (lambda value: None), slot=worker_slot)
+        from webapp.downloads import DownloadLeaseLost
+        # 复查磁盘后读取最新处理计划。上次可能已经登记了产物，并回收了对应的源文件。
+        with store.connect() as db:
+            work = db.execute(select(delivery_work).where(delivery_work.c.task_id == task_id)).mappings().first()
+        if not work:
+            raise DownloadLeaseLost('本地处理计划已注销，当前执行已停止。')
+        return run(store, task_id, work, report_progress or (lambda value: None), slot=worker_slot)
     if store and action == 'download':
         payload = store.effective_download_payload(task_id, payload)
     if action != 'download':
@@ -18,10 +26,12 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     payload = {**payload, '_task_id': task_id}
     from Utils.download_storage import DownloadWorkspace
     from Utils.config import video_directory
-    from webapp.disk_budget import DiskBudget, DISK_FIELDS
+    from webapp.disk_budget import DiskBudget, DiskCoordinationBusy, DiskPressure, DISK_FIELDS
     config = dict(payload['config'])
     runtime = store.runtime() if store else config
     config.update({key: runtime[key] for key in DISK_FIELDS if key in runtime})
+    if 'min_free_gb' in runtime:
+        config['min_free_gb'] = runtime['min_free_gb']
     if 'postprocess_limit' in runtime:
         config['postprocess_limit'] = runtime['postprocess_limit']
     state = store.directory if store else Path(payload['base']) / '.cache'
@@ -42,7 +52,9 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     # cache. Keep their reservation on the global temporary-file budget so
     # large videos can progress even when the small cache budget is full.
     lease = budget.lease('test' if workspace.test_mode else 'downloads', task=task_id,
-                         path=workspace.directory if workspace.test_mode else None)
+                         path=workspace.directory if workspace.test_mode else None, wait_for_budget=True,
+                         defer_reservation=True)
+    lease.media_directory = state if workspace.test_mode else video_directory(config, payload['base'])
     from webapp.downloads import initial_progress
     last_progress = initial_progress(config, payload.get('policy_version'))
     if payload.get('_force_test_sample'):
@@ -50,39 +62,46 @@ def execute_task(action, payload, report_progress=None, rotation_completed=None,
     if payload.get('_retry_cookie_profile_id'):
         last_progress['retry_cookie_profile_id'] = payload['_retry_cookie_profile_id']
 
+    def stop_children():
+        from webapp.control import terminate_own_descendants
+        terminate_own_descendants()
+
     def report(value):
-        estimate = value.get('total_bytes') or 0
         forecast = value.get('space_plan') or {}
-        if forecast:
-            lease.plan(forecast['peak_bytes'])
-        elif workspace.test_mode:
-            # Typed delivery reserves conversion peaks in the local pool. Its
-            # acquisition phase stores only the original tracks, without copies.
-            lease.check(estimate)
-        else:
-            lease.check()
+        if value.get('stage') != 'waiting_processing':
+            # 准备目录、分配账号和解析来源只上报进度。解析得出空间计划后，首次检查水位并申请临时额度。
+            if forecast:
+                first_plan = lease.planned is None
+                peak = forecast['peak_bytes']
+                try:
+                    lease.plan(peak)
+                except DiskPressure as error:
+                    if not isinstance(error, DiskCoordinationBusy):
+                        # 放开账号后，复查只读空间账本。真实申请成功后才允许写文件。
+                        error.download_space_ready = lambda: budget.download_space_ready(
+                            lease.media_directory, lease.category, peak)
+                    raise
+                if first_plan:
+                    lease.start_monitor(stop_children)
+            elif lease.planned is not None:
+                lease.check()
+        # 本地处理计划提交后的最后一帧只上报状态，空间检查由接手的进程负责。
         last_progress.update(value, storage_mode=config.get('storage_mode', 'local'))
         if report_progress:
             report_progress(dict(last_progress))
 
     with lease:
         if not workspace.test_mode:
-            from Utils.config import video_directory
-            lease.media_directory = video_directory(config, payload['base'])
             if store:
                 from webapp.catalog import MediaCatalog
                 MediaCatalog(store).register_root(lease.media_directory)
-            lease.media_directory.mkdir(parents=True, exist_ok=True)
-        def stop_children():
-            from webapp.control import terminate_own_descendants
-            terminate_own_descendants()
-        lease.start_monitor(stop_children)
         report({'stage': 'preparing_workspace'})
         prepared = workspace.prepare()
         prepared['_temporary_directory'] = str(lease.path / '_aux')
         prepared['_disk_state'] = str(state)
         payload = {**payload, 'config': prepared, '_disk_workspace': str(lease.path),
-                   '_disk_lease': lease.id, '_disk_state': str(state)}
+                   '_disk_lease': lease.id, '_disk_state': str(state),
+                   '_disk_monitor_error': lambda: lease.error}
         try:
             if not store or not task_id or not prepared.get('youtube_cookie_pool'):
                 from webapp.throughput import PipelineBusy

@@ -113,11 +113,15 @@ async function stop() {
   more.value = false;
   if (!status.canStop) return;
   try {
-    await ElMessageBox.confirm(`停止「${instances.name}」并清理未完成视频的临时文件？下次开始时重新下载。`, '立即停止', {
-      confirmButtonText: '立即停止',
-      cancelButtonText: '取消',
-      type: 'warning',
-    });
+    await ElMessageBox.confirm(
+      `停止「${instances.name}」并删除本地待处理和下载中的临时文件？下次开始时重新下载。`,
+      '立即停止',
+      {
+        confirmButtonText: '立即停止',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
   } catch {
     return;
   }
@@ -179,6 +183,9 @@ watch(
   },
 );
 const disk = computed(() => (status.displayFresh ? status.data?.disk : null));
+const diskWaitCount = computed(
+  () => (status.diskWaiting?.download || 0) + (status.diskWaiting?.processing || 0),
+);
 const diskQuota = computed(() => {
   const total = disk.value?.download?.constraints?.find((row) => row.key === 'total');
   if (!total || total.limit_bytes <= 0) return null;
@@ -214,7 +221,7 @@ const powerTitle = computed(
       : !status.selection
         ? '请先选择任务'
         : status.enabled
-          ? '暂停领取新任务，当前下载完成后停止'
+          ? '暂停领取新任务，完成当前下载和本地待处理内容'
           : !status.canStart
             ? '所选任务没有待处理内容，或暂时无法启动'
             : '启动所选任务'),
@@ -368,7 +375,9 @@ const powerTitle = computed(
             <p v-if="status.error || instances.error" role="alert">
               {{ status.error || instances.error }}
             </p>
-            <p>暂停会让当前任务继续完成。立即停止会中断任务并清理未完成视频的临时文件。</p>
+            <p>
+              暂停后继续完成当前下载和本地待处理内容。立即停止会中断执行、删除临时文件，下次开始时重新下载。
+            </p>
           </div>
         </div>
       </div>
@@ -457,17 +466,19 @@ const powerTitle = computed(
           type="button"
           aria-controls="header-disk-quota-details"
           :aria-expanded="resourceOpen === 'disk'"
-          :title="diskLabel(disk)"
+          :title="diskLabel(disk, diskWaitCount)"
           @click="toggleResource('disk')"
         >
           <span class="resource-heading">
             <span>临时磁盘</span>
             <strong>{{
-              disk?.waiting_tasks
-                ? disk.waiting_tasks + ' 等待'
-                : diskQuota
-                  ? Math.round(diskQuota.committedPercent) + '%'
-                  : '—'
+              diskWaitCount
+                ? diskWaitCount + ' 个进程等待'
+                : disk?.download?.impact === 'new_downloads_paused'
+                  ? '暂缓新下载'
+                  : diskQuota
+                    ? Math.round(diskQuota.committedPercent) + '%'
+                    : '—'
             }}</strong>
           </span>
           <span class="resource-track" aria-hidden="true">

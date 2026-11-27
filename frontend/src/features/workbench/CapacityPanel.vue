@@ -51,6 +51,7 @@ function reductionReason(reason: { code: string; value: number; threshold: numbe
   if (code === 'cpu') return `CPU 利用率 ${value}%，触发阈值 ${threshold}%`;
   if (code === 'io') return `I/O 压力 ${value}%，触发阈值 ${threshold}%`;
   if (code === 'memory') return `可用内存 ${value} MB，低于 ${threshold} MB 安全水位`;
+  if (code === 'processing_backlog') return `本地处理占用 ${value} MiB，达到 ${threshold} MiB 周转阈值`;
   return '';
 }
 </script>

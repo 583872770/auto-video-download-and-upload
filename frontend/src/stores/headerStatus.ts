@@ -3,7 +3,7 @@ import { defineStore } from 'pinia';
 import { api } from '../api';
 import { bootstrap } from '../bootstrap';
 import { useInstances } from './instances';
-import type { RuntimeAccount, WorkbenchStatus } from '../features/workbench/contracts';
+import type { DiskWaiting, RuntimeAccount, WorkbenchStatus } from '../features/workbench/contracts';
 import { accountState } from '../features/workbench/accountState';
 
 export interface HeaderStatus extends Omit<WorkbenchStatus, 'active_tasks'> {
@@ -30,7 +30,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   let revision = 0,
     controller: AbortController | undefined;
   let lastSelected: string | null | undefined;
-  const liveDownload = ref<{ speed: number; receivedAt: number }>();
+  const liveDownload = ref<{ speed: number; receivedAt: number; diskWaiting?: DiskWaiting }>();
   const fresh = computed(
     () =>
       !!data.value &&
@@ -70,12 +70,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     () => editable && fresh.value && !busy.value && !!data.value && !data.value.paused,
   );
   const canStop = computed(
-    () =>
-      editable &&
-      fresh.value &&
-      !busy.value &&
-      !!data.value &&
-      !data.value.cleaning_temporary,
+    () => editable && fresh.value && !busy.value && !!data.value && !data.value.cleaning_temporary,
   );
   const download = computed(() => {
     if (liveDownload.value)
@@ -88,6 +83,13 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
   const output = computed(() =>
     displayFresh.value && data.value?.session ? (data.value.session.output_mbps ?? 0) / 8 : null,
   );
+  const diskWaiting = computed(() => {
+    const live = liveDownload.value;
+    if (live?.diskWaiting && now.value - live.receivedAt < 15) return live.diskWaiting;
+    return displayFresh.value && now.value - receivedAt.value <= CONTROL_FRESH_SECONDS
+      ? data.value?.disk_waiting
+      : null;
+  });
   const hlsBuffer = computed(() => {
     const sample = data.value?.hls_buffer;
     if (!displayFresh.value || !sample || sample.limit_bytes <= 0) return null;
@@ -144,8 +146,8 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     error.value = '';
     receivedAt.value = now.value = Date.now() / 1000;
   }
-  function adoptLiveDownload(speed: number, received: number) {
-    liveDownload.value = { speed, receivedAt: received };
+  function adoptLiveDownload(speed: number, received: number, diskWaiting?: DiskWaiting) {
+    liveDownload.value = { speed, receivedAt: received, diskWaiting };
   }
   function adoptAccountSummary(summary: HeaderStatus['account_summary']) {
     if (data.value) data.value = { ...data.value, account_summary: summary };
@@ -232,7 +234,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
       if (scope.isCurrent())
         message.value = {
           start: '已启动所选任务。',
-          pause: '已暂停领取新任务，当前下载完成后停止。',
+          pause: '已暂停领取新任务，当前下载和本地待处理内容将继续完成。',
           stop: '正在停止实例并清理未完成视频的临时文件。',
         }[action];
     } catch (failure) {
@@ -271,6 +273,7 @@ export const useHeaderStatus = defineStore('headerStatus', () => {
     canStop,
     download,
     output,
+    diskWaiting,
     hlsBuffer,
     cooling,
     label,

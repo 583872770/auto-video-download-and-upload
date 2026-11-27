@@ -216,7 +216,7 @@ async function control(action: 'start' | 'pause' | 'stop') {
     });
     message.value = {
       start: '已启动所选任务。',
-      pause: '当前实例已停止领取；正在执行的视频完成后停止。',
+      pause: '当前实例已暂停领取新任务，当前下载和本地待处理内容将继续完成。',
       stop: '正在停止实例并清理未完成视频的临时文件。',
     }[action];
     started = action === 'start';
@@ -262,6 +262,7 @@ watch([live.lastSuccessAt, live.error], () => {
   headerStatus.adoptLiveDownload(
     live.data.value?.transfer_summary.speed || 0,
     live.error.value ? 0 : live.lastSuccessAt.value,
+    live.data.value?.disk_waiting,
   );
 });
 </script>
@@ -486,7 +487,7 @@ watch([live.lastSuccessAt, live.error], () => {
       ><p>
         将终止 {{ instances.name
         }}<template v-if="instances.selectedId">（{{ instances.selectedId }}）</template>
-        当前执行中的视频，并清理未完成视频的下载和后处理临时文件。下次开始时重新下载。
+        的下载和本地处理，并删除本地待处理和下载中的临时文件。下次开始时重新下载。
       </p>
       <p v-if="failure" role="alert" class="form-error">{{ failure }}</p>
       <button class="danger" :disabled="busy" @click="control('stop')">

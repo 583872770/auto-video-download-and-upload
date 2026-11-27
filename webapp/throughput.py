@@ -165,7 +165,7 @@ class ThroughputController:
             pass
         return resources
 
-    def update(self, config, stages=(), force=False, *, cookie_capacity=None):
+    def update(self, config, stages=(), force=False, *, cookie_capacity=None, processing_load=None):
         tick = self.clock()
         if not force and self.state is not None and tick - self.last < 5 and self.state['policy'] == policy_key(config):
             return self.state
@@ -223,6 +223,16 @@ class ThroughputController:
         io_pressure = resources.get('io_pressure') or 0
         self.pressure_hits = self.pressure_hits + 1 if cpu >= CPU_HIGH or io_pressure >= IO_HIGH else 0
         protection = pressure_state(resources, cpu, self.pressure_hits)
+        # 按已下载文件的实测字节和驻留时间判断周转压力，小文件排队不会触发同等限额。
+        processing_load = processing_load or {}
+        processing_bytes = processing_load.get('bytes', 0)
+        oldest_at = processing_load.get('oldest_at')
+        backlog_seconds = max(0, time.time() - oldest_at) if oldest_at else 0
+        backlog_threshold = max(2048 * MIB, processing_load.get('budget_bytes', 0) // 4)
+        if processing_bytes >= backlog_threshold and backlog_seconds >= WORKER_ADJUST_SECONDS:
+            protection['active'] = True
+            protection['reasons'].append({'code': 'processing_backlog', 'value': round(processing_bytes / MIB),
+                                          'threshold': round(backlog_threshold / MIB)})
         pressure = protection['active']
         reason = cookie_capacity.get('reason', '账号池调度')
         pool_limits = pool_worker_limits(config, requested, resources)
@@ -271,6 +281,8 @@ class ThroughputController:
                       'cpu_cores': round(resources['cpu_cores'], 2),
                       'memory_available_mb': round(resources['memory_available'] / MIB),
                       'stages': counts, 'ready_transfer_count': counts.get('waiting_transfer', 0),
+                      'processing_load': dict(count=processing_load.get('count', 0), bytes=processing_bytes,
+                                              oldest_seconds=round(backlog_seconds)),
                       'transfer_wait_resources': wait_resources,
                       'oldest_ready_seconds': round(max(ready_ages), 1) if ready_ages else 0,
                       'reason': reason, 'control_metric': 'media_received_bytes',

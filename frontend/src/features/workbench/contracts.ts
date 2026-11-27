@@ -20,6 +20,7 @@ export interface WorkbenchStatus {
     speed: number;
   };
   disk?: import('../disk/model').DiskDiagnostic | null;
+  disk_waiting?: DiskWaiting | null;
   hls_buffer?: HlsBufferSample | null;
   selected_job_id: string | null;
   job: (Job & { importing?: number }) | null;
@@ -79,7 +80,7 @@ export interface ProcessRow {
   slot: string;
   number: number;
   processing: boolean;
-  state: 'downloading' | 'pending_transfer' | 'pending_start' | 'idle';
+  state: 'downloading' | 'pending_transfer' | 'pending_start' | 'disk_wait' | 'idle';
   stage: string;
   id?: string | null;
   video_id?: string | null;
@@ -91,7 +92,11 @@ export interface ProcessRow {
   wait?: { code?: string; label: string; detail?: string; until?: number } | null;
   phase_started_at?: number | null;
 }
-export type QueueGroup = 'processing' | 'disk' | 'retry' | 'ready';
+export type QueueGroup = 'processing' | 'retry' | 'ready';
+export interface DiskWaiting {
+  download: number;
+  processing: number;
+}
 export interface QueuePage {
   items: { id: string; video_id?: string; title?: string; reason?: string; until?: number }[];
   next_cursor: number | null;
@@ -101,6 +106,7 @@ export interface LiveWorkbench {
   paused: boolean;
   rows: ProcessRow[];
   counts: Record<ProcessRow['state'], number>;
+  disk_waiting: DiskWaiting;
   queue: Record<QueueGroup, number>;
   transfer_summary: WorkbenchStatus['transfer_summary'];
 }

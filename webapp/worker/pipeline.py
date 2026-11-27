@@ -80,6 +80,15 @@ def run_download(payload, report_progress=None, rotation_completed=None, store=N
               elapsed_seconds=round(time.monotonic() - started, 3))
         return finish(session)
     except Exception as error:
+        from webapp.disk_budget import DiskPressure, is_disk_write_pressure
+        disk_monitor_error = payload.get('_disk_monitor_error')
+        pressure = (disk_monitor_error and disk_monitor_error()) or error
+        if isinstance(pressure, DiskPressure) or is_disk_write_pressure(pressure):
+            # 空间不足属于本机资源等待，不计入来源失败，也不触发账号冷却。
+            meter.finish(False)
+            if pressure is not error:
+                raise pressure from error
+            raise
         evidence = failure_evidence(error, phase=session.failure_phase, source='youtube')
         progress.state['last_failure'] = evidence.public()
         progress.save(force=True)

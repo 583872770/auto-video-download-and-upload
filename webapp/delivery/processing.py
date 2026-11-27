@@ -80,6 +80,8 @@ def run(store, task_id, work, report, *, slot=0):
     budget = DiskBudget(store.directory, config)
     lease = budget.adopt(work['disk_lease'], task_id, work['workspace'])
     lease.preserve = True  # Settlement commits before any workspace is deleted.
+    # 本地处理空间不足也在原进程等待，继续沿用已登记的工作区和处理断点。
+    lease.wait_for_budget = True
     if config.get('storage_mode') != 'test':
         lease.media_directory = video_directory(config, plan['base'])
     progress = DownloadProgress(lambda value: (lease.check(), report(value)))

@@ -85,12 +85,13 @@ export function diskBytes(value?: number | null): string {
   const index = Math.min(4, Math.max(0, Math.floor(Math.log(value) / Math.log(1024))));
   return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
-export function diskLabel(disk?: DiskDiagnostic | null): string {
+export function diskLabel(disk?: DiskDiagnostic | null, waitingProcesses = 0): string {
+  if (waitingProcesses) return `${waitingProcesses} 个进程等待磁盘空间`;
   if (!disk) return '磁盘待更新';
   if (!disk.download) return '空间待更新';
   if (disk.download.impact === 'new_downloads_paused') return '空间限制 · 暂缓新下载';
   if (disk.download.impact === 'some_tasks_waiting')
-    return `空间等待 · ${disk.waiting_tasks} 个任务`;
+    return '临时空间存在分配压力';
   if (disk.kind === 'retention')
     return disk.retention.failed_processing_count
       ? `${disk.retention.failed_processing_count} 个失败测试待处理 · 未限制下载`
