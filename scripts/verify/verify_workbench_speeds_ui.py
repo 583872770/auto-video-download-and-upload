@@ -113,7 +113,7 @@ def main():
                 assert panel.bounding_box()['y'] < page.locator('.download-console').bounding_box()['y']
                 page.screenshot(path=str(output / 'speeds-1440.png'), full_page=True)
                 page.get_by_label('当前实例', exact=True).select_option('beta')
-                expect(page.get_by_text('近 24 小时暂无正式交付。')).to_be_visible()
+                expect(page.get_by_text('近 24 小时暂无交付。')).to_be_visible()
                 expect(download).to_have_text('3.00')
                 expect(produced).to_have_text('6.00')
                 update_mode('stale')

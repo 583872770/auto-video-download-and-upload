@@ -47,13 +47,13 @@ usePolling(ref(true), load, 30000);
 <template>
   <section class="card">
     <h2>近 24 小时平均交付速度</h2>
-    <p class="muted">每 10 分钟统计正式交付文件的平均速度（Mbps），不足 10 分钟按实际时长计算。</p>
+    <p class="muted">每 10 分钟合计正式与测试交付，计算平均速度（Mbps）。不足 10 分钟按实际时长计算。</p>
     <p v-if="history.error.value" class="form-error" role="alert">
       交付速度读取失败：{{ history.error.value }} <button @click="load()">重试</button>
     </p>
     <p v-else-if="!data" class="muted">正在读取交付速度…</p>
     <template v-if="data">
-      <p v-if="!hasDeliveries" class="muted">近 24 小时暂无正式交付。</p>
+      <p v-if="!hasDeliveries" class="muted">近 24 小时暂无交付。</p>
       <div
         class="delivery-chart"
         role="img"
@@ -86,7 +86,7 @@ usePolling(ref(true), load, 30000);
             <thead>
               <tr>
                 <th>时间段</th>
-                <th>正式交付</th>
+                <th>交付文件（含测试）</th>
                 <th>平均交付速度</th>
               </tr>
             </thead>

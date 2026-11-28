@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, or_, select
 
 from webapp.database import deliveries, delivery_artifacts, download_sessions as sessions, session_tasks, settings, tasks, test_files, test_totals
 
@@ -17,6 +17,7 @@ OUTCOMES = ('running', 'succeeded', 'failed', 'skipped', 'test_succeeded')
 UNITS = {'GB': 1000 ** 3, 'GiB': 1024 ** 3}
 DELIVERY_WINDOW_SECONDS = 24 * 60 * 60
 DELIVERY_INTERVAL_SECONDS = 10 * 60
+SESSION_OWNER_PREFIX = 'download_statistics_owner:'
 
 
 def with_test_sizes(value):
@@ -154,16 +155,18 @@ class DownloadStatistics:
         with self.store.connect() as db:
             end = database_time(db, self.db.mysql)
             start = end - DELIVERY_WINDOW_SECONDS
-            bucket = func.floor(deliveries.c.created_epoch / interval)
-            # 正式交付账本记录去重后的完成时间和大小。关联产物定位实例，旧记录可回退到任务。
-            source = (sessions.join(deliveries, deliveries.c.session_id == sessions.c.id)
-                      .outerjoin(delivery_artifacts, delivery_artifacts.c.id == deliveries.c.id)
-                      .outerjoin(tasks, (tasks.c.id == deliveries.c.task_id) & delivery_artifacts.c.id.is_(None)))
-            owner = func.coalesce(delivery_artifacts.c.instance_id, tasks.c.instance_id, 'local')
-            rows = db.execute(select(bucket, func.sum(deliveries.c.size), func.count()).select_from(source).where(
-                owner == scope, deliveries.c.created_epoch >= start, deliveries.c.created_epoch < end
-            ).group_by(bucket))
-            totals = {int(index): (int(size), count) for index, size, count in rows}
+            identities = self._delivery_sessions(db, scope, start, end)
+            totals = {}
+            # 会话已确定归属，按会话和完成时间的联合索引扫描账本，无需逐条查询产物。
+            for ledger in (deliveries, test_files) if identities else ():
+                bucket = func.floor(ledger.c.created_epoch / interval)
+                rows = db.execute(select(bucket, func.sum(ledger.c.size), func.count()).where(
+                    ledger.c.session_id.in_(identities), ledger.c.created_epoch >= start, ledger.c.created_epoch < end
+                ).group_by(bucket))
+                for index, size, count in rows:
+                    index = int(index)
+                    previous_size, previous_count = totals.get(index, (0, 0))
+                    totals[index] = previous_size + int(size), previous_count + count
         points = []
         for aligned_start in range(int(start // interval) * interval, int(end) + 1, interval):
             # 首尾按滚动窗口截断，未满十分钟的区间按实际覆盖时长计算。
@@ -177,6 +180,36 @@ class DownloadStatistics:
                                mbps=round(size * 8 / elapsed / 1e6, 2), partial=elapsed < interval))
         return dict(start_at=start, end_at=end, interval_seconds=interval, points=points)
 
+    def _delivery_sessions(self, db, scope, start, end):
+        def window(ledger):
+            return (ledger.c.session_id == sessions.c.id, ledger.c.created_epoch >= start, ledger.c.created_epoch < end)
+
+        def legacy_owner(ledger):
+            # 旧会话最多读取一条交付回执来确定归属。文件已删除也可使用账本记录。
+            source = (ledger.outerjoin(delivery_artifacts, delivery_artifacts.c.id == ledger.c.id)
+                      .outerjoin(tasks, (tasks.c.id == ledger.c.task_id) & delivery_artifacts.c.id.is_(None)))
+            return (select(func.coalesce(delivery_artifacts.c.instance_id, tasks.c.instance_id)).select_from(source)
+                    .where(*window(ledger)).order_by(ledger.c.created_epoch).limit(1).correlate(sessions).scalar_subquery())
+
+        active = {value: key.split(':', 1)[1] for key, value in db.execute(select(settings.c.key, settings.c.value)
+            .where(settings.c.key.startswith('download_statistics_active:'))) if value}
+        owner = func.coalesce(settings.c.value, legacy_owner(deliveries), legacy_owner(test_files), 'local')
+        source = sessions.outerjoin(settings, settings.c.key == literal(SESSION_OWNER_PREFIX) + sessions.c.id)
+        relevant = or_(*(select(ledger.c.id).where(*window(ledger)).exists() for ledger in (deliveries, test_files)))
+        return [identity for identity, recorded_owner in db.execute(select(sessions.c.id, owner).select_from(source)
+                .where(relevant)) if active.get(identity, recorded_owner) == scope]
+
+    def _create_session(self, db, scope):
+        identity = uuid.uuid4().hex
+        db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
+            started_at=stamp(), status='active', label=''))
+        # 会话由实例独享。保存首次归属，跨会话或文件回收后仍可直接按账本汇总。
+        db.execute(settings.insert().values(key=SESSION_OWNER_PREFIX + identity, value=scope))
+        key = self._active_key(scope)
+        self.db.ensure(db, settings, {'key': key, 'value': identity})
+        db.execute(settings.update().where(settings.c.key == key).values(value=identity))
+        return identity
+
     def ensure_session(self, db, instance_id=None):
         scope = self._scope(instance_id)
         identity = self._active(db, scope)
@@ -184,17 +217,11 @@ class DownloadStatistics:
             row = db.execute(select(sessions.c.status).where(sessions.c.id == identity)).scalar_one_or_none()
             if row in ('active', 'stopping'):
                 return identity
-        identity = uuid.uuid4().hex
-        db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
-            started_at=stamp(), status='active', label=''))
-        self.db.ensure(db, settings, {'key': self._active_key(scope), 'value': identity})
-        db.execute(settings.update().where(settings.c.key == self._active_key(scope)).values(value=identity))
-        return identity
+        return self._create_session(db, scope)
 
     def start_session(self, db, instance_id=None):
         """Start the lifecycle session for an instance if one is not active."""
         scope = self._scope(instance_id)
-        key = self._active_key(scope)
         existing = self._active(db, scope)
         if existing:
             status = db.execute(select(sessions.c.status).where(sessions.c.id == existing)).scalar_one_or_none()
@@ -202,12 +229,7 @@ class DownloadStatistics:
                 return existing
             db.execute(sessions.update().where(sessions.c.id == existing, sessions.c.ended_at.is_(None)).values(
                 status='paused', ended_at=stamp()))
-        identity = uuid.uuid4().hex
-        db.execute(sessions.insert().values(id=identity, seq=self.db.sequence(db, 'download_session'),
-            started_at=stamp(), status='active', label=''))
-        self.db.ensure(db, settings, {'key': key, 'value': ''})
-        db.execute(settings.update().where(settings.c.key == key).values(value=identity))
-        return identity
+        return self._create_session(db, scope)
 
     def stop_session(self, db, instance_id=None):
         """Mark an instance session as stopping and close it when idle."""
@@ -235,8 +257,7 @@ class DownloadStatistics:
         for key in keys:
             self.stop_session(db, key.split(':', 1)[1])
 
-    def begin(self, db, row):
-        identity = self.ensure_session(db, row.get('instance_id'))
+    def begin(self, db, row, identity):
         old = db.execute(select(session_tasks).where(session_tasks.c.session_id == identity,
             session_tasks.c.task_id == row['id'])).mappings().first()
         if old:
@@ -251,10 +272,6 @@ class DownloadStatistics:
         elif old['status'] in OUTCOMES and old['status'] != 'running':
             changes[old['status']] = sessions.c[old['status']] - 1
         db.execute(sessions.update().where(sessions.c.id == identity).values(**changes))
-        # Automatic routing may choose a different adapter than the first
-        # configured candidate. Account for that adapter when it is assigned.
-        config = self.store.decode(row, private=True, db=db)['payload'].get('config', {})
-        return identity
 
     def transition(self, db, row, status, error=None):
         if row['action'] != 'download':

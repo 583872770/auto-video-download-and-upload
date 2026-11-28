@@ -121,7 +121,6 @@ class TaskLeases:
                     row = db.execute(self._locked(statement.order_by(*ordering).limit(1), skip=True)).mappings().first()
             if row is None:
                 return None
-            self._transition(db, row, 'running')
             values = dict(status='running', worker_id=worker_id or self.owner,
                           started_at=self._timestamp(), finished_at=None, lease_until=time.time() + lease_seconds,
                           attempts=row['attempts'] + 1, error=None)
@@ -131,6 +130,9 @@ class TaskLeases:
                 work = db.execute(select(delivery_work).where(delivery_work.c.task_id == row['id'])).mappings().one()
                 values['attempts'] = work['attempts'] + 1
                 db.execute(delivery_work.update().where(delivery_work.c.task_id == row['id']).values(attempts=values['attempts']))
+            # 本地处理计划先于队列计数加锁，领取和结算保持同一顺序。
+            self._transition(db, row, 'running')
+            if processing:
                 self.statistics.transition(db, row, 'running')
                 initial = json.loads(row['progress'] or '{}')
                 initial.update(stage='processing', speed=None, eta=None, cookie_profile_id=None,
@@ -140,6 +142,8 @@ class TaskLeases:
                 payload = self.decode(row, private=True, db=db)['payload']
                 payload.pop('_execution_settings', None)
                 payload.pop('download_session_id', None)
+                # 固定交付要求会写交付汇总，先锁会话设置，与文件登记的顺序一致。
+                identity = self.statistics.ensure_session(db, values.get('instance_id', row.get('instance_id')))
                 payload = self.effective_download_payload(row['id'], payload, db)
                 payload['_execution_settings'] = True
                 values['max_attempts'] = int(payload.get('config', {}).get('download_attempts', row['max_attempts']))
@@ -149,12 +153,7 @@ class TaskLeases:
                 if payload.get('_retry_cookie_profile_id'):
                     initial['retry_cookie_profile_id'] = payload['_retry_cookie_profile_id']
                 values['progress'] = json.dumps(initial, ensure_ascii=False)
-                # Generate snapshot BEFORE adding download_session_id
-                packed_without_session = self._pack(db, payload)
-                row = {**row, 'instance_id': values.get('instance_id', row.get('instance_id')),
-                       'payload': packed_without_session}
-                identity = self.statistics.begin(db, row)
-                # Add download_session_id and create final snapshot
+                self.statistics.begin(db, row, identity)
                 payload_with_session = {**payload, 'download_session_id': identity}
                 values['payload'] = self._pack(db, payload_with_session)
             db.execute(tasks.update().where(tasks.c.id == row['id']).values(**values))
@@ -227,8 +226,8 @@ class TaskLeases:
                     return False
                 live = self.progress_cache.read(row)
                 observed = live['progress'] if live else json.loads(row['progress']) if row.get('progress') else {}
-                self._transition(db, row, 'queued')
                 self._release_processing_attempt(db, row)
+                self._transition(db, row, 'queued')
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
                     lease_until=None, attempts=max(0, row['attempts'] - 1),
                     available_at=(self.fleet.clock(db) if self.fleet else time.time()) + delay, error=reason))
@@ -383,8 +382,8 @@ class TaskLeases:
                 db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
             if (result or {}).get('network_pending'):
                 source_attempts = db.execute(select(delivery_work.c.source_attempts).where(delivery_work.c.task_id == task_id)).scalar_one()
-                self._transition(db, row, 'queued')
                 db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
+                self._transition(db, row, 'queued')
                 progress = json.loads(row['progress'] or '{}')
                 progress.update(stage='queued', speed=None, eta=None, wait_reason='已保存已下载内容，等待补齐剩余内容。')
                 db.execute(tasks.update().where(tasks.c.id == task_id).values(status='queued', worker_id=None,
@@ -437,14 +436,14 @@ class TaskLeases:
                 if payload.pop('_force_test_sample', False):
                     progress['_sample_requested'] = True
                     extra['payload'] = self._pack(db, payload)
+            if not error:
+                db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
             self._transition(db, row, status)
             db.execute(tasks.update().where(tasks.c.id == task_id).values(
                 status=status, finished_at=None if retry else self._timestamp(), result=json.dumps(result, ensure_ascii=False) if result else None,
                 error=error, progress=json.dumps(progress, ensure_ascii=False) if progress else None,
                 available_at=settled_stamp + delay if retry else 0,
                 lease_until=None, worker_id=None, **extra))
-            if not error:
-                db.execute(delivery_work.delete().where(delivery_work.c.task_id == task_id))
             outcome = ('retrying' if retry else 'failed' if error else 'test_succeeded' if (result or {}).get('test_mode')
                        else 'skipped' if (result or {}).get('skipped') else 'succeeded')
             self.statistics.transition(db, row, outcome, error)

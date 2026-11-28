@@ -517,14 +517,14 @@ class Jobs:
                 if not rows:
                     break
                 db.execute(self.store.db.ignore(job_removed, [dict(task_id=task['id'],previous_status=task['status']) for task in rows]))
+                from webapp.database import delivery_work
+                db.execute(delivery_work.delete().where(delivery_work.c.task_id.in_([task['id'] for task in rows])))
                 changes = Counter(task['status'] for task in rows)
                 for scope in sorted(('action:download','batch:'+identity)):
                     for status in sorted({*changes,'removed'}):
                         self.store._counter(db,scope,status,len(rows) if status=='removed' else -changes[status])
                 db.execute(tasks.update().where(tasks.c.id.in_([task['id'] for task in rows])).values(
                     status='removed',worker_id=None,lease_until=None))
-                from webapp.database import delivery_work
-                db.execute(delivery_work.delete().where(delivery_work.c.task_id.in_([task['id'] for task in rows])))
                 for task in rows:
                     if task['status']=='running':
                         self.store.statistics.transition(db, task, 'paused')

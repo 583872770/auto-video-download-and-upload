@@ -82,11 +82,15 @@ def _sweep(store, budget, *, incoming=None):
     with store.connect() as db:
         rows = [dict(r) for r in db.execute(select(samples).where(samples.c.instance_id == local_id(store))
             .order_by(samples.c.created)).mappings()]
-        policies_by_job = {r['job_id']: policy(db, r['job_id']) for r in rows}
-    pressure = budget._free() < budget.watermarks[1]
-    snapshot = budget.snapshot()
-    pressure |= (snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
-        snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'])
+        policies_by_job = {job: policy(db, job) for job in {row['job_id'] for row in rows}}
+    def pressure_bytes(snapshot):
+        test = snapshot['categories']['test']
+        return max(0, budget.watermarks[1] - snapshot['free_bytes'],
+            snapshot['committed_bytes'] - snapshot['budget_bytes'] + 1,
+            test['committed_bytes'] - test['budget_bytes'] + 1)
+
+    deficit = pressure_bytes(budget.snapshot())
+    reclaimed = 0
     maximum_bytes = int(budget.config.get('disk_sample_budget_mb', 3072)) * MIB
     total = sum(r['size'] for r in rows)
     retained = len(rows) + int(incoming is not None)
@@ -108,11 +112,11 @@ def _sweep(store, budget, *, incoming=None):
                 continue
         p = policies_by_job[row['job_id']]
         amount, count = per_job[row['job_id']]
-        reason = ('空间紧张，样本已自动回收。' if pressure else
+        reason = ('空间紧张，样本已自动回收。' if deficit else
             '样本已到期，自动清理。' if row['expires'] <= now else
             '已关闭留样，样本自动清理。' if not p['enabled'] and not row['requested'] else
             '已达到留样数量或容量上限，旧样本自动替换。')
-        evict = (row['state'] != 'ready' or pressure or (not p['enabled'] and not row['requested']) or row['expires'] <= now or
+        evict = (row['state'] != 'ready' or deficit or (not p['enabled'] and not row['requested']) or row['expires'] <= now or
             total > maximum_bytes or retained > 200 or amount > p['budget_mb'] * MIB or count > p['maximum'])
         if not evict or row['view_until'] > now:
             continue
@@ -122,14 +126,18 @@ def _sweep(store, budget, *, incoming=None):
             with budget.connect() as db:
                 budget._set(db, 'sample_cleanup', dict(time=now, error='样本文件暂时无法删除，将自动重试；可在实例日志中检查文件权限。'))
             continue
-        total -= row['size'];per_job[row['job_id']] = amount - row['size'], count - 1
+        total -= row['size']
+        per_job[row['job_id']] = amount - row['size'], count - 1
         retained -= 1
         removed += 1
-        snapshot = budget.snapshot(force=True)
-        pressure = (budget._free() < budget.watermarks[1] or
-            snapshot['committed_bytes'] >= snapshot['budget_bytes'] or
-            snapshot['categories']['test']['committed_bytes'] >= snapshot['categories']['test']['budget_bytes'])
-    return total, per_job, pressure, removed
+        reclaimed += row['size']
+        # 到期和配额轮换只使用样本账本。空间紧张时，累计到预计缺口后再核对实际用量。
+        if deficit and reclaimed >= deficit:
+            deficit = pressure_bytes(budget.snapshot(force=True))
+            reclaimed = 0
+    if deficit and reclaimed:
+        deficit = pressure_bytes(budget.snapshot(force=True))
+    return total, per_job, bool(deficit), removed
 
 
 def sweep(store, budget):
@@ -149,6 +157,54 @@ def status(store, budget):
         budget._set(db, 'sample_status', dict(count=int(count), used_bytes=int(amount), time=time.time()))
 
 
+def _sample_candidate(store, budget, lease, task, workspace, *, under_pressure):
+    # 工作区租约锁由调用方持有。普通回收和文件探查无需占用全局样本锁。
+    with store.connect() as db:
+        previous = db.execute(select(samples).where(samples.c.id == lease['id'])).mappings().first()
+        if previous:
+            # 文件移动中断后，从原清单恢复，避免清掉已经移动了一部分的工作区。
+            return (dict(previous) if previous['state'] == 'building' else None), None
+        if under_pressure:
+            return None, None
+        p = policy(db, task['batch_id'])
+        requested = bool((task.get('progress') or {}).get('_sample_requested'))
+        if not p['enabled'] and not requested:
+            outputs = []
+        else:
+            outputs = list(db.execute(select(artifacts).where(artifacts.c.task_id == task['id'],
+                artifacts.c.job_id == task['batch_id'], artifacts.c.test_mode == 1,
+                artifacts.c.instance_id == local_id(store))).mappings())
+    if not p['enabled'] and not requested:
+        task_note(store, task['id'], '快速测试：校验结果已登记，真实文件已按设置清理。')
+        return None, None
+    files = []
+    for output in outputs:
+        try:
+            path = safe_path(output['path'], workspace)
+        except ValueError:
+            continue  # 同一交付回执可能来自上一次尝试的工作区。
+        if not path.is_file():
+            continue
+        files.append(dict(id=output['id'], kind=output['kind'], language=output['language'],
+            subtitle_source=output['subtitle_source'], title=output['title'], video_id=output['video_id'],
+            size=path.stat().st_size, extension=path.suffix.lower(), name=output['id'] + path.suffix.lower(),
+            source=str(path), storage='test', instance_id=local_id(store), available=True))
+    if not files:
+        return None, None
+    size = sum(item['size'] for item in files)
+    cap = min(p['budget_mb'], int(budget.config.get('disk_sample_budget_mb', 3072))) * MIB
+    if size > cap:
+        task_note(store, task['id'], '样本超过留样容量上限，校验通过后已自动清理。')
+        return None, None
+    now = time.time()
+    candidate = dict(id=lease['id'], job_id=task['batch_id'], task_id=task['id'],
+        instance_id=local_id(store), video_id=task['video_id'], title=task.get('title') or files[0]['title'] or task['video_id'],
+        workspace=str(workspace), files=json.dumps(files, ensure_ascii=False), size=size,
+        state='building', created=now, expires=now + p['hours'] * 3600,
+        view_until=0, review='pending', reviewed_by=None, reviewed_at=None, revision=1, requested=int(requested))
+    return candidate, p
+
+
 def capture(store, budget, lease, task, *, under_pressure=False):
     """Move completed files on the same disk; no re-encoding or duplicate traffic.
 
@@ -161,55 +217,15 @@ def capture(store, budget, lease, task, *, under_pressure=False):
         task_note(store, task['id'], '快速测试文件已逐批回收，结果已登记；留样设置变更对后续完整测试生效。')
         return
     workspace = safe_path(lease['path'], store.directory / 'test-downloads')
+    candidate, p = _sample_candidate(store, budget, lease, task, workspace, under_pressure=under_pressure)
+    if not candidate:
+        return
     with file_lock(store.directory / 'sample-maintenance.lock') as owned:
         if not owned:
             raise OSError('样本管理繁忙，稍后继续整理。')
-        with store.connect() as db:
-            p = policy(db, task['batch_id'])
-            if (task.get('progress') or {}).get('_sample_requested'):
-                p['enabled'] = True
-            previous = db.execute(select(samples).where(samples.c.id == lease['id'])).mappings().first()
-            if previous and previous['state'] == 'ready':
-                return
-            if under_pressure and not previous:
-                return
-            # A building sample already has its manifest. A fast test does not
-            # need file discovery at all; neither path should scan receipts.
-            outputs = list(db.execute(select(artifacts).where(artifacts.c.task_id == task['id'],
-                artifacts.c.job_id == task['batch_id'], artifacts.c.test_mode == 1,
-                artifacts.c.instance_id == local_id(store))).mappings()) if not previous and p['enabled'] else []
-        if previous:
-            candidate = dict(previous)
-        else:
-            if not p['enabled']:
-                task_note(store, task['id'], '快速测试：校验结果已登记，真实文件已按设置清理。')
-                return
-            files = []
-            for output in outputs:
-                try:
-                    path = safe_path(output['path'], workspace)
-                except ValueError:
-                    continue  # A retry can reuse receipts from a previous workspace.
-                if not path.is_file():
-                    continue
-                files.append(dict(id=output['id'], kind=output['kind'], language=output['language'],
-                    subtitle_source=output['subtitle_source'], title=output['title'], video_id=output['video_id'],
-                    size=path.stat().st_size, extension=path.suffix.lower(), name=output['id'] + path.suffix.lower(),
-                    source=str(path), storage='test', instance_id=local_id(store), available=True))
-            size = sum(f['size'] for f in files)
-            if not files:
-                return
-            cap = min(p['budget_mb'], int(budget.config.get('disk_sample_budget_mb', 3072))) * MIB
-            if size > cap:
-                task_note(store, task['id'], '样本超过留样容量上限，校验通过后已自动清理。')
-                return
-            candidate = dict(id=lease['id'], job_id=task['batch_id'], task_id=task['id'],
-                instance_id=local_id(store), video_id=task['video_id'], title=task.get('title') or files[0]['title'] or task['video_id'],
-                workspace=str(workspace), files=json.dumps(files, ensure_ascii=False), size=size,
-                state='building', created=time.time(), expires=time.time() + p['hours'] * 3600,
-                view_until=0, review='pending', reviewed_by=None, reviewed_at=None, revision=1)
-            candidate['requested'] = int(bool((task.get('progress') or {}).get('_sample_requested')))
+        if p is not None:
             total, amounts, pressure, _ = _sweep(store, budget, incoming=candidate)
+            size = candidate['size']
             amount, count = amounts.get(task['batch_id'], (size, 1))
             if (pressure or total > int(budget.config.get('disk_sample_budget_mb', 3072)) * MIB
                     or sum(value[1] for value in amounts.values()) > 200

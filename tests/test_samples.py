@@ -143,6 +143,24 @@ class SampleTests(unittest.TestCase):
         budget = self.budget();budget.config['disk_sample_budget_mb'] = 0
         self.assertEqual(retention.sweep(self.store, budget), 1)
 
+    def test_oversized_sample_does_not_wait_for_sample_maintenance(self):
+        self.storage = {'storage_mode': 'test'}
+        job = self.create(['metadata'])
+        task = self.store.claim(self.store.owner)
+        with patch('webapp.delivery.executor.ParallelYoutubeDL.extract_info', return_value=self.info()):
+            result = self.run_task(task)
+        self.assertTrue(self.store.finish(task['id'], result=result, worker_id=self.store.owner))
+        work = result['_processing_workspace']
+        budget = self.budget()
+        budget.config['disk_sample_budget_mb'] = 0
+        from webapp.delivery.processing import cleanup_completed
+        with file_lock(self.store.directory / 'sample-maintenance.lock') as owned:
+            self.assertTrue(owned)
+            with patch('webapp.delivery.processing.DiskBudget', return_value=budget):
+                self.assertTrue(cleanup_completed(self.store, work))
+        self.assertFalse(self.kept(job))
+        self.assertGreater(self.client.get('/api/jobs/' + job).json['test_file_bytes'], 0)
+
     def test_crash_between_moves_resumes_same_sample(self):
         self.storage = {'storage_mode': 'test'}
         job = self.create(['audio_only', 'video_only', 'metadata'])
